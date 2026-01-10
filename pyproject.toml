@@ -1,0 +1,22 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "qobuz-librarian"
+version = "0.1.0"
+description = "Qobuz library manager"
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.12"
+dependencies = [
+    "requests>=2.31",
+    "mutagen>=1.47",
+    "tomlkit>=0.12",
+]
+
+[project.scripts]
+qobuz-librarian = "qobuz_fetch.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/qobuz_fetch"]
