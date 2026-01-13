@@ -1,0 +1,990 @@
+"""Core album processing — detect gaps, prompt, download, import, consolidate.
+
+"""
+import re
+import shutil
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+
+from qobuz_fetch import config as cfg
+from qobuz_fetch.api.auth import AuthLost, detect_auth_lost, detect_disk_full
+from qobuz_fetch.integrations.beets import (
+    _merge_split_folder,
+    beets_import_paths,
+    staging_preflight,
+)
+from qobuz_fetch.integrations.lyrics import (
+    _record_post_import_lyric_retry,
+    _resolve_signatures_to_paths,
+    write_post_import_sidecars,
+)
+from qobuz_fetch.integrations.rip import (
+    cleanup_lossy,
+    files_added_since,
+    rip_url,
+    snapshot_staging,
+)
+from qobuz_fetch.library.backup import (
+    backup_album_dir,
+    backup_gap_fill_files,
+    restore_gap_fill_backup,
+    restore_upgrade_backup,
+)
+from qobuz_fetch.library.catalog import (
+    _is_multi_artist_subset,
+    _paths_equal,
+    album_quality_label,
+    cleanup_duplicate_art,
+    compute_missing,
+    find_album_dir_filesystem,
+    find_existing_tracks,
+    find_expanded_edition,
+    find_extras_in_existing,
+    is_lossless_album,
+    prompt_and_migrate_multi_artist_folder,
+)
+from qobuz_fetch.library.tags import normalize, strip_edition_suffix
+from qobuz_fetch.modes.consolidate import consolidate_albums
+from qobuz_fetch.quality.decision import (
+    compare_album_quality,
+    existing_track_quality,
+)
+from qobuz_fetch.queue.executor import _pre_import_staging_hooks
+from qobuz_fetch.ui_cli.colors import C, fmt, format_size, section, truncate
+from qobuz_fetch.ui_cli.errors import plural
+from qobuz_fetch.ui_cli.logging import log, vlog
+from qobuz_fetch.ui_cli.prompts import (
+    confirm,
+    log_fetch,
+    print_album_summary,
+    prompt_edition_pick,
+)
+
+
+def force_cleanup_preflight(album, args):
+    """With --force, prompt to remove an existing album dir before re-import.
+    Returns True/False/None: True = safe to proceed; None = symlinked dir
+    (skip without further prompts); False = declined or rmtree failed.
+    --yes does NOT silence this prompt."""
+    if not args.force:
+        return True
+
+    album_dir = find_album_dir_filesystem(album)
+    if not album_dir or not album_dir.exists():
+        return True
+
+    # Refuse to --force-delete a symlinked album dir: rmtree of a symlink-to-
+    # a-dir raises anyway, but more importantly the redownload would land
+    # files through the surviving link into the target — wiping the original
+    # without an undo. Signal None so the caller skips without a collision
+    # prompt (the collision prompt makes no sense here).
+    if album_dir.is_symlink():
+        log.info("")
+        log.info(fmt(C.RED + C.BOLD,
+            "  ✗  --force on a symlinked album folder is unsafe:"))
+        log.info(fmt(C.WHITE, f"     {album_dir}"))
+        log.info(fmt(C.GRAY,
+            "     Resolve the symlink (or pick the real path) and re-run."))
+        return None
+
+    total_size = 0
+    audio_files = []
+    for f in album_dir.rglob("*"):
+        if f.is_file():
+            try:
+                total_size += f.stat().st_size
+            except OSError:
+                pass
+            if f.suffix.lower() in cfg.AUDIO_EXTS:
+                audio_files.append(f)
+
+    log.info("")
+    log.info(fmt(C.YELLOW + C.BOLD, "  ⚠  --force AND existing album folder detected:"))
+    log.info(fmt(C.WHITE, f"     {album_dir}"))
+    log.info(fmt(C.GRAY,
+        f"     {len(audio_files)} audio file(s), {format_size(total_size)} total"))
+    log.info(fmt(C.GRAY,
+        "     Without deletion, beets will create '<n>.1.flac' alongside existing files."))
+
+    delete_it = confirm("\n  Delete this folder before re-downloading?",
+                        default_yes=True, auto_yes=False)
+    if not delete_it:
+        log.info(fmt(C.YELLOW, "  Continuing without deletion. Expect file collisions."))
+        return False
+
+    try:
+        shutil.rmtree(album_dir)
+        log.info(fmt(C.GREEN, f"  ✓  Deleted {album_dir}."))
+        return True
+    except OSError as e:
+        log.info(fmt(C.RED, f"  ✗  Couldn't delete {album_dir}: {e}."))
+        log.info(fmt(C.GRAY, "     Continuing anyway. Expect collisions."))
+        return False
+
+
+def detect_sibling_album_groups(album_dirs):
+    """Group album dirs whose names strip to the same bare title.
+    Returns [(bare_title, [dirs])] for groups with 2+ members."""
+    from qobuz_fetch.library.tags import strip_album_decorations
+    groups = {}
+    for d in album_dirs:
+        bare = normalize(strip_album_decorations(d.name))
+        if not bare:
+            continue
+        groups.setdefault(bare, []).append(d)
+    return [(k, v) for k, v in groups.items() if len(v) >= 2]
+
+
+def pick_canonical_sibling(dirs):
+    """Most audio files wins; tiebreak on longest name (more decoration =
+    usually the more comprehensive edition like Deluxe / Expanded)."""
+    def score(d):
+        try:
+            n = sum(1 for f in d.rglob("*")
+                    if f.is_file() and f.suffix.lower() in cfg.AUDIO_EXTS)
+        except OSError:
+            n = 0
+        return (n, len(d.name))
+    return max(dirs, key=score)
+
+
+def process_album(album, args, *, allow_force=True, label=None,
+                  already_confirmed=False, upgrade_only=False,
+                  token=None, quality=None):
+    """End-to-end processing for one Qobuz album: detect → prompt → download →
+    cleanup → import → consolidate.
+
+    Parameters:
+      album         Qobuz album dict (must include tracks.items)
+      args          parsed argparse Namespace
+      allow_force   if False, --force is ignored for this album. Used by
+                    artist mode so a single forgetful run doesn't wipe every
+                    album by an artist.
+      label         optional prefix for status output (e.g. "[3/12]")
+
+    Track-by-track downloading is a queue-only contract: this path always
+    downloads the whole album in one rip invocation and computes its
+    own per-track decisions (around line 600). Callers that need
+    one-track-at-a-time isolation (repair) must go through the queue
+    builder/executor and set `force_track_by_track`.
+
+    Returns dict with run results (used by artist mode summary).
+    Never raises for "this album can't be done"; only KeyboardInterrupt and
+    AuthLost propagate.
+    """
+    use_force = bool(args.force) and allow_force
+    label_prefix = (label + " ") if label else ""
+
+    if not is_lossless_album(album):
+        log.info(fmt(C.RED,
+            f"\n  ✗  {label_prefix}Lossy-only on Qobuz "
+            f"({album.get('title') or '?'} — {album_quality_label(album)})."))
+        log.info(fmt(C.GRAY, "     Skipping — no lossless version on Qobuz."))
+        return {"result": "lossy_only"}
+
+    qobuz_tracks = (album.get("tracks") or {}).get("items") or []
+    if not qobuz_tracks:
+        log.info(fmt(C.RED, f"  ✗  {label_prefix}Album has no tracks in API response. Skipping."))
+        return {"result": "no_tracks"}
+
+    # ── Detect what's already there ──────────────────────────────────────────
+    # --force cleanup is deferred until AFTER the download confirm
+    # below: deleting here would mean a 'no' at the download prompt
+    # leaves the user with their folder already wiped.
+    force_cleaned = True
+    if use_force:
+        _, album_dir = find_existing_tracks(album)
+        existing = []
+        missing, present = qobuz_tracks, []
+    else:
+        existing, album_dir = find_existing_tracks(album)
+        vlog(f"hybrid detection: {len(existing)} existing track(s) total")
+        missing, present = compute_missing(qobuz_tracks, existing)
+
+    # ── Quality-aware auto-upgrade decision ──────────────────────────────────
+    # Runs BEFORE the "already complete" early-exit, because an album that
+    # is "complete" track-wise might still be lower quality than Qobuz and
+    # warrant an upgrade-replace. Disabled when --no-upgrade or --force is
+    # in effect (--force has its own destructive flow with its own prompt).
+    auto_upgrade_active = False    # if True, do backup-then-wipe-then-redownload
+    upgrade_backup_path = None     # populated after backup_album_dir succeeds
+    gap_fill_backup_path = None    # populated when full-album gap-fill moves present tracks to backup
+    upgrade_existing_label = None  # before-quality label, set in the auto-upgrade branch
+
+    # Quality-upgrade replace path. This is opt-in: it only runs when
+    # AUTO_UPGRADE_ENABLED is set (env/Settings), or when the user invokes
+    # the explicit Upgrade action (which turns the flag on for its run).
+    # A plain gap-fill just fills the missing tracks and leaves the rest of
+    # the album alone — it does NOT wipe-and-redownload an album to a
+    # different master unless the user asked for upgrades.
+    auto_upgrade = getattr(args, "auto_upgrade", cfg.AUTO_UPGRADE_ENABLED)
+    if (auto_upgrade
+            and existing
+            and not use_force
+            and not getattr(args, "no_upgrade", False)
+            and album_dir is not None):
+        qual = compare_album_quality(existing, album)
+        cls = qual["classification"]
+        extras = find_extras_in_existing(qobuz_tracks, existing)
+        qbits, qrate = qual["qobuz_quality"]
+        target_label = (f"{qbits}-bit/{qrate/1000:.1f}kHz"
+                        if qbits and qrate else "Qobuz quality")
+
+        if cls == "all_higher":
+            # Existing strictly better than Qobuz everywhere — never replace.
+            log.info(fmt(C.GREEN,
+                f"\n  ✓  Already higher quality than Qobuz "
+                f"({qual['n_above']} track(s) above target)."))
+            if not missing:
+                log_fetch({
+                    "ts": datetime.now(timezone.utc).isoformat(),
+                    "album_id": album.get("id"),
+                    "artist": (album.get("artist") or {}).get("name"),
+                    "title": album.get("title"),
+                    "result": "skipped_already_higher_quality",
+                    "tracks_total": len(qobuz_tracks),
+                    "qobuz_quality": f"{qbits}-bit/{qrate}Hz",
+                })
+                return {"result": "skipped_already_higher_quality",
+                        "n_total": len(qobuz_tracks)}
+            # Has missing tracks. Will fall through to gap-fill prompt with
+            # explicit warning that this creates mixed quality.
+            log.info(fmt(C.YELLOW,
+                f"     ⚠  {len(missing)} track(s) missing — filling them at "
+                f"{target_label} would mix quality."))
+
+        elif cls in ("all_lower", "mixed_below"):
+            # Qobuz is higher quality. Safe to replace ONLY if no extras.
+            # If user already said yes to gap-fill, honor it instead of
+            # silently skipping — auto-upgrade is unsafe but gap-fill isn't.
+            if extras and missing and already_confirmed:
+                _cands = find_expanded_edition(album, album_dir, existing, token, args)
+                _exp, _exp_extras = prompt_edition_pick(
+                    album, len(extras), _cands, existing, args, label_prefix="  ")
+                if _exp is not None:
+                    _exp_tracks = (_exp.get("tracks") or {}).get("items") or []
+                    _exp_qual = compare_album_quality(existing, _exp)
+                    if _exp_qual["classification"] in ("all_lower", "mixed_below"):
+                        log.info(fmt(C.MAGENTA,
+                            f"\n  ↑  Switching to {_exp.get('title') or '?'!r} — "
+                            f"covers your {len(existing)} tracks "
+                            f"with {len(_exp_extras)} local-only at {album_quality_label(_exp)}"))
+                        album = _exp
+                        qobuz_tracks = _exp_tracks
+                        extras = _exp_extras
+                        qual = _exp_qual
+                        cls = _exp_qual["classification"]
+                        qbits, qrate = _exp_qual["qobuz_quality"]
+                        target_label = (f"{qbits}-bit/{qrate/1000:.1f}kHz"
+                                        if qbits and qrate else "Qobuz quality")
+                        missing, present = compute_missing(qobuz_tracks, existing)
+                        # Re-enter the elif extras / else branches below with updated values.
+                        # Can't re-run the whole if/elif chain, so handle inline:
+                        if extras:
+                            log.info(fmt(C.YELLOW,
+                                f"\n  ⚠  Can't auto-upgrade ({len(extras)} bonus track(s) here); "
+                                f"filling {len(missing)} at {target_label} (will mix quality)."))
+                            # Fall through to plain gap-fill; do NOT set auto_upgrade_active.
+                        else:
+                            # No extras on expanded edition → auto-upgrade
+                            # is safe. Reset detection so the download path
+                            # treats this as wipe-and-replace, not gap-fill.
+                            log.info(fmt(C.MAGENTA + C.BOLD,
+                                f"\n  ↑ Auto-upgrade via expanded edition → {target_label}"))
+                            auto_upgrade_active = True
+                            existing = []
+                            missing, present = qobuz_tracks, []
+                    else:
+                        log.info(fmt(C.YELLOW,
+                            f"\n  ⚠  Can't auto-upgrade ({len(extras)} bonus track(s) here); "
+                            f"filling {len(missing)} at {target_label} (will mix quality)."))
+                        # Fall through to plain gap-fill; do NOT set auto_upgrade_active.
+                else:
+                    log.info(fmt(C.YELLOW,
+                        f"\n  ⚠  Can't auto-upgrade ({len(extras)} bonus track(s) here); "
+                        f"filling {len(missing)} at {target_label} (will mix quality)."))
+                    # Fall through to plain gap-fill; do NOT set auto_upgrade_active.
+            elif extras:
+                # Before giving up, try to find an expanded edition that covers
+                # the local tracks. If candidates exist, prompt the user to pick.
+                _cands = find_expanded_edition(album, album_dir, existing, token, args)
+                _exp, _exp_extras = prompt_edition_pick(
+                    album, len(extras), _cands, existing, args, label_prefix="  ")
+                _resolved = False
+                if _exp is not None:
+                    _exp_tracks = (_exp.get("tracks") or {}).get("items") or []
+                    _exp_qual = compare_album_quality(existing, _exp)
+                    if _exp_qual["classification"] in ("all_lower", "mixed_below") and not _exp_extras:
+                        log.info(fmt(C.MAGENTA,
+                            f"\n  ↑  Switching to {_exp.get('title') or '?'!r} — "
+                            f"covers your {len(existing)} tracks at {album_quality_label(_exp)}"))
+                        album = _exp
+                        qobuz_tracks = _exp_tracks
+                        extras = _exp_extras
+                        qual = _exp_qual
+                        qbits, qrate = _exp_qual["qobuz_quality"]
+                        target_label = (f"{qbits}-bit/{qrate/1000:.1f}kHz"
+                                        if qbits and qrate else "Qobuz quality")
+                        missing, present = compute_missing(qobuz_tracks, existing)
+                        _resolved = True
+                        # Auto-upgrade is safe here (no extras on the
+                        # expanded edition). Reset detection so the download
+                        # path treats this as wipe-and-replace.
+                        log.info(fmt(C.MAGENTA + C.BOLD,
+                            f"\n  ↑ Auto-upgrade via expanded edition → {target_label}"))
+                        log.info(fmt(C.YELLOW,
+                            "  ⚠  This was queued as a gap-fill but will now back up and\n"
+                            "     replace the entire folder. Ctrl+C to abort."))
+                        auto_upgrade_active = True
+                        existing = []
+                        missing, present = qobuz_tracks, []
+                if not _resolved:
+                    log.info(fmt(C.YELLOW,
+                        f"\n  ⚠  Upgrade to {target_label} blocked: "
+                        f"{len(extras)} on-disk track(s) Qobuz doesn't carry:"))
+                    for _e in extras[:5]:
+                        log.info(fmt(C.GRAY,
+                            f"       • {truncate(_e.get('title') or '?', 60)}"))
+                    if len(extras) > 5:
+                        log.info(fmt(C.GRAY,
+                            f"       ... and {len(extras) - 5} more"))
+                    log.info(fmt(C.GRAY,
+                        "     If these look like normal album tracks, your tags"
+                        " differ from Qobuz's. Skipping (logged)."))
+                    log_fetch({
+                        "ts": datetime.now(timezone.utc).isoformat(),
+                        "album_id": album.get("id"),
+                        "artist": (album.get("artist") or {}).get("name"),
+                        "title": album.get("title"),
+                        "result": "skipped_has_extras",
+                        "tracks_total": len(qobuz_tracks),
+                        "qobuz_quality": f"{qbits}-bit/{qrate}Hz",
+                        "n_extras": len(extras),
+                        "extra_titles": [t.get("title") or "?" for t in extras[:20]],
+                    })
+                    return {"result": "skipped_has_extras",
+                            "n_total": len(qobuz_tracks),
+                            "n_extras": len(extras)}
+            else:
+                # No extras — auto-upgrade is safe. Build a louder banner with an
+                # explicit before→after quality contrast so the user sees at a
+                # glance what they're getting (gives the user a quick mental win).
+                # Removed unused n_replace; downstream code uses
+                # existing_label / target_label, not the count.
+                _qcounts = {}
+                for _t in existing:
+                    _bb, _rr = existing_track_quality(_t)
+                    if _bb and _rr:
+                        _qcounts[(_bb, _rr)] = _qcounts.get((_bb, _rr), 0) + 1
+                if _qcounts:
+                    _eb, _er = max(_qcounts, key=_qcounts.get)
+                    existing_label = f"{_eb}-bit/{_er/1000:.1f}kHz"
+                    if len(_qcounts) > 1:
+                        existing_label = "mostly " + existing_label
+                else:
+                    existing_label = "lower-quality"
+                upgrade_existing_label = existing_label
+                _fill = f" +{len(missing)} gap-fill" if missing else ""
+                if not already_confirmed:
+                    log.info(fmt(C.MAGENTA + C.BOLD,
+                        f"\n  ↑ Auto-upgrade: {existing_label} → {target_label}{_fill}"))
+                auto_upgrade_active = True
+                # Override detection results so downstream code does a full
+                # download. Backup happens after user confirms.
+                # upgrade_only: re-download ONLY the tracks already on disk
+                # (skipping the missing ones). Album stays as incomplete as
+                # it was, just at the higher quality.
+                if upgrade_only:
+                    # map each local track to its single
+                    # best Qobuz match so duplicate matches (one local
+                    # file matching both "Foo" and "Foo (Edit)" via
+                    # title-stripping) don't cause re-ripping the same
+                    # track twice — which would collide at the destination
+                    # filename and produce a 0-byte fallback that
+                    # cleanup_lossy then deletes, losing the original.
+                    _claimed_qids = set()
+                    _upgrade_targets = []
+                    for _et in existing:
+                        _eisrc = _et.get("isrc") or ""
+                        _embid = _et.get("mb_trackid") or ""
+                        _enorm = _et.get("normalized") or ""
+                        _edisc = _et.get("discnumber", 1) or 1
+                        _estripped = normalize(strip_edition_suffix(
+                            _et.get("title") or ""))
+                        _best_qt, _best_rank = None, 99
+                        for _qt in present:
+                            if _qt.get("id") in _claimed_qids:
+                                continue
+                            _qisrc = (_qt.get("isrc") or "").replace("-", "").upper()
+                            _qmbid = (_qt.get("mbid") or "").lower()
+                            _qnorm = normalize(_qt.get("title") or "")
+                            _qstripped = normalize(strip_edition_suffix(
+                                _qt.get("title") or ""))
+                            _qdisc = _qt.get("media_number", 1) or 1
+                            if _eisrc and _qisrc and _eisrc == _qisrc:
+                                _r = 0
+                            elif _embid and _qmbid and _embid == _qmbid:
+                                _r = 1
+                            elif _qdisc == _edisc and _enorm and _enorm == _qnorm:
+                                _r = 2
+                            elif _qdisc == _edisc and _estripped and _estripped == _qstripped:
+                                _r = 3
+                            else:
+                                continue
+                            if _r < _best_rank:
+                                _best_qt, _best_rank = _qt, _r
+                                if _r == 0:
+                                    break
+                        if _best_qt is not None:
+                            _claimed_qids.add(_best_qt.get("id"))
+                            _upgrade_targets.append(_best_qt)
+                    existing = []
+                    missing, present = _upgrade_targets, []
+                else:
+                    existing = []
+                    missing, present = qobuz_tracks, []
+
+        elif cls == "mixed_above":
+            # Some tracks above, rest equal. Treat like all_higher.
+            log.info(fmt(C.GREEN,
+                "\n  ✓  No upgrade available (some track(s) already above target)."))
+            if not missing:
+                log_fetch({
+                    "ts": datetime.now(timezone.utc).isoformat(),
+                    "album_id": album.get("id"),
+                    "artist": (album.get("artist") or {}).get("name"),
+                    "title": album.get("title"),
+                    "result": "skipped_already_higher_quality",
+                    "tracks_total": len(qobuz_tracks),
+                })
+                return {"result": "skipped_already_higher_quality",
+                        "n_total": len(qobuz_tracks)}
+            # Has missing tracks. Mirror the all_higher branch warning so
+            # the user knows filling them at Qobuz quality creates a mixed
+            # bag against tracks that are already above target.
+            log.info(fmt(C.YELLOW,
+                f"     ⚠  {len(missing)} track(s) missing — filling them at "
+                f"{target_label} would mix quality."))
+
+        elif cls == "mixed_both":
+            # Some above, some below: ambiguous. Don't auto-replace.
+            log.info(fmt(C.YELLOW,
+                f"\n  ⚠  Mixed quality: {qual['n_above']} above and "
+                f"{qual['n_below']} below Qobuz target. Not auto-upgrading."))
+            log.info(fmt(C.GRAY,
+                "     Falling back to gap-fill if applicable. "
+                "Use --force on this album manually if you want to replace."))
+
+        elif cls == "unknown":
+            log.info(fmt(C.GRAY,
+                "  · Couldn't read quality from existing tracks; using gap-fill."))
+
+        # cls == "all_equal": no message, today's behavior.
+
+    # If caller asked for upgrade-only but the auto-upgrade branch above
+    # didn't fire (quality classification didn't match upgrade criteria,
+    # extras blocked it, etc.), bail rather than silently fall through to
+    # gap-fill — the user explicitly asked NOT to fill missing tracks.
+    if upgrade_only and not auto_upgrade_active:
+        log.info(fmt(C.YELLOW,
+            "  ⚠  Upgrade-only requested but no upgrade applies here; skipping."))
+        return {"result": "upgrade_only_no_op", "n_total": len(qobuz_tracks)}
+
+    if not already_confirmed:
+        print_album_summary(album, missing, present, album_dir, use_force,
+                            auto_upgrade=auto_upgrade_active,
+                            existing_quality_label=upgrade_existing_label)
+
+    if not missing:
+        log.info(fmt(C.GREEN, "\n  ✓  Already complete. Nothing to download.\n"))
+        log_fetch({
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "album_id": album.get("id"),
+            "artist": (album.get("artist") or {}).get("name"),
+            "title": album.get("title"),
+            "result": "already_complete",
+            "tracks_total": len(qobuz_tracks),
+            "tracks_downloaded": 0,
+        })
+        if args.consolidate:
+            try:
+                consolidate_albums(album, args)
+            except KeyboardInterrupt:
+                log.info(fmt(C.GRAY, "\n  Consolidation interrupted."))
+        return {"result": "already_complete", "n_total": len(qobuz_tracks)}
+
+    # Default NO: the missing-tracks list above is the user's chance to
+    # decide; defaulting yes would mean every enter-press starts a download
+    # they may not want. Press y to proceed.
+    if not already_confirmed and not confirm(
+            f"\n  Proceed with downloading {len(missing)} track(s)?",
+            default_yes=False, auto_yes=args.yes):
+        log.info(fmt(C.GRAY, "  Skipped."))
+        return {"result": "user_skipped", "n_missing": len(missing)}
+
+    if args.dry_run:
+        log.info(fmt(C.YELLOW, "\n  --dry-run: stopping here, nothing downloaded.\n"))
+        return {"result": "dry_run", "n_missing": len(missing)}
+
+    # ── Pre-flight: staging dir state (BEFORE backup so sys.exit can't strand it)
+    staging_preflight(args)
+
+    # ── Auto-upgrade: back up the existing folder before redownload ──────────
+    # Same-filesystem move, so this is fast (rename, not copy). The backup
+    # is restored if anything fails before beets import succeeds.
+    if auto_upgrade_active and album_dir and album_dir.exists():
+        upgrade_backup_path = backup_album_dir(album_dir)
+        if upgrade_backup_path is None:
+            log.info(fmt(C.RED,
+                "  ✗  Could not back up the existing folder; refusing to "
+                "wipe without a backup. Skipping this album."))
+            log_fetch({
+                "ts": datetime.now(timezone.utc).isoformat(),
+                "album_id": album.get("id"),
+                "artist": (album.get("artist") or {}).get("name"),
+                "title": album.get("title"),
+                "result": "upgrade_aborted_backup_failed",
+            })
+            return {"result": "upgrade_aborted_backup_failed"}
+        log.info(fmt(C.GRAY,
+            "  ⤷  Backed up existing folder (auto-restore on failure)"))
+
+    # ── --force: NOW delete the existing album dir (deferred from above) ─────
+    if use_force:
+        force_cleaned = force_cleanup_preflight(album, args)
+        if force_cleaned is None:
+            # Symlink — no safe --force path; skip without asking anything further.
+            return {"result": "cancelled"}
+        if not force_cleaned:
+            if not confirm("\n  Proceed with --force despite expected '<n>.1.flac' collisions?",
+                           default_yes=False, auto_yes=False):
+                log.info(fmt(C.GRAY, "  Skipping this album."))
+                return {"result": "cancelled"}
+
+    # ── Download phase ───────────────────────────────────────────────────────
+    # Pre-init so the upgrade-backup finally block has sane defaults if an
+    # exception fires anywhere inside the try (rip_url, beets, etc.).
+    n_ok = n_fail = n_lossy = 0
+    failed_tracks, lossy_tracks = [], []
+    imported = False
+    new_files, kept, deleted = [], [], []
+    elapsed = 0.0
+    download_phase_completed = False
+    full_album_rc = None
+    transient_lyric_sigs = []
+
+    try:
+        snapshot = snapshot_staging()
+        vlog(f"staging snapshot: {len(snapshot)} files before download")
+
+        # Streamrip's track-URL path crashes with KeyError: 'body' on
+        # certain tracks (older catalog, edge metadata cases). The album-URL
+        # path is more robust. Use it when most of the album is missing —
+        # any redundant duplicate of an already-present track is merged on
+        # beets import. Threshold: >=70% missing AND at least 4 missing,
+        # so small gap-fills still go track-by-track.
+        n_tracks_total = len(qobuz_tracks)
+        # In upgrade_only mode, allow the full-album URL only when EVERY
+        # Qobuz track is being re-ripped (album was fully present at lower
+        # quality). Partial-album upgrades stay track-by-track so
+        # streamrip's album URL doesn't accidentally pull missing tracks —
+        # filling gaps is a gap-fill's job, not an upgrade's.
+        if upgrade_only:
+            download_full_album = (len(missing) == n_tracks_total)
+        else:
+            download_full_album = (
+                len(present) == 0
+                or len(missing) >= max(4, int(n_tracks_total * 0.7))
+            )
+        album_id = album.get("id")
+        t_start = time.time()
+
+        # Surface which path was chosen and why, so the user can
+        # tell a wipe-and-fill (full-album URL, backs up present tracks
+        # first) apart from a targeted gap-fill without reading staging.
+        if download_full_album:
+            log.info(fmt(C.GRAY,
+                f"  Strategy: full-album URL "
+                f"({len(missing)} of {n_tracks_total} missing)"))
+        else:
+            log.info(fmt(C.GRAY,
+                f"  Strategy: per-track "
+                f"({len(missing)} of {n_tracks_total} missing)"))
+
+        if download_full_album:
+            url = f"https://play.qobuz.com/album/{album_id}"
+            section("Downloading full album")
+            vlog(f"  ⟳  {url}")
+            # Remove already-present tracks before ripping so beets
+            # doesn't create 'Foo.1.flac' duplicates during import.
+            # Move them to a backup dir first so a rip failure
+            # (network drop, Ctrl+C, auth loss) doesn't leave the user
+            # with permanently lost tracks. Backup is restored from the
+            # finally block below if download_phase_completed=False.
+            if present and album_dir and existing:
+                present_extras = find_extras_in_existing(qobuz_tracks, existing)
+                present_extra_paths = {e["path"] for e in present_extras}
+                present_to_clear = [e for e in existing
+                                if e["path"] not in present_extra_paths]
+                if present_to_clear:
+                    vlog(f"pre-download: backing up + removing {len(present_to_clear)} present "
+                         f"track(s) to prevent .1.flac collisions")
+                    gap_fill_backup_path = backup_gap_fill_files(
+                        [e["path"] for e in present_to_clear], album_dir)
+            rc, out = rip_url(url, timeout=cfg.RIP_TIMEOUT, live_output=True,
+                              quality=quality)
+            full_album_rc = rc
+            if detect_auth_lost(out):
+                raise AuthLost("rip output contained auth-lost markers")
+            if detect_disk_full(out):
+                raise OSError(28, f"No space left on device at {cfg.STAGING_DIR}")
+            # Count ERROR markers — rip exits 0 even when it
+            # skipped tracks after persistent retries.
+            n_errors = len(re.findall(
+                r"^\s*(?:\[\d{2}:\d{2}:\d{2}\]\s*)?ERROR\b",
+                out, re.MULTILINE))
+            if rc != 0:
+                log.info(fmt(C.RED, f"  ✗  rip exit {rc}; last 300 chars:"))
+                log.info(fmt(C.GRAY, "  " + out[-300:].replace("\n", "\n  ")))
+            elif n_errors:
+                log.info(fmt(C.YELLOW,
+                    f"  ⚠  rip exit 0 but {n_errors} error(s) in output — "
+                    f"some tracks likely skipped (see summary below)."))
+            else:
+                log.info(fmt(C.GREEN, "  ✓  Download succeeded."))
+            # Reconciliation against surviving FLACs happens after cleanup_lossy
+            # regardless of rc — rip occasionally exits 0 while silently dropping tracks.
+        else:
+            section("Downloading missing tracks")
+            for i, t in enumerate(missing, 1):
+                tid = t.get("id")
+                # Surface the Qobuz version + track number so an album with
+                # several same-titled tracks (e.g. an EP of remixes) doesn't
+                # render as N identical-looking lines that look like a
+                # duplicate-download bug.
+                ttl = t.get("title") or "?"
+                ver = t.get("version") or ""
+                if ver and ver.lower() not in ttl.lower():
+                    ttl = f"{ttl} ({ver})"
+                tnum = t.get("track_number")
+                _tnum_prefix = f"#{tnum:>2} · " if tnum else ""
+                log.info(fmt(C.BLUE, f"\n  [{i}/{len(missing)}]") +
+                         f"  {fmt(C.WHITE, truncate(_tnum_prefix + ttl, 60))}")
+                url = f"https://play.qobuz.com/track/{tid}"
+                rc, out = rip_url(url, timeout=cfg.RIP_TIMEOUT, quality=quality)
+                if detect_auth_lost(out):
+                    raise AuthLost("rip output contained auth-lost markers")
+                if detect_disk_full(out):
+                    raise OSError(28, f"No space left on device at {cfg.STAGING_DIR}")
+                if rc == 0:
+                    log.info(fmt(C.GREEN, "    ✓ ok"))
+                else:
+                    n_fail += 1
+                    failed_tracks.append(ttl)
+                    if "KeyError: 'body'" in out:
+                        log.info(fmt(C.RED,
+                            "    ✗ streamrip KeyError on track endpoint "
+                            "(known bug; usually works via album URL)."))
+                    else:
+                        log.info(fmt(C.RED, f"    ✗ rip exit {rc}"))
+                        log.info(fmt(C.GRAY,
+                            "      " + out[-200:].replace("\n", " ")))
+                time.sleep(cfg.DELAY_BETWEEN)
+
+        # ── Verify what landed: keep FLACs, delete lossy ─────────────────────────
+        new_files = files_added_since(snapshot)
+        audio_new = [f for f in new_files if f.suffix.lower() in cfg.AUDIO_EXTS]
+        vlog(f"  {len(new_files)} new file(s) in staging ({len(audio_new)} audio)")
+        kept, deleted = cleanup_lossy(audio_new)
+        n_ok = len(kept)
+        n_lossy = len(deleted)
+        lossy_tracks = deleted
+
+        # Reconcile failure counts for full-album rips that exited non-zero but
+        # still landed some FLACs. Without this, the summary AND the activity log
+        # would report e.g. "8 downloaded / 12 failed" for a 12-track album.
+        # Track-by-track path can also have files-landed-despite-error
+        # (streamrip crashes in post-processing). Reconcile failed_tracks
+        # against what's actually on disk.
+        if not download_full_album and failed_tracks and kept:
+            def _stem_title_t(p):
+                s = p.stem
+                m = re.match(r"^(?:\d+[-.])?\d+[\s\-–—.]+(.+)$", s)
+                t = m.group(1) if m else s
+                m = re.match(r"^.+?\s+-\s+(.+)$", t)
+                return m.group(1) if m else t
+            surviving = {normalize(strip_edition_suffix(_stem_title_t(p))) for p in kept}
+            recovered = [t for t in failed_tracks if normalize(t) in surviving]
+            if recovered:
+                failed_tracks = [t for t in failed_tracks
+                                 if normalize(t) not in surviving]
+                n_fail = max(0, n_fail - len(recovered))
+                log.info(fmt(C.GRAY,
+                    f"  · {len(recovered)} track(s) actually landed despite "
+                    f"streamrip post-processing error — counting as success."))
+
+        if download_full_album and full_album_rc is not None:
+            n_fail = max(0, len(missing) - n_ok)
+            if n_fail > 0:
+                def _stem_title(p: Path) -> str:
+                    s = p.stem
+                    # Strip leading track number (with optional disc prefix).
+                    m = re.match(r"^(?:\d+[-.])?\d+[\s\-–—.]+(.+)$", s)
+                    title = m.group(1) if m else s
+                    # Streamrip sometimes prefixes "Artist - " before the title.
+                    # Strip it so comparison works against bare titles.
+                    m = re.match(r"^.+?\s+-\s+(.+)$", title)
+                    if m:
+                        title = m.group(1)
+                    return title
+                surviving_norms = {normalize(strip_edition_suffix(_stem_title(p))) for p in kept}
+                failed_tracks = [t.get("title") for t in missing
+                                 if normalize(t.get("title", "")) not in surviving_norms]
+            else:
+                failed_tracks = []
+
+        if n_lossy:
+            log.info(fmt(C.YELLOW, f"  ⚠  {n_lossy} non-FLAC file(s) deleted (Qobuz quality fallback):"))
+            for d in deleted[:5]:
+                log.info(fmt(C.GRAY, f"     {d}"))
+
+        elapsed = time.time() - t_start
+
+        # ── Pre-import: compress + lyrics on STAGING ─────────────────────────────
+        # compress + lyric_fetch run on staging BEFORE beets imports.
+        # Beets's `move: yes` then transfers already-compressed,
+        # already-lyriced FLACs into the library in one shot, so a media
+        # server only ever sees the final state and never serves stale
+        # metadata (wrong sample rate, missing lyrics) to its clients
+        # between the move and the post-import hooks.
+        if n_ok > 0 and not args.no_import:
+            transient_lyric_sigs = _pre_import_staging_hooks(args)
+
+        # ── Beets import ─────────────────────────────────────────────────────────
+        imported = False
+        if args.no_import:
+            log.info(fmt(C.YELLOW, f"\n  --no-import: skipping beets. Files remain in {cfg.STAGING_DIR}/"))
+        elif n_ok == 0:
+            log.info(fmt(C.YELLOW, "\n  Skipping beets import — nothing succeeded."))
+        else:
+            log.info("")
+            imported = beets_import_paths()
+
+        download_phase_completed = True
+
+    finally:
+        # Always resolve upgrade backup, including on exception.
+        # download_phase_completed stays False on KeyboardInterrupt /
+        # AuthLost / SystemExit / unhandled errors → restore branch fires.
+        # ── Auto-upgrade backup resolution ───────────────────────────────────────
+        upgrade_restored = False
+        if upgrade_backup_path is not None:
+            # Require zero failures AND zero lossy-deletes.
+            upgrade_succeeded = (download_phase_completed
+                                  and imported
+                                  and n_ok > 0
+                                  and n_fail == 0
+                                  and n_lossy == 0)
+            if upgrade_succeeded:
+                try:
+                    shutil.rmtree(upgrade_backup_path)
+                    if not upgrade_only:
+                        log.info(fmt(C.GRAY,
+                            "  ✓  Upgrade complete; backup cleared."))
+                except OSError as e:
+                    log.info(fmt(C.YELLOW,
+                        f"  ⚠  Upgrade succeeded but couldn't remove backup: {e}."))
+                    log.info(fmt(C.GRAY,
+                        f"     Backup remains at {upgrade_backup_path} "
+                        f"(auto-cleaned after {cfg.UPGRADE_BACKUP_RETENTION_DAYS} days)."))
+            elif download_phase_completed and args.no_import:
+                log.info(fmt(C.YELLOW,
+                    f"\n  ⚠  --no-import set; cannot auto-verify upgrade. "
+                    f"Backup kept at {upgrade_backup_path}."))
+            else:
+                log.info(fmt(C.YELLOW,
+                    "\n  ⚠  Upgrade did not succeed (no successful import); "
+                    "restoring backup …"))
+                upgrade_restored = restore_upgrade_backup(upgrade_backup_path, album_dir)
+                if upgrade_restored:
+                    log.info(fmt(C.GREEN,
+                        f"  ✓  Restored original folder to {album_dir}."))
+                else:
+                    log.info(fmt(C.RED,
+                        f"  ✗  Auto-restore failed. Original folder is at: "
+                        f"{upgrade_backup_path}"))
+                    log.info(fmt(C.WHITE,
+                        f"     Manual restore: mv {upgrade_backup_path!s} {album_dir!s}"))
+
+        # ── Gap-fill backup resolution ───────────────────────────────────────
+        if gap_fill_backup_path is not None and gap_fill_backup_path.exists():
+            gap_fill_succeeded = (download_phase_completed
+                                  and imported
+                                  and n_ok > 0
+                                  and n_fail == 0)
+            if gap_fill_succeeded:
+                try:
+                    shutil.rmtree(gap_fill_backup_path)
+                except OSError as e:
+                    log.info(fmt(C.YELLOW,
+                        f"  ⚠  Gap-fill complete but couldn't remove backup: {e}."))
+            elif args.no_import:
+                log.info(fmt(C.YELLOW,
+                    f"  ⚠  --no-import; gap-fill backup kept at "
+                    f"{gap_fill_backup_path}."))
+            else:
+                log.info(fmt(C.YELLOW,
+                    "  ⚠  Gap-fill did not succeed; restoring backed-up tracks…"))
+                _n_back = restore_gap_fill_backup(gap_fill_backup_path, album_dir)
+                log.info(fmt(C.GREEN,
+                    f"  ✓  Restored {_n_back} track(s) to {album_dir}."))
+
+    # ── Consolidation ────────────────────────────────────────────────────────
+    n_consolidated = 0
+    if args.consolidate:
+        if imported:
+            try:
+                n_consolidated = consolidate_albums(album, args)
+            except KeyboardInterrupt:
+                log.info(fmt(C.GRAY, "\n  Consolidation interrupted."))
+        else:
+            log.info(fmt(C.YELLOW,
+                "\n  --consolidate requested but beets import didn't succeed — skipping."))
+
+    # ── Post-import cleanup: duplicate cover art ────────────────────────────
+    if imported:
+        # Multi-artist folder migration is opt-in only (--migrate-multi-artist).
+        # Only migrate on strict success (no fails, no lossy).
+        _strict_success = (n_fail == 0 and n_lossy == 0)
+        if (getattr(args, "migrate_multi_artist", False)
+                and _strict_success):
+            post_dir = prompt_and_migrate_multi_artist_folder(album, args)
+            if post_dir is None:
+                post_dir = find_album_dir_filesystem(album)
+        else:
+            post_dir = find_album_dir_filesystem(album)
+        if post_dir:
+            n_art_removed = cleanup_duplicate_art(post_dir)
+            if n_art_removed:
+                vlog(f"removed {n_art_removed} duplicate art file(s)")
+            # Split-folder auto-merge.
+            try:
+                split_artist = (album.get("artist") or {}).get("name") or ""
+                if (album_dir is not None
+                        and album_dir.exists()
+                        and post_dir.exists()
+                        and not _paths_equal(post_dir, album_dir)
+                        and split_artist
+                        and _is_multi_artist_subset(album_dir.parent.name, split_artist)
+                        and not _is_multi_artist_subset(post_dir.parent.name, split_artist)):
+                    n_merged = _merge_split_folder(post_dir, album_dir)
+                    if n_merged:
+                        log.info(fmt(C.GREEN,
+                            f"  ✓  Consolidated {n_merged} existing track(s) "
+                            f"into primary-artist folder: {post_dir.name}."))
+                    else:
+                        log.info(fmt(C.YELLOW,
+                            f"  ⚠  Split-folder detected but nothing merged "
+                            f"(check {album_dir} for overlap conflicts)."))
+            except Exception as _e_sf:
+                vlog(f"split-folder merge raised: {_e_sf}")
+            # Resolve transient-lyric signatures captured pre-beets
+            if transient_lyric_sigs:
+                resolved = _resolve_signatures_to_paths(
+                    transient_lyric_sigs, [post_dir])
+                if resolved:
+                    _record_post_import_lyric_retry(resolved)
+                    vlog(f"lyric retry: queued {len(resolved)} "
+                         f"post-import path(s) for next-launch retry")
+            # Materialise .lrc sidecars next to the final renamed files
+            # (no-op unless LYRICS_FORMAT is sidecar/both).
+            try:
+                write_post_import_sidecars([post_dir, album_dir])
+            except Exception as _e_sc:
+                vlog(f"post-import sidecar write raised: {_e_sc}")
+    elif transient_lyric_sigs:
+        # Import didn't succeed (beets failed, silent skip, or n_ok==0):
+        # the files are still in STAGING_DIR. Record their staging paths
+        # so next launch's offer_resume_lyric_retry gets a second chance
+        # at provider-unavailable lyrics instead of silently dropping the
+        # queue. Stale entries (files beets later moves on a retry walk)
+        # self-prune in offer_resume_lyric_retry.
+        resolved = _resolve_signatures_to_paths(
+            transient_lyric_sigs, [cfg.STAGING_DIR])
+        if resolved:
+            _record_post_import_lyric_retry(resolved)
+            vlog(f"lyric retry: import unsuccessful; queued {len(resolved)} "
+                 f"staging path(s) for next-launch retry")
+
+    # ── Summary ──────────────────────────────────────────────────────────────
+    if already_confirmed and not n_fail and not n_lossy and imported:
+        if auto_upgrade_active:
+            log.info(fmt(C.MAGENTA + C.BOLD,
+                f"  ↑ upgraded · {n_ok} track(s) · {int(elapsed)}s · imported"))
+        else:
+            log.info(fmt(C.GREEN,
+                f"  ✓ {n_ok} downloaded · {int(elapsed)}s · imported"))
+    else:
+        section("Result")
+        log.info("")
+        log.info(f"  {fmt(C.GREEN if n_ok else C.GRAY,    '✓ downloaded:')}    {n_ok}")
+        if n_lossy:
+            log.info(f"  {fmt(C.YELLOW, '⚠ lossy/deleted:')} {n_lossy}")
+        if n_fail:
+            log.info(f"  {fmt(C.RED, '✗ failed:')}        {n_fail}")
+        log.info(f"  {fmt(C.GRAY, '  runtime:')}        {int(elapsed)}s")
+        log.info(f"  {fmt(C.GRAY, '  beets:')}          {'imported' if imported else 'skipped/failed'}")
+        if args.consolidate:
+            log.info(f"  {fmt(C.GRAY, '  consolidated:')}   {plural(n_consolidated, 'sibling track')} removed")
+        if failed_tracks:
+            log.info(fmt(C.RED, "\n  failed tracks:"))
+            for t in failed_tracks[:10]:
+                log.info(f"     {truncate(t, 60)}")
+        if lossy_tracks:
+            log.info(fmt(C.YELLOW,
+                "\n  lossy-only on Qobuz (skipped — would need another source):"))
+            for t in lossy_tracks[:10]:
+                log.info(f"     {truncate(t, 60)}")
+        log.info("")
+
+    if n_ok and n_fail:
+        result_status = "partial"
+    elif n_ok:
+        result_status = "downloaded"
+    elif n_fail:
+        result_status = "failed"
+    else:
+        result_status = "nothing_landed"
+
+    log_fetch({
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "album_id": album_id,
+        "artist": (album.get("artist") or {}).get("name"),
+        "title": album.get("title"),
+        "result": result_status,
+        "tracks_total": len(qobuz_tracks),
+        "tracks_already_present": len(present),
+        "tracks_attempted": len(missing),
+        "tracks_downloaded": n_ok,
+        "tracks_lossy_deleted": n_lossy,
+        "tracks_failed": n_fail,
+        "failed_titles": failed_tracks,
+        "lossy_titles": lossy_tracks,
+        "imported": imported,
+        "force": bool(use_force),
+        "force_cleaned": force_cleaned,
+        "auto_upgrade": bool(auto_upgrade_active),
+        "upgrade_backup_path": str(upgrade_backup_path) if upgrade_backup_path else None,
+        "upgrade_restored": upgrade_restored,
+        "consolidated": bool(args.consolidate and imported),
+        "consolidated_tracks_removed": n_consolidated,
+        "elapsed_s": int(elapsed),
+    })
+
+    return {
+        "result": result_status,
+        "n_ok": n_ok, "n_fail": n_fail, "n_lossy": n_lossy,
+        "imported": imported,
+        "auto_upgrade": bool(auto_upgrade_active),
+    }
