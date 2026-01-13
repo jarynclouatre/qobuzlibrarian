@@ -1,0 +1,28 @@
+# Seeded once into the persistent config volume, then never overwritten —
+# edit it freely. Full reference: https://beets.readthedocs.io/
+library: /config/beets/musiclibrary.db
+directory: /music
+
+import:
+  move: yes
+  write: yes
+  autotag: no
+  quiet: yes
+  timid: no
+  incremental: no
+  duplicate_action: merge
+
+paths:
+  default: $albumartist/$album ($year)/$track - $title
+  singleton: $albumartist/$album ($year)/$track - $title
+  comp: Various Artists/$album ($year)/$track - $title
+
+plugins:
+  - fetchart
+
+fetchart:
+  auto: yes
+  cautious: yes
+  cover_names: [cover, folder, album, front, art]
+  sources:
+    - filesystem
