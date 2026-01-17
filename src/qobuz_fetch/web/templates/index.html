@@ -1,0 +1,267 @@
+{% extends "base.html" %}
+{% block title %}Qobuz Librarian{% endblock %}
+{% block content %}
+
+
+{% if lock_busy_pid %}
+<!-- The web process couldn't take the single-instance run-lock at startup.
+     Another invocation (a forgotten `docker compose run ... cli`, or a
+     second compose stack) holds it. Downloads/scans are refused with 503
+     until this container restarts and reacquires it. -->
+<div class="alert alert-error mb-6">
+  <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 shrink-0" fill="none"
+       viewBox="0 0 24 24" stroke="currentColor">
+    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+          d="M12 9v2m0 4h.01M5 19h14a2 2 0 0 0 1.84-2.75L13.74 4a2 2 0 0 0-3.5 0L3.18 16.25A2 2 0 0 0 5 19z"/>
+  </svg>
+  <span class="min-w-0 break-words">
+    <strong>Another instance holds the run-lock (pid {{ lock_busy_pid }}).</strong>
+    Downloads and scans are paused so two writers can't corrupt
+    <code>/staging</code>. Stop the other run first (likely a
+    <code>docker compose run</code> CLI session), then restart this container
+    so it can take the lock.
+  </span>
+</div>
+{% endif %}
+
+{% if creds_ok and creds_token_valid == False %}
+<div class="alert alert-warning mb-6">
+  <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 shrink-0" fill="none"
+       viewBox="0 0 24 24" stroke="currentColor">
+    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+          d="M12 9v2m0 4h.01M5 19h14a2 2 0 0 0 1.84-2.75L13.74 4a2 2 0 0 0-3.5 0L3.18 16.25A2 2 0 0 0 5 19z"/>
+  </svg>
+  <span>Your saved token isn't authenticating against Qobuz any more —
+    re-paste it on the <a href="/settings" class="link">Settings page</a>.</span>
+</div>
+{% endif %}
+
+{% if lyric_retry_count %}
+<!-- Lyric retry manifest present — surface it so web-only users don't miss it -->
+<div class="alert alert-info mb-6 flex-wrap gap-2">
+  <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 shrink-0" fill="none"
+       viewBox="0 0 24 24" stroke="currentColor">
+    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+          d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+  </svg>
+  <span>
+    <strong>{{ lyric_retry_count }} track{{ 's' if lyric_retry_count != 1 }} need{{ 's' if lyric_retry_count == 1 }} a lyric retry</strong>
+    — providers were unavailable or rate-limited during the last import.
+  </span>
+  <form action="/lyric-retry" method="post" class="ml-auto">
+    <input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}">
+    <button type="submit" class="btn btn-sm btn-info">Retry now</button>
+  </form>
+</div>
+{% endif %}
+
+<!-- Hero + search -->
+<section class="text-center pt-6 pb-8">
+  <img src="/static/icon.png" alt="" class="h-16 w-16 rounded-2xl mx-auto mb-4 shadow-lg">
+  <h1 class="text-3xl font-bold text-primary">Qobuz Librarian</h1>
+  <p class="text-base-content/60 mt-1">A Qobuz music downloader — also fills library gaps and upgrades quality.</p>
+
+  {% if not creds_ok %}
+  <a href="/settings" class="btn btn-primary btn-lg mt-6">Set up your Qobuz account</a>
+  {% else %}
+  <form action="/search" method="post"
+        hx-post="/search" hx-target="#search-results" hx-swap="innerHTML"
+        hx-indicator="#dashboard-search-spinner"
+        class="flex gap-2 mt-6 max-w-2xl mx-auto">
+    <input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}">
+    <input type="text" name="q" aria-label="Search Qobuz" placeholder="Artist, album, or Qobuz URL"
+           inputmode="search" enterkeyhint="search" autocapitalize="off" spellcheck="false"
+           class="input input-bordered input-lg flex-1" autocomplete="off" autofocus>
+    <button type="submit" class="btn btn-primary btn-lg gap-2">
+      <span id="dashboard-search-spinner"
+            class="loading loading-spinner loading-sm htmx-indicator"></span>
+      <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-4.35-4.35M17 11A6 6 0 1 1 5 11a6 6 0 0 1 12 0z"/>
+      </svg>
+      <span class="hidden sm:inline">Search</span>
+    </button>
+  </form>
+  {% endif %}
+</section>
+
+<div id="search-results"></div>
+
+<!-- Quick actions -->
+{% if creds_ok %}
+<div class="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-6">
+  <a href="/artist"
+     class="card bg-base-200 border border-base-300/60 shadow-sm
+            hover:border-primary/50 hover:-translate-y-0.5 hover:shadow-md
+            transition-all duration-150">
+    <div class="card-body p-5 items-center text-center gap-1">
+      <span class="grid place-items-center h-11 w-11 rounded-full bg-primary/10 text-primary mb-1">
+        <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 7a4 4 0 1 1-8 0 4 4 0 0 1 8 0zM12 14a7 7 0 0 0-7 7h14a7 7 0 0 0-7-7z"/>
+        </svg>
+      </span>
+      <span class="font-semibold">Artist</span>
+      <span class="text-xs text-base-content/50">Fill an artist's gaps</span>
+    </div>
+  </a>
+  <a href="/library"
+     class="card bg-base-200 border border-base-300/60 shadow-sm
+            hover:border-primary/50 hover:-translate-y-0.5 hover:shadow-md
+            transition-all duration-150">
+    <div class="card-body p-5 items-center text-center gap-1">
+      <span class="grid place-items-center h-11 w-11 rounded-full bg-primary/10 text-primary mb-1">
+        <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v14l-7-3.5L6 20V6z"/>
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M18 4h.5A1.5 1.5 0 0 1 20 5.5V18"/>
+        </svg>
+      </span>
+      <span class="font-semibold">Library</span>
+      <span class="text-xs text-base-content/50">Find every missing album</span>
+    </div>
+  </a>
+  <a href="/upgrade"
+     class="card bg-base-200 border border-base-300/60 shadow-sm
+            hover:border-primary/50 hover:-translate-y-0.5 hover:shadow-md
+            transition-all duration-150">
+    <div class="card-body p-5 items-center text-center gap-1">
+      <span class="grid place-items-center h-11 w-11 rounded-full bg-primary/10 text-primary mb-1">
+        <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 19V5M5 12l7-7 7 7"/>
+        </svg>
+      </span>
+      <span class="font-semibold">Upgrade</span>
+      <span class="text-xs text-base-content/50">Better-quality versions</span>
+    </div>
+  </a>
+  <a href="/repair"
+     class="card bg-base-200 border border-base-300/60 shadow-sm
+            hover:border-primary/50 hover:-translate-y-0.5 hover:shadow-md
+            transition-all duration-150">
+    <div class="card-body p-5 items-center text-center gap-1">
+      <span class="grid place-items-center h-11 w-11 rounded-full bg-primary/10 text-primary mb-1">
+        <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.7 6.3a4 4 0 0 0-5.4 5.4L4 17v3h3l5.3-5.3a4 4 0 0 0 5.4-5.4l-2.6 2.6-2-2 2.6-2.6z"/>
+        </svg>
+      </span>
+      <span class="font-semibold">Repair</span>
+      <span class="text-xs text-base-content/50">Find and refill incomplete tracks</span>
+    </div>
+  </a>
+</div>
+{% endif %}
+
+<!-- Scans waiting for your review -->
+{% if review %}
+<div class="card bg-base-200 border border-info shadow mb-6">
+  <div class="card-body">
+    <h2 class="card-title text-info text-base">Waiting for your review</h2>
+    <div class="space-y-2 mt-1">
+      {% for job in review %}
+      <div class="flex items-center justify-between gap-3">
+        <div class="min-w-0">
+          <p class="font-medium truncate">{{ job.title }}</p>
+          <p class="text-xs text-base-content/50">
+            {% set _n = job.candidates | length %}{{ _n }} candidate{% if _n != 1 %}s{% endif %}</p>
+        </div>
+        <a href="/jobs/{{ job.id }}" class="btn btn-sm btn-info shrink-0">Review</a>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+</div>
+{% endif %}
+
+<!-- Active job card -->
+{% if active_job %}
+<div class="card bg-base-200 border border-warning shadow mb-6" id="active-job-card">
+  <div class="card-body">
+    <div class="flex items-center gap-3 mb-3">
+      <span class="loading loading-spinner loading-sm text-warning"></span>
+      <div>
+        <p class="font-semibold text-warning">Downloading</p>
+        <p class="text-sm text-base-content/70">{% if active_job.artist %}{{ active_job.artist }} — {% endif %}{{ active_job.title }}</p>
+      </div>
+    </div>
+    <div class="log-console" id="active-log-{{ active_job.id }}">
+      {%- for line in active_job.log_lines[-30:] %}{{ line }}
+{% endfor -%}
+    </div>
+  </div>
+</div>
+<script>
+(function() {
+  const logEl = document.getElementById('active-log-{{ active_job.id }}');
+  const src = new EventSource('/api/jobs/{{ active_job.id }}/stream');
+  src.onmessage = e => {
+    logEl.appendChild(document.createTextNode(e.data + '\n'));
+    logEl.scrollTop = logEl.scrollHeight;
+  };
+  src.addEventListener('done', () => {
+    src.close();
+    setTimeout(() => window.location.reload(), 1500);
+  });
+})();
+</script>
+{% endif %}
+
+<!-- Queue summary (if jobs pending but not running) -->
+{% set queued_only = pending | rejectattr('status.value', 'equalto', 'awaiting_review') | list %}
+{% if queued_only and not active_job %}
+<div class="alert alert-info mb-6">
+  <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+  </svg>
+  <span>{{ queued_only | length }} job{{ 's' if queued_only|length != 1 }} queued — <a href="/queue" class="link">view queue</a></span>
+</div>
+{% endif %}
+
+<!-- Recent downloads -->
+<div class="card bg-base-200 border border-base-300/60 shadow-sm">
+  <div class="card-body">
+    <h2 class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-3">
+      Recent downloads</h2>
+    {% if recent %}
+    <div class="divide-y divide-base-300">
+      {% for entry in recent %}
+      <div class="py-2 flex items-center justify-between gap-3">
+        <div class="min-w-0">
+          <p class="font-medium truncate">{{ entry.get('artist') or '?' }} — {{ entry.get('title') or '?' }}</p>
+          <p class="text-xs text-base-content/50">{{ (entry.get('ts') or '')[:10] }}</p>
+        </div>
+        <div class="shrink-0">
+          {% set result = entry.get('result') or '' %}
+          {% if result == 'already_complete' %}
+            <span class="badge badge-ghost badge-sm">complete</span>
+          {% elif result in ('downloaded', 'partial') %}
+            <span class="badge badge-success badge-sm">+{{ entry.get('tracks_downloaded') or 0 }}</span>
+          {% elif result == 'failed' %}
+            <span class="badge badge-error badge-sm">failed</span>
+          {% elif result == 'skipped_already_higher_quality' %}
+            <span class="badge badge-ghost badge-sm">already best</span>
+          {% elif result == 'skipped_has_extras' %}
+            <span class="badge badge-ghost badge-sm">skipped</span>
+          {% elif result == 'upgrade_aborted_backup_failed' %}
+            <span class="badge badge-warning badge-sm">backup failed</span>
+          {% elif result == 'nothing_landed' %}
+            <span class="badge badge-ghost badge-sm">no change</span>
+          {% else %}
+            <span class="badge badge-ghost badge-sm">{{ result.replace('_', ' ') }}</span>
+          {% endif %}
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+    {% else %}
+    <div class="flex flex-col items-center text-center py-10 gap-2">
+      <svg xmlns="http://www.w3.org/2000/svg" class="h-10 w-10 text-base-content/20"
+           fill="none" viewBox="0 0 24 24" stroke="currentColor">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
+              d="M9 18V6l10-2v12M9 18a2 2 0 1 1-4 0 2 2 0 0 1 4 0zm10-2a2 2 0 1 1-4 0 2 2 0 0 1 4 0z"/>
+      </svg>
+      <p class="font-medium text-base-content/60">Nothing downloaded yet.</p>
+      <p class="text-xs text-base-content/40">Search for an album or artist above to get started.</p>
+    </div>
+    {% endif %}
+  </div>
+</div>
+
+{% endblock %}

@@ -1,0 +1,62 @@
+{% if error %}
+<div class="alert alert-error mb-4">
+  <span>Search error: {{ error }}{% if not error.endswith('.') %}.{% endif %}</span>
+</div>
+{% endif %}
+
+{% if results and not error %}
+<div class="card bg-base-200 shadow">
+  <div class="card-body p-0">
+    <div class="divide-y divide-base-300">
+      {% for r in results %}
+      <div class="flex flex-col sm:flex-row sm:items-center gap-3 sm:gap-4 px-4 py-3">
+        <div class="min-w-0 flex-1">
+          <p class="font-semibold truncate">{{ r.title }}</p>
+          <p class="text-sm text-base-content/60 truncate">
+            {{ r.artist }}
+            <span class="text-base-content/40">· {{ r.year }} · {{ r.tracks }} tracks</span>
+          </p>
+        </div>
+        <div class="shrink-0 flex items-center gap-2 self-end sm:self-auto">
+          {% if r.hires %}
+          <span class="badge badge-sm quality-hires border border-current">Hi-Res</span>
+          {% elif r.lossy %}
+          <span class="badge badge-sm quality-lossy border border-current">Lossy</span>
+          {% else %}
+          <span class="badge badge-sm quality-cd border border-current">CD</span>
+          {% endif %}
+          <span class="text-xs text-base-content/40 hidden sm:block">{{ r.quality }}</span>
+          <form method="post" action="/download"
+                hx-post="/download"
+                hx-target="#download-toast"
+                hx-swap="innerHTML"
+                hx-disabled-elt="find button[type=submit]"
+                hx-confirm='Download "{{ r.title }}" by {{ r.artist }} ({{ r.tracks }} tracks)?'
+                hx-on::after-request="if(event.detail.successful){var b=this.querySelector('button[type=submit]');b.disabled=true;b.textContent='Queued';b.classList.remove('btn-primary');b.classList.add('btn-ghost','btn-disabled')}">
+            <input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}">
+            <input type="hidden" name="album_id" value="{{ r.id }}">
+            <button type="submit" class="btn btn-sm btn-primary">
+              <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/>
+              </svg>
+              Download
+            </button>
+          </form>
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+</div>
+<div id="download-toast" class="mt-4"></div>
+
+{% elif q and not error %}
+<div class="text-center py-12 text-base-content/40">
+  <p class="text-lg">No results for "{{ q }}".</p>
+  <p class="text-sm mt-1">Try a different query or paste a Qobuz URL directly.</p>
+</div>
+{% elif not q and not error %}
+<div class="text-center py-12 text-base-content/40">
+  <p class="text-sm">Type an artist, album, or Qobuz URL above to search.</p>
+</div>
+{% endif %}

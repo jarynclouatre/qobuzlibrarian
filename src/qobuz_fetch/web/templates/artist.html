@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block title %}Artist — Qobuz Librarian{% endblock %}
+{% block content %}
+
+<h1 class="text-2xl font-bold mb-2">Scan an artist</h1>
+<p class="text-base-content/60 mb-6">
+  Look up an artist on Qobuz, compare their discography against your library,
+  and pick which missing albums to download. Use the name as it appears on
+  Qobuz.
+</p>
+
+{% if error %}
+<div class="alert alert-error mb-4"><span>{{ error }} — try a different query or check Settings.</span></div>
+{% endif %}
+
+{% if creds_ok %}
+<div class="card bg-base-200 shadow">
+  <div class="card-body">
+    <form action="/artist" method="post" class="flex gap-2">
+      <input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}">
+      <input type="text" name="artist" placeholder="e.g. Stars of the Lid"
+             aria-label="Artist name"
+             inputmode="search" enterkeyhint="search" autocapitalize="words" spellcheck="false"
+             class="input input-bordered flex-1" autocomplete="off" autofocus>
+      <button type="submit" class="btn btn-primary">Scan</button>
+    </form>
+    <p class="text-xs text-base-content/40 mt-2">
+      Want the whole library scanned instead?
+      <a href="/library" class="link">Library gap scan</a> does every artist
+      at once.
+    </p>
+  </div>
+</div>
+{% else %}
+<div class="alert alert-warning">
+  <span>No Qobuz credentials set —
+    <a href="/settings" class="link">set them in Settings</a> before starting a scan.</span>
+</div>
+{% endif %}
+
+{% endblock %}

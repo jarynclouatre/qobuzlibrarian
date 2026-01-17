@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block title %}Search — Qobuz Librarian{% endblock %}
+{% block content %}
+
+{% if creds_ok %}
+<div class="card bg-base-200 shadow mb-6">
+  <div class="card-body">
+    <form action="/search" method="post"
+          hx-post="/search" hx-target="#results" hx-swap="innerHTML"
+          hx-indicator="#search-spinner"
+          class="flex gap-2">
+      <input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}">
+      <input type="text" name="q" value="{{ q or '' }}"
+             aria-label="Search Qobuz"
+             placeholder="Artist, album, or Qobuz URL"
+             inputmode="search" enterkeyhint="search" autocapitalize="off" spellcheck="false"
+             class="input input-bordered flex-1" autocomplete="off" autofocus>
+      <button type="submit" class="btn btn-primary gap-2">
+        <span id="search-spinner" class="loading loading-spinner loading-sm htmx-indicator"></span>
+        Search
+      </button>
+    </form>
+  </div>
+</div>
+
+<div id="results">
+  {% include "_search_results.html" %}
+</div>
+{% else %}
+<div class="alert alert-warning">
+  <span>No Qobuz credentials set —
+    <a href="/settings" class="link">set them in Settings</a> before searching.</span>
+</div>
+{% endif %}
+
+{% endblock %}

@@ -1,0 +1,129 @@
+{% extends "base.html" %}
+{% block title %}{% if job.artist %}{{ job.artist }} — {% endif %}{{ job.title }} — Qobuz Librarian{% endblock %}
+{% block content %}
+
+{% if stale %}
+<div class="alert alert-warning mb-4">
+  <span>This job is no longer awaiting review — the previous click already
+    started it.</span>
+</div>
+{% endif %}
+
+<div class="flex items-center justify-between gap-3 mb-1">
+  <h1 class="text-2xl font-bold">{% if job.artist %}{{ job.artist }} — {% endif %}{{ job.title }}</h1>
+  <span class="badge
+    {%- if job.status.value == 'done' %} badge-success
+    {%- elif job.status.value in ('failed','canceled') %} badge-error
+    {%- elif job.status.value == 'awaiting_review' %} badge-info
+    {%- else %} badge-warning{% endif %}">{{ job.status.value.replace('_', ' ') }}</span>
+</div>
+<p class="text-xs text-base-content/40 mb-6">Job {{ job.id }}</p>
+
+{% set s = job.status.value %}
+
+{# ── Scanning / running: live log ─────────────────────────────────────── #}
+{% if s in ('pending', 'scanning', 'running') %}
+  <div class="flex items-center justify-between mb-3">
+    <p class="text-base-content/60">
+      {% if s == 'scanning' %}Scanning{% elif s == 'running' %}Downloading{% else %}Queued{% endif %}
+      {% if job.cancel_requested %}<span class="badge badge-ghost badge-sm ml-2">stopping</span>{% endif %}
+    </p>
+    {% if not job.cancel_requested %}
+    <form action="/jobs/{{ job.id }}/cancel" method="post">
+      <input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}">
+      <button type="submit" class="btn btn-sm btn-ghost">Cancel</button>
+    </form>
+    {% endif %}
+  </div>
+  <div class="log-console" id="log"></div>
+  <script>
+  (function () {
+    const logEl = document.getElementById('log');
+    const baseTitle = document.title;
+    const src = new EventSource('/api/jobs/{{ job.id }}/stream');
+    let titleSet = false;
+    src.onmessage = e => {
+      if (!titleSet) { document.title = '▶ ' + baseTitle; titleSet = true; }
+      logEl.appendChild(document.createTextNode(e.data + '\n'));
+      logEl.scrollTop = logEl.scrollHeight;
+    };
+    src.addEventListener('done', () => {
+      src.close();
+      document.title = '✓ ' + baseTitle;
+      const banner = document.createElement('div');
+      banner.className = 'alert alert-success mt-3';
+      banner.innerHTML = 'Job finished — <button class="btn btn-sm btn-ghost ml-2" onclick="location.reload()">load summary</button>';
+      document.getElementById('log').insertAdjacentElement('afterend', banner);
+    });
+  })();
+  </script>
+
+{# ── Awaiting review: pick candidates ─────────────────────────────────── #}
+{% elif s == 'awaiting_review' %}
+  {% if job.candidates %}
+  <form action="/jobs/{{ job.id }}/approve" method="post">
+    <input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}">
+    <div class="flex items-center justify-between mb-3">
+      <p class="text-base-content/70">
+        {% set _n = job.candidates | length %}{{ _n }} candidate{% if _n != 1 %}s{% endif %}. Uncheck anything you don't
+        want, then download.
+      </p>
+      <div class="flex gap-2">
+        <button type="button" class="btn btn-xs"
+                onclick="document.querySelectorAll('.cb').forEach(c=>c.checked=true)">All</button>
+        <button type="button" class="btn btn-xs"
+                onclick="document.querySelectorAll('.cb').forEach(c=>c.checked=false)">None</button>
+      </div>
+    </div>
+
+    <div class="space-y-1 mb-4">
+      {% for c in job.candidates %}
+      <label class="flex items-center gap-3 px-3 py-2 bg-base-200 rounded-lg cursor-pointer">
+        <input type="checkbox" class="checkbox checkbox-sm cb" name="cid"
+               value="{{ c.cid }}" {% if c.selected %}checked{% endif %}>
+        <span class="flex-1 min-w-0">
+          <span class="font-medium">{{ c.title }}</span>
+          {% if c.artist %}<span class="text-base-content/50"> — {{ c.artist }}</span>{% endif %}
+          <span class="block text-xs text-base-content/40">{{ c.detail }}</span>
+        </span>
+      </label>
+      {% endfor %}
+    </div>
+
+    <div class="flex gap-2">
+      <button type="submit" class="btn btn-primary">Download selected</button>
+      <button type="submit" formaction="/jobs/{{ job.id }}/cancel"
+              class="btn btn-ghost">Cancel</button>
+    </div>
+  </form>
+  {% else %}
+  <div class="flex items-center justify-between flex-wrap gap-3">
+    <p class="text-base-content/60">Nothing found.</p>
+    <form action="/jobs/{{ job.id }}/cancel" method="post">
+      <input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}">
+      <button type="submit" class="btn btn-sm btn-ghost">Dismiss</button>
+    </form>
+  </div>
+  {% endif %}
+
+  <div class="divider text-base-content/30 text-xs">log</div>
+  <div class="log-console" style="max-height:200px">
+    {%- for line in job.log_lines %}{{ line }}
+{% endfor -%}
+  </div>
+
+{# ── Finished ─────────────────────────────────────────────────────────── #}
+{% else %}
+  {% if job.error %}
+  <div class="alert alert-error mb-4"><span class="break-words whitespace-pre-wrap">{{ job.error }} — check the queue or run logs.</span></div>
+  {% endif %}
+  <div class="log-console">
+    {%- for line in job.log_lines %}{{ line }}
+{% endfor -%}
+  </div>
+  <div class="mt-4">
+    <a href="/queue" class="btn btn-ghost btn-sm">Back to queue</a>
+  </div>
+{% endif %}
+
+{% endblock %}

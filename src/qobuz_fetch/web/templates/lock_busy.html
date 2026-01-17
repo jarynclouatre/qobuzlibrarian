@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block title %}Service paused — Qobuz Librarian{% endblock %}
+{% block content %}
+
+<h1 class="text-2xl font-bold mb-4">Service paused</h1>
+
+<div class="alert alert-error mb-6">
+  <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 shrink-0" fill="none"
+       viewBox="0 0 24 24" stroke="currentColor">
+    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+          d="M12 9v2m0 4h.01M5 19h14a2 2 0 0 0 1.84-2.75L13.74 4a2 2 0 0 0-3.5 0L3.18 16.25A2 2 0 0 0 5 19z"/>
+  </svg>
+  <span class="min-w-0 break-words">{{ msg }}</span>
+</div>
+
+<a href="/" class="btn btn-ghost btn-sm">Back to dashboard</a>
+
+{% endblock %}

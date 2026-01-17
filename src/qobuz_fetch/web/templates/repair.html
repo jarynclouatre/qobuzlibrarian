@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block title %}Repair — Qobuz Librarian{% endblock %}
+{% block content %}
+
+<h1 class="text-2xl font-bold mb-2">Repair</h1>
+<p class="text-base-content/60 mb-2">
+  Scan every album for truncated or partially-downloaded FLACs. Each file is
+  matched to its exact Qobuz recording by ISRC, so a flagged file is genuinely
+  short — not just a different master. You pick which albums to repair;
+  broken files are backed up before being refilled.
+</p>
+<p class="text-base-content/40 text-sm mb-6">
+  Slow: one Qobuz call per track. A 20k-track library takes a couple of hours.
+</p>
+
+{% if creds_ok %}
+<form action="/repair" method="post">
+  <input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}">
+  <button type="submit" class="btn btn-primary">Start repair scan</button>
+</form>
+{% else %}
+<div class="alert alert-warning">
+  <span>No Qobuz credentials set —
+    <a href="/settings" class="link">set them in Settings</a> before starting a scan.</span>
+</div>
+{% endif %}
+
+{% endblock %}

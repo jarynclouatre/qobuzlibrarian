@@ -1,0 +1,157 @@
+{% extends "base.html" %}
+{% block title %}Queue — Qobuz Librarian{% endblock %}
+{% block content %}
+
+<div class="flex items-center justify-between mb-6 gap-2 flex-wrap">
+  <h1 class="text-2xl font-bold">Download queue</h1>
+  <div class="flex gap-2 flex-wrap">
+    {% if pending %}
+    <form action="/queue/cancel-pending" method="post">
+      <input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}">
+      <button type="submit" class="btn btn-sm btn-ghost"
+              onclick="return confirm('Cancel all pending and running jobs?')">Cancel pending</button>
+    </form>
+    {% endif %}
+    {% if finished %}
+    <form action="/queue/clear" method="post">
+      <input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}">
+      <button type="submit" class="btn btn-sm btn-ghost"
+              onclick="return confirm('Clear completed job history?')">Clear history</button>
+    </form>
+    {% endif %}
+  </div>
+</div>
+
+{% if error %}
+<div class="alert alert-error mb-4"><span>{{ error }} — refresh the queue or check Settings.</span></div>
+{% endif %}
+
+<!-- Active / Pending -->
+{% if pending %}
+<div class="mb-6 space-y-4">
+  {% for job in pending %}
+  <div class="card bg-base-200 shadow {% if job.status.value == 'running' %}border border-warning{% endif %}">
+    <div class="card-body">
+      <div class="flex items-start justify-between gap-3">
+        <div class="min-w-0 flex-1">
+          <div class="flex items-center gap-2 mb-1">
+            {% if job.status.value == 'running' %}
+              <span class="loading loading-spinner loading-xs text-warning"></span>
+              <span class="badge badge-warning badge-sm">Downloading</span>
+            {% elif job.status.value == 'scanning' %}
+              <span class="loading loading-spinner loading-xs text-info"></span>
+              <span class="badge badge-info badge-sm">Scanning</span>
+            {% elif job.status.value == 'awaiting_review' %}
+              <span class="badge badge-info badge-sm">Needs review</span>
+            {% else %}
+              <span class="badge badge-ghost badge-sm">Queued</span>
+            {% endif %}
+          </div>
+          <p class="font-semibold truncate">
+            <a href="/jobs/{{ job.id }}" class="link link-hover">
+              {% if job.artist %}{{ job.artist }} — {% endif %}{{ job.title }}</a>
+          </p>
+          <p class="text-xs text-base-content/40">Job {{ job.id }}</p>
+        </div>
+        {% if job.status.value == 'awaiting_review' %}
+        <div class="flex gap-2">
+          <a href="/jobs/{{ job.id }}" class="btn btn-sm btn-info">Review</a>
+          <form action="/jobs/{{ job.id }}/cancel" method="post">
+            <input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}">
+            <button type="submit" class="btn btn-square min-h-[44px] min-w-[44px] sm:btn-sm btn-ghost"
+                    title="Cancel" aria-label="Cancel">×</button>
+          </form>
+        </div>
+        {% elif job.status.value in ('pending', 'running', 'scanning') %}
+        <form action="/jobs/{{ job.id }}/cancel" method="post">
+          <input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}">
+          <button type="submit" class="btn btn-square min-h-[44px] min-w-[44px] sm:btn-sm btn-ghost"
+                  title="Cancel" aria-label="Cancel">×</button>
+        </form>
+        {% endif %}
+      </div>
+
+      {% if job.status.value == 'running' %}
+      <div class="mt-3">
+        <div class="log-console" id="log-{{ job.id }}">
+          {%- for line in job.log_lines[-40:] %}{{ line }}
+{% endfor -%}
+        </div>
+      </div>
+      <script>
+      (function() {
+        const logEl = document.getElementById('log-{{ job.id }}');
+        const src = new EventSource('/api/jobs/{{ job.id }}/stream');
+        src.onmessage = e => {
+          logEl.appendChild(document.createTextNode(e.data + '\n'));
+          logEl.scrollTop = logEl.scrollHeight;
+        };
+        src.addEventListener('done', () => {
+          src.close();
+          setTimeout(() => location.reload(), 2000);
+        });
+      })();
+      </script>
+      {% elif job.log_lines %}
+      <div class="mt-3 log-console" style="max-height:120px">
+        {%- for line in job.log_lines[-10:] %}{{ line }}
+{% endfor -%}
+      </div>
+      {% endif %}
+    </div>
+  </div>
+  {% endfor %}
+</div>
+{% else %}
+<div class="text-center py-10 text-base-content/40 mb-6">
+  <svg xmlns="http://www.w3.org/2000/svg" class="h-12 w-12 mx-auto mb-3 opacity-30" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/>
+  </svg>
+  <p>Queue is empty. <a href="/search" class="link">Search for something to download.</a></p>
+</div>
+{% endif %}
+
+<!-- Completed -->
+{% if finished %}
+<div class="divider text-base-content/40 text-sm">Completed</div>
+<div class="space-y-2">
+  {% for job in finished | reverse %}
+  <div class="flex items-center gap-3 px-4 py-3 bg-base-200 rounded-lg">
+    <div class="shrink-0">
+      {% if job.status.value == 'done' %}
+        <span class="text-success text-lg">✓</span>
+      {% else %}
+        <span class="text-error text-lg">✗</span>
+      {% endif %}
+    </div>
+    <div class="min-w-0 flex-1">
+      <p class="font-medium truncate">{% if job.artist %}{{ job.artist }} — {% endif %}{{ job.title }}</p>
+      {% if job.error %}
+      <p class="text-xs text-error/80 truncate">{{ job.error }}</p>
+      {% endif %}
+    </div>
+    <div class="shrink-0 text-xs text-base-content/30">
+      {{ job.finished_at_str }}
+    </div>
+    {% if job.status.value == 'failed' and job.album_id %}
+    <form action="/jobs/{{ job.id }}/retry" method="post" class="shrink-0">
+      <input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}">
+      <button type="submit" class="btn btn-xs btn-ghost" title="Retry download">Retry</button>
+    </form>
+    {% endif %}
+    <button class="btn btn-xs btn-ghost"
+            onclick="document.getElementById('hist-{{ job.id }}').classList.toggle('hidden')">
+      Log
+    </button>
+  </div>
+  <div id="hist-{{ job.id }}" class="hidden px-2 pb-2">
+    <div class="log-console" style="max-height:200px">
+      {%- for line in job.log_lines %}{{ line }}
+{% endfor -%}
+    </div>
+  </div>
+  {% endfor %}
+</div>
+{% endif %}
+
+{% endblock %}

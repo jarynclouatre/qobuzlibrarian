@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block title %}Library — Qobuz Librarian{% endblock %}
+{% block content %}
+
+<h1 class="text-2xl font-bold mb-2">Library gap scan</h1>
+<p class="text-base-content/60 mb-2">
+  Walk every artist folder in your library, check each against Qobuz, and
+  list every album you're missing. Review and approve the list before
+  anything downloads.
+</p>
+<p class="text-base-content/40 text-sm mb-6">
+  Roughly one Qobuz call per artist, with a small pause between each.
+</p>
+
+{% if creds_ok %}
+<form action="/library" method="post">
+  <input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}">
+  <button type="submit" class="btn btn-primary">Start library scan</button>
+</form>
+{% else %}
+<div class="alert alert-warning">
+  <span>No Qobuz credentials set —
+    <a href="/settings" class="link">set them in Settings</a> before starting a scan.</span>
+</div>
+{% endif %}
+
+{% endblock %}

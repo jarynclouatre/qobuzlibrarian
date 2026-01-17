@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="night">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="csrf-token" content="{{ request.state.csrf_token }}">
+  <title>{% block title %}Qobuz Librarian{% endblock %}</title>
+  <link rel="icon" type="image/png" href="/static/icon.png">
+  <link rel="apple-touch-icon" href="/static/icon-192.png">
+  <link rel="manifest" href="/static/manifest.json">
+  <meta name="theme-color" content="#1d232a">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Qobuz Librarian">
+  <!-- Vendored locally so the UI works on air-gapped / offline NAS boxes.
+       Pinned versions; refresh from upstream when bumping. -->
+  <link href="/static/dist/app.css" rel="stylesheet">
+  <script src="/static/vendor/htmx-1.9.12.min.js"></script>
+  <script>
+    // HTMX POSTs go through the CSRF middleware; lift the token from the
+    // meta tag and attach it as a header so non-form-submit AJAX calls
+    // (Test Connection, etc.) pass the check.
+    document.addEventListener('htmx:configRequest', function(evt) {
+      var m = document.querySelector('meta[name="csrf-token"]');
+      if (m) evt.detail.headers['X-CSRF-Token'] = m.content;
+    });
+  </script>
+  <style>
+    .log-console {
+      font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+      font-size: 0.78rem;
+      line-height: 1.5;
+      background: #0d1117;
+      color: #c9d1d9;
+      border-radius: 0.5rem;
+      padding: 1rem;
+      overflow-y: auto;
+      max-height: min(60vh, 400px);
+      overscroll-behavior: contain;
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
+    .log-console:empty::before { content: "Waiting for output…"; color: #484f58; }
+    .quality-hires { color: #7ee787; }
+    .quality-cd    { color: #79c0ff; }
+    .quality-lossy { color: #f78166; }
+    /* htmx spinners must not reserve space (or off-center their button)
+       while idle — only occupy layout during an in-flight request. */
+    .htmx-indicator { display: none; }
+    .htmx-request .htmx-indicator,
+    .htmx-request.htmx-indicator { display: inline-block; }
+  </style>
+</head>
+<body class="min-h-screen bg-base-100 flex flex-col">
+
+  <!-- Navbar -->
+  <nav class="navbar bg-base-200 shadow-lg px-4">
+    <div class="flex-1 min-w-0">
+      <a href="/" class="inline-flex items-center gap-2 text-lg font-bold text-primary whitespace-nowrap">
+        <img src="/static/icon.png" alt="" class="h-8 w-8 rounded-lg shrink-0">
+        Qobuz Librarian
+      </a>
+    </div>
+    <div class="hidden md:flex">
+      <ul class="menu menu-horizontal gap-1 px-1">
+        <li><a href="/"        class="{% if page=='dashboard' %}active{% endif %}">Dashboard</a></li>
+        <li><a href="/search"  class="{% if page=='search' %}active{% endif %}">Search</a></li>
+        <li><a href="/artist"  class="{% if page=='artist' %}active{% endif %}">Artist</a></li>
+        <li><a href="/library" class="{% if page=='library' %}active{% endif %}">Library</a></li>
+        <li><a href="/upgrade" class="{% if page=='upgrade' %}active{% endif %}">Upgrade</a></li>
+        <li><a href="/repair"   class="{% if page=='repair' %}active{% endif %}">Repair</a></li>
+        <li><a href="/queue"   class="{% if page=='queue' %}active{% endif %}">
+          Queue
+          {% set _qbadge = pending_job_count or 0 %}
+          {% if _qbadge > 0 %}<span class="badge badge-primary badge-sm">{% if _qbadge > 99 %}99+{% else %}{{ _qbadge }}{% endif %}</span>{% endif %}
+        </a></li>
+        <li><a href="/settings" class="{% if page=='settings' %}active{% endif %}">Settings</a></li>
+      </ul>
+    </div>
+    <div class="md:hidden">
+      <!-- Mobile menu -->
+      <div class="dropdown dropdown-end">
+        <label tabindex="0" class="btn btn-ghost btn-circle" aria-label="Menu">
+          <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/>
+          </svg>
+        </label>
+        <ul tabindex="0" class="menu menu-sm dropdown-content mt-3 z-[1] p-2 shadow bg-base-200 rounded-box min-w-max">
+          <li><a href="/">Dashboard</a></li>
+          <li><a href="/search">Search</a></li>
+          <li><a href="/artist">Artist</a></li>
+          <li><a href="/library">Library</a></li>
+          <li><a href="/upgrade">Upgrade</a></li>
+          <li><a href="/repair">Repair</a></li>
+          <li><a href="/queue">
+            Queue
+            {% set _qbadge = pending_job_count or 0 %}
+            {% if _qbadge > 0 %}<span class="badge badge-primary badge-sm">{% if _qbadge > 99 %}99+{% else %}{{ _qbadge }}{% endif %}</span>{% endif %}
+          </a></li>
+          <li><a href="/settings">Settings</a></li>
+        </ul>
+      </div>
+    </div>
+  </nav>
+
+  <!-- Main content -->
+  <main class="container mx-auto px-4 py-6 max-w-5xl flex-1 w-full">
+    {% block content %}{% endblock %}
+  </main>
+
+  <!-- Footer -->
+  <footer class="border-t border-base-300 mt-8">
+    <div class="container mx-auto px-4 py-4 max-w-5xl flex items-center justify-between
+                text-xs text-base-content/40">
+      <span>Qobuz Librarian <span class="font-mono">v{{ app_version }}</span></span>
+      <a href="{{ repo_url }}" target="_blank" rel="noopener"
+         class="inline-flex items-center gap-1.5 hover:text-base-content/70 transition-colors">
+        <svg viewBox="0 0 16 16" class="h-4 w-4" fill="currentColor" aria-hidden="true">
+          <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38
+                   0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13
+                   -.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66
+                   .07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15
+                   -.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0
+                   1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82
+                   1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01
+                   1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/>
+        </svg>
+        GitHub
+      </a>
+    </div>
+  </footer>
+
+  <script>
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('/sw.js');
+    }
+    // Global keyboard shortcuts. "/" focuses the search box; Esc dismisses
+    // any visible alert and blurs the focused input; "g s/q/h" navigate.
+    (function() {
+      let gPending = false;
+      let gTimer = null;
+      document.addEventListener('keydown', e => {
+        const tag = (document.activeElement && document.activeElement.tagName) || '';
+        const inField = tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT';
+        if (e.key === '/' && !inField) {
+          const q = document.querySelector('input[name="q"], input[name="artist"]');
+          if (q) { e.preventDefault(); q.focus(); q.select && q.select(); }
+        } else if (e.key === 'Escape') {
+          ['error', 'warning'].forEach(kind => {
+            document.querySelectorAll('.alert.alert-' + kind).forEach(a => a.remove());
+          });
+          if (inField) document.activeElement.blur();
+        } else if (e.key === 'g' && !inField) {
+          gPending = true;
+          clearTimeout(gTimer);
+          gTimer = setTimeout(() => { gPending = false; }, 800);
+        } else if (gPending && !inField) {
+          const map = { 's': '/settings', 'q': '/queue', 'h': '/' };
+          if (map[e.key]) { e.preventDefault(); location.href = map[e.key]; }
+          gPending = false;
+        }
+      });
+    })();
+  </script>
+</body>
+</html>
