@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Offline — Qobuz Librarian</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #1d232a;
+      color: #a6adbb;
+      font-family: system-ui, sans-serif;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100dvh;
+    }
+    .card {
+      text-align: center;
+      max-width: 380px;
+      padding: 2.5rem 2rem;
+    }
+    h1 { font-size: 1.5rem; color: #7ee787; margin-bottom: 0.75rem; }
+    p { line-height: 1.6; opacity: 0.75; }
+    button {
+      margin-top: 1.75rem;
+      padding: 0.55rem 1.75rem;
+      background: #7ee787;
+      color: #1d232a;
+      border: none;
+      border-radius: 0.5rem;
+      cursor: pointer;
+      font-size: 0.95rem;
+      font-weight: 600;
+    }
+    button:hover { background: #a7f3b0; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>Qobuz Librarian</h1>
+    <p>Can't reach the server.<br>Check that the Docker container is running.</p>
+    <button onclick="location.reload()">Retry</button>
+  </div>
+</body>
+</html>
