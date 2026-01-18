@@ -1,0 +1,11 @@
+# Build-from-source override for contributors. Layered on top of
+# compose.yaml, it replaces the pulled image with a local build:
+#
+#   docker compose -f compose.yaml -f compose.dev.yaml up -d --build
+#
+# Regular users don't need this — plain `docker compose up -d` pulls
+# the published image.
+services:
+  qobuz-librarian:
+    build: .
+    image: qobuz-librarian:dev

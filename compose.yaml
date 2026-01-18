@@ -1,0 +1,155 @@
+services:
+  qobuz-librarian:
+    image: dinkeyes/qobuz-librarian:latest
+    container_name: qobuz-librarian
+    restart: unless-stopped
+    mem_limit: 1g
+    pids_limit: 256
+    security_opt:
+      - "no-new-privileges:true"
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+      - SETUID
+      - SETGID
+    ports:
+      # WEB_PORT (from .env) only changes the host-side mapping; the
+      # container always listens on 8666 internally.
+      - "${WEB_PORT:-8666}:8666"
+
+    environment:
+      # ── User / permissions ────────────────────────────────────────────────
+      # Set PUID/PGID to match your host user so downloaded and imported files
+      # are owned by you, not root. Find your values with `id -u` / `id -g`.
+      # Unset = run as root (works fine for a single-user desktop box;
+      # not recommended on a shared NAS).
+      # PUID: "${PUID:-1000}"
+      # PGID: "${PGID:-1000}"
+
+      # ── Auth ──────────────────────────────────────────────────────────────
+      # Optional: set QOBUZ_USER_AUTH_TOKEN / QOBUZ_USER_ID in .env, or just
+      # use the Settings page in the web UI. Empty = use the Settings page.
+      QOBUZ_USER_AUTH_TOKEN: "${QOBUZ_USER_AUTH_TOKEN:-}"
+      QOBUZ_USER_ID:         "${QOBUZ_USER_ID:-}"
+
+      # ── Paths ─────────────────────────────────────────────────────────────
+      MUSIC_ROOT:           /music
+      STAGING_DIR:          /staging
+      DATA_DIR:             /data
+      UPGRADE_BACKUP_DIR:   /upgrade_backups
+
+      # beets (bundled — no separate container needed)
+      BEETS_CONFIG_DIR:     /config/beets
+      BEETS_DB_PATH:        /config/beets/musiclibrary.db
+      BEETS_STAGING_INSIDE: /staging
+      # Optional folder/file naming. Leave unset to use the fully-editable
+      # /config/beets/config.yaml. beets path syntax ($albumartist, $album,
+      # $year, $track, $title, ...).
+      # BEETS_PATH_DEFAULT:   "$albumartist/$album ($year)/$track - $title"
+      # BEETS_PATH_SINGLETON: "$albumartist/$album ($year)/$track - $title"
+      # BEETS_PATH_COMP:      "Various Artists/$album ($year)/$track - $title"
+      # Comma-separated list of beets plugins. Unset = honour /config/beets/
+      # config.yaml (seeded with `fetchart` only). Useful extras: lastgenre,
+      # replaygain, scrub, edit, embedart. Full list: https://beets.readthedocs.io/
+      # BEETS_PLUGINS: "fetchart,lastgenre,replaygain"
+
+      # streamrip config (generated on first run)
+      STREAMRIP_CONFIG:     /config/streamrip/config.toml
+
+      # ── Web UI ─────────────────────────────────────────────────────────────
+      WEB_HOST: "0.0.0.0"
+      WEB_PORT: "8666"
+      # Refuse downloads/scans at startup if /music or /staging aren't writable
+      # by the container user (typical on a NAS with the wrong PUID/PGID).
+      QF_CHECK_VOLUMES: "1"
+      # Optional: shell command run after every terminal job. The job state
+      # (id/status/title/artist/error/finished_at) is piped to it as JSON on
+      # stdin. Useful for desktop notifications, ntfy/Apprise, etc.
+      # POST_JOB_HOOK: "curl -sX POST https://ntfy.sh/your-topic -d @-"
+
+      # ── Qobuz API ─────────────────────────────────────────────────────────
+      QOBUZ_API_BASE: https://www.qobuz.com/api.json/0.2
+      QOBUZ_APP_ID:   "798273057"
+
+      # ── Tuning (defaults are sensible; uncomment to override) ─────────────
+      # RIP_TIMEOUT:               "900"   # per-album rip subprocess timeout (s)
+      # DELAY_BETWEEN:             "1.0"   # pause between consecutive album downloads (s)
+      # ARTIST_API_DELAY:          "0.4"   # pause between Qobuz API calls during library walks (s)
+      # SEARCH_LIMIT:              "8"     # search results per query
+      # ARTIST_CATALOG_LIMIT:      "500"   # max albums fetched per artist
+      # MISSING_ALBUMS_MIN_TRACKS: "4"     # hide singles / very short EPs in the missing-albums step
+
+      # ── Download quality ──────────────────────────────────────────────────
+      # streamrip quality: 1=320k, 2=CD/16-bit lossless, 3=24-bit ≤96kHz,
+      # 4=24-bit ≤192kHz. Default 4 = the best master Qobuz serves you.
+      # Set "2" for CD lossless if you'd rather have smaller files.
+      STREAMRIP_QUALITY: "4"
+
+      # ── Lyrics ────────────────────────────────────────────────────────────
+      # Synced lyrics are fetched on every import by default. Set "false" to
+      # disable. LYRICS_FORMAT: embed = FLAC tag · sidecar = .lrc · both.
+      # LYRICS_PROVIDERS: comma list in preferred order; empty = built-in.
+      # LYRICS_ENABLED: "false"
+      LYRICS_FORMAT: "${LYRICS_FORMAT:-embed}"
+      LYRICS_PROVIDERS: "${LYRICS_PROVIDERS:-}"
+
+      # ── Behaviour (also editable on the Settings page) ────────────────────
+      # Pick the hi-res master when an album has multiple versions.
+      PREFER_HIRES: "true"
+      # After import, merge sibling/duplicate album folders. CLI-only and
+      # prompts per folder; off by default (it moves folders). Set "true"
+      # if you want it offered on CLI runs.
+      CONSOLIDATE: "false"
+      # Move "Primary, Other/<album>" into "Primary/<album>" after import.
+      MIGRATE_MULTI_ARTIST: "false"
+
+      # ── Optional features (off by default) ────────────────────────────────
+      # Offer quality upgrades during ordinary gap-fill walks. The explicit
+      # Upgrade walk works regardless of this; this only affects normal walks.
+      AUTO_UPGRADE_ENABLED: "false"
+      UPGRADE_BACKUP_RETENTION_DAYS: "7"
+      # How long (days) to remember that Qobuz delivered a partial hi-res for
+      # an album before retrying it in the upgrade walk.
+      # CAPPED_RETENTION_DAYS: "90"
+      # Downsample hi-res FLACs to 44.1/48 kHz before import to save space.
+      # Leave false to keep whatever Qobuz delivers (CD quality is fine).
+      COMPRESS_ENABLED: "false"
+
+      # ── Matching thresholds (advanced; defaults are well-tested) ──────────
+      # Similarity score (0–1) for fuzzy directory-name matching.
+      # Lower = more permissive, more false positives.
+      # FUZZY_DIR_THRESH:           "0.78"
+      # ARTIST_NAME_THRESH:         "0.85"
+      # ARTIST_DIR_MATCH_THRESH:    "0.65"
+      # DB_ALBUM_THRESH:            "0.85"
+      # CONSOLIDATE_THRESH:         "0.70"
+      # AUTO_SAFE_TITLE_SIM_THRESH: "0.85"
+
+      # ── Web request budgets ───────────────────────────────────────────────
+      # Per-request timeout (seconds) for the web UI's Qobuz API calls.
+      # WEB_FETCH_TIMEOUT bounds album/track fetches and the search box;
+      # WEB_TEST_AUTH_TIMEOUT bounds the startup + Settings token probe.
+      QF_WEB_FETCH_TIMEOUT:     "${QF_WEB_FETCH_TIMEOUT:-12.0}"
+      QF_WEB_TEST_AUTH_TIMEOUT: "${QF_WEB_TEST_AUTH_TIMEOUT:-8.0}"
+
+    volumes:
+      # Host paths come from a .env file (see .env.example). Defaults to
+      # ./music, ./staging, ./upgrade_backups so a fresh clone runs as-is.
+      # Music library (read-write so beets can move files in)
+      - ${QF_MUSIC_DIR:-./music}:/music
+      # Staging area for streamrip downloads
+      - ${QF_STAGING_DIR:-./staging}:/staging
+      # Persistent config: beets db, streamrip config, app state
+      - qobuz-librarian-config:/config
+      # App data: fetch log, queue persistence, repair log
+      - qobuz-librarian-data:/data
+      # Upgrade backups
+      - ${QF_UPGRADE_BACKUPS:-./upgrade_backups}:/upgrade_backups
+
+volumes:
+  qobuz-librarian-config:
+    name: qobuz-librarian-config
+  qobuz-librarian-data:

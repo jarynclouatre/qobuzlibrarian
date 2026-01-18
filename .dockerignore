@@ -1,0 +1,43 @@
+# Dev-only files that shouldn't bloat the image or invalidate cache layers.
+.venv
+__pycache__
+*.pyc
+*.pyo
+.pytest_cache
+.ruff_cache
+.mypy_cache
+.coverage
+htmlcov/
+
+# Host-installed Node deps and Tailwind build artifacts; the builder stage
+# installs fresh inside the image.
+node_modules
+.tailwindcache
+src/qobuz_fetch/web/static/dist
+
+# Tests and CI: not needed at runtime.
+tests/
+.github/
+
+# VCS + ignored locals.
+.git
+.gitignore
+.gitattributes
+.env
+*.local
+notes/
+TODO.md
+TODO.local.md
+
+# Build artifacts.
+*.egg-info
+dist/
+build/
+
+# README assets and the dev-only logo generator.
+assets/
+scripts/make_logo.py
+
+# Docs only the README links to.
+CHANGELOG.md
+CONTRIBUTING.md
