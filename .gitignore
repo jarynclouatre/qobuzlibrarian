@@ -7,6 +7,13 @@ build/
 .venv/
 venv/
 .env
+.qobuz_*
+.upgrade_backups/
 .pytest_cache/
 .coverage
 htmlcov/
+
+# Node + Tailwind build
+node_modules/
+.tailwindcache/
+src/qobuz_fetch/web/static/dist/
