@@ -9,6 +9,7 @@
   <link rel="apple-touch-icon" href="/static/icon-192.png">
   <link rel="manifest" href="/static/manifest.json">
   <meta name="theme-color" content="#1d232a">
+  <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="Qobuz Librarian">
@@ -25,6 +26,10 @@
       if (m) evt.detail.headers['X-CSRF-Token'] = m.content;
     });
   </script>
+  <!-- CSP-safe htmx event handlers — see web/static/app.js. Replaces the
+       inline-attribute style htmx 1.9 evaluates via new Function, which
+       the page CSP correctly forbids ('unsafe-eval' not allowed). -->
+  <script src="/static/app.js"></script>
   <style>
     .log-console {
       font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;

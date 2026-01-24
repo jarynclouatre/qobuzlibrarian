@@ -1,6 +1,12 @@
 # ── Builder ───────────────────────────────────────────────────────────────────
+# Builds a self-contained virtualenv and the Tailwind CSS bundle. `git`,
+# build-essential, and the Node toolchain live ONLY here, so they never
+# reach the runtime image.
 FROM python:3.12-slim AS builder
 
+# git: for the pinned streamrip install (git+https). build-essential: some
+# transitive deps compile C extensions if no wheel is available. nodejs/npm:
+# Tailwind CLI for the production CSS bundle.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         git \
         build-essential \
@@ -15,13 +21,20 @@ ENV PATH="$VIRTUAL_ENV/bin:$PATH"
 WORKDIR /app
 
 # Heavy upstream deps first (rarely change → cached above app source).
-# beets gets --no-deps + a minimum-deps list. The full install pulls in
-# chroma/acoustid prerequisites we never load.
-# Pillow is pinned past the 10.4.x CVE family.
+# streamrip 2.2.0 isn't on PyPI; pin to a known-working dev-branch commit.
+# beets is pinned to a verified minor.
+# Bump policy: track nathom/streamrip's dev branch, refresh quarterly or
+# when a Qobuz-side schema change forces it; verify with scripts/smoke_test.sh
+# before changing the SHA. Last verified: 2026-04 against streamrip dev.
+#
+# beets gets --no-deps + an explicit minimum-deps list. Full install pulls
+# in chroma/acoustid prerequisites (llvmlite, scipy, numpy, numba) — ~350 MB
+# we never load because the bundled beets-default.yaml only enables fetchart.
+# If you ever enable the chroma or acoustid plugin, install beets[chroma]
+# (or its equivalent) on top inside the container or in a flag-gated build.
 RUN pip install --no-cache-dir \
         "streamrip @ git+https://github.com/nathom/streamrip.git@e3291615ba6be34aa76df19da8aeb6f41673c6a0" \
         "syncedlyrics>=0.4" \
-        "pillow>=12.2.0" \
  && pip install --no-cache-dir --no-deps "beets==2.11.0" \
  && pip install --no-cache-dir \
         confuse \
@@ -30,6 +43,7 @@ RUN pip install --no-cache-dir \
         mediafile \
         munkres \
         packaging \
+        "pillow>=12.2.0" \
         platformdirs \
         pyyaml \
         requests \
@@ -37,56 +51,82 @@ RUN pip install --no-cache-dir \
         typing_extensions \
         unidecode
 
-COPY package.json package-lock.json ./
-RUN npm ci --no-audit --no-fund
-
-COPY LICENSE README.md pyproject.toml ./
+# App + its Python deps. requirements.txt is the resolved lockfile (regenerate
+# via `uv pip compile pyproject.toml`); the editable install picks up source
+# without re-resolving. The .pth references /app/src — kept at the same path
+# in the runtime stage.
+COPY LICENSE README.md pyproject.toml requirements.txt ./
 COPY src/ ./src/
-COPY tailwind.config.js ./
+RUN pip install --no-cache-dir -r requirements.txt \
+ && pip install --no-cache-dir -e . --no-deps
 
-RUN npx --no-install @tailwindcss/cli \
+# Tailwind production bundle: scans templates + static JS for class names,
+# emits a minified CSS file shipped at /static/dist/app.css.
+COPY package.json package-lock.json tailwind.config.js ./
+RUN npm ci --no-audit --no-fund \
+ && ./node_modules/.bin/tailwindcss \
         -i src/qobuz_fetch/web/static/src/app.css \
         -o src/qobuz_fetch/web/static/dist/app.css \
         --minify
 
-RUN pip install --no-cache-dir -e .
-
 # ── Runtime ───────────────────────────────────────────────────────────────────
+# No git, no compilers, no pip caches — just the venv + ffmpeg + tiny helpers.
 FROM python:3.12-slim AS runtime
 
 LABEL org.opencontainers.image.title="Qobuz Librarian"
-LABEL org.opencontainers.image.description="Qobuz downloader and library manager."
-LABEL org.opencontainers.image.licenses="MIT"
+LABEL org.opencontainers.image.description="Qobuz downloader + library maintenance (CLI + web UI)"
 LABEL org.opencontainers.image.source="https://github.com/jarynclouatre/qobuz-librarian"
+LABEL org.opencontainers.image.licenses="MIT"
 
+# ffmpeg: rip/compress (runtime). gosu: clean PUID/PGID drop.
+# procps: ps/top for operators debugging from inside the container.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ffmpeg \
         gosu \
         procps \
     && rm -rf /var/lib/apt/lists/*
 
-RUN groupadd -g 1000 appuser && useradd -u 1000 -g 1000 -m -s /bin/bash appuser
-
 ENV VIRTUAL_ENV=/opt/venv
 ENV PATH="$VIRTUAL_ENV/bin:$PATH"
-ENV QF_IN_CONTAINER=1
 
-COPY --chown=appuser:appuser --from=builder /opt/venv /opt/venv
-COPY --chown=appuser:appuser --from=builder /app/src /app/src
-COPY --chown=appuser:appuser --from=builder /app/pyproject.toml /app/LICENSE /app/README.md /app/
+# Dedicated unprivileged user for the app. The entrypoint stays root-capable
+# so it can chown PUID/PGID-owned mount points on first run, then drops to
+# this uid (or the user-supplied PUID:PGID) via gosu.
+RUN groupadd -g 1000 appuser \
+ && useradd -u 1000 -g 1000 -m -s /bin/bash appuser
+
+COPY --from=builder --chown=appuser:appuser /opt/venv /opt/venv
 
 WORKDIR /app
 
-COPY --chown=appuser:appuser docker/streamrip-default.toml /app/docker/streamrip-default.toml
+# Bundled scripts ship next to /app (discovered by a parent-walk probe).
+COPY --chown=appuser:appuser scripts/lyric_fetch.py ./lyric_fetch.py
+COPY --chown=appuser:appuser scripts/compress.py    ./compress.py
+
+# Source kept at /app/src so the editable install from the builder resolves.
+COPY --chown=appuser:appuser pyproject.toml ./
+COPY --chown=appuser:appuser src/ ./src/
+
+# Tailwind CSS bundle built in the builder stage.
+COPY --from=builder --chown=appuser:appuser \
+     /app/src/qobuz_fetch/web/static/dist/ \
+     /app/src/qobuz_fetch/web/static/dist/
+
+# Default config templates (entrypoint seeds them into /config).
 COPY --chown=appuser:appuser docker/beets-default.yaml /app/docker/beets-default.yaml
+COPY --chown=appuser:appuser docker/streamrip-default.toml /app/docker/streamrip-default.toml
+COPY docker/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
 
 EXPOSE 8666
 
-HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD python -c "import urllib.request, sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8666/healthz', timeout=2).status == 200 else 1)" || exit 1
+# Explicit marker for the `_in_container()` runtime check in cli.py — Docker
+# also creates /.dockerenv, but this also covers Podman/Buildah/rootless.
+ENV QF_IN_CONTAINER=1
 
-COPY docker/entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh
+# Lets `docker compose ps` / orchestrators detect a wedged container.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+    CMD python -c "import urllib.request,os; urllib.request.urlopen('http://localhost:' + os.environ.get('WEB_PORT','8666') + '/healthz')" || exit 1
 
 ENTRYPOINT ["/entrypoint.sh"]
 CMD ["web"]

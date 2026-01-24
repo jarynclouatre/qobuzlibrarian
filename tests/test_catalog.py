@@ -326,3 +326,59 @@ class TestFindExpandedEdition:
         # cand_b is 24-bit.
         ids = [r[0]["id"] for r in results]
         assert ids[0] == "cand_a", "fewer extras must win regardless of quality"
+
+
+class TestPredictedAlbumPathsCoversBeetsPathTemplates:
+    # Users can change the beets `paths.default` template. The scanner's
+    # fast-path needs to match common forms or the whole library will
+    # surface as "missing" after a format change.
+
+    def test_includes_trailing_paren_and_bracket_year(self, monkeypatch):
+        from qobuz_fetch import config as cfg
+        from qobuz_fetch.library.catalog import predicted_album_paths
+        monkeypatch.setattr(cfg, "MUSIC_ROOT", __import__("pathlib").Path("/music"))
+        monkeypatch.setattr(
+            "qobuz_fetch.library.catalog._find_multi_artist_dirs",
+            lambda *a, **k: [],
+        )
+
+        album = {
+            "title": "Hunky Dory",
+            "artist": {"name": "David Bowie"},
+            "release_date_original": "1971-12-17",
+        }
+        paths = [str(p) for p in predicted_album_paths(album)]
+        assert "/music/David Bowie/Hunky Dory (1971)" in paths
+        assert "/music/David Bowie/[1971] Hunky Dory" in paths
+        assert "/music/David Bowie/1971 - Hunky Dory" in paths
+        assert "/music/David Bowie/Hunky Dory" in paths
+
+
+class TestPrimaryArtistOf:
+    # Multi-artist migration needs the FIRST artist no matter which form
+    # Qobuz returns ("Jay Z, Kanye West" vs "Jay Z and Kanye West" for
+    # the same album) so the migration target matches the on-disk folder.
+
+    def test_handles_comma_space(self):
+        from qobuz_fetch.library.catalog import _primary_artist_of
+        assert _primary_artist_of("Jay Z, Kanye West") == "Jay Z"
+
+    def test_handles_and(self):
+        from qobuz_fetch.library.catalog import _primary_artist_of
+        assert _primary_artist_of("Jay Z and Kanye West") == "Jay Z"
+
+    def test_handles_ampersand(self):
+        from qobuz_fetch.library.catalog import _primary_artist_of
+        assert _primary_artist_of("Daft Punk & The Weeknd") == "Daft Punk"
+
+    def test_handles_feat(self):
+        from qobuz_fetch.library.catalog import _primary_artist_of
+        assert _primary_artist_of("Bruno Mars feat. Cardi B") == "Bruno Mars"
+
+    def test_single_artist_unchanged(self):
+        from qobuz_fetch.library.catalog import _primary_artist_of
+        assert _primary_artist_of("Daft Punk") == "Daft Punk"
+
+    def test_empty_returns_empty(self):
+        from qobuz_fetch.library.catalog import _primary_artist_of
+        assert _primary_artist_of("") == ""

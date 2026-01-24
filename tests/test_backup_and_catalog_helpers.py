@@ -16,6 +16,7 @@ from qobuz_fetch.library.backup import (
 from qobuz_fetch.library.catalog import (
     _MERGE_MAX_DEPTH,
     _merge_album_dirs,
+    _sync_beets_db_after_move,
     cleanup_duplicate_art,
     maybe_remove_empty_dir,
 )
@@ -351,6 +352,104 @@ class TestMergeAlbumDirs:
         # dst must still exist even though the move failed
         assert dst_file.exists()
         assert dst_file.read_bytes() == b"dst-audio"
+
+
+class TestSearchLimitsRouteThroughConfig:
+    """Literal `limit=N` overrides at internal call sites silently bypass
+    the config knob. Every internal search call must route through
+    cfg.ARTIST_LOOKUP_LIMIT or cfg.CATALOG_SEARCH_LIMIT so an operator
+    can actually tune search depth."""
+
+    def test_no_literal_search_limits_in_internal_callsites(self):
+        import re
+        files = [
+            "src/qobuz_fetch/library/catalog.py",
+            "src/qobuz_fetch/modes/artist.py",
+            "src/qobuz_fetch/quality/decision.py",
+            "src/qobuz_fetch/web/flows.py",
+        ]
+        bad = []
+        # Matches: search_albums(..., limit=10) / search_artists(..., limit=5)
+        pat = re.compile(r"search_(albums|artists|tracks)\([^)]*limit=\d+")
+        root = Path(__file__).resolve().parents[1]
+        for f in files:
+            for ln, line in enumerate((root / f).read_text().splitlines(), 1):
+                if pat.search(line):
+                    bad.append(f"{f}:{ln}: {line.strip()}")
+        assert not bad, (
+            "internal callers must use cfg.ARTIST_LOOKUP_LIMIT / "
+            "cfg.CATALOG_SEARCH_LIMIT, not literal limit=N:\n  "
+            + "\n  ".join(bad))
+
+
+class TestSyncBeetsDBAfterMove:
+    """The multi-artist migration shutil-moves an album folder; beets's DB
+    needs the items.path column updated to match or `beet update` will
+    mark every track as deleted."""
+
+    def _setup(self, tmp_path, monkeypatch, rows):
+        import sqlite3
+        music_root = tmp_path / "music"
+        music_root.mkdir()
+        db = tmp_path / "beets.db"
+        with sqlite3.connect(str(db)) as conn:
+            conn.execute("CREATE TABLE items (id INTEGER PRIMARY KEY, path BLOB)")
+            for i, p in enumerate(rows, 1):
+                conn.execute("INSERT INTO items (id, path) VALUES (?, ?)", (i, p))
+            conn.commit()
+        monkeypatch.setattr("qobuz_fetch.library.catalog.config.BEETS_DB_PATH", str(db))
+        monkeypatch.setattr("qobuz_fetch.library.catalog.config.MUSIC_ROOT", music_root)
+        return music_root, db
+
+    def _read(self, db):
+        import sqlite3
+        with sqlite3.connect(str(db)) as conn:
+            return [r[0] for r in conn.execute("SELECT path FROM items ORDER BY id")]
+
+    def test_replaces_old_prefix_with_new(self, tmp_path, monkeypatch):
+        music_root, db = self._setup(tmp_path, monkeypatch, [
+            b"Atlas & Oracle, Foxing Day/Christmas Treat (2023)/01 - track.flac",
+            b"Atlas & Oracle, Foxing Day/Christmas Treat (2023)/02 - other.flac",
+        ])
+        old = music_root / "Atlas & Oracle, Foxing Day" / "Christmas Treat (2023)"
+        new = music_root / "Atlas & Oracle" / "Christmas Treat (2023)"
+        # Create the new dir so `resolve()` works.
+        old.mkdir(parents=True)
+        new.mkdir(parents=True)
+        _sync_beets_db_after_move(old, new)
+        rows = self._read(db)
+        assert rows == [
+            b"Atlas & Oracle/Christmas Treat (2023)/01 - track.flac",
+            b"Atlas & Oracle/Christmas Treat (2023)/02 - other.flac",
+        ]
+
+    def test_unrelated_paths_unchanged(self, tmp_path, monkeypatch):
+        music_root, db = self._setup(tmp_path, monkeypatch, [
+            b"Atlas & Oracle, Foxing Day/Christmas Treat (2023)/01 - track.flac",
+            b"The Beatles/Abbey Road (1969)/01 - Come Together.flac",
+        ])
+        old = music_root / "Atlas & Oracle, Foxing Day" / "Christmas Treat (2023)"
+        new = music_root / "Atlas & Oracle" / "Christmas Treat (2023)"
+        old.mkdir(parents=True)
+        new.mkdir(parents=True)
+        _sync_beets_db_after_move(old, new)
+        rows = self._read(db)
+        # Beatles row must stay intact.
+        assert b"The Beatles/Abbey Road (1969)/01 - Come Together.flac" in rows
+
+    def test_no_db_file_is_silent_noop(self, tmp_path, monkeypatch):
+        music_root = tmp_path / "music"
+        music_root.mkdir()
+        monkeypatch.setattr(
+            "qobuz_fetch.library.catalog.config.BEETS_DB_PATH",
+            str(tmp_path / "nonexistent.db"))
+        monkeypatch.setattr("qobuz_fetch.library.catalog.config.MUSIC_ROOT", music_root)
+        old = music_root / "old"
+        new = music_root / "new"
+        old.mkdir()
+        new.mkdir()
+        # Must not raise.
+        _sync_beets_db_after_move(old, new)
 
 
 class TestMatchSiblingTrack:

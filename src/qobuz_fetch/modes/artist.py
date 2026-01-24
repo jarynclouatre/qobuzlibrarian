@@ -162,7 +162,7 @@ def run_artist_gap_fill(artist_name, artist_dir, args, token, *,
     catalog = []
     vlog("  Resolving artist + pre-fetching catalog …")
     try:
-        artists = search_artists(artist_name, token, limit=5)
+        artists = search_artists(artist_name, token, limit=cfg.ARTIST_LOOKUP_LIMIT)
     except QobuzError as e:
         log.info(fmt(C.YELLOW, f"  ⚠  artist/search failed ({e}); per-folder fallback."))
         artists = []
@@ -551,7 +551,7 @@ def run_artist_missing_albums(artist_name, owned_bare_titles, args, token,
     if artist_id is None:
         log.info(fmt(C.GRAY, "  Looking up artist on Qobuz …"))
         try:
-            artists = search_artists(artist_name, token, limit=5)
+            artists = search_artists(artist_name, token, limit=cfg.ARTIST_LOOKUP_LIMIT)
         except QobuzError as e:
             log.info(fmt(C.YELLOW, f"  ⚠  Qobuz artist search failed: {e}."))
             return 0

@@ -21,6 +21,27 @@ from qobuz_fetch.quality.tiers import (
 )
 
 
+@pytest.fixture
+def fresh_quality_cap():
+    """Reset the streamrip cap cache so tests that read it see config, not
+    state leaked from a previous case. Previous shape used setup_method /
+    teardown_method which hid this precondition inside three classes."""
+    import qobuz_fetch.quality.tiers as tiers_mod
+    tiers_mod._streamrip_cap_cache = None
+    yield
+    tiers_mod._streamrip_cap_cache = None
+
+
+@pytest.fixture
+def primed_quality_cap_24_192():
+    """Seed the cap cache with (24, 192000) so album_max_quality tests
+    can exercise the cap logic without dragging in a streamrip subprocess."""
+    import qobuz_fetch.quality.tiers as tiers_mod
+    tiers_mod._streamrip_cap_cache = (24, 192000)
+    yield
+    tiers_mod._streamrip_cap_cache = None
+
+
 class TestFormatQuality:
     def test_normal_cd(self):
         assert format_quality(16, 44100) == "16/44.1"
@@ -32,15 +53,8 @@ class TestFormatQuality:
         assert format_quality(0, 44100) == "?"
 
 
+@pytest.mark.usefixtures("fresh_quality_cap")
 class TestStreamripQualityCap:
-    def setup_method(self):
-        import qobuz_fetch.quality.tiers as tiers_mod
-        tiers_mod._streamrip_cap_cache = None
-
-    def teardown_method(self):
-        import qobuz_fetch.quality.tiers as tiers_mod
-        tiers_mod._streamrip_cap_cache = None
-
     @pytest.mark.parametrize("quality,expected", [
         (4, (24, 192000)),
         ("3", (24, 96000)),
@@ -57,14 +71,8 @@ class TestStreamripQualityCap:
         assert first == second == (24, 96000)
 
 
+@pytest.mark.usefixtures("primed_quality_cap_24_192")
 class TestAlbumMaxQuality:
-    def setup_method(self):
-        import qobuz_fetch.quality.tiers as tiers_mod
-        tiers_mod._streamrip_cap_cache = (24, 192000)
-
-    def teardown_method(self):
-        import qobuz_fetch.quality.tiers as tiers_mod
-        tiers_mod._streamrip_cap_cache = None
 
     def test_khz_input_converted_to_hz(self):
         album = {"maximum_bit_depth": 24, "maximum_sampling_rate": 96.0}
@@ -84,14 +92,8 @@ class TestExistingTrackQuality:
         assert existing_track_quality({"bits": 24, "sample_rate": 96000}) == (24, 96000)
 
 
+@pytest.mark.usefixtures("primed_quality_cap_24_192")
 class TestCompareAlbumQuality:
-    def setup_method(self):
-        import qobuz_fetch.quality.tiers as tiers_mod
-        tiers_mod._streamrip_cap_cache = (24, 192000)
-
-    def teardown_method(self):
-        import qobuz_fetch.quality.tiers as tiers_mod
-        tiers_mod._streamrip_cap_cache = None
 
     def _qalbum(self, bd=24, sr=96.0):
         return {"maximum_bit_depth": bd, "maximum_sampling_rate": sr}
@@ -112,13 +114,13 @@ class TestCompareAlbumQuality:
 
 
 class TestTrackQualityCmp:
-    def test_higher_returns_1(self):
+    def test_higher_quality_wins(self):
         assert _track_quality_cmp(
             {"bits": 24, "sample_rate": 96000},
             {"bits": 16, "sample_rate": 44100},
         ) == 1
 
-    def test_equal_returns_0(self):
+    def test_equal_quality_is_a_tie(self):
         assert _track_quality_cmp(
             {"bits": 24, "sample_rate": 96000},
             {"bits": 24, "sample_rate": 96000},

@@ -6,7 +6,15 @@ BEETS_DIR="$CONFIG_DIR/beets"
 STREAMRIP_DIR="$CONFIG_DIR/streamrip"
 
 # ── First-run bootstrap ───────────────────────────────────────────────────────
-mkdir -p "$BEETS_DIR" "$STREAMRIP_DIR" /staging /music /data /upgrade_backups
+# /staging /music /data /upgrade_backups are normally mounted volumes — the
+# mkdir is a no-op when they exist. With --read-only and a missing mount,
+# `mkdir -p` would fail under `set -e`; warn instead so the writability
+# diagnostics below can run and surface the real problem to the user.
+mkdir -p "$BEETS_DIR" "$STREAMRIP_DIR"
+for d in /staging /music /data /upgrade_backups; do
+    [ -d "$d" ] || mkdir -p "$d" 2>/dev/null || \
+        echo "[warn] couldn't create $d — add a mount, or remove --read-only on the rootfs." >&2
+done
 
 if [ ! -f "$BEETS_DIR/config.yaml" ]; then
     echo "[init] Creating default beets config at $BEETS_DIR/config.yaml"
@@ -19,6 +27,11 @@ if [ ! -f "$STREAMRIP_DIR/config.toml" ]; then
 fi
 
 export STREAMRIP_CONFIG="$STREAMRIP_DIR/config.toml"
+# So `docker exec qobuz-librarian beet …` finds the real config + DB
+# instead of falling back to ~/.config/beets/ (which is empty inside the
+# container). The app reads BEETS_CONFIG_DIR/BEETS_DB_PATH itself; this
+# is purely for ad-hoc CLI use.
+export BEETSDIR="$BEETS_DIR"
 
 # ── Optional privilege drop (NAS-friendly) ────────────────────────────────────
 # Set PUID/PGID to the owner of your media share so downloaded/imported
@@ -60,8 +73,11 @@ run() {
         exec "$@"
     else
         # gosu resets HOME to the user's passwd entry (or / for unknown UIDs).
-        # Pass HOME=/tmp explicitly so rip/streamrip don't try to write to /.config.
-        exec gosu "$APP_USER" env HOME=/tmp "$@"
+        # Pass HOME explicitly so rip/streamrip don't try to write to /.config
+        # on a read-only rootfs. APP_HOME is overridable for users running
+        # --read-only with a custom tmpfs target (e.g. /var/tmp instead of
+        # /tmp); /tmp is the default because every plain docker run has one.
+        exec gosu "$APP_USER" env HOME="${APP_HOME:-/tmp}" "$@"
     fi
 }
 

@@ -32,7 +32,7 @@
                 hx-swap="innerHTML"
                 hx-disabled-elt="find button[type=submit]"
                 hx-confirm='Download "{{ r.title }}" by {{ r.artist }} ({{ r.tracks }} tracks)?'
-                hx-on::after-request="if(event.detail.successful){var b=this.querySelector('button[type=submit]');b.disabled=true;b.textContent='Queued';b.classList.remove('btn-primary');b.classList.add('btn-ghost','btn-disabled')}">
+                data-queue-button>
             <input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}">
             <input type="hidden" name="album_id" value="{{ r.id }}">
             <button type="submit" class="btn btn-sm btn-primary">

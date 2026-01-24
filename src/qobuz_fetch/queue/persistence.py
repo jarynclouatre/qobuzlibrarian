@@ -161,7 +161,7 @@ def offer_resume_pending_queue(args, token):
                     log.info(fmt(C.GREEN, "  ✓ Resume complete; pending file cleared."))
                 else:
                     log.info(fmt(C.YELLOW,
-                        f"  ⚠  Beets import did not succeed — pending file "
+                        f"  ⚠  beets import did not succeed — pending file "
                         f"kept for next launch ({len(items)} album(s) still queued)."))
             except KeyboardInterrupt:
                 log.info(fmt(C.YELLOW,

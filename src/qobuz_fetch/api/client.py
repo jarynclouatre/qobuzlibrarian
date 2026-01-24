@@ -18,9 +18,18 @@ from qobuz_fetch.api.auth import AuthLost, QobuzError
 from qobuz_fetch.ui_cli.colors import C, fmt
 from qobuz_fetch.ui_cli.logging import log, vlog
 
+
 # ── Session ───────────────────────────────────────────────────────────────────
+def _ua_string() -> str:
+    try:
+        from importlib.metadata import version as _pkg_version
+        return f"qobuz-librarian/{_pkg_version('qobuz-librarian')} (+streamrip-companion)"
+    except Exception:
+        return "qobuz-librarian (+streamrip-companion)"
+
+
 _session = requests.Session()
-_session.headers.update({"User-Agent": "qobuz-librarian/0.1 (+streamrip-companion)"})
+_session.headers.update({"User-Agent": _ua_string()})
 # requests.Session shares state (urllib3 pool, cookie jar, adapter caches)
 # across threads. The web app fans calls out via run_in_executor + sync route
 # handlers, so concurrent gets are real. Serialize the call to keep that
@@ -31,8 +40,12 @@ _session_lock = threading.Lock()
 # backoff capped at 8s — long enough to outwait a typical Qobuz hiccup, short
 # enough that a sustained outage still fails the call quickly. Honors a
 # Retry-After header if Qobuz sends one. 401/403/404 do NOT retry.
-_REQUEST_TIMEOUT = 10  # seconds — kept below the web's asyncio.wait_for budget
-# so a cancelled awaiter doesn't leak the executor thread for the full window.
+#
+# _REQUEST_TIMEOUT must stay below WEB_FETCH_TIMEOUT so a cancelled
+# asyncio.wait_for awaiter doesn't leak the executor thread for the full
+# window. Derive from config rather than risking drift between two
+# independently-tuned literals.
+_REQUEST_TIMEOUT = max(2, int(config.WEB_FETCH_TIMEOUT) - 2)
 _RETRY_STATUSES  = (429, 500, 502, 503, 504)
 _MAX_ATTEMPTS    = 3
 

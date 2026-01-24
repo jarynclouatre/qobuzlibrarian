@@ -228,7 +228,7 @@ def scan_artist_for_upgrades(artist_name, artist_dir, token, args, capped=None):
     # Failure here is non-fatal; find_qobuz_album_for_dir falls back to search.
     catalog = []
     try:
-        artists = search_artists(artist_name, token, limit=5)
+        artists = search_artists(artist_name, token, limit=cfg.ARTIST_LOOKUP_LIMIT)
         if artists:
             best_a = max(artists, key=lambda a: similarity(a.get("name", ""), artist_name))
             if similarity(best_a.get("name", ""), artist_name) >= cfg.ARTIST_NAME_THRESH:

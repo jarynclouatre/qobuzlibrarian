@@ -67,6 +67,20 @@ class TestValidateToken:
             assert validate_token("good_token") is None
 
 
+class TestUserAgent:
+    def test_user_agent_carries_installed_package_version(self):
+        """The session UA must reflect the running build, not a hard-coded
+        version string — otherwise the UA silently lies after a bump."""
+        from importlib.metadata import version
+
+        from qobuz_fetch.api.client import _session
+
+        ua = _session.headers["User-Agent"]
+        installed = version("qobuz-librarian")
+        assert installed in ua, f"UA {ua!r} doesn't mention installed version {installed!r}"
+        assert "qobuz-librarian" in ua
+
+
 class TestConcurrentAccess:
     def test_concurrent_calls_serialize_through_lock(self):
         """The shared requests.Session is wrapped in a lock so the web app's

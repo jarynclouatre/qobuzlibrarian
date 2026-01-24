@@ -504,7 +504,7 @@ def prompt_artist_name():
             for d in artists[:50]:
                 log.info(fmt(C.GRAY, f"    • {d.name}"))
             if len(artists) > 50:
-                log.info(fmt(C.GRAY, f"    ... and {len(artists) - 50} more"))
+                log.info(fmt(C.GRAY, f"    … and {len(artists) - 50} more"))
             continue
         return name
 
@@ -559,6 +559,6 @@ def print_album_summary(album, missing, present, album_dir, force, auto_upgrade=
             n = t.get("track_number") or "?"
             log.info(f"     {n:>2}.  {truncate(t.get('title') or '?', 60)}")
         if len(missing) > 25:
-            log.info(fmt(C.GRAY, f"     ... and {len(missing) - 25} more"))
+            log.info(fmt(C.GRAY, f"     … and {len(missing) - 25} more"))
 
 

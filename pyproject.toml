@@ -1,3 +1,6 @@
+# Regenerate lockfiles after touching dependencies:
+#   uv pip compile pyproject.toml -o requirements.txt
+#   uv pip compile pyproject.toml --extra test -o requirements-test.txt
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
@@ -5,30 +8,74 @@ build-backend = "hatchling.build"
 [project]
 name = "qobuz-librarian"
 version = "0.1.0"
-description = "Qobuz library manager"
+description = "Qobuz Librarian — album/artist downloader and music-library maintenance tool"
 readme = "README.md"
 license = { file = "LICENSE" }
 requires-python = ">=3.12"
+keywords = ["qobuz", "music", "downloader", "beets", "library", "flac", "streamrip"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Environment :: Web Environment",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Multimedia :: Sound/Audio",
+]
 dependencies = [
-    "requests>=2.31",
     "mutagen>=1.47",
-    "tomlkit>=0.12",
-    "syncedlyrics>=0.4",
+    "requests>=2.31",
+    # Web UI
     "fastapi>=0.111",
     "uvicorn[standard]>=0.29",
     "jinja2>=3.1",
     "python-multipart>=0.0.9",
     "aiofiles>=23.0",
+    # Config file writing
+    "tomlkit>=0.12",
 ]
+
+[project.urls]
+Homepage      = "https://github.com/jarynclouatre/qobuz-librarian"
+Issues        = "https://github.com/jarynclouatre/qobuz-librarian/issues"
+Repository    = "https://github.com/jarynclouatre/qobuz-librarian"
 
 [project.optional-dependencies]
-test = [
-    "pytest>=7",
-    "httpx>=0.27",
-]
+# Available when installed in dev environment with extras
+lyrics = ["syncedlyrics>=0.4"]
+# Test-only deps (httpx powers FastAPI's TestClient). Not shipped in the image.
+test = ["pytest>=7", "httpx>=0.27"]
 
 [project.scripts]
-qobuz-librarian = "qobuz_fetch.cli:main"
+qobuz-librarian = "qobuz_fetch.cli:_entry"
+qobuz-librarian-web = "qobuz_fetch.web.app:start"
 
 [tool.hatch.build.targets.wheel]
+# Distribution is "qobuz-librarian" but the import package stays qobuz_fetch.
 packages = ["src/qobuz_fetch"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+# Default selection plus pyflakes; intentionally relaxed to keep the
+# lint job a smoke test, not a style police.
+select = ["E", "F", "W", "I"]
+ignore = [
+    "E501",  # line length — handled by formatter, not lint
+    "E701",  # multi-statement on one line (used for terse if-guards)
+    "E731",  # lambda assignment
+    "E741",  # ambiguous variable name (e.g. `l` in tight one-liners)
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests pull in patches/fixtures whose imports are used by `with patch(...)`
+# blocks; ruff can't always see those uses.
+"tests/*" = ["F401"]
