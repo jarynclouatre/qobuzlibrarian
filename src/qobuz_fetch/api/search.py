@@ -12,22 +12,72 @@ a user's file with the wrong recording.
 from qobuz_fetch import config
 from qobuz_fetch.api.auth import QobuzError
 from qobuz_fetch.api.client import qobuz_get
+from qobuz_fetch.library.tags import clean_qobuz_string
+
+
+def _normalize_album_fields(album):
+    """Trim surrounding whitespace and outer quotes from text fields in a
+    Qobuz album dict. Mutates and returns the dict.
+
+    Applied at every API boundary that returns albums (search_albums,
+    get_album, search_tracks via embedded album, get_artist_albums) so
+    downstream code never has to remember to clean again.
+    """
+    if not isinstance(album, dict):
+        return album
+    if "title" in album:
+        album["title"] = clean_qobuz_string(album.get("title"))
+    artist = album.get("artist")
+    if isinstance(artist, dict) and "name" in artist:
+        artist["name"] = clean_qobuz_string(artist.get("name"))
+    tracks_block = album.get("tracks")
+    if isinstance(tracks_block, dict):
+        items = tracks_block.get("items")
+        if isinstance(items, list):
+            for t in items:
+                _normalize_track_fields(t)
+    return album
+
+
+def _normalize_track_fields(track):
+    """Trim surrounding whitespace and outer quotes from a track dict's
+    user-visible text fields. Mutates and returns the dict."""
+    if not isinstance(track, dict):
+        return track
+    if "title" in track:
+        track["title"] = clean_qobuz_string(track.get("title"))
+    if "album_artist" in track:
+        track["album_artist"] = clean_qobuz_string(track.get("album_artist"))
+    if "version" in track and track.get("version"):
+        track["version"] = clean_qobuz_string(track.get("version"))
+    inner_album = track.get("album")
+    if isinstance(inner_album, dict):
+        _normalize_album_fields(inner_album)
+    return track
 
 
 # ── Album / artist / track search ─────────────────────────────────────────────
 def search_albums(query, token, limit=None):
     limit = limit if limit is not None else config.SEARCH_LIMIT
     data = qobuz_get("album/search", {"query": query, "limit": limit}, token)
-    return (data.get("albums") or {}).get("items") or []
+    items = (data.get("albums") or {}).get("items") or []
+    for a in items:
+        _normalize_album_fields(a)
+    return items
 
 
 def search_artists(query, token, limit=10):
     data = qobuz_get("artist/search", {"query": query, "limit": limit}, token)
-    return (data.get("artists") or {}).get("items") or []
+    items = (data.get("artists") or {}).get("items") or []
+    for a in items:
+        if isinstance(a, dict) and "name" in a:
+            a["name"] = clean_qobuz_string(a.get("name"))
+    return items
 
 
 def get_album(album_id, token):
-    return qobuz_get("album/get", {"album_id": album_id, "extra": "track_ids"}, token)
+    album = qobuz_get("album/get", {"album_id": album_id, "extra": "track_ids"}, token)
+    return _normalize_album_fields(album)
 
 
 def search_tracks(query, token, limit=10):
@@ -40,7 +90,10 @@ def search_tracks(query, token, limit=10):
     edition guessing.
     """
     data = qobuz_get("track/search", {"query": query, "limit": limit}, token)
-    return (data.get("tracks") or {}).get("items") or []
+    items = (data.get("tracks") or {}).get("items") or []
+    for t in items:
+        _normalize_track_fields(t)
+    return items
 
 
 # ── ISRC lookup — STRICT equality (replacing the wrong recording is silent data loss) ────
@@ -99,6 +152,8 @@ def get_artist_albums(artist_id, token, limit=None):
                 qobuz_total = t
         if not block:
             break
+        for a in block:
+            _normalize_album_fields(a)
         items.extend(block)
         offset += len(block)
         # Short page = end of data on Qobuz's side; stop early.

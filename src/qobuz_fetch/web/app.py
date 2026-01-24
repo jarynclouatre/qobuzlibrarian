@@ -6,7 +6,7 @@ import urllib.parse
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, Form, Query, Request
+from fastapi import FastAPI, Form, HTTPException, Query, Request
 from fastapi.responses import (
     FileResponse,
     HTMLResponse,
@@ -243,6 +243,23 @@ async def healthz():
     return JSONResponse({"ok": True})
 
 
+@app.head("/healthz")
+async def healthz_head():
+    """Uptime monitors HEAD before GET — return a body-less 200 so they
+    don't mark the service down on a 405."""
+    return Response(status_code=200)
+
+
+@app.head("/queue")
+async def queue_head():
+    return Response(status_code=200)
+
+
+@app.head("/settings")
+async def settings_head():
+    return Response(status_code=200)
+
+
 def _tr(request, name, context):
     """TemplateResponse wrapper for Starlette 1.0+ signature.
 
@@ -447,7 +464,8 @@ async def do_search(request: Request, q: str = Form("", max_length=500)):
 
 
 @app.post("/download", response_class=HTMLResponse)
-async def queue_download(request: Request, album_id: str = Form(...)):
+async def queue_download(request: Request, album_id: str = Form(""),
+                         force: str = Form("")):
     busy = _lock_busy_response(request)
     if busy is not None:
         return busy
@@ -470,16 +488,42 @@ async def queue_download(request: Request, album_id: str = Form(...)):
                 f'<div class="alert alert-warning">Already queued — '
                 f'<a href="/jobs/{existing.id}" class="link">view job</a>.</div>')
         return RedirectResponse(url=f"/jobs/{existing.id}", status_code=303)
+    force_redownload = str(force).strip().lower() in ("1", "true", "yes", "on")
     try:
         token = _get_token()
         from qobuz_fetch.api.search import get_album
         album = get_album(album_id, token)
+        if not force_redownload:
+            from qobuz_fetch.library.catalog import (
+                find_album_dir_filesystem,
+                find_existing_tracks,
+            )
+            try:
+                album_dir = find_album_dir_filesystem(album)
+            except Exception:
+                album_dir = None
+            if album_dir is not None:
+                try:
+                    existing_tracks, _ = find_existing_tracks(album)
+                except Exception:
+                    existing_tracks = []
+                if existing_tracks:
+                    msg = ("This album is already in your library — "
+                           "no need to download it again.")
+                    if _is_htmx(request):
+                        return HTMLResponse(
+                            f'<div class="alert alert-warning">{html.escape(msg)} '
+                            f'<a href="/" class="link">Open library</a>.</div>')
+                    return RedirectResponse(
+                        url="/queue?error=" + urllib.parse.quote(msg),
+                        status_code=303)
         title  = album.get("title") or "?"
         artist = (album.get("artist") or {}).get("name") or "?"
         job = job_mgr.Job(title=title, artist=artist, album_id=album_id)
 
         def run(j):
             from qobuz_fetch.modes.process import process_album
+            from qobuz_fetch.ui_cli.errors import plural
             from qobuz_fetch.web.flows import build_args
             r = process_album(album, build_args(), allow_force=False,
                               already_confirmed=True, token=token) or {}
@@ -487,9 +531,13 @@ async def queue_download(request: Request, album_id: str = Form(...)):
                       "dry_run", "user_skipped", "lossy_only", "no_tracks"}
             if r.get("result") not in benign and not r.get("imported"):
                 j.status = job_mgr.JobStatus.FAILED
-                from qobuz_fetch.ui_cli.errors import plural
                 j.error = (f"{plural(r['n_fail'], 'track')} failed"
                            if r.get("n_fail") else "download or import failed")
+            elif r.get("imported") and r.get("n_fail", 0) > 0:
+                # Album imported but some tracks failed. Status stays
+                # DONE so the folder is reachable; the error surfaces
+                # the count so a green check isn't lying about completeness.
+                j.error = f"{plural(r['n_fail'], 'track')} failed — see job log"
 
         job_mgr.submit(job, run)
         if _is_htmx(request):
@@ -502,11 +550,17 @@ async def queue_download(request: Request, album_id: str = Form(...)):
             return HTMLResponse(f'<div class="alert alert-error">{msg}</div>')
         return RedirectResponse(url="/settings?error=creds", status_code=303)
     except Exception as e:
-        from qobuz_fetch.api.auth import AuthLost, QobuzError
+        from qobuz_fetch.api.auth import AuthLost, QobuzError, friendly_qobuz_error
         if isinstance(e, AuthLost):
             user_msg = "Token is expired or invalid — update it in Settings."
         elif isinstance(e, QobuzError):
-            user_msg = "Couldn't reach the Qobuz API — check the container's network."
+            cleaned = friendly_qobuz_error(e)
+            if cleaned.startswith("HTTP 404"):
+                user_msg = ("No album with that id — check the URL "
+                            "or use Search.")
+            else:
+                user_msg = ("Couldn't reach the Qobuz API — "
+                            "check the container's network.")
         else:
             user_msg = "Couldn't queue download — check your token and try again."
         if _is_htmx(request):
@@ -524,7 +578,7 @@ async def artist_page(request: Request, error: str = ""):
 
 
 @app.post("/artist")
-async def artist_scan(request: Request, artist: str = Form(...)):
+async def artist_scan(request: Request, artist: str = Form("")):
     busy = _lock_busy_response(request)
     if busy is not None:
         return busy
@@ -533,6 +587,12 @@ async def artist_scan(request: Request, artist: str = Form(...)):
         return RedirectResponse(
             url="/artist?error=" + urllib.parse.quote("Artist name is required."),
             status_code=303,
+        )
+    if any(c in name for c in ("<", ">", "\x00")):
+        return RedirectResponse(
+            url="/artist?error=" + urllib.parse.quote(
+                "Artist name contains forbidden characters."),
+            status_code=400,
         )
     try:
         _get_token()
@@ -555,7 +615,7 @@ async def library_page(request: Request):
 
 
 @app.post("/library")
-async def library_scan(request: Request):
+async def library_scan(request: Request, mode: str = Form("missing_albums")):
     busy = _lock_busy_response(request)
     if busy is not None:
         return busy
@@ -564,7 +624,12 @@ async def library_scan(request: Request):
     except (SystemExit, NoCredsError):
         return _no_creds_response(request)
     from qobuz_fetch.web import flows
-    job = job_mgr.Job(title="Library gap scan")
+    mode_norm = (mode or "").strip().lower()
+    if mode_norm == "partial_fill":
+        title = "Library album-fill scan"
+    else:
+        title = "Library gap scan"
+    job = job_mgr.Job(title=title)
     job_mgr.submit_scan(
         job,
         lambda j: flows.scan_library(j, _get_token()),
@@ -684,6 +749,7 @@ async def job_retry(request: Request, job_id: str):
 
         def run(j):
             from qobuz_fetch.modes.process import process_album
+            from qobuz_fetch.ui_cli.errors import plural
             from qobuz_fetch.web.flows import build_args
             r = process_album(album, build_args(), allow_force=False,
                               already_confirmed=True, token=token) or {}
@@ -691,9 +757,13 @@ async def job_retry(request: Request, job_id: str):
                       "dry_run", "user_skipped", "lossy_only", "no_tracks"}
             if r.get("result") not in benign and not r.get("imported"):
                 j.status = job_mgr.JobStatus.FAILED
-                from qobuz_fetch.ui_cli.errors import plural
                 j.error = (f"{plural(r['n_fail'], 'track')} failed"
                            if r.get("n_fail") else "download or import failed")
+            elif r.get("imported") and r.get("n_fail", 0) > 0:
+                # Album imported but some tracks failed. Status stays
+                # DONE so the folder is reachable; the error surfaces
+                # the count so a green check isn't lying about completeness.
+                j.error = f"{plural(r['n_fail'], 'track')} failed — see job log"
 
         job_mgr.submit(new_job, run)
         return RedirectResponse(url=f"/jobs/{new_job.id}", status_code=303)
@@ -894,8 +964,17 @@ async def save_settings(request: Request, user_id: str = Form(""), auth_token: s
 async def save_behavior(request: Request):
     from qobuz_fetch.web import settings_store
     form = await request.form()
-    # Unchecked boxes don't post; absence means False.
-    values = {k: (k in form) for k in settings_store.BEHAVIOR_KEYS}
+    # The real Settings form ships a hidden form_complete=1 marker. When
+    # it's present, every checkbox key is known to be authoritative
+    # (unchecked = absent = False). When it's absent — a scripted partial
+    # POST — only the keys the caller actually sent overwrite; the rest
+    # are left at their current value so a one-field toggle doesn't blow
+    # away the user's other booleans.
+    is_complete = "form_complete" in form
+    if is_complete:
+        values = {k: (k in form) for k in settings_store.BEHAVIOR_KEYS}
+    else:
+        values = {k: True for k in settings_store.BEHAVIOR_KEYS if k in form}
     # Text/enum/list fields: take whatever the form posted; absent =
     # leave unchanged (don't wipe a previously-set value).
     for k in settings_store.TEXT_KEYS:
@@ -931,7 +1010,13 @@ async def test_auth(request: Request):
         return HTMLResponse('<div class="alert alert-error py-2">No Qobuz credentials set — visit Settings.</div>')
     except AuthLost:
         return HTMLResponse('<div class="alert alert-error py-2">Token is expired or invalid.</div>')
-    except QobuzError:
+    except QobuzError as e:
+        from qobuz_fetch.api.auth import friendly_qobuz_error
+        cleaned = friendly_qobuz_error(e)
+        if cleaned.startswith("HTTP 401") or cleaned.startswith("HTTP 400"):
+            return HTMLResponse(
+                '<div class="alert alert-error py-2">Token rejected by Qobuz — '
+                're-grab it from the desktop app\'s Help &rarr; Debug.</div>')
         return HTMLResponse('<div class="alert alert-error py-2">Couldn\'t reach the Qobuz API — check the container\'s network.</div>')
     except Exception:
         import logging as _logging
@@ -942,20 +1027,21 @@ async def test_auth(request: Request):
 
 # Empty 500ms ticks before we emit a `: ping` heartbeat to keep
 # reverse proxies from dropping the EventSource on a quiet scan.
-_SSE_HEARTBEAT_TICKS = 30
+# Defaults from cfg.SSE_HEARTBEAT_TICKS / cfg.SSE_MAX_WORKERS (env-tunable).
+_SSE_HEARTBEAT_TICKS = cfg.SSE_HEARTBEAT_TICKS
 
 # Dedicated thread pool for SSE waits so a long-running scan with many
 # tabs open doesn't starve /search / /download / /api/test-auth on the
 # default executor.
 _SSE_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
-    max_workers=16, thread_name_prefix="sse")
+    max_workers=cfg.SSE_MAX_WORKERS, thread_name_prefix="sse")
 
 
 @app.get("/api/jobs/{job_id}/stream")
 async def job_stream(job_id: str):
     job = job_mgr.registry.get(job_id)
     if not job:
-        return HTMLResponse("Job not found", status_code=404)
+        return JSONResponse({"error": "not found"}, status_code=404)
 
     async def _generator():
         import logging as _logging
@@ -1024,20 +1110,24 @@ def _job_to_dict(job, *, log_tail: int = 50, with_candidates: bool = False):
 
 @app.get("/api/jobs/{job_id}/status")
 async def job_status(job_id: str):
-    from fastapi.responses import JSONResponse
     job = job_mgr.registry.get(job_id)
     if not job:
-        return JSONResponse({"error": "not found"}, status_code=404)
+        raise HTTPException(status_code=404, detail="Job not found")
     return _job_to_dict(job)
 
 
 @app.get("/api/jobs")
 async def jobs_list(status: str = "", limit: int = 50):
     """List jobs as JSON. Optional `status` filter ('pending', 'running',
-    'awaiting_review', 'scanning', 'done', 'failed', 'cancelled').
+    'awaiting_review', 'scanning', 'done', 'failed', 'canceled').
     `limit` caps the response — most recent first."""
     from fastapi.responses import JSONResponse
     wanted = status.strip().lower() or None
+    if wanted is not None:
+        valid = {s.value for s in job_mgr.JobStatus}
+        if wanted not in valid:
+            raise HTTPException(status_code=400,
+                                detail="Unknown status filter")
     matching = []
     with job_mgr.registry._lock:
         ordered = [job_mgr.registry._jobs[i] for i in job_mgr.registry._order

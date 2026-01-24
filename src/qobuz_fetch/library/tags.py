@@ -23,6 +23,33 @@ from functools import lru_cache
 # ── Path sanitization ─────────────────────────────────────────────────────────
 _BEETS_BAD_CHARS_RE = re.compile(r'[\\/<>:"?*|\x00-\x1f]')
 _NORMALIZE_RE       = re.compile(r"[^a-z0-9]+")
+_WHITESPACE_RUN_RE  = re.compile(r"\s+")
+
+
+def clean_qobuz_string(s):
+    """Trim surrounding whitespace, collapse internal whitespace runs, and
+    strip a single pair of matching outer quotes from a Qobuz response field.
+
+    Qobuz titles and artist names occasionally arrive with trailing spaces
+    (e.g. ``"Hunky Dory "``) or wrapped in literal quotes (e.g. ``'"Heroes"'``).
+    Leaving those in place produces folder names like ``Hunky Dory  (1971)/``
+    or ``_Heroes_ (1977)/`` after beets sanitizes the quotes. Normalising at
+    the API response boundary means downstream consumers (process, queue,
+    web, beets) all get the clean form for free.
+
+    Returns the empty string for None or non-string input so callers can rely
+    on a usable str. Matching outer quotes are stripped only when both sides
+    of the string carry them; quoted text inside a longer string is preserved
+    (``the "wall" album`` is left alone).
+    """
+    if not isinstance(s, str):
+        return ""
+    out = _WHITESPACE_RUN_RE.sub(" ", s).strip()
+    if len(out) >= 2:
+        first, last = out[0], out[-1]
+        if (first == '"' and last == '"') or (first == "'" and last == "'"):
+            out = out[1:-1].strip()
+    return out
 
 # Normalized forms of the "Various Artists" placeholder used by Qobuz and
 # many libraries. Matched after normalize() (lowercased, alphanum-only)
@@ -139,6 +166,10 @@ def strip_edition_suffix(title):
 # ── Album-name decoration stripping ──────────────────────────────────────────
 _YEAR_PAREN_RE     = re.compile(r"\s*\([^)]*\d{4}[^)]*\)\s*$")
 _TRAILING_PAREN_RE = re.compile(r"\s*\([^)]*\)\s*$")
+# Leading-year forms from alternate beets path templates, e.g.
+# `[$year] $album/` produces "[1971] Hunky Dory"; `$year - $album/`
+# produces "1971 - Hunky Dory".
+_LEADING_YEAR_RE   = re.compile(r"^\s*(?:\[\s*\d{4}\s*\]|\d{4})\s*[-–—]?\s+")
 
 # Edition keywords to strip from album title suffixes.
 # Deliberately excluded (different products, stay separate):
@@ -185,7 +216,9 @@ def strip_album_decorations(name):
     """
     s = name
     for _ in range(8):
-        new = _YEAR_PAREN_RE.sub("", s).strip()
+        new = _LEADING_YEAR_RE.sub("", s).strip()
+        if new == s:
+            new = _YEAR_PAREN_RE.sub("", s).strip()
         if new == s:
             new = _TRAILING_PAREN_RE.sub("", s).strip()
         if new == s:

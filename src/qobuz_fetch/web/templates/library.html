@@ -15,6 +15,22 @@
 {% if creds_ok %}
 <form action="/library" method="post">
   <input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}">
+  <div class="space-y-2 mb-4">
+    <label class="flex items-start gap-3 cursor-pointer">
+      <input type="radio" name="mode" value="missing_albums" class="radio radio-primary mt-1" checked>
+      <div>
+        <div class="font-medium">Find missing albums</div>
+        <div class="text-sm text-base-content/50">Surface albums you don't have at all.</div>
+      </div>
+    </label>
+    <label class="flex items-start gap-3 cursor-pointer">
+      <input type="radio" name="mode" value="partial_fill" class="radio radio-primary mt-1">
+      <div>
+        <div class="font-medium">Find missing albums and partial-album gaps</div>
+        <div class="text-sm text-base-content/50">Also surface albums where some tracks are missing.</div>
+      </div>
+    </label>
+  </div>
   <button type="submit" class="btn btn-primary">Start library scan</button>
 </form>
 {% else %}

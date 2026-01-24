@@ -1,6 +1,7 @@
 # Contributing
 
-Thanks for taking the time.
+Thanks for taking the time. This file covers filing bugs, suggesting
+features, and submitting PRs.
 
 ## Reporting bugs
 
@@ -31,7 +32,8 @@ are likely out of scope.
 3. Add or update tests. Ours run with `python -m pytest -q` — they don't
    touch the network, beets, or streamrip; everything is mocked. Keep it
    that way.
-4. Run `ruff check src tests --fix` before pushing.
+4. Run `ruff check src tests --fix` before pushing. The `[test]` extras
+   bundle it.
 5. CI (`.github/workflows/test.yml`) runs the same checks on push/PR.
 
 ## Dev notes

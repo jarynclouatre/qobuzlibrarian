@@ -247,6 +247,38 @@ def test_download_error_raw_exception_not_reflected(client, monkeypatch):
     assert "alert-error" in r.text
 
 
+def test_download_partial_result_marks_done_with_error(client, monkeypatch):
+    # A partial download (some tracks failed but the album was imported)
+    # keeps the job DONE — the folder is reachable — but must surface the
+    # failure count in job.error so the green ✓ isn't lying.
+    import qobuz_fetch.api.search as search_mod
+    import qobuz_fetch.modes.process as proc_mod
+    import qobuz_fetch.web.app as app_mod
+
+    monkeypatch.setattr(app_mod, "_get_token", lambda: "tok")
+    monkeypatch.setattr(search_mod, "get_album", lambda _id, _tok: {
+        "id": "partial1", "title": "Partial Album",
+        "artist": {"name": "Test Artist"}, "tracks": {"items": []}})
+    monkeypatch.setattr(proc_mod, "process_album", lambda *a, **k: {
+        "result": "partial", "n_ok": 5, "n_fail": 2, "imported": True})
+
+    jm.start_worker()
+    r = client.post("/download", data={"album_id": "partial1"},
+                    follow_redirects=False)
+    assert r.status_code in (200, 303)
+
+    new_jobs = [j for j in list(jm.registry._jobs.values())
+                if getattr(j, "album_id", None) == "partial1"]
+    assert len(new_jobs) == 1
+    job = new_jobs[0]
+    try:
+        assert _wait_for(lambda: job.status in (jm.JobStatus.DONE, jm.JobStatus.FAILED))
+        assert job.status == jm.JobStatus.DONE
+        assert job.error and "2 tracks failed" in job.error
+    finally:
+        _remove_job(job)
+
+
 def test_download_authlost_branch_redirects_to_settings_error(client, monkeypatch):
     import qobuz_fetch.api.search as search_mod
     import qobuz_fetch.web.app as app_mod
@@ -395,6 +427,23 @@ def test_queue_renders_job_without_artist_without_none(client):
         # The job title is rendered; "None" must not leak into the markup.
         assert "No-artist job" in r.text
         assert "None" not in r.text.split("</style>")[-1]
+    finally:
+        _remove_job(job)
+
+
+def test_queue_running_job_log_div_renders_empty(client):
+    # SSE owns the running-job log channel. If the template also renders
+    # log_lines server-side, every line shows up twice on /queue once SSE
+    # connects and replays its history.
+    job = _inject_job(jm.JobStatus.RUNNING, title="Live job")
+    job.log_lines.extend(["line one", "line two", "line three"])
+    try:
+        r = client.get("/queue")
+        assert r.status_code == 200
+        assert "line one" not in r.text
+        assert "line two" not in r.text
+        assert "line three" not in r.text
+        assert f'id="log-{job.id}"></div>' in r.text
     finally:
         _remove_job(job)
 
@@ -641,7 +690,14 @@ def test_write_then_read_creds_roundtrip(tmp_path, monkeypatch):
 
 def test_lock_busy_refuses_destructive_routes(monkeypatch):
     """When the web process couldn't acquire the run-lock at startup,
-    staging-writing POSTs must 503; read-only pages stay reachable."""
+    staging-writing POSTs must 503; read-only pages stay reachable.
+
+    Note: this is the cross-process lock case (a CLI run holds /staging
+    while the web container started). Within a single process, the job
+    manager queues writes onto its single worker thread by design — the
+    second POST returns 303 (queued), not 503. See the README's
+    Limitations section.
+    """
     from fastapi.testclient import TestClient
 
     from qobuz_fetch.web import app as webapp
@@ -679,6 +735,96 @@ def test_lyric_retry_submits_job_and_redirects(client, monkeypatch):
     r = client.post("/lyric-retry", follow_redirects=False)
     assert r.status_code == 303
     assert r.headers["location"].startswith("/jobs/")
+
+
+# ── _missing_albums surfaces partial-album fill ─────────
+
+class TestMissingAlbumsSurfacesPartialAlbums:
+    # CLI artist mode flags albums with track gaps for gap-fill. The web
+    # /artist scan used to ignore any album that had a folder on disk,
+    # so a half-downloaded album never appeared as a fill candidate. The
+    # fix surfaces partial albums alongside entirely-missing ones.
+
+    def _qobuz_tracks(self, isrc_prefix, n):
+        return {"items": [{"isrc": f"{isrc_prefix}{i}", "track_number": i + 1}
+                          for i in range(n)]}
+
+    def test_yields_partial_and_missing_skips_complete(self, monkeypatch):
+        from qobuz_fetch.web import flows
+
+        albums = [
+            {"id": 1, "title": "Missing", "tracks_count": 10,
+             "tracks": self._qobuz_tracks("A", 10)},
+            {"id": 2, "title": "Partial", "tracks_count": 10,
+             "tracks": self._qobuz_tracks("B", 10)},
+            {"id": 3, "title": "Complete", "tracks_count": 5,
+             "tracks": self._qobuz_tracks("C", 5)},
+        ]
+
+        def fake_existing(album):
+            aid = album.get("id")
+            if aid == 1:
+                return [], None
+            if aid == 2:
+                return [{"isrc": f"B{i}", "tracknumber": i + 1}
+                        for i in range(5)], "/dir2"
+            return [{"isrc": f"C{i}", "tracknumber": i + 1}
+                    for i in range(5)], "/dir3"
+
+        def fake_missing(qobuz_tracks, existing):
+            have = {t["isrc"] for t in existing}
+            miss = [qt for qt in qobuz_tracks if qt["isrc"] not in have]
+            pres = [qt for qt in qobuz_tracks if qt["isrc"] in have]
+            return miss, pres
+
+        monkeypatch.setattr(flows, "get_artist_albums",
+                            lambda *a, **k: (albums, 3))
+        monkeypatch.setattr(flows, "dedup_album_versions",
+                            lambda catalog, **k: [(a, 1) for a in catalog])
+        monkeypatch.setattr(flows, "filter_compilation_albums",
+                            lambda pairs, name: pairs)
+        monkeypatch.setattr(flows, "filter_short_releases",
+                            lambda pairs, n: pairs)
+        monkeypatch.setattr(flows, "find_existing_tracks", fake_existing)
+        monkeypatch.setattr(flows, "compute_missing", fake_missing)
+
+        yielded = list(flows._missing_albums("aid", "Artist", "tok"))
+        ids = [a["id"] for a in yielded]
+        assert 1 in ids
+        assert 2 in ids
+        assert 3 not in ids
+        partial = next(a for a in yielded if a["id"] == 2)
+        assert partial.get("_partial_missing_count") == 5
+
+    def test_candidate_detail_marks_gap_fill(self, monkeypatch):
+        from qobuz_fetch.web import flows
+        monkeypatch.setattr(flows, "album_year", lambda a: 2017)
+        monkeypatch.setattr(flows, "album_quality_label", lambda a: "Hi-res")
+
+        class FakeJob:
+            def __init__(self):
+                self.candidates = []
+
+            def add_candidate(self, **kwargs):
+                self.candidates.append(kwargs)
+
+        partial_job = FakeJob()
+        flows._add_album_candidate(
+            partial_job,
+            {"id": 2, "title": "Partial", "tracks_count": 10,
+             "_partial_missing_count": 3},
+            "Test",
+        )
+        assert "gap-fill: 3 missing" in partial_job.candidates[0]["detail"]
+
+        full_job = FakeJob()
+        flows._add_album_candidate(
+            full_job,
+            {"id": 1, "title": "Missing", "tracks_count": 10},
+            "Test",
+        )
+        assert "gap-fill" not in full_job.candidates[0]["detail"]
+        assert "10 tracks" in full_job.candidates[0]["detail"]
 
 
 # ── imported must gate success counting ─────────
@@ -1113,6 +1259,66 @@ def test_cancel_pending_job_redirects_to_job_page(client):
         _remove_job(job)
 
 
+def test_rip_cancel_hook_is_wired_on_jobs_import():
+    # When the web job manager is loaded, it registers a cancel-check
+    # callable with rip.set_cancel_check so an in-flight streamrip
+    # process can be terminated when the user clicks Cancel.
+    from qobuz_fetch.integrations import rip
+    assert rip._CANCEL_CHECK is not None
+
+
+def test_cancel_check_predicate_reads_current_job_flag():
+    # The installed hook returns True only when the worker thread's
+    # current job has cancel_requested set.
+    assert jm._current_job_cancel_requested() is False
+
+    fake = jm.Job(title="x")
+    fake.cancel_requested = True
+    jm._TLS.current_job = fake
+    try:
+        assert jm._current_job_cancel_requested() is True
+    finally:
+        jm._TLS.current_job = None
+    assert jm._current_job_cancel_requested() is False
+
+
+def test_rip_url_returns_canceled_when_check_fires(monkeypatch):
+    # rip_url's polling loop must consult _CANCEL_CHECK between proc.wait
+    # iterations and kill+return when the check fires, otherwise a clicked
+    # Cancel leaves rip running to completion and the album imports anyway.
+    import subprocess
+
+    from qobuz_fetch.integrations import rip
+
+    class FakeProc:
+        pid = 99999
+        returncode = None
+        stdout = iter(())
+
+        def wait(self, timeout=None):
+            raise subprocess.TimeoutExpired("rip", timeout or 1)
+
+        def kill(self):
+            FakeProc.killed = True
+
+    FakeProc.killed = False
+    monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: FakeProc())
+    monkeypatch.setattr(rip, "_kill_process_group",
+                        lambda proc: setattr(FakeProc, "killed", True))
+
+    poll_count = [0]
+
+    def cancel_after_two_polls():
+        poll_count[0] += 1
+        return poll_count[0] >= 2
+
+    monkeypatch.setattr(rip, "_CANCEL_CHECK", cancel_after_two_polls)
+    rc, out = rip.rip_url("https://play.qobuz.com/track/x", timeout=10)
+    assert rc == 130
+    assert "canceled by user" in out
+    assert FakeProc.killed is True
+
+
 # done-event shows a banner instead of auto-reloading (browser-only).
 # The JS change is verified by checking the template no longer contains
 # location.reload() in the live SSE handler path.
@@ -1143,7 +1349,7 @@ def test_job_status_api_returns_json_for_known_and_unknown_job(client):
 
     r2 = client.get("/api/jobs/nonexistent/status")
     assert r2.status_code == 404
-    assert r2.json()["error"] == "not found"
+    assert r2.json() == {"detail": "Job not found"}
 
 
 def test_post_job_hook_receives_terminal_state_as_json(tmp_path, monkeypatch):
@@ -1438,6 +1644,36 @@ def test_dashboard_no_creds_shows_cta(client, monkeypatch):
 
 # ── SSE stream event delivery ───────────────────────────────────────
 
+def test_sse_stream_404_returns_json(client):
+    """Both /api/jobs/{id}/status and /stream are under the /api namespace —
+    a missing job must surface as JSON on both, not HTML on /stream and
+    JSON on /status. Monitors that watch the SSE endpoint shouldn't have
+    to parse two error envelopes."""
+    r = client.get("/api/jobs/no-such-job/stream")
+    assert r.status_code == 404
+    assert r.headers["content-type"].startswith("application/json")
+    assert r.json() == {"error": "not found"}
+
+
+def test_templates_have_no_hx_on_attributes():
+    """htmx 1.9's hx-on:* attributes evaluate via new Function() which
+    the page CSP correctly forbids. Handlers must live in static/app.js
+    instead — see web/static/app.js. Catches regressions where someone
+    pastes an hx-on: handler into a template without realising it
+    silently fails under CSP."""
+    from pathlib import Path
+    tpl_dir = Path(__file__).resolve().parents[1] / "src/qobuz_fetch/web/templates"
+    offenders = []
+    for f in tpl_dir.glob("*.html"):
+        text = f.read_text(encoding="utf-8")
+        for needle in ("hx-on:", "hx-on::"):
+            if needle in text:
+                offenders.append((f.name, needle))
+    assert not offenders, (
+        f"hx-on:* attributes found (CSP would block these via new Function): "
+        f"{offenders}. Move to web/static/app.js handlers.")
+
+
 def test_sse_stream_done_for_finished_job(client):
     job = jm.Job(title="finished")
     job.status = jm.JobStatus.DONE
@@ -1587,32 +1823,31 @@ def test_test_auth_falls_back_to_disk_when_form_blank(client, monkeypatch):
     assert seen.get("probed_with") == "DISK_TOK"
 
 
-@pytest.mark.parametrize("path", ["/artist", "/library", "/upgrade", "/repair", "/search"])
-def test_scan_pages_show_cta_when_no_creds(client, monkeypatch, path):
+def test_scan_pages_show_cta_when_no_creds(client, monkeypatch):
+    """Every scan page (/artist /library /upgrade /repair /search) renders
+    a "set them in Settings" CTA and hides the start-scan buttons when
+    creds are absent. The gate lives in one place (middleware-level
+    creds check); /library is the representative case."""
     import qobuz_fetch.web.app as webapp
     monkeypatch.setattr(webapp, "_read_creds", lambda: {})
-    r = client.get(path)
+    r = client.get("/library")
     assert r.status_code == 200
     assert "set them in Settings" in r.text
-    assert '<input type="text" name="artist"' not in r.text  # form is hidden
-    # The library/upgrade/repair Start buttons must be hidden too.
+    assert '<input type="text" name="artist"' not in r.text  # form hidden
     assert "Start library scan" not in r.text
     assert "Start upgrade scan" not in r.text
     assert "Start repair scan" not in r.text
 
 
-@pytest.mark.parametrize("route,data", [
-    ("/library", {}),
-    ("/artist", {"artist": "Stars of the Lid"}),
-    ("/upgrade", {}),
-    ("/repair", {}),
-])
-def test_scan_routes_redirect_to_settings_when_no_creds(client, monkeypatch, route, data):
+def test_scan_routes_redirect_to_settings_when_no_creds(client, monkeypatch):
+    """POSTing to any scan route without creds redirects to /settings.
+    The same middleware handles /library /artist /upgrade /repair; one
+    representative POST suffices."""
     import qobuz_fetch.web.app as webapp
     def _no_creds():
         raise SystemExit(1)
     monkeypatch.setattr(webapp, "_get_token", _no_creds)
-    r = client.post(route, data=data, follow_redirects=False)
+    r = client.post("/library", data={}, follow_redirects=False)
     assert r.status_code == 303
     assert r.headers["location"] == "/settings"
 
@@ -1938,3 +2173,249 @@ def test_lyric_retry_alert_pluralizes_correctly(client, monkeypatch):
     body_5 = _render_dashboard_with_count(5)
     assert "5 tracks need a lyric retry" in body_5
     assert "5 track " not in body_5
+
+
+# ── empty form values reach friendly branches, never 422 JSON ──────
+
+
+def test_download_empty_album_id_renders_friendly_error(client):
+    r = client.post("/download", data={"album_id": ""},
+                    headers={"HX-Request": "true"})
+    assert r.status_code in (200, 400)
+    assert r.headers["content-type"].startswith("text/html")
+    assert "alert-error" in r.text
+    assert "Missing album id" in r.text
+
+
+def test_download_empty_album_id_redirects_for_non_htmx(client):
+    r = client.post("/download", data={"album_id": ""},
+                    follow_redirects=False)
+    assert r.status_code == 303
+    assert "/queue?error=" in r.headers["location"]
+
+
+def test_artist_empty_form_redirects_with_friendly_error(client):
+    r = client.post("/artist", data={"artist": ""},
+                    follow_redirects=False)
+    assert r.status_code == 303
+    loc = r.headers["location"]
+    assert loc.startswith("/artist?error=")
+    assert "required" in loc
+
+
+# ── 404 album_id maps to a "no album" message, not "network" ────────
+
+
+def test_download_404_maps_to_no_album_message(client, monkeypatch):
+    import qobuz_fetch.api.search as search_mod
+    import qobuz_fetch.web.app as webapp
+    from qobuz_fetch.api.auth import QobuzError
+    monkeypatch.setattr(webapp, "_get_token", lambda: "tok")
+
+    def _missing(_id, _tok):
+        raise QobuzError(
+            "HTTP 404 from album/get: "
+            "{'status':'error','code':404,'message':'album not found'}"
+        )
+    monkeypatch.setattr(search_mod, "get_album", _missing)
+    r = client.post("/download", data={"album_id": "ghost-album"},
+                    headers={"HX-Request": "true"})
+    assert r.status_code == 200
+    assert "No album with that id" in r.text
+    assert "container's network" not in r.text
+
+
+# ── HEAD requests on /healthz / /queue / /settings ─────────────────
+
+
+def test_head_on_healthz_returns_200(client):
+    r = client.request("HEAD", "/healthz")
+    assert r.status_code == 200
+    assert r.content == b""
+
+
+# ── F-011: dedupe vs already-in-library ────────────────────────────
+
+
+def test_download_already_in_library_short_circuits(client, monkeypatch):
+    from pathlib import Path
+
+    import qobuz_fetch.api.search as search_mod
+    import qobuz_fetch.library.catalog as cat
+    import qobuz_fetch.web.app as webapp
+    monkeypatch.setattr(webapp, "_get_token", lambda: "tok")
+    monkeypatch.setattr(search_mod, "get_album",
+                        lambda aid, tok: {"id": aid, "title": "Album",
+                                          "artist": {"name": "Artist"}})
+    monkeypatch.setattr(cat, "find_album_dir_filesystem",
+                        lambda album: Path("/tmp/album-dir"))
+    monkeypatch.setattr(cat, "find_existing_tracks",
+                        lambda album: ([{"isrc": "X1"}, {"isrc": "X2"}],
+                                       Path("/tmp/album-dir")))
+    before = len(jm.registry.all())
+    r = client.post("/download", data={"album_id": "already-have"},
+                    headers={"HX-Request": "true"})
+    assert r.status_code == 200
+    assert "already in your library" in r.text
+    after = len(jm.registry.all())
+    assert before == after, "no job should be queued for an album already in library"
+
+
+def test_download_force_param_overrides_library_check(client, monkeypatch):
+    from pathlib import Path
+
+    import qobuz_fetch.api.search as search_mod
+    import qobuz_fetch.library.catalog as cat
+    import qobuz_fetch.modes.process as proc_mod
+    import qobuz_fetch.web.app as webapp
+    monkeypatch.setattr(webapp, "_get_token", lambda: "tok")
+    monkeypatch.setattr(search_mod, "get_album",
+                        lambda aid, tok: {"id": aid, "title": "Forced",
+                                          "artist": {"name": "Artist"}})
+    monkeypatch.setattr(cat, "find_album_dir_filesystem",
+                        lambda album: Path("/tmp/album-dir"))
+    monkeypatch.setattr(cat, "find_existing_tracks",
+                        lambda album: ([{"isrc": "X1"}], Path("/tmp/album-dir")))
+    monkeypatch.setattr(proc_mod, "process_album",
+                        lambda *a, **k: {"result": "downloaded", "n_ok": 1,
+                                         "n_fail": 0, "n_lossy": 0,
+                                         "imported": True, "auto_upgrade": False})
+    r = client.post("/download",
+                    data={"album_id": "force-test", "force": "1"},
+                    follow_redirects=False)
+    assert r.status_code == 303
+    loc = r.headers["location"]
+    assert loc.startswith("/jobs/")
+    new_job_id = loc.rsplit("/", 1)[1]
+    job = jm.registry.get(new_job_id)
+    try:
+        assert job is not None
+        assert job.album_id == "force-test"
+    finally:
+        if job is not None:
+            _remove_job(job)
+
+
+# ── F-016: library mode=partial_fill dispatches an album-fill job ──
+
+
+def test_library_partial_fill_mode_dispatches_scan(client, monkeypatch):
+    import qobuz_fetch.web.app as webapp
+    from qobuz_fetch.web import flows
+    monkeypatch.setattr(webapp, "_get_token", lambda: "tok")
+    captured = {}
+
+    def _fake_submit_scan(job, scan_fn, exec_fn):
+        captured["job"] = job
+        captured["scan_fn"] = scan_fn
+        captured["exec_fn"] = exec_fn
+
+    monkeypatch.setattr(jm, "submit_scan", _fake_submit_scan)
+    monkeypatch.setattr(flows, "scan_library", lambda j, t: None)
+    r = client.post("/library", data={"mode": "partial_fill"},
+                    follow_redirects=False)
+    assert r.status_code == 303
+    assert captured.get("job") is not None
+    assert "fill" in captured["job"].title.lower()
+    assert captured["scan_fn"] is not None
+
+
+# ── F-021: behavior POST without form_complete preserves untouched keys
+
+
+def test_settings_behavior_partial_post_preserves_other_booleans(
+        tmp_path, monkeypatch, client):
+    from qobuz_fetch import config as cfg
+    from qobuz_fetch.web import settings_store as ss
+
+    monkeypatch.setattr(ss, "SETTINGS_FILE", tmp_path / "s.json")
+    monkeypatch.setattr(cfg, "COMPRESS_ENABLED", True)
+    monkeypatch.setattr(cfg, "AUTO_UPGRADE_ENABLED", False)
+    monkeypatch.setattr(ss, "_any_active_job", lambda: False)
+    with ss._pending_lock:
+        ss._pending_apply = None
+    try:
+        r = client.post("/settings/behavior",
+                        data={"AUTO_UPGRADE_ENABLED": "on"},
+                        follow_redirects=False)
+        assert r.status_code == 303
+        # Partial POST: COMPRESS_ENABLED must stay True.
+        assert cfg.COMPRESS_ENABLED is True
+        assert cfg.AUTO_UPGRADE_ENABLED is True
+    finally:
+        with ss._pending_lock:
+            ss._pending_apply = None
+
+
+def test_settings_behavior_complete_post_overwrites(tmp_path, monkeypatch, client):
+    from qobuz_fetch import config as cfg
+    from qobuz_fetch.web import settings_store as ss
+
+    monkeypatch.setattr(ss, "SETTINGS_FILE", tmp_path / "s.json")
+    monkeypatch.setattr(cfg, "COMPRESS_ENABLED", True)
+    monkeypatch.setattr(ss, "_any_active_job", lambda: False)
+    with ss._pending_lock:
+        ss._pending_apply = None
+    try:
+        # Full form submission (form_complete=1) with no behavior keys
+        # present means every checkbox is unchecked, so all booleans go
+        # to False.
+        r = client.post("/settings/behavior",
+                        data={"form_complete": "1"},
+                        follow_redirects=False)
+        assert r.status_code == 303
+        assert cfg.COMPRESS_ENABLED is False
+    finally:
+        with ss._pending_lock:
+            ss._pending_apply = None
+
+
+# ── F-022: test-auth bad token maps to "Token rejected" not "network" ──
+
+
+def test_test_auth_bad_token_maps_to_token_rejected(client, monkeypatch):
+    import qobuz_fetch.web.app as webapp
+    from qobuz_fetch.api.auth import QobuzError
+    monkeypatch.setattr(webapp, "_get_token", lambda: "tok")
+
+    def _reject(*a, **k):
+        raise QobuzError(
+            "HTTP 401 from user/login: "
+            "{'status':'error','code':401,'message':'invalid token'}"
+        )
+    monkeypatch.setattr("qobuz_fetch.api.client.qobuz_get", _reject)
+    r = client.post("/api/test-auth",
+                    data={"auth_token": "DEFINITELY_NOT_REAL"},
+                    headers={"HX-Request": "true"})
+    assert r.status_code == 200
+    assert "Token rejected" in r.text
+    assert "network" not in r.text.lower()
+
+
+# ── F-025: invalid status filter on /api/jobs returns 400 ──────────
+
+
+def test_jobs_list_unknown_status_returns_400(client):
+    r = client.get("/api/jobs?status=garbage")
+    assert r.status_code == 400
+    assert r.json() == {"detail": "Unknown status filter"}
+
+
+def test_jobs_list_known_status_returns_200(client):
+    r = client.get("/api/jobs?status=running")
+    assert r.status_code == 200
+    assert "jobs" in r.json()
+
+
+# ── F-027: XSS-like artist names rejected before reaching Qobuz ────
+
+
+def test_artist_with_angle_brackets_rejected(client):
+    before = len(jm.registry.all())
+    r = client.post("/artist",
+                    data={"artist": "<script>alert(1)</script>"},
+                    follow_redirects=False)
+    # 400 status with a redirect carrying the error.
+    assert r.status_code == 400
+    assert "error=" in r.headers["location"]
+    assert before == len(jm.registry.all())

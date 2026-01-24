@@ -65,6 +65,8 @@ lyrics are fetched automatically (when `LYRICS_ENABLED` is on; default).
 - Gap-fill never deletes a track; the only mode that replaces files
   (Upgrade) backs them up first
 
+## How it ships
+
 **Web UI, with a CLI for power users.** The web UI is the primary way to use
 it (see below). The CLI runs the exact same engine and is handy for scripting
 and unattended runs.
@@ -153,7 +155,8 @@ mkdir qobuz-librarian && cd qobuz-librarian
 curl -O https://raw.githubusercontent.com/jarynclouatre/qobuz-librarian/main/compose.yaml
 curl -O https://raw.githubusercontent.com/jarynclouatre/qobuz-librarian/main/.env.example
 cp .env.example .env
-# edit .env and point the paths at your library
+# edit .env — at minimum point QF_MUSIC_DIR at your music folder
+# (see Configuration below for the full list of variables)
 docker compose up -d
 ```
 
@@ -161,9 +164,10 @@ On Windows, run those commands in WSL or Git Bash — Windows PowerShell's
 `curl` is an alias for `Invoke-WebRequest` with different flags, and
 `cp`/`mkdir` chained with `&&` won't work the same way.
 
-`compose.yaml` pulls the prebuilt image from Docker Hub. Until `0.1.0` is
-published as a Docker image, build from source instead — `latest` tracks
-`main`. See [Building from source](#building-from-source) below.
+`compose.yaml` pulls the prebuilt image from Docker Hub. `latest` tracks
+`main`; pin a tag like `0.1.0` in `compose.yaml` if you want a stable
+build. See [Building from source](#building-from-source) below if you'd
+rather build it yourself.
 
 **Docker Desktop (Windows / macOS):** volume paths in `compose.yaml` are
 relative to the file's location on the host. On Windows the host-side path
@@ -272,13 +276,27 @@ below.
 
 ### Expected folder layout
 
-The scanner expects a **two-level tree**:
-`$MUSIC_ROOT/<Artist>/<Album>/<track>.flac`, recursing into per-disc
-subdirs (`CD1/`, `CD2/`). The album folder *name* is flexible — `Album`,
-`Album (2017)`, `Album [2017]`, `2017 - Album` all work; a year in the
-name is used when present but isn't required, since presence matching is
-driven by the track tags, not folder names. So most beets path templates
-work as-is, as long as the result is artist-then-album.
+The scanner expects a **two-level tree** — `$MUSIC_ROOT/<Artist>/<Album>/`:
+
+```
+$MUSIC_ROOT/
+├── Artist Name/
+│   ├── Album Name/
+│   │   └── 01 - Track.flac
+│   └── Album (2017)/
+│       ├── CD1/
+│       └── CD2/
+└── Other Artist/
+    └── 2017 - Album/
+        └── 01 - Track.flac
+```
+
+The album folder *name* is flexible — `Album`, `Album (2017)`,
+`Album [2017]`, `2017 - Album` all work; a year in the name is used when
+present but isn't required, since presence matching is driven by the
+track tags, not folder names. Per-disc subdirs (`CD1/`, `CD2/`) are
+recursed into. Most beets path templates work as-is, as long as the
+result is artist-then-album.
 
 Hidden directories (`startswith(".")`) and the staging dir are skipped.
 Layouts it won't detect: flat (`/music/<track>.flac`) or extra-nested
@@ -287,7 +305,7 @@ that isn't exactly artist directory, then album directory. Set
 `QF_MUSIC_DIR` in your `.env` to point at the artist-level directory on
 the host.
 
-### Bringing your existing beets database
+## Bringing your existing beets database
 
 The container creates `/config/beets/musiclibrary.db` fresh on first start
 if none exists. To use your existing beets database instead:
@@ -306,7 +324,7 @@ if none exists. To use your existing beets database instead:
    (Or bind-mount a host directory at `/config/beets` in `compose.yaml`.)
 3. Start the container. It will not overwrite either file.
 
-### Default beets config
+## Default beets config
 
 The seeded `beets/config.yaml` is conservative so it doesn't surprise you
 on first import:
@@ -323,7 +341,7 @@ Edit `/config/beets/config.yaml` and the changes apply on the next import
 be set via `BEETS_PATH_DEFAULT` / `_SINGLETON` / `_COMP` in `compose.yaml`
 without editing YAML.
 
-### First scan on a big library
+## First scan on a big library
 
 A library-wide scan does one Qobuz API call per artist directory, with a
 small pause between calls (`ARTIST_API_DELAY`, default 0.4 s). ~2000
@@ -336,7 +354,7 @@ Singles and very short EPs are hidden from the missing-albums step by
 default — bump `MISSING_ALBUMS_MIN_TRACKS` in `compose.yaml` (or pass
 `--include-singles` on the CLI) if you want them surfaced.
 
-### What it will and won't touch on its own
+## What it will and won't touch on its own
 
 - It **never** deletes a track during gap-fill. A bare gap-fill only adds
   missing tracks; the Upgrade walk is the only path that replaces files,
@@ -411,10 +429,7 @@ docker compose run --rm qobuz-librarian cli --upgrade-walk --auto-safe
 docker compose run --rm qobuz-librarian cli --help
 ```
 
-The CLI honours the same `.env` and `compose.yaml` settings as the web
-UI. Only one writer at a time — if the web container is running, stop it
-first (`docker compose stop qobuz-librarian`) before running CLI
-commands, then start it again afterward.
+The CLI honours the same `.env` and `compose.yaml` settings as the web UI.
 
 ## Troubleshooting
 
@@ -422,10 +437,41 @@ commands, then start it again afterward.
 |---------|--------------------------|
 | `Another Qobuz Librarian run is in progress` | Web container holds the lock — use the web UI, or `docker compose stop qobuz-librarian` for CLI. |
 | `MUSIC_ROOT missing or inaccessible` | Bind mount unset or wrong path — check `QF_MUSIC_DIR` in `.env` and that the host path exists. |
+| Container exits immediately on `docker compose up` | `.env` missing from the compose dir, or a required `QF_*` var is unset. `docker compose logs qobuz-librarian` shows which. |
 | `Volume not writable` (Settings → Diagnostics shows FAIL) | `PUID`/`PGID` don't match the host owner of the bind mount — `chown -R $(id -u):$(id -g) ./music ./staging` or set `PUID`/`PGID` in `.env`. |
-| Token rejected | Token expired or copied wrong — re-grab from the Qobuz desktop app → Help → Debug. |
-| `docker compose pull` 404 | Image hasn't been published yet under that tag — build from source (see [Building from source](#building-from-source)). |
+| Web UI loads but Library scan says "no artist folders found" | `/music` is mounted at an empty directory or one level off — make sure `QF_MUSIC_DIR` points at the artist-level folder, not the parent. |
+| Token rejected (Settings → Test) | Token expired, copied with surrounding quotes, or pasted with trailing whitespace — re-grab from the Qobuz desktop app → Help → Debug, paste clean. |
+| Download stalls in "Importing into beets…" | A beets plugin is loaded without its required config block (e.g. lastgenre API key, replaygain backend). Disable it via `BEETS_PLUGINS` or add the block to `/config/beets/config.yaml`. |
+| `docker compose pull` 404 | Image hasn't been published under that tag yet — build from source (see [Building from source](#building-from-source)). |
 | Healthcheck failing but port reachable | Container couldn't reach its own `/healthz` — check container resource limits and `docker logs qobuz-librarian`. |
+| Upgrade walk fails with `Permission denied` backing up an album | An earlier `docker exec qobuz-librarian beet …` (or similar) ran as root, leaving root-owned files the librarian (PUID 1000) can't move. Either rerun with `docker exec --user 1000:1000 …`, or fix on the host: `sudo chown -R 1000:1000 ./music`. |
+
+## Security & deployment shape
+
+The bundled `compose.yaml` ships with sane hardening enabled — what you
+get on a fresh `docker compose up -d`:
+
+- `mem_limit: 1g`, `pids_limit: 256` — a runaway streamrip child can't
+  exhaust host resources.
+- `security_opt: ["no-new-privileges:true"]` — kernel blocks setuid
+  escalation paths.
+- `cap_drop: [ALL]` plus only `CHOWN, DAC_OVERRIDE, FOWNER, SETUID,
+  SETGID` added back — exactly what gosu + the PUID/PGID handover need.
+- Multi-arch image (`linux/amd64`, `linux/arm64`) — NAS users on
+  Synology/QNAP arm64 get native builds.
+- Persisted token files at `/config/streamrip/config.toml` and
+  `/data/.qobuz_settings.json` land 0600.
+- CSRF (double-submit cookie + constant-time compare), strict CSP
+  (`frame-ancestors 'none'`, no `unsafe-eval`), HSTS on HTTPS only.
+- `--no-server-header` plus a middleware strip — uvicorn isn't
+  advertised in responses.
+- `QF_CHECK_VOLUMES=1` at startup blocks write endpoints with 503 if
+  `/staging` or `/music` aren't writable, so the container fails
+  loudly on a wrong PUID/PGID instead of silently mis-owned files.
+
+`--read-only` rootfs deployments work as long as you include
+`--tmpfs /tmp` (default APP_HOME) or set `APP_HOME=/var/tmp` with
+`--tmpfs /var/tmp`.
 
 ## Limitations
 

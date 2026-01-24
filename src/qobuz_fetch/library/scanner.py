@@ -94,6 +94,7 @@ def read_flac_meta(path: Path):
         "discnumber":  parse_track_num(first("DISCNUMBER") or first("discnumber")) or 1,
         "bits":        getattr(info, "bits_per_sample", 0) if info else 0,
         "sample_rate": getattr(info, "sample_rate", 0) if info else 0,
+        "channels":    getattr(info, "channels", 0) if info else 0,
         "length":      getattr(info, "length", 0.0) if info else 0.0,
         "path":        str(path),
     }
@@ -159,16 +160,40 @@ def read_album_dir(album_dir: Path):
 
 
 # ── Library directory listing ─────────────────────────────────────────────────
+def _has_audio_anywhere(d: Path) -> bool:
+    """True if any audio file exists anywhere under ``d`` (recursive).
+
+    Walks without following symlinks and bails on the first hit so the
+    cost stays bounded on big trees. Errors during walk count as "no
+    audio present" — they'll also break later scans, so flagging the dir
+    as empty is the helpful answer.
+    """
+    exts = set(config.AUDIO_EXTS)
+    try:
+        for f in iter_tree_no_symlinks(d):
+            if f.is_file() and f.suffix.lower() in exts:
+                return True
+    except OSError:
+        return False
+    return False
+
+
 def list_library_artists():
     """List artist directories under MUSIC_ROOT.
 
     Skips dot-folders (startswith(".")) and the staging
-    directory. Sorted by name (case-insensitive). Used for fuzzy resolution
-    and the library / walk+queue / album-fill walks.
+    directory. Sorted by name (case-insensitive). Empty artist directories
+    (no audio files anywhere in the tree) are also skipped — they cost an
+    API round-trip during scans for zero gain and clutter the walk output.
+    A single info line names anything skipped so the user can hand-clean.
+
+    Used for fuzzy resolution and the library / walk+queue / album-fill
+    walks.
     """
     if not config.MUSIC_ROOT.exists():
         return []
     artists = []
+    empties = []
     try:
         for d in config.MUSIC_ROOT.iterdir():
             if not d.is_dir():
@@ -177,9 +202,16 @@ def list_library_artists():
                 continue
             if d.resolve() == config.STAGING_DIR.resolve():
                 continue
+            if not _has_audio_anywhere(d):
+                empties.append(d.name)
+                continue
             artists.append(d)
     except OSError as e:
         log.info(f"  ⚠  Couldn’t list MUSIC_ROOT: {e}.")
+    if empties:
+        names = ", ".join(sorted(empties)[:5])
+        more = f" (+{len(empties) - 5} more)" if len(empties) > 5 else ""
+        log.info(f"  · Skipping {len(empties)} empty artist dir(s): {names}{more}.")
     return sorted(artists, key=lambda p: p.name.lower())
 
 

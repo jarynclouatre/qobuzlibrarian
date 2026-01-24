@@ -49,11 +49,27 @@ def parse_qobuz_url(url: str) -> tuple[str, str] | None:
 
 # ── Single-instance lock ──────────────────────────────────────────────────────
 
+def _compose_service_name() -> str:
+    """Best-effort docker compose service name for diagnostic hints.
+
+    Docker sets HOSTNAME to the container's name when `container_name:` is
+    set in compose, else to the 12-char container ID. Fall back to the
+    generic name when we see an ID, so user-facing strings don't print a
+    misleading hex blob.
+    """
+    import os
+    h = os.environ.get("HOSTNAME", "").strip()
+    if not h or (len(h) == 12 and all(c in "0123456789abcdef" for c in h)):
+        return "qobuz-librarian"
+    return h
+
+
 def acquire_run_lock():
     """Acquire the single-writer run lock or exit."""
     try:
         return run_lock.acquire()
     except run_lock.LockBusy as busy:
+        _svc = _compose_service_name()
         die(fmt(C.RED,
             f"\n✗  Another Qobuz Librarian run is in progress (pid {busy.pid}).\n"
             f"   Lock file: {cfg.LOCK_FILE}\n\n"
@@ -61,8 +77,8 @@ def acquire_run_lock():
             f"     1. Use the web UI (http://<host>:{cfg.WEB_PORT}) to queue this download —\n"
             f"        every CLI mode is also a web action, so nothing is CLI-only.\n"
             f"     2. Stop the web container first if you really need the CLI:\n"
-            f"          docker compose stop qobuz-librarian\n"
-            f"        Then re-run, then `docker compose start qobuz-librarian`.\n\n"
+            f"          docker compose stop {_svc}\n"
+            f"        Then re-run, then `docker compose start {_svc}`.\n\n"
             f"   Only one writer can use /staging at a time.\n"),
             EXIT_LOCK_BUSY)
 
@@ -106,27 +122,42 @@ def check_ffprobe():
 
 # ── Argument parsing ──────────────────────────────────────────────────────────
 
+class _ExitOneArgParser(argparse.ArgumentParser):
+    """ArgumentParser that exits 1 (EXIT_GENERAL) on parse errors instead
+    of argparse's default 2. Our documented exit-code contract reserves 2
+    for EXIT_AUTH; without this override, a `--flag --conflict` typo
+    surfaces with the same code as "token expired" and cron retry rules
+    can't tell them apart.
+    """
+
+    def exit(self, status=0, message=None):
+        if status == 2 and message:
+            status = EXIT_GENERAL
+        return super().exit(status, message)
+
+
 def parse_args():
     try:
         from importlib.metadata import version as _pkg_version
         _version = _pkg_version("qobuz-librarian")
     except Exception:
         _version = "0.1.0"
-    p = argparse.ArgumentParser(
+    p = _ExitOneArgParser(
         description="Qobuz Librarian — download albums/artists from Qobuz and "
                     "keep a library complete, only fetching what's missing. "
                     "Run with no arguments for an interactive menu.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
-            "Examples:\n"
+            "Examples (all require credentials — set them first):\n"
             "  qobuz-librarian                                  # interactive menu\n"
             "  qobuz-librarian https://open.qobuz.com/album/abc # one album by URL\n"
             "  qobuz-librarian \"radiohead in rainbows\"          # search and download\n"
             "  qobuz-librarian --artist \"Stars of the Lid\"      # fill artist gaps\n"
             "  qobuz-librarian --upgrade-walk --auto-safe       # unattended upgrade pass\n"
             "  qobuz-librarian --dry-run --artist Beatles       # preview without downloading\n\n"
-            "Credentials: set them on the web UI Settings page, or via "
-            "QOBUZ_USER_AUTH_TOKEN / QOBUZ_USER_ID.\n\n"
+            "Credentials: set them on the web UI Settings page first (browse to\n"
+            "http://<host>:8666/settings on a fresh install), or via\n"
+            "QOBUZ_USER_AUTH_TOKEN / QOBUZ_USER_ID env vars.\n\n"
             "Exit codes:\n"
             "  0   success\n"
             "  1   general failure (incl. interrupt)\n"
@@ -184,14 +215,28 @@ def parse_args():
     p.add_argument("--reset-walk-seen", action="store_true",
                    help="delete the library-walk dedup files and exit "
                         "(so the next walk revisits every artist/album)")
-    p.add_argument("--no-compress",  action="store_true",
+    p.add_argument("--no-downsample",  dest="no_downsample",
+                   action="store_true",
                    help="force-skip pre-import downsampling for this run "
-                        "(only relevant when COMPRESS_ENABLED is on)")
+                        "(only relevant when DOWNSAMPLE_HIRES_ENABLED is on)")
+    # Legacy name kept so existing shell aliases / cron jobs don't break.
+    p.add_argument("--no-compress", dest="no_compress",
+                   action="store_true",
+                   help=argparse.SUPPRESS)
     p.add_argument("--migrate-multi-artist", dest="migrate_multi_artist",
                    action=argparse.BooleanOptionalAction,
                    default=cfg.MIGRATE_MULTI_ARTIST,
                    help="after import, merge 'Primary, Other' folders into 'Primary'")
     args = p.parse_args()
+    # Mirror the downsample-skip flag so either spelling resolves to both
+    # attributes. Callers may read whichever name they're used to; the
+    # behaviour is the same.
+    if getattr(args, "no_compress", False) or getattr(args, "no_downsample", False):
+        args.no_compress = True
+        args.no_downsample = True
+    else:
+        args.no_compress = False
+        args.no_downsample = False
     # Per-run override of cfg.AUTO_UPGRADE_ENABLED. Defaults to the global
     # so plain gap-fills behave the same as before; the explicit upgrade
     # walk flips this without mutating the cfg the web Settings page reads.
@@ -228,6 +273,17 @@ def parse_args():
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main():
+    # Apply the web Settings page's persisted overrides before parse_args
+    # reads cfg.* into the default flags. Without this, a user who toggles
+    # MIGRATE_MULTI_ARTIST on in Settings has the change silently ignored
+    # by CLI runs — the web process applies it on startup but the CLI never
+    # reloads from disk.
+    try:
+        from qobuz_fetch.web import settings_store
+        settings_store.load()
+    except Exception:
+        pass
+
     args = parse_args()
     set_verbose(args.verbose)
     set_quiet(args.quiet)
@@ -318,7 +374,17 @@ def main():
             f"config ({cfg.STREAMRIP_CONFIG}); downloads may fail."))
     vlog(f"user_id: {user_id}  •  music root: {cfg.MUSIC_ROOT}")
     if args.verbose:
-        log.info(fmt(C.GRAY, f"  compose:    {cfg.COMPOSE_FILE}  ({'present' if cfg.COMPOSE_FILE.exists() else 'MISSING'})"))
+        # compose.yaml lives on the host filesystem; inside the container
+        # the bind mount isn't visible, so the "MISSING" line is just
+        # noise. Note that fact instead of flagging a fake error.
+        if _in_container():
+            log.info(fmt(C.GRAY,
+                f"  compose:    {cfg.COMPOSE_FILE}  "
+                "(host-side; not visible from container)"))
+        else:
+            log.info(fmt(C.GRAY,
+                f"  compose:    {cfg.COMPOSE_FILE}  "
+                f"({'present' if cfg.COMPOSE_FILE.exists() else 'MISSING'})"))
         log.info(fmt(C.GRAY, f"  staging:    {cfg.STAGING_DIR}"))
         log.info(fmt(C.GRAY, f"  log file:   {cfg.FETCH_LOG_FILE}"))
         log.info(fmt(C.GRAY, f"  lock:       {cfg.LOCK_FILE}"))
@@ -393,6 +459,7 @@ def main():
             while True:
                 artist = prompt_artist_name()
                 if artist is None:
+                    log.info(fmt(C.GRAY, "  Cancelled."))
                     break
                 run_artist_mode(artist, args, token)
         elif mode == Mode.WALK:

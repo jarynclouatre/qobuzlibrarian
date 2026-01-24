@@ -9,6 +9,7 @@ auth signals — no API calls, no session needed.
 
 validate_token() lives in client.py (not here) because it calls qobuz_get().
 """
+import re
 import tomllib
 from pathlib import Path
 
@@ -21,6 +22,24 @@ class AuthLost(Exception):    pass
 class CatalogMiss(Exception): pass
 class Aborted(Exception):     pass
 class QobuzError(Exception):  pass
+
+
+_RAW_API_BODY_RE = re.compile(r"^(HTTP \d+ from [^:]+):\s+.+$", re.DOTALL)
+
+
+def friendly_qobuz_error(e):
+    """Strip the raw API response body from a QobuzError's message.
+
+    `qobuz_get` raises ``QobuzError("HTTP NNN from endpoint: <body>")``;
+    the body is fine for logs but leaks JSON into user-facing UI when
+    surfaced verbatim. This helper keeps the status + endpoint prefix
+    and drops everything after the colon.
+    """
+    msg = str(e)
+    m = _RAW_API_BODY_RE.match(msg)
+    if m:
+        return m.group(1)
+    return msg
 
 
 class NoCredsError(Exception):

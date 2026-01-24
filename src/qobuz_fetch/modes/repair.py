@@ -217,7 +217,7 @@ def repair_album_dir(album_dir, verified_truncated, artist_name, args, token):
                 # least back to its pre-repair (truncated) state; user
                 # can re-run repair from a clean baseline.
                 log.info(fmt(C.YELLOW,
-                    "  ⚠  Beets import did not succeed — restoring "
+                    "  ⚠  beets import did not succeed — restoring "
                     "truncated originals so the album isn't left short."))
                 if restore_gap_fill_backup(backup_path, album_dir):
                     log.info(fmt(C.GREEN,
@@ -299,8 +299,13 @@ def _scan_report_repair(album_dir, artist_name, args, token):
             "\n  Skipped (no ISRC tag — can't verify recording "
             "identity, refusing to guess):"))
         for x in no_isrc_tag[:10]:
-            log.info(fmt(C.GRAY,
-                f"    • {truncate(x['title'], 60)}"))
+            diag = x.get("diagnostic")
+            if diag:
+                log.info(fmt(C.YELLOW,
+                    f"    • {truncate(x['title'], 60)} — {diag}"))
+            else:
+                log.info(fmt(C.GRAY,
+                    f"    • {truncate(x['title'], 60)}"))
         if len(no_isrc_tag) > 10:
             log.info(fmt(C.GRAY,
                 f"    ... and {len(no_isrc_tag) - 10} more"))

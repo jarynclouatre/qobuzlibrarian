@@ -170,10 +170,7 @@ def run_album_walk_mode(args, token):
         flt = ""
     artists = all_artists
     if flt:
-        if len(flt) == 1 and flt.isalpha():
-            artists = [a for a in all_artists if a.name.lower() and a.name.lower()[0] >= flt]
-        else:
-            artists = [a for a in all_artists if flt in a.name.lower()]
+        artists = [a for a in all_artists if flt in a.name.lower()]
         log.info(fmt(C.GRAY, f"  {len(artists)} artist(s) match {flt!r}."))
         if not artists:
             return
@@ -213,7 +210,7 @@ def run_album_walk_mode(args, token):
             clear_pending_queue()
         else:
             log.info(fmt(C.YELLOW,
-                f"  ⚠  Beets import did not succeed — keeping the queue "
+                f"  ⚠  beets import did not succeed — keeping the queue "
                 f"({len(shared_queue)} album(s)) so the next launch can "
                 f"retry. Files remain in staging."))
 
@@ -493,7 +490,7 @@ def run_walk_queued_mode(args, token):
             clear_pending_queue()
         else:
             log.info(fmt(C.YELLOW,
-                f"  ⚠  Beets import did not succeed — keeping the queue "
+                f"  ⚠  beets import did not succeed — keeping the queue "
                 f"({len(shared_queue)} album(s)) so the next launch can "
                 f"retry. Files remain in staging."))
         return sum(1 for r in results

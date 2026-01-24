@@ -8,11 +8,28 @@ import shutil
 import signal
 import subprocess
 import threading
+import time
 from pathlib import Path
 
 from qobuz_fetch import config as cfg
 from qobuz_fetch.ui_cli.colors import C, fmt
 from qobuz_fetch.ui_cli.logging import log, vlog
+
+# Optional cancel-check hook. The web JobManager installs a callable
+# here that returns True when the active job has been cancelled; rip_url
+# polls it between proc.wait iterations and kills the subprocess group
+# when it fires. None when running from the CLI (where Ctrl-C handles
+# the same job via KeyboardInterrupt).
+_CANCEL_CHECK = None
+
+
+def set_cancel_check(fn):
+    """Register a no-arg callable that returns True to cancel the active rip.
+
+    Called by qobuz_fetch.web.jobs at import time.
+    """
+    global _CANCEL_CHECK
+    _CANCEL_CHECK = fn
 
 try:
     from mutagen.flac import FLAC as MutagenFLAC
@@ -282,8 +299,24 @@ def rip_url(url, timeout=None, live_output=False, quality=None):
     reader = threading.Thread(target=_reader, daemon=True)
     reader.start()
 
+    deadline = time.monotonic() + timeout if timeout else None
     try:
-        proc.wait(timeout=timeout)
+        while True:
+            if _CANCEL_CHECK is not None and _CANCEL_CHECK():
+                _kill_process_group(proc)
+                reader.join(timeout=5)
+                return 130, "".join(lines) + "\n<<< canceled by user >>>"
+            poll_for = 1.0
+            if deadline is not None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise subprocess.TimeoutExpired(cmd, timeout)
+                poll_for = min(poll_for, remaining)
+            try:
+                proc.wait(timeout=poll_for)
+                break
+            except subprocess.TimeoutExpired:
+                continue
     except subprocess.TimeoutExpired:
         # Kill the whole process group (covers rip's child downloaders too).
         _kill_process_group(proc)

@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from qobuz_fetch import config as cfg
 from qobuz_fetch.api.auth import AuthLost
 from qobuz_fetch.integrations.beets import beets_import_paths, staging_preflight
-from qobuz_fetch.integrations.compress import HAVE_COMPRESS, compress_dir
+from qobuz_fetch.integrations.compress import HAVE_DOWNSAMPLE, downsample_dir
 from qobuz_fetch.integrations.lyrics import (
     _record_post_import_lyric_retry,
     _resolve_signatures_to_paths,
@@ -162,11 +162,21 @@ def _download_for_queue_item(item):
         return m.group(1) if m else title
 
     if download_full_album and full_album_rc is not None:
-        n_fail = max(0, len(missing) - n_ok)
+        # Lossy-fallback tracks aren't a failure; subtract them so the
+        # math holds (``n_ok + n_lossy + n_fail == n_attempted``).
+        n_fail = max(0, len(missing) - n_ok - n_lossy)
         if n_fail > 0:
+            from pathlib import Path as _Path
             surviving = {normalize(strip_edition_suffix(_stem_title(p))) for p in kept}
-            failed_tracks = [t.get("title") for t in missing
-                             if normalize(t.get("title", "")) not in surviving]
+            lossy_norms = {
+                normalize(strip_edition_suffix(_stem_title(_Path(stem))))
+                for stem in lossy_tracks
+            }
+            failed_tracks = [
+                t.get("title") for t in missing
+                if normalize(t.get("title", "")) not in surviving
+                and normalize(t.get("title", "")) not in lossy_norms
+            ]
         else:
             failed_tracks = []
         # Surface reconciliation. If rip exited non-zero but every
@@ -204,15 +214,16 @@ def _pre_import_staging_hooks(args):
     Returns the transient lyric signatures list (empty on hook failure).
     """
     sigs = []
-    if (cfg.COMPRESS_ENABLED and HAVE_COMPRESS
-            and not getattr(args, "no_compress", False)):
+    if (cfg.DOWNSAMPLE_HIRES_ENABLED and HAVE_DOWNSAMPLE
+            and not getattr(args, "no_downsample",
+                            getattr(args, "no_compress", False))):
         try:
-            compress_dir(cfg.STAGING_DIR, verbose=True, base_dir=cfg.STAGING_DIR, log=log.info)
+            downsample_dir(cfg.STAGING_DIR, verbose=True, base_dir=cfg.STAGING_DIR, log=log.info)
         except KeyboardInterrupt:
-            log.info(fmt(C.YELLOW, "  ⚠  compress hook interrupted"))
+            log.info(fmt(C.YELLOW, "  ⚠  downsample hook interrupted"))
             raise
         except Exception as _ce:
-            log.info(fmt(C.YELLOW, f"  ⚠  compress hook failed: {_ce}"))
+            log.info(fmt(C.YELLOW, f"  ⚠  downsample hook failed: {_ce}"))
     try:
         lh_result = _run_lyric_hook(cfg.STAGING_DIR)
     except KeyboardInterrupt:

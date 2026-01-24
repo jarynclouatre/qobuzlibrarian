@@ -11,6 +11,7 @@ Two non-obvious bits of behaviour worth preserving:
   stays unambiguously parseable.
 """
 import fcntl
+import os
 import time
 from pathlib import Path
 
@@ -19,6 +20,13 @@ from qobuz_fetch.api.search import find_qobuz_track_by_isrc
 from qobuz_fetch.library.scanner import read_album_dir
 from qobuz_fetch.ui_cli.colors import C, fmt
 from qobuz_fetch.ui_cli.logging import log
+
+# Lossless FLAC compresses music to roughly 0.40-0.65 of raw PCM; even
+# very compressible material rarely lands below ~0.30. A file under 15%
+# of the uncompressed-equivalent size for the duration STREAMINFO claims
+# is almost certainly truncated — the header survives tail damage and
+# lies about how much audio is actually present.
+_BYTE_SIZE_TRUNCATED_RATIO = 0.15
 
 
 def scan_dir_for_isrc_repairs(album_dir, token,
@@ -57,7 +65,21 @@ def scan_dir_for_isrc_repairs(album_dir, token,
             flen = 0.0
 
         if not isrc:
-            report["no_isrc_tag"].append({"path": path, "title": title})
+            entry = {"path": path, "title": title}
+            try:
+                size_bytes = os.path.getsize(path) if path else 0
+            except OSError:
+                size_bytes = 0
+            entry["size_bytes"] = size_bytes
+            # A FLAC tagless enough to be missing ISRC and small enough to
+            # be obviously broken is almost certainly a damaged download.
+            # Surface a friendlier hint so the user knows to hand-verify
+            # rather than chasing the bland "skipped — can't verify".
+            if 0 < size_bytes < 50_000:
+                entry["diagnostic"] = (
+                    f"likely-corrupted ({size_bytes:,} B); hand-verify "
+                    "before refilling")
+            report["no_isrc_tag"].append(entry)
             continue
 
         qt = find_qobuz_track_by_isrc(isrc, token)
@@ -77,6 +99,34 @@ def scan_dir_for_isrc_repairs(album_dir, token,
             # come with a non-zero Qobuz duration on the matched record.
             report["verified_ok"] += 1
             continue
+
+        # Byte-size sanity gate. flen comes from the FLAC STREAMINFO
+        # block, which survives tail-truncation and middle-zero damage
+        # — the duration check below can't see those. If the actual
+        # file is impossibly small for the duration STREAMINFO claims,
+        # flag here so the truncation surfaces.
+        sample_rate = int(et.get("sample_rate") or 0)
+        bits = int(et.get("bits") or 0)
+        channels = int(et.get("channels") or 2)
+        try:
+            actual_size = os.path.getsize(path) if path else 0
+        except OSError:
+            actual_size = 0
+        if sample_rate > 0 and bits > 0 and actual_size > 0:
+            expected_uncompressed = qdur * sample_rate * channels * (bits / 8)
+            if actual_size < expected_uncompressed * _BYTE_SIZE_TRUNCATED_RATIO:
+                report["verified_truncated"].append({
+                    "path": path,
+                    "file_length": flen,
+                    "qobuz_track": qt,
+                    "qobuz_duration": qdur,
+                    "isrc": isrc,
+                    "title": qt.get("title") or title,
+                    "track_number": qt.get("track_number") or et.get("tracknumber") or 0,
+                    "actual_size": actual_size,
+                    "reason": "byte_size_short",
+                })
+                continue
 
         if flen < (qdur - min_short_seconds) and flen < (qdur * max_ratio):
             report["verified_truncated"].append({

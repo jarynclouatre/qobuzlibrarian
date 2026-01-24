@@ -173,6 +173,12 @@ LYRICS_PROVIDERS = [p.strip() for p in
 
 # ── Timeouts / delays ─────────────────────────────────────────────────────────
 SEARCH_LIMIT     = _env("SEARCH_LIMIT",     8)
+# Per-context search depth for internal matchers. Defaults stay close to
+# the literals they replace (5 / 12) — bump to widen catalog/artist
+# matching at the cost of more Qobuz API calls. SEARCH_LIMIT above is
+# the user-facing "Search page" depth and is unaffected.
+ARTIST_LOOKUP_LIMIT  = _env("ARTIST_LOOKUP_LIMIT",  5)
+CATALOG_SEARCH_LIMIT = _env("CATALOG_SEARCH_LIMIT", 12)
 RIP_TIMEOUT      = _env("RIP_TIMEOUT",      900)
 DELAY_BETWEEN    = _env("DELAY_BETWEEN",    1.0)
 # Pause before the next queued album when Qobuz throttling was detected
@@ -193,6 +199,23 @@ ARTIST_API_DELAY = _env("ARTIST_API_DELAY", 0.4)
 # park a worker thread for minutes — the user gets a clear timeout instead.
 WEB_FETCH_TIMEOUT     = _env("QF_WEB_FETCH_TIMEOUT",     12.0)
 WEB_TEST_AUTH_TIMEOUT = _env("QF_WEB_TEST_AUTH_TIMEOUT", 8.0)
+
+# Web job log + SSE tunables. Defaults match the literals these replaced.
+# JOB_LOG_CAP is the per-job line ceiling; very long artist walks
+# (500+ albums) on tight memory should drop this to e.g. 2000.
+# JOB_LOG_REPLAY_TAIL is what a late SSE subscriber gets replayed.
+# POST_JOB_HOOK_TIMEOUT bounds the subprocess that fires the optional
+# post-job hook — slow webhooks (Apprise, ntfy with retries) may need
+# more. SSE_MAX_WORKERS sets the thread pool for SSE streams (each
+# active subscriber holds one). SSE_HEARTBEAT_TICKS sets how many
+# 0.5s queue-empty ticks pass before a `: ping` keepalive — reverse
+# proxies with short idle timeouts (60s default on most) want a lower
+# value.
+JOB_LOG_CAP          = _env("JOB_LOG_CAP",          5000)
+JOB_LOG_REPLAY_TAIL  = _env("JOB_LOG_REPLAY_TAIL",  500)
+POST_JOB_HOOK_TIMEOUT = _env("POST_JOB_HOOK_TIMEOUT", 10)
+SSE_MAX_WORKERS      = _env("SSE_MAX_WORKERS",      16)
+SSE_HEARTBEAT_TICKS  = _env("SSE_HEARTBEAT_TICKS",  30)
 
 # ── Fuzzy-match thresholds ────────────────────────────────────────────────────
 FUZZY_DIR_THRESH           = _env("FUZZY_DIR_THRESH",           0.78)
@@ -218,7 +241,27 @@ CAPPED_RETENTION_DAYS         = _env("CAPPED_RETENTION_DAYS",         90)
 AUTO_UPGRADE_ENABLED = _env_bool("AUTO_UPGRADE_ENABLED", False)
 # Off by default: most people want the file Qobuz delivers. Opt in if you
 # prefer to grab hi-res mixes and downsample them to 44.1/48 kHz to save space.
-COMPRESS_ENABLED = _env_bool("COMPRESS_ENABLED", False)
+# DOWNSAMPLE_HIRES_ENABLED is the canonical name; COMPRESS_ENABLED is the
+# legacy alias kept so existing .env files / settings files keep working.
+# Read both at startup: an explicit COMPRESS_ENABLED=1 still wins, but new
+# users should reach for the clearer name.
+def _resolve_downsample_flag():
+    new = os.environ.get("DOWNSAMPLE_HIRES_ENABLED")
+    if new is not None:
+        return new.strip().lower() in ("1", "true", "yes")
+    old = os.environ.get("COMPRESS_ENABLED")
+    if old is not None:
+        # The previous name described an effect that wasn't quite
+        # "compress" — it's a downsample. The env name still works; the
+        # log doesn't need to scold the user about it.
+        return old.strip().lower() in ("1", "true", "yes")
+    return False
+
+
+DOWNSAMPLE_HIRES_ENABLED = _resolve_downsample_flag()
+# Legacy alias retained so older code paths and on-disk settings files keep
+# resolving to the same value. Both names always refer to the same flag.
+COMPRESS_ENABLED = DOWNSAMPLE_HIRES_ENABLED
 
 # Album-version / library-structure preferences. CLI and web both read these
 # so behaviour is identical across interfaces; override via env or Settings.

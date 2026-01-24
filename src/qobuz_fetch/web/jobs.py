@@ -25,6 +25,21 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Callable, Optional
 
+from qobuz_fetch.integrations import rip as rip_module
+
+# Thread-local pointer to the job currently being run on this worker.
+# Lets rip_url's cancel-check hook (installed below) find the running
+# job's cancel_requested flag without threading job through every layer.
+_TLS = threading.local()
+
+
+def _current_job_cancel_requested() -> bool:
+    j = getattr(_TLS, "current_job", None)
+    return bool(j and j.cancel_requested)
+
+
+rip_module.set_cancel_check(_current_job_cancel_requested)
+
 
 class JobStatus(str, Enum):
     PENDING         = "pending"
@@ -92,7 +107,14 @@ class Job:
             for q in dead:
                 self._subscribers.remove(q)
 
-    LOG_CAP = 5000
+    # Read from config at class-definition time so env overrides on
+    # startup take effect (set JOB_LOG_CAP to lower for tight-memory NAS
+    # boxes, or higher for long artist walks). Stays a class attribute so
+    # tests that monkeypatch Job.LOG_CAP keep working unchanged.
+    from qobuz_fetch import config as _cfg
+    LOG_CAP = _cfg.JOB_LOG_CAP
+    del _cfg
+
     _LOG_SLACK = 1000
     _TRUNCATION_MARKER = "[… earlier output truncated to bound memory …]"
     # Strip C0 control bytes except \t (\x09) and \n (\x0a) — a stray NUL or
@@ -115,8 +137,11 @@ class Job:
 
     # Cap replay so a late subscriber doesn't get thousands of historical
     # lines blasted at them (and so the bounded queue isn't filled by
-    # history alone — that would silently drop live lines).
-    REPLAY_TAIL = 500
+    # history alone — that would silently drop live lines). Default from
+    # config.JOB_LOG_REPLAY_TAIL (env-tunable).
+    from qobuz_fetch import config as _cfg2
+    REPLAY_TAIL = _cfg2.JOB_LOG_REPLAY_TAIL
+    del _cfg2
 
     def subscribe(self) -> "queue.Queue[str]":
         """Return a queue that replays the recent history then receives
@@ -251,7 +276,15 @@ def _friendly_job_error(exc, fallback: str) -> str:
     if isinstance(exc, QobuzError):
         return "Couldn't reach the Qobuz API — check the container's network."
     if isinstance(exc, FileNotFoundError):
-        return f"Required tool or path missing — see log ({exc.filename or 'see log'})."
+        # html.escape the filename — _friendly_job_error feeds into the
+        # job error banner which is rendered without further escaping by
+        # templates that treat job.error as trusted. Today every
+        # FileNotFoundError here traces back to subprocess invocations
+        # (rip/beet/ffprobe), but guarding now means future code paths
+        # that flow user input into a path can't surface a reflection bug.
+        import html as _html
+        fname = _html.escape(str(exc.filename)) if exc.filename else "see log"
+        return f"Required tool or path missing — see log ({fname})."
     if isinstance(exc, OSError):
         import errno
         if exc.errno == errno.ENOSPC:
@@ -268,6 +301,7 @@ def _run_task(job: Job, fn):
     handler.setFormatter(logging.Formatter("%(message)s"))
     app_logger = logging.getLogger("qobuz_librarian")
     app_logger.addHandler(handler)
+    _TLS.current_job = job
     try:
         fn(job)
         if job.cancel_requested and job.status not in TERMINAL:
@@ -290,6 +324,7 @@ def _run_task(job: Job, fn):
         job.error = _friendly_job_error(e, cleaned)
         job.push_line(f"[ERROR] {cleaned}")
     finally:
+        _TLS.current_job = None
         app_logger.removeHandler(handler)
         if job.status in TERMINAL:
             job.finished_at = time.time()
@@ -317,13 +352,14 @@ def _fire_post_job_hook(job):
         "error": job.error,
         "finished_at": job.finished_at,
     })
+    from qobuz_fetch import config as _cfg
     try:
         subprocess.Popen(
             ["sh", "-c", cmd],
             stdin=subprocess.PIPE,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-        ).communicate(payload.encode("utf-8"), timeout=10)
+        ).communicate(payload.encode("utf-8"), timeout=_cfg.POST_JOB_HOOK_TIMEOUT)
     except (subprocess.TimeoutExpired, OSError) as e:
         vlog(f"post-job hook failed: {e}")
 

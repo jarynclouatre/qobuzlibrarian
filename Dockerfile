@@ -123,10 +123,18 @@ EXPOSE 8666
 # Explicit marker for the `_in_container()` runtime check in cli.py — Docker
 # also creates /.dockerenv, but this also covers Podman/Buildah/rootless.
 ENV QF_IN_CONTAINER=1
+# entrypoint.sh exports BEETSDIR for the PID-1 process tree, but
+# `docker exec ... beet ...` doesn't inherit that. Set it at the image
+# level so ad-hoc beets commands inside the container find the library
+# without needing -e BEETSDIR=/config/beets every time.
+ENV BEETSDIR=/config/beets
 
 # Lets `docker compose ps` / orchestrators detect a wedged container.
+# 0.0.0.0 is a bind address, not a destination, so coerce it to 127.0.0.1
+# (uvicorn binds to all interfaces in that case, loopback included). A
+# user who pins WEB_HOST to a specific interface gets that hostname back.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-    CMD python -c "import urllib.request,os; urllib.request.urlopen('http://localhost:' + os.environ.get('WEB_PORT','8666') + '/healthz')" || exit 1
+    CMD python -c "import urllib.request,os; h=os.environ.get('WEB_HOST','0.0.0.0'); h='127.0.0.1' if h=='0.0.0.0' else h; urllib.request.urlopen('http://'+h+':'+os.environ.get('WEB_PORT','8666')+'/healthz')" || exit 1
 
 ENTRYPOINT ["/entrypoint.sh"]
 CMD ["web"]

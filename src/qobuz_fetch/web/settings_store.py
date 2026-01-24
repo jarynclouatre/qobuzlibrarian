@@ -34,7 +34,7 @@ BEHAVIOR_FIELDS = [
     ("AUTO_UPGRADE_ENABLED", "Offer upgrades during walks",
      "Let ordinary gap-fill walks also surface quality upgrades. The "
      "explicit Upgrade scan always works regardless of this."),
-    ("COMPRESS_ENABLED", "Downsample hi-res before import",
+    ("DOWNSAMPLE_HIRES_ENABLED", "Downsample hi-res before import",
      "Resample 88.2/96 kHz+ FLACs to 44.1/48 kHz to save space."),
     ("LYRICS_ENABLED", "Fetch lyrics",
      "Look up synced/plain lyrics on import."),
@@ -99,6 +99,15 @@ def current() -> dict:
     """
     with _pending_lock:
         out = {k: bool(getattr(cfg, k)) for k in BEHAVIOR_KEYS}
+        # DOWNSAMPLE_HIRES_ENABLED replaced COMPRESS_ENABLED but the
+        # legacy attribute still gets set directly by older callers and
+        # tests. Surface whichever side is currently True so the Settings
+        # page reflects user intent across both names.
+        if "DOWNSAMPLE_HIRES_ENABLED" in out:
+            out["DOWNSAMPLE_HIRES_ENABLED"] = bool(
+                out.get("DOWNSAMPLE_HIRES_ENABLED")
+                or getattr(cfg, "COMPRESS_ENABLED", False)
+            )
         for key, _, _, kind, _, _ in TEXT_FIELDS:
             v = getattr(cfg, key, "")
             out[key] = _list_to_str(v) if kind == "list" else str(v or "")
@@ -114,9 +123,22 @@ def current() -> dict:
 
 
 def _apply(values: dict):
+    # Accept either DOWNSAMPLE_HIRES_ENABLED (the canonical name) or the
+    # legacy COMPRESS_ENABLED key from on-disk settings files. Whichever
+    # the user supplied wins; both cfg attributes get set so old and new
+    # call sites see the same value.
+    if ("DOWNSAMPLE_HIRES_ENABLED" not in values
+            and "COMPRESS_ENABLED" in values):
+        values = dict(values)
+        values["DOWNSAMPLE_HIRES_ENABLED"] = bool(values["COMPRESS_ENABLED"])
     for k in BEHAVIOR_KEYS:
         if k in values:
             setattr(cfg, k, bool(values[k]))
+    # Mirror the downsample flag onto its legacy attribute so code paths
+    # that still read cfg.COMPRESS_ENABLED keep seeing the right value.
+    if "DOWNSAMPLE_HIRES_ENABLED" in values:
+        setattr(cfg, "COMPRESS_ENABLED",
+                bool(values["DOWNSAMPLE_HIRES_ENABLED"]))
     for key, _, _, kind, choices, _ in TEXT_FIELDS:
         if key not in values:
             continue
@@ -206,6 +228,11 @@ def save(values: dict) -> bool:
 
 def _save_locked(values: dict) -> bool:
     merged = current()
+    # Map the legacy COMPRESS_ENABLED key onto the canonical name so
+    # callers passing the old key still flip the flag.
+    if "COMPRESS_ENABLED" in values and "DOWNSAMPLE_HIRES_ENABLED" not in values:
+        values = dict(values)
+        values["DOWNSAMPLE_HIRES_ENABLED"] = bool(values["COMPRESS_ENABLED"])
     for k in BEHAVIOR_KEYS:
         if k in values:
             merged[k] = bool(values[k])

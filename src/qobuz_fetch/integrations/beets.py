@@ -384,14 +384,18 @@ def staging_preflight(args):
     except EOFError:
         r = "2"
     if r == "1":
-        from qobuz_fetch.integrations.compress import HAVE_COMPRESS, compress_dir
-        if HAVE_COMPRESS and not getattr(args, "no_compress", False):
+        from qobuz_fetch.integrations.compress import (
+            HAVE_DOWNSAMPLE,
+            downsample_dir,
+        )
+        if HAVE_DOWNSAMPLE and not getattr(args, "no_downsample",
+                                           getattr(args, "no_compress", False)):
             try:
-                compress_dir(cfg.STAGING_DIR, verbose=True, base_dir=cfg.STAGING_DIR, log=log.info)
+                downsample_dir(cfg.STAGING_DIR, verbose=True, base_dir=cfg.STAGING_DIR, log=log.info)
             except (KeyboardInterrupt, Exception) as _ce:
                 if isinstance(_ce, KeyboardInterrupt):
                     sys.exit(EXIT_GENERAL)
-                log.info(fmt(C.YELLOW, f"  ⚠  compress hook failed during preflight: {_ce}."))
+                log.info(fmt(C.YELLOW, f"  ⚠  downsample hook failed during preflight: {_ce}."))
         try:
             from qobuz_fetch.integrations.lyrics import _run_lyric_hook
             _run_lyric_hook(cfg.STAGING_DIR)

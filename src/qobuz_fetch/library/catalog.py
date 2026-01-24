@@ -53,6 +53,25 @@ _MULTI_ARTIST_SEPS = (
 # names ('Bob Marley & The Wailers') and auto-migrating those would
 # silently fold entire artists' catalogs into a lead-member folder.
 _MIGRATION_SEPS = (", ",)
+_PRIMARY_ARTIST_SEPS = (", ", " & ", " and ", " feat. ", " feat ", " ft. ", " ft ")
+
+
+def _primary_artist_of(qartist):
+    """Return the primary (first) name from a multi-artist string.
+
+    Qobuz returns the same album with different artist-string formats
+    depending on which edition is queried: "Jay Z and Kanye West"
+    (album-level) vs. "Jay Z, Kanye West" (track-level). The migration
+    check needs a canonical primary so it matches the on-disk folder
+    regardless of which form Qobuz happened to return.
+    """
+    if not qartist:
+        return qartist
+    s = qartist.strip()
+    for sep in _PRIMARY_ARTIST_SEPS:
+        if sep in s:
+            return s.split(sep, 1)[0].strip()
+    return s
 
 
 def _has_separator_match(folder_name, qartist, seps):
@@ -134,7 +153,13 @@ def predicted_album_paths(qobuz_album):
     for ad in artist_dirs:
         for bt in bare_titles:
             for year in years:
+                # Common beets path-template forms: trailing-paren, leading
+                # [year], leading bare year. Match all three so a user who
+                # switched beets templates doesn't get the whole library
+                # listed as "missing".
                 candidates.append(ad / f"{bt} ({year})")
+                candidates.append(ad / f"[{year}] {bt}")
+                candidates.append(ad / f"{year} - {bt}")
             candidates.append(ad / bt)
 
     if artist_raw.lower().strip() in (
@@ -143,6 +168,10 @@ def predicted_album_paths(qobuz_album):
             for year in years:
                 candidates.append(
                     config.MUSIC_ROOT / "Various Artists" / f"{bt} ({year})")
+                candidates.append(
+                    config.MUSIC_ROOT / "Various Artists" / f"[{year}] {bt}")
+                candidates.append(
+                    config.MUSIC_ROOT / "Various Artists" / f"{year} - {bt}")
             candidates.append(config.MUSIC_ROOT / "Various Artists" / bt)
 
     return candidates
@@ -806,6 +835,50 @@ def _merge_album_dirs(src: Path, dst: Path, _depth: int = 0) -> bool:
     return True
 
 
+def _sync_beets_db_after_move(old_dir: Path, new_dir: Path) -> None:
+    """Update beets' items.path after a directory move performed outside
+    beets' control. Without this, the next `beet update` marks every
+    track under old_dir as deleted because the relative path stored in
+    items.path still points at the pre-move location.
+
+    Failures are surfaced but never raised — a sync slip is recoverable
+    (`beet update`), an exception here would unwind the migration and
+    leave the disk and DB in worse drift than before.
+    """
+    db_path = getattr(config, "BEETS_DB_PATH", None)
+    if not db_path:
+        return
+    db_path = Path(str(db_path))
+    if not db_path.exists():
+        return
+    music_root = Path(str(config.MUSIC_ROOT))
+    try:
+        old_rel = old_dir.resolve().relative_to(music_root.resolve())
+        new_rel = new_dir.resolve().relative_to(music_root.resolve())
+    except (ValueError, OSError):
+        # Not under MUSIC_ROOT — beets doesn't track these.
+        return
+    old_prefix = str(old_rel).encode("utf-8") + b"/"
+    new_prefix = str(new_rel).encode("utf-8") + b"/"
+    import sqlite3
+    try:
+        with sqlite3.connect(str(db_path)) as conn:
+            # items.path is BLOB, relative to beets `directory`. Replace
+            # only the prefix; keep the per-disc/per-track suffix intact.
+            # `||` coerces BLOB → TEXT, so wrap the concat in CAST AS BLOB
+            # to preserve the byte-string type beets expects.
+            conn.execute(
+                "UPDATE items SET path = CAST(? || SUBSTR(path, ?) AS BLOB) "
+                "WHERE SUBSTR(path, 1, ?) = ?",
+                (new_prefix, len(old_prefix) + 1, len(old_prefix), old_prefix),
+            )
+            conn.commit()
+    except sqlite3.Error as e:
+        log.info(fmt(C.YELLOW,
+            f"  ⚠  beets DB path sync failed ({e}). "
+            "Run `beet update` to re-scan."))
+
+
 def prompt_and_migrate_multi_artist_folder(album, args):
     """If `album` landed in a multi-artist folder ('Primary, Other'), move
     it under 'Primary'. No-op when:
@@ -822,16 +895,22 @@ def prompt_and_migrate_multi_artist_folder(album, args):
     from qobuz_fetch.library.scanner import clear_scan_caches as _clear_caches
     from qobuz_fetch.library.tags import beets_sanitize, normalize
 
-    qartist = (album.get("artist") or {}).get("name") or ""
-    if not qartist:
+    qartist_raw = (album.get("artist") or {}).get("name") or ""
+    if not qartist_raw:
         return None
-    if qartist.lower().strip() in (
+    if qartist_raw.lower().strip() in (
             "various artists", "various", "va", "compilations", "soundtrack"):
         return find_album_dir_filesystem(album)
 
     cur = find_album_dir_filesystem(album)
     if cur is None:
         return None
+
+    # Use the primary (first) name from the Qobuz artist string. Qobuz
+    # returns "Jay Z and Kanye West" on some editions and "Jay Z" on
+    # others; the folder is always named from the comma-joined track-
+    # level form, so the migration target is the first name either way.
+    qartist = _primary_artist_of(qartist_raw)
 
     cur_parent = cur.parent
     primary = beets_sanitize(qartist)
@@ -857,6 +936,7 @@ def prompt_and_migrate_multi_artist_folder(album, args):
         # User chose to merge: handle file-by-file, prompting on collisions.
         ok = _merge_album_dirs(cur, new_dir)
         if ok:
+            _sync_beets_db_after_move(cur, new_dir)
             maybe_remove_empty_dir(cur)
             maybe_remove_empty_dir(cur_parent)
             _clear_caches()
@@ -866,6 +946,26 @@ def prompt_and_migrate_multi_artist_folder(album, args):
     try:
         new_parent.mkdir(parents=True, exist_ok=True)
         _shutil.move(str(cur), str(new_dir))
+        # shutil.move falls back to copy+rmtree across filesystem
+        # boundaries; on permission edge cases that has been observed
+        # to leave files at the source while the rename log line
+        # already fired. Sweep anything left behind into the new dir.
+        if cur.exists():
+            leftovers = [p for p in cur.rglob("*") if p.is_file()]
+            if leftovers:
+                log.info(fmt(C.YELLOW,
+                    f"  ⚠  {len(leftovers)} file(s) left at {cur} after move; "
+                    "sweeping manually."))
+                for src in leftovers:
+                    rel = src.relative_to(cur)
+                    dst = new_dir / rel
+                    dst.parent.mkdir(parents=True, exist_ok=True)
+                    if not dst.exists():
+                        _shutil.move(str(src), str(dst))
+            maybe_remove_empty_dir(cur)
+        # Sync beets DB BEFORE the cache clear so a concurrent scan can't
+        # see the new layout with the DB still pointing at the old path.
+        _sync_beets_db_after_move(cur, new_dir)
         log.info(fmt(C.GRAY,
             f"  ⤷  Moved into primary-artist folder: {new_dir.name} "
             f"(parent: {primary})"))
@@ -1065,7 +1165,7 @@ def find_qobuz_album_for_dir(album_dir: Path, artist_name: str, token,
     seen_ids = set()
     for q in queries:
         try:
-            batch = search_albums(q, token, limit=10)
+            batch = search_albums(q, token, limit=config.CATALOG_SEARCH_LIMIT)
         except QobuzError as e:
             vlog(f"    search variant {q!r} failed: {e}")
             continue
@@ -1194,7 +1294,7 @@ def find_expanded_edition(album, album_dir, existing, token, args):
     candidates = []
     for q in queries:
         try:
-            batch = search_albums(q, token, limit=12)
+            batch = search_albums(q, token, limit=config.CATALOG_SEARCH_LIMIT)
         except QobuzError:
             continue
         for r in batch:

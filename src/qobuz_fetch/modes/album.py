@@ -2,7 +2,13 @@
 
 """
 from qobuz_fetch import config as cfg
-from qobuz_fetch.api.auth import Aborted, AuthLost, CatalogMiss, QobuzError
+from qobuz_fetch.api.auth import (
+    Aborted,
+    AuthLost,
+    CatalogMiss,
+    QobuzError,
+    friendly_qobuz_error,
+)
 from qobuz_fetch.api.search import get_album, search_albums
 from qobuz_fetch.cli import parse_qobuz_url
 from qobuz_fetch.library.catalog import compute_missing, find_existing_tracks
@@ -36,11 +42,13 @@ def resolve_album_from_args(args, token):
                 EXIT_GENERAL)
         kind, qid = parsed
         if kind == "track":
+            from qobuz_fetch.cli import _compose_service_name
+            _svc = _compose_service_name()
             die(fmt(C.RED,
                 "✗  Track URL passed; Qobuz Librarian handles albums only.\n"
                 "   For a single track use the bundled streamrip:\n"
                 "     rip url <url>\n"
-                "   (in Docker: docker compose run --rm qobuz-librarian "
+                f"   (in Docker: docker compose run --rm {_svc} "
                 "rip url <url>)"),
                 EXIT_GENERAL)
         log.info(fmt(C.GRAY, f"  ⟳  Fetching album {qid} …"))
@@ -152,7 +160,7 @@ def _interactive_album_action(album, args, token, album_queue, flush_queue):
     except AuthLost:
         die(fmt(C.RED, auth_lost_msg("mid-album")), EXIT_AUTH)
     except QobuzError as e:
-        log.info(fmt(C.RED, f"\n✗  Qobuz API error: {e}.\n"))
+        log.info(fmt(C.RED, f"\n✗  Qobuz API error: {friendly_qobuz_error(e)}.\n"))
 
 
 def run_album_mode(args, token, *, query_args=None, loop=False):

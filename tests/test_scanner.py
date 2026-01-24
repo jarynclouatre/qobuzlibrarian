@@ -27,9 +27,17 @@ class TestParseTrackNum:
 
 
 class TestListLibraryArtists:
+    def _seed(self, tmp_path, name):
+        """Create an artist dir with at least one audio file so the empty-
+        dir skip in list_library_artists doesn't drop it."""
+        d = tmp_path / name / "Album"
+        d.mkdir(parents=True)
+        (d / "01.flac").write_bytes(b"audio")
+        return tmp_path / name
+
     def test_returns_artist_dirs(self, tmp_path):
-        (tmp_path / "Pink Floyd").mkdir()
-        (tmp_path / "Radiohead").mkdir()
+        self._seed(tmp_path, "Pink Floyd")
+        self._seed(tmp_path, "Radiohead")
         with patch("qobuz_fetch.config.MUSIC_ROOT", tmp_path), \
              patch("qobuz_fetch.config.STAGING_DIR", tmp_path / ".staging"):
             result = list_library_artists()
@@ -38,7 +46,7 @@ class TestListLibraryArtists:
         assert "Radiohead" in names
 
     def test_excludes_dot_folders(self, tmp_path):
-        (tmp_path / "Pink Floyd").mkdir()
+        self._seed(tmp_path, "Pink Floyd")
         (tmp_path / ".AppleDouble").mkdir()
         with patch("qobuz_fetch.config.MUSIC_ROOT", tmp_path), \
              patch("qobuz_fetch.config.STAGING_DIR", tmp_path / ".staging"):
@@ -51,6 +59,33 @@ class TestListLibraryArtists:
         with patch("qobuz_fetch.config.MUSIC_ROOT", tmp_path / "nonexistent"):
             result = list_library_artists()
         assert result == []
+
+    def test_skips_empty_artist_dirs(self, tmp_path):
+        """Artist directories with no audio files anywhere in their tree
+        should not be returned — they cost an API round-trip per walk and
+        produce confusing '(0 albums)' output for the user."""
+        (tmp_path / "Empty Artist").mkdir()
+        real = tmp_path / "Real Artist" / "Album"
+        real.mkdir(parents=True)
+        (real / "01 - Track.flac").write_bytes(b"audio")
+        with patch("qobuz_fetch.config.MUSIC_ROOT", tmp_path), \
+             patch("qobuz_fetch.config.STAGING_DIR", tmp_path / ".staging"):
+            names = [d.name for d in list_library_artists()]
+        assert names == ["Real Artist"]
+
+    def test_skips_artist_dir_with_only_cover_jpg(self, tmp_path):
+        """An artist dir whose only content is a cover image (no audio
+        anywhere) is still empty for library purposes — skip it."""
+        cover_only = tmp_path / "Cover Only Artist"
+        cover_only.mkdir()
+        (cover_only / "cover.jpg").write_bytes(b"img")
+        real = tmp_path / "Real Artist" / "Album"
+        real.mkdir(parents=True)
+        (real / "01.flac").write_bytes(b"audio")
+        with patch("qobuz_fetch.config.MUSIC_ROOT", tmp_path), \
+             patch("qobuz_fetch.config.STAGING_DIR", tmp_path / ".staging"):
+            names = [d.name for d in list_library_artists()]
+        assert names == ["Real Artist"]
 
 
 class TestListArtistAlbumDirs:

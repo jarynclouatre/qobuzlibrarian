@@ -18,6 +18,7 @@ from qobuz_fetch.api.search import (
 from qobuz_fetch.library.catalog import (
     album_quality_label,
     album_year,
+    compute_missing,
     dedup_album_versions,
     filter_compilation_albums,
     filter_short_releases,
@@ -41,7 +42,7 @@ def build_args():
     """
     return argparse.Namespace(
         force=False, yes=True, dry_run=False, no_import=False,
-        no_upgrade=False, no_compress=False,
+        no_upgrade=False, no_downsample=False, no_compress=False,
         prefer_hires=cfg.PREFER_HIRES,
         consolidate=False,
         migrate_multi_artist=cfg.MIGRATE_MULTI_ARTIST,
@@ -60,7 +61,7 @@ def build_args():
 def resolve_artist(query, token):
     """Return (artist_id, artist_name) for the best match, or (None, None)."""
     try:
-        results = search_artists(query, token, limit=5)
+        results = search_artists(query, token, limit=cfg.ARTIST_LOOKUP_LIMIT)
     except AuthLost:
         raise
     except Exception as e:
@@ -75,7 +76,11 @@ def resolve_artist(query, token):
 
 
 def _missing_albums(artist_id, artist_name, token):
-    """Yield Qobuz album dicts for this artist that aren't in the library."""
+    """Yield Qobuz album dicts that need attention — either entirely
+    absent from the library, or present on disk with track-level gaps.
+    Partial albums get a `_partial_missing_count` key set on the dict
+    so the candidate detail can show 'gap-fill: N missing'.
+    """
     catalog, total = get_artist_albums(artist_id, token,
                                        limit=cfg.ARTIST_CATALOG_LIMIT)
     if total and total > len(catalog):
@@ -88,15 +93,33 @@ def _missing_albums(artist_id, artist_name, token):
         existing, _album_dir = find_existing_tracks(album)
         if not existing:
             yield album
+            continue
+        # On-disk: check for track gaps. process_album re-derives the
+        # gap when the user approves, so we don't need to thread the
+        # missing set through the candidate — just count it for the UI.
+        qobuz_tracks = (album.get("tracks") or {}).get("items") or []
+        if not qobuz_tracks:
+            continue
+        missing, _present = compute_missing(qobuz_tracks, existing)
+        if missing:
+            album["_partial_missing_count"] = len(missing)
+            yield album
 
 
 def _add_album_candidate(job, album, artist_name):
+    partial_n = album.get("_partial_missing_count")
+    if partial_n:
+        detail = (f"{album_year(album) or '?'} · {album_quality_label(album)} · "
+                  f"gap-fill: {partial_n} missing of "
+                  f"{album.get('tracks_count') or '?'}")
+    else:
+        detail = (f"{album_year(album) or '?'} · {album_quality_label(album)} · "
+                  f"{album.get('tracks_count') or '?'} tracks")
     job.add_candidate(
         kind="album",
         title=album.get("title") or "?",
         artist=artist_name,
-        detail=f"{album_year(album) or '?'} · {album_quality_label(album)} · "
-               f"{album.get('tracks_count') or '?'} tracks",
+        detail=detail,
         payload={"album_id": album.get("id")},
     )
 

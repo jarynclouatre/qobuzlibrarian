@@ -701,6 +701,57 @@ def process_album(album, args, *, allow_force=True, label=None,
         n_lossy = len(deleted)
         lossy_tracks = deleted
 
+        # Single-track retry for 0-byte / lossy-deleted files. A single
+        # network glitch shouldn't strand the track in the lossy bucket
+        # when a one-off per-track URL almost always succeeds. Cap at one
+        # retry per track (no recursion, no loop risk).
+        if lossy_tracks and missing:
+            def _retry_stem_title(p):
+                s = p.stem if hasattr(p, "stem") else str(p)
+                m = re.match(r"^(?:\d+[-.])?\d+[\s\-–—.]+(.+)$", s)
+                t = m.group(1) if m else s
+                m = re.match(r"^.+?\s+-\s+(.+)$", t)
+                return normalize(strip_edition_suffix(m.group(1) if m else t))
+
+            lossy_norms = {_retry_stem_title(Path(d)) for d in lossy_tracks}
+            retry_targets = []
+            for t in missing:
+                if normalize(strip_edition_suffix(t.get("title") or "")) in lossy_norms:
+                    retry_targets.append(t)
+            if retry_targets:
+                log.info(fmt(C.GRAY,
+                    f"  ↻  Retrying {len(retry_targets)} lossy/empty "
+                    "track(s) once via per-track URL"))
+                retry_snapshot = snapshot_staging()
+                for t in retry_targets:
+                    tid = t.get("id")
+                    if not tid:
+                        continue
+                    r_url = f"https://play.qobuz.com/track/{tid}"
+                    rc, out = rip_url(r_url, timeout=cfg.RIP_TIMEOUT,
+                                      quality=quality)
+                    if detect_auth_lost(out):
+                        raise AuthLost("rip output contained auth-lost markers")
+                    if detect_disk_full(out):
+                        raise OSError(28, f"No space left on device at {cfg.STAGING_DIR}")
+                retry_new = files_added_since(retry_snapshot)
+                retry_audio = [f for f in retry_new
+                               if f.suffix.lower() in cfg.AUDIO_EXTS]
+                retry_kept, retry_deleted = cleanup_lossy(retry_audio)
+                if retry_kept:
+                    # Move retry survivors from lossy to ok; remove their
+                    # titles from the deleted list so the summary doesn't
+                    # re-list them as lossy.
+                    recovered_norms = {_retry_stem_title(p) for p in retry_kept}
+                    lossy_tracks = [d for d in lossy_tracks
+                                    if _retry_stem_title(Path(d))
+                                    not in recovered_norms]
+                    kept = kept + retry_kept
+                    n_ok = len(kept)
+                    n_lossy = len(lossy_tracks)
+                    log.info(fmt(C.GREEN,
+                        f"  ✓  Retry recovered {len(retry_kept)} track(s)"))
+
         # Reconcile failure counts for full-album rips that exited non-zero but
         # still landed some FLACs. Without this, the summary AND the activity log
         # would report e.g. "8 downloaded / 12 failed" for a 12-track album.
@@ -725,7 +776,11 @@ def process_album(album, args, *, allow_force=True, label=None,
                     f"streamrip post-processing error — counting as success."))
 
         if download_full_album and full_album_rc is not None:
-            n_fail = max(0, len(missing) - n_ok)
+            # Lossy fallbacks count once as lossy, not also as failed.
+            # ``n_ok + n_lossy + n_fail`` is supposed to equal the number of
+            # tracks attempted, so the "missing - ok" math has to deduct
+            # the lossy bucket too.
+            n_fail = max(0, len(missing) - n_ok - n_lossy)
             if n_fail > 0:
                 def _stem_title(p: Path) -> str:
                     s = p.stem
@@ -739,8 +794,19 @@ def process_album(album, args, *, allow_force=True, label=None,
                         title = m.group(1)
                     return title
                 surviving_norms = {normalize(strip_edition_suffix(_stem_title(p))) for p in kept}
-                failed_tracks = [t.get("title") for t in missing
-                                 if normalize(t.get("title", "")) not in surviving_norms]
+                # Lossy-deleted file stems show up in ``lossy_tracks`` —
+                # those tracks belong in the lossy bucket only. Exclude them
+                # from the failed list so the same title can't appear in
+                # both summary sections.
+                lossy_norms = {
+                    normalize(strip_edition_suffix(_stem_title(Path(stem))))
+                    for stem in lossy_tracks
+                }
+                failed_tracks = [
+                    t.get("title") for t in missing
+                    if normalize(t.get("title", "")) not in surviving_norms
+                    and normalize(t.get("title", "")) not in lossy_norms
+                ]
             else:
                 failed_tracks = []
 

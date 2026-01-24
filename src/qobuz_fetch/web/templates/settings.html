@@ -94,7 +94,7 @@
                 hx-post="/api/test-auth" hx-target="#auth-status" hx-swap="innerHTML"
                 hx-include="closest form"
                 hx-indicator="#auth-test-spinner"
-                hx-on:htmx:after-on-load="document.getElementById('auth-status').scrollIntoView({block:'center',behavior:'smooth'})">
+                data-scroll-target="#auth-status">
           <span id="auth-test-spinner" class="loading loading-spinner loading-sm htmx-indicator"></span>
           Test token
         </button>
@@ -115,6 +115,7 @@
     </p>
     <form action="/settings/behavior" method="post">
       <input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}">
+      <input type="hidden" name="form_complete" value="1">
       <div class="space-y-4 mb-5">
         {% for key, label, help in behavior_fields %}
         <div class="flex items-start gap-3">

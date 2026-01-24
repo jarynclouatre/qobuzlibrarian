@@ -102,8 +102,12 @@ video_downloads_folder = ""
 # Create a database that contains all the track IDs downloaded so far
 # Any time a track logged in the database is requested, it is skipped
 # This can be disabled temporarily with the --no-db flag
-downloads_enabled = true
-# Path to the downloads database 
+#
+# Shipped `false` because the librarian does its own "what's missing"
+# computation against the on-disk library, and a stale downloads.db
+# blocks any retry of a track whose file the user removed by hand.
+downloads_enabled = false
+# Path to the downloads database
 downloads_path = "/config/streamrip/downloads.db"
 # If a download fails, the item ID is stored here. Then, `rip repair` can be
 # called to retry the downloads
@@ -150,7 +154,10 @@ embed_size = "large"
 # If this is set to a value > 0, max(width, height) of the embedded art will be set to this value in pixels
 # Proportions of the image will remain the same
 embed_max_width = -1
-# Save the cover image at the highest quality as a seperate jpg file
+# Heads-up: on first auth streamrip scrapes Qobuz's app_id + secrets
+# pair and writes them back into this file. Treat /config/streamrip/
+# as secret-bearing at rest (the container ships it 0600 by default).
+# Save the cover image at the highest quality as a separate jpg file
 save_artwork = true
 # If this is set to a value > 0, max(width, height) of the saved art will be set to this value in pixels
 # Proportions of the image will remain the same
@@ -172,7 +179,13 @@ exclude = []
 [filepaths]
 # Create folders for single tracks within the downloads directory using the folder_format
 # template
-add_singles_to_folder = false
+#
+# Shipped `true` because gap-fill walks issue one play.qobuz.com/track URL
+# per missing track and stage them together. Without per-track folders
+# every file lands flat in /staging/, and beets — running one combined
+# import with autotag off — routes them by stage-directory, not tag, and
+# multiple albums collapse into the same on-disk folder.
+add_singles_to_folder = true
 # Available keys: "albumartist", "title", "year", "bit_depth", "sampling_rate",
 # "id", and "albumcomposer"
 folder_format = "{albumartist}/{title} ({year})"
