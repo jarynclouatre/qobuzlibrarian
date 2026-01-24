@@ -68,7 +68,7 @@ def save_pending_queue(items, *, mode):
             "items": [_serialize_queue_item(i) for i in items],
         }
         tmp = cfg.PENDING_QUEUE_FILE.with_suffix(cfg.PENDING_QUEUE_FILE.suffix + ".tmp")
-        tmp.write_text(json.dumps(payload, ensure_ascii=False))
+        tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
         os.replace(tmp, cfg.PENDING_QUEUE_FILE)
     except Exception as e:
         # Persistence failures shouldn't block the user from continuing
@@ -88,6 +88,11 @@ def load_pending_queue():
     except Exception as e:
         log.info(fmt(C.YELLOW,
             f"  ⚠  {cfg.PENDING_QUEUE_FILE.name} unreadable ({e}); ignoring."))
+        return None, None, None
+    if not isinstance(payload, dict):
+        log.info(fmt(C.YELLOW,
+            f"  ⚠  {cfg.PENDING_QUEUE_FILE.name} is malformed (not an object); "
+            "ignoring."))
         return None, None, None
     ver = payload.get("version")
     if ver != cfg.PENDING_QUEUE_VERSION:

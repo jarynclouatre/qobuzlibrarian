@@ -10,7 +10,8 @@ STREAMRIP_DIR="$CONFIG_DIR/streamrip"
 # mkdir is a no-op when they exist. With --read-only and a missing mount,
 # `mkdir -p` would fail under `set -e`; warn instead so the writability
 # diagnostics below can run and surface the real problem to the user.
-mkdir -p "$BEETS_DIR" "$STREAMRIP_DIR"
+mkdir -p "$BEETS_DIR" "$STREAMRIP_DIR" 2>/dev/null || \
+    echo "[warn] couldn't create $CONFIG_DIR subdirs — mount /config read-write." >&2
 for d in /staging /music /data /upgrade_backups; do
     [ -d "$d" ] || mkdir -p "$d" 2>/dev/null || \
         echo "[warn] couldn't create $d — add a mount, or remove --read-only on the rootfs." >&2
@@ -25,6 +26,30 @@ if [ ! -f "$STREAMRIP_DIR/config.toml" ]; then
     echo "[init] Creating default streamrip config at $STREAMRIP_DIR/config.toml"
     cp /app/docker/streamrip-default.toml "$STREAMRIP_DIR/config.toml"
 fi
+
+# Enforce the streamrip settings the librarian depends on, every boot. These
+# aren't user-tunable (there's no UI for them) and the /config volume persists
+# across image rebuilds, so a config written by an older build must be brought
+# into line rather than left stale.
+#   downloads_enabled=false  — its downloads.db otherwise blocks re-download of
+#     any track the user removed by hand. ^anchor avoids failed_downloads_enabled.
+#   add_singles_to_folder=true — per-track gap-fill must land each track in its
+#     own folder, or beets routes multiple albums into one on-disk folder.
+if grep -q '^downloads_enabled = true' "$STREAMRIP_DIR/config.toml" 2>/dev/null; then
+    sed -i 's/^downloads_enabled = true/downloads_enabled = false/' \
+        "$STREAMRIP_DIR/config.toml"
+    echo "[init] Set streamrip downloads_enabled=false (was true)."
+fi
+if grep -q '^add_singles_to_folder = false' "$STREAMRIP_DIR/config.toml" 2>/dev/null; then
+    sed -i 's/^add_singles_to_folder = false/add_singles_to_folder = true/' \
+        "$STREAMRIP_DIR/config.toml"
+    echo "[init] Set streamrip add_singles_to_folder=true (was false)."
+fi
+
+# The streamrip config holds the Qobuz token once creds are set. The web/env
+# write path lands 0600 (atomic mkstemp+replace); the seeded default arrives
+# 0644 via cp, so bring it in line here.
+chmod 600 "$STREAMRIP_DIR/config.toml" 2>/dev/null || true
 
 export STREAMRIP_CONFIG="$STREAMRIP_DIR/config.toml"
 # So `docker exec qobuz-librarian beet …` finds the real config + DB
@@ -42,12 +67,21 @@ APP_USER="root"
 if [ -n "$PUID" ] || [ -n "$PGID" ]; then
     PUID="${PUID:-1000}"
     PGID="${PGID:-1000}"
-    APP_USER="${PUID}:${PGID}"
-    # Only the small, app-owned dirs are chowned. The music/staging trees
-    # may be huge NAS mounts — recursively chowning them would be slow and
-    # wrong; their permissions are the user's to manage on the NAS side.
-    chown -R "$APP_USER" "$CONFIG_DIR" /data 2>/dev/null || true
-    echo "[init] Running as ${APP_USER} (PUID/PGID)."
+    case "${PUID}${PGID}" in
+        *[!0-9]*)
+            # gosu needs a numeric uid:gid; a name like "appuser" would make
+            # the final exec fail fatally. Warn and stay root instead.
+            echo "[warn] PUID/PGID must be numeric (got ${PUID}:${PGID}); running as root." >&2
+            ;;
+        *)
+            APP_USER="${PUID}:${PGID}"
+            # Only the small, app-owned dirs are chowned. The music/staging
+            # trees may be huge NAS mounts — recursively chowning them would
+            # be slow and wrong; their permissions are the user's to manage.
+            chown -R "$APP_USER" "$CONFIG_DIR" /data 2>/dev/null || true
+            echo "[init] Running as ${APP_USER} (PUID/PGID)."
+            ;;
+    esac
 fi
 
 # ── Writability diagnostics ───────────────────────────────────────────────────

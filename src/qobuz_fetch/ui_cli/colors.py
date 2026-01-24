@@ -21,7 +21,8 @@ class C:
 def _detect_color() -> bool:
     if os.environ.get("NO_COLOR") is not None:
         return False
-    if os.environ.get("FORCE_COLOR"):
+    _fc = os.environ.get("FORCE_COLOR", "")
+    if _fc and _fc != "0":
         return True
     return sys.stdout.isatty() and os.environ.get("TERM", "") != "dumb"
 

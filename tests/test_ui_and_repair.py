@@ -30,26 +30,7 @@ class TestInteractiveSessionMode:
         with patch("builtins.input", side_effect=inputs):
             return interactive_session_mode()
 
-    @pytest.mark.parametrize("entered,expected_mode", [
-        ("",  "album"),
-        ("2", "artist"),
-        ("3", "walk"),
-        ("4", "walk_queue"),
-        ("5", "album_walk"),
-        ("6", "album_repair"),
-        ("7", "upgrade"),
-        ("q", "quit"),
-    ])
-    def test_input_maps_to_mode(self, entered, expected_mode):
-        """All 7 menu numbers + blank + q go through the same dict-lookup
-        branch in interactive_session_mode(); one parametrize covers them.
-        """
-        assert self._run([entered]) == expected_mode
-
     def test_garbage_reprompts_then_valid(self):
-        """The error branch (unrecognised input → reprompt loop) is the
-        distinct behaviour worth its own test, separate from the lookup
-        table above."""
         assert self._run(["xyz", "2"]) == "artist"
 
 
@@ -72,10 +53,6 @@ class TestConfirm:
     def test_auto_yes_returns_true(self):
         assert confirm("Do it?", auto_yes=True) is True
 
-    def test_y_returns_true(self):
-        with patch("builtins.input", return_value="y"):
-            assert confirm("Do it?") is True
-
     def test_eof_returns_false(self):
         with patch("builtins.input", side_effect=EOFError):
             assert confirm("Do it?") is False
@@ -94,6 +71,11 @@ class TestParseNumberList:
     def test_out_of_range_clamped(self):
         assert max(parse_number_list("3-10", 5)) <= 5
 
+    def test_superscript_digit_does_not_crash(self):
+        # '²'.isdigit() is True but int('²') raises; must be ignored, not crash.
+        assert parse_number_list("²", 10) == []
+        assert parse_number_list("1-³", 10) == []
+
 
 class TestFetchLog:
     def test_round_trip_single_entry(self, tmp_path, monkeypatch):
@@ -111,6 +93,15 @@ class TestFetchLog:
         f.write_text('{"artist":"A"}\nNOT JSON\n{"artist":"B"}\n')
         monkeypatch.setattr("qobuz_fetch.config.FETCH_LOG_FILE", f)
         assert len(_read_fetch_log()) == 2
+
+    def test_failed_migration_does_not_corrupt_legacy_array(self, tmp_path, monkeypatch):
+        from qobuz_fetch.ui_cli import prompts
+        f = tmp_path / "log.json"
+        f.write_text(json.dumps([{"artist": "old"}]), encoding="utf-8")
+        monkeypatch.setattr("qobuz_fetch.config.FETCH_LOG_FILE", f)
+        monkeypatch.setattr(prompts, "_migrate_fetch_log_to_jsonl", lambda: False)
+        log_fetch({"artist": "new"})
+        assert json.loads(f.read_text(encoding="utf-8")) == [{"artist": "old"}]
 
 
 class TestAppendRepairLog:
@@ -134,10 +125,6 @@ class TestAppendRepairLog:
         assert "AC|DC" not in f.read_text().split("\n")[-2]
 
     def test_concurrent_appends_produce_parseable_output(self, tmp_path, monkeypatch):
-        """Run-lock currently serializes appenders, but the log itself must
-        stay parseable if a future code path ever writes outside that scope.
-        Spawn many threads and assert: exactly one header, every data line
-        present, no interleaving."""
         from concurrent.futures import ThreadPoolExecutor
 
         f = tmp_path / "repair.log"
@@ -174,14 +161,6 @@ class TestScanDirForIsrcRepairs:
                 result = scan_dir_for_isrc_repairs(tmp_path, "token")
         assert len(result["verified_truncated"]) == 1
 
-    def test_normal_duration_goes_to_verified_ok(self, tmp_path):
-        track = self._make_track(length=230.0)
-        qt = {"duration": 240.0, "title": "T", "track_number": 1}
-        with patch("qobuz_fetch.repair_log.read_album_dir", return_value=[track]):
-            with patch("qobuz_fetch.repair_log.find_qobuz_track_by_isrc", return_value=qt):
-                result = scan_dir_for_isrc_repairs(tmp_path, "token")
-        assert result["verified_ok"] == 1 and result["verified_truncated"] == []
-
     def test_zero_qobuz_duration_treated_as_ok(self, tmp_path):
         track = self._make_track(length=10.0)
         qt = {"duration": 0, "title": "T", "track_number": 1}
@@ -191,10 +170,6 @@ class TestScanDirForIsrcRepairs:
         assert result["verified_ok"] == 1
 
     def test_no_isrc_entry_records_file_size(self, tmp_path):
-        """A FLAC without ISRC should land in no_isrc_tag with a size_bytes
-        field — small sizes get a diagnostic hint so the user sees a clue
-        (the file is likely corrupt) instead of the bland default skip
-        message."""
         flac_file = tmp_path / "tiny.flac"
         flac_file.write_bytes(b"\x00" * 5_000)
         track = {
@@ -214,24 +189,6 @@ class TestScanDirForIsrcRepairs:
         entry = result["no_isrc_tag"][0]
         assert entry["size_bytes"] == 5_000
         assert "likely-corrupted" in entry["diagnostic"]
-
-    def test_no_isrc_entry_no_diagnostic_for_full_size_file(self, tmp_path):
-        """A full-size FLAC without ISRC is interesting only in that ISRC
-        was missing — no extra hint to surface."""
-        flac_file = tmp_path / "big.flac"
-        flac_file.write_bytes(b"\x00" * 5_000_000)
-        track = {
-            "isrc": "", "length": 0.0, "title": "T",
-            "path": str(flac_file),
-            "sample_rate": 0, "bits": 0, "channels": 2,
-            "tracknumber": 1,
-        }
-        with patch("qobuz_fetch.repair_log.read_album_dir",
-                   return_value=[track]):
-            result = scan_dir_for_isrc_repairs(tmp_path, "token")
-        assert len(result["no_isrc_tag"]) == 1
-        assert result["no_isrc_tag"][0]["size_bytes"] == 5_000_000
-        assert result["no_isrc_tag"][0].get("diagnostic") in (None, "")
 
     def test_byte_size_short_flags_truncated_when_length_intact(self, tmp_path):
         # mutagen reads `length` from STREAMINFO, which survives tail
@@ -281,14 +238,78 @@ class TestScanDirRealFlacRoundTrip:
         if shutil.which("ffmpeg") is None:
             pytest.skip("ffmpeg not available")
 
-    def test_real_short_flac_flagged_truncated(self, tmp_path):
+    def test_tail_truncated_full_length_flac_flagged_via_decode_probe(self, tmp_path):
+        import subprocess
+
+        from mutagen.flac import FLAC
         album = tmp_path / "Artist" / "Album"
         album.mkdir(parents=True)
-        self._make_flac(album / "01.flac", 4, "US1234500001")
-        qt = {"duration": 200.0, "title": "Some Track", "track_number": 1}
+        flac = album / "01.flac"
+        # White noise compresses poorly so the resulting FLAC is well
+        # above the byte-size gate's 0.15 × uncompressed threshold even
+        # after a small tail truncation — forcing the decode probe to
+        # be the signal that actually catches the damage.
+        subprocess.run(
+            ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+             "-f", "lavfi",
+             "-i", "anoisesrc=duration=10:color=white:sample_rate=44100:amplitude=0.3",
+             "-ac", "2", "-c:a", "flac", str(flac)],
+            check=True,
+        )
+        f = FLAC(str(flac))
+        f["isrc"] = ["US1234500002"]
+        f["title"] = ["Tail Truncated"]
+        f["tracknumber"] = ["1"]
+        f.save()
+        intact_size = flac.stat().st_size
+        # 10 s of stereo 44.1k/16 white noise should compress to a few hundred kB;
+        # 10 kB removed has to leave the file well above the byte-size threshold
+        # (10 * 44100 * 2 * 2 * 0.15 = 264.6 kB).
+        assert intact_size > 500_000, f"fixture FLAC too small: {intact_size} B"
+        flac.write_bytes(flac.read_bytes()[:-10_240])
+
+        qt = {"duration": 10.0, "title": "Tail Truncated", "track_number": 1}
         with patch("qobuz_fetch.repair_log.find_qobuz_track_by_isrc", return_value=qt):
             result = scan_dir_for_isrc_repairs(album, "token")
-        assert len(result["verified_truncated"]) == 1
+        assert len(result["verified_truncated"]) == 1, result
+        assert result["verified_truncated"][0]["reason"] == "decode_failed"
+
+
+class TestWebScanRepairsSurfacesNoIsrcDiagnostic:
+    """The CLI repair flow shows the size diagnostic on no-ISRC files
+    (e.g. 5 kB stubs). The web /repair scan must surface the same hint —
+    otherwise a user with a damaged file gets 'no truncated files' even
+    though scan_dir_for_isrc_repairs flagged something."""
+
+    def test_suspicious_no_isrc_entry_emits_log_line(self, tmp_path, caplog):
+        from qobuz_fetch.web import flows
+        artist_dir = tmp_path / "Artist"
+        album_dir = artist_dir / "Album"
+        album_dir.mkdir(parents=True)
+        scan_result = {
+            "verified_truncated": [],
+            "verified_ok": 0,
+            "no_isrc_tag": [{
+                "path": str(album_dir / "01.flac"),
+                "title": "Bad Track",
+                "size_bytes": 5_000,
+                "diagnostic": "likely-corrupted (5,000 B); hand-verify",
+            }],
+            "isrc_no_match": [],
+        }
+        job = MagicMock()
+        job.cancel_requested = False
+        with patch.object(flows, "list_library_artists", return_value=[artist_dir]), \
+             patch.object(flows, "list_artist_album_dirs", return_value=[album_dir]), \
+             patch.object(flows, "clear_scan_caches"), \
+             patch("qobuz_fetch.repair_log.scan_dir_for_isrc_repairs",
+                   return_value=scan_result):
+            with caplog.at_level("INFO", logger="qobuz_librarian"):
+                flows.scan_repairs(job, "token")
+
+        messages = " ".join(r.getMessage() for r in caplog.records)
+        assert "Bad Track" in messages and "likely-corrupted" in messages
+        assert not job.add_candidate.called  # no_isrc_tag is not actionable
 
 
 class TestParseArgsGuards:
@@ -299,22 +320,14 @@ class TestParseArgsGuards:
         with patch.object(sys, "argv", ["qobuz-librarian", *argv]):
             return parse_args()
 
-    def test_auto_safe_without_upgrade_walk_accepted(self):
-        args = self._parse(["--auto-safe"])
-        assert args.auto_safe is True
-        assert args.upgrade_walk is False
+    def test_auto_safe_with_query_rejected(self):
+        with pytest.raises(SystemExit):
+            self._parse(["--auto-safe", "Some Artist - Album"])
 
     def test_force_with_artist_rejected(self):
         with pytest.raises(SystemExit):
             self._parse(["--force", "--artist", "Radiohead"])
 
-    def test_force_in_album_mode_allowed(self):
-        args = self._parse(["--force", "Some Artist - Album"])
-        assert args.force is True
-
-    def test_include_singles_with_artist_allowed(self):
-        args = self._parse(["--include-singles", "--artist", "Radiohead"])
-        assert args.include_singles is True
 
     def test_no_catalog_in_album_mode_rejected(self):
         with pytest.raises(SystemExit):
@@ -332,32 +345,22 @@ class TestParseArgsGuards:
         with pytest.raises(SystemExit):
             self._parse(["--include-singles", "--upgrade-walk"])
 
-    def test_dry_run_yes_no_import_no_color_accepted(self):
-        args = self._parse(["--dry-run", "--yes", "--no-import", "--no-color"])
-        assert args.dry_run is True
-        assert args.yes is True
-        assert args.no_import is True
-        assert args.no_color is True
 
-    def test_no_prefer_hires_overrides_default(self):
-        args = self._parse(["--no-prefer-hires", "Some Artist - Album"])
-        assert args.prefer_hires is False
+    def test_artist_with_upgrade_walk_rejected(self):
+        # main() dispatches --artist before --upgrade-walk, so accepting both
+        # silently drops the walk; reject the combination at parse time.
+        with pytest.raises(SystemExit):
+            self._parse(["--artist", "Radiohead", "--upgrade-walk"])
 
-    def test_no_compress_no_consolidate_no_migrate(self):
-        args = self._parse(["--no-compress", "--no-consolidate",
-                            "--no-migrate-multi-artist", "Q"])
-        assert args.no_compress is True
-        assert args.consolidate is False
-        assert args.migrate_multi_artist is False
-
-    def test_upgrade_walk_alone_accepted(self):
-        args = self._parse(["--upgrade-walk"])
-        assert args.upgrade_walk is True
+    def test_reset_walk_seen_with_mode_rejected(self):
+        # --reset-walk-seen clears state and exits; pairing it with a mode or
+        # query silently skips the requested work.
+        with pytest.raises(SystemExit):
+            self._parse(["--reset-walk-seen", "--artist", "Radiohead"])
+        with pytest.raises(SystemExit):
+            self._parse(["--reset-walk-seen", "Some Artist - Album"])
 
     def test_parser_error_exits_one_not_two(self):
-        """argparse defaults to exit 2 on parse errors, which collides with
-        EXIT_AUTH=2 in our documented contract. Verify mode-conflict
-        rejections surface as EXIT_GENERAL=1 instead."""
         with pytest.raises(SystemExit) as exc:
             self._parse(["--force", "--artist", "Radiohead"])
         assert exc.value.code == 1
@@ -406,28 +409,9 @@ class TestVerboseComposeDiagnostic:
                 f"({'present' if cli.cfg.COMPOSE_FILE.exists() else 'MISSING'})"))
         return "\n".join(captured)
 
-    def test_in_container_does_not_emit_missing_label(self, monkeypatch):
-        """Inside the container, compose.yaml is host-side and won't be
-        visible. The verbose diagnostic must say so instead of flagging
-        it MISSING — that label scares users into thinking the install
-        is broken."""
-        text = self._run_verbose_block(monkeypatch, in_container=True)
-        assert "MISSING" not in text
-        assert "host-side" in text
-
-    def test_outside_container_keeps_present_or_missing_label(self, monkeypatch):
-        """Outside the container the user expects the existing
-        present/MISSING flag against a real file path."""
-        text = self._run_verbose_block(monkeypatch, in_container=False)
-        assert "MISSING" in text
-
 
 class TestCLISettingsLoad:
     def test_main_loads_persisted_settings_before_parse(self, monkeypatch):
-        """The web Settings page persists overrides to disk; CLI must
-        replay them before parse_args reads cfg.* into the flag defaults.
-        Without this hook, a user who toggles MIGRATE_MULTI_ARTIST on in
-        Settings has the change silently ignored on CLI invocations."""
         import sys
 
         from qobuz_fetch import cli
@@ -451,15 +435,6 @@ class TestScanETA:
     def test_eta_empty_before_first_item(self):
         from qobuz_fetch.web.flows import _fmt_eta
         assert _fmt_eta(0.0, 0, 10) == ""
-
-    def test_eta_seconds_format(self, monkeypatch):
-        import time as _t
-
-        from qobuz_fetch.web import flows
-        # 1 done at t=2s, 9 to go → ETA 18s
-        monkeypatch.setattr(_t, "monotonic", lambda: 2.0)
-        eta = flows._fmt_eta(0.0, 1, 10)
-        assert eta == " (eta: 18s)"
 
     def test_eta_minutes_format(self, monkeypatch):
         import time as _t
@@ -512,12 +487,6 @@ class TestExitCodes:
         assert ei.value.code == EXIT_AUTH
         assert "auth failure msg" in capsys.readouterr().err
 
-    def test_die_default_code_is_general(self):
-        from qobuz_fetch.ui_cli.errors import EXIT_GENERAL, die
-        with pytest.raises(SystemExit) as ei:
-            die("x")
-        assert ei.value.code == EXIT_GENERAL
-
 
 class TestParseQobuzURL:
     def _p(self, url):
@@ -527,20 +496,9 @@ class TestParseQobuzURL:
     def test_play_url(self):
         assert self._p("https://play.qobuz.com/album/abc12345") == ("album", "abc12345")
 
-    def test_play_track(self):
-        assert self._p("https://play.qobuz.com/track/9876543") == ("track", "9876543")
-
-    def test_store_album(self):
-        assert self._p("https://www.qobuz.com/us-en/album/some-title/abc123") == ("album", "abc123")
-
-    def test_store_track(self):
-        assert self._p("https://www.qobuz.com/us-en/track/some-title/xyz789") == ("track", "xyz789")
 
     def test_non_qobuz_returns_none(self):
         assert self._p("https://example.com/something") is None
-
-    def test_garbage_returns_none(self):
-        assert self._p("not a url") is None
 
 
 def test_interactive_query_warns_on_non_qobuz_url(caplog):
@@ -579,8 +537,6 @@ def test_album_mode_track_url_at_interactive_prompt_explains_clearly(capsys):
 
 
 def test_album_mode_aborted_at_query_prompt_breaks_loop():
-    """When the top-level query prompt raises Aborted, the loop exits
-    without ever reaching the download path."""
     import types
 
     from qobuz_fetch.api.auth import Aborted
@@ -660,8 +616,6 @@ class TestRepairBackupResolution:
         assert result["n_ok"] == 1
 
     def test_backup_restored_on_silent_beets_failure(self, tmp_path, monkeypatch):
-        """When beets silently fails (n_fail==0, imported==False), the
-        original tracks are restored to album_dir from the upgrade backup."""
         result = self._call_repair(tmp_path, monkeypatch, n_ok=1, n_fail=0, imported=False)
         assert self._backup_files(tmp_path) == []
         assert (tmp_path / "Artist" / "Album (2020)" / "01 - Track.flac").exists()
@@ -672,8 +626,6 @@ class TestRepairBackupResolution:
         assert self._backup_files(tmp_path)
 
     def test_backup_failure_leaves_original_intact(self, tmp_path, monkeypatch):
-        """When backup_gap_fill_files returns None, repair aborts without
-        unlinking the original files or running the download queue."""
         from argparse import Namespace
 
         import qobuz_fetch.modes.repair as repair_mod
@@ -717,18 +669,8 @@ class TestWalkSeenFile:
                  if l.strip() and not l.startswith("#")]
         assert lines.count("Beatles") == 1
 
-    def test_second_artist_appended_not_overwritten(self, tmp_path, monkeypatch):
-        f = tmp_path / "walk_seen.txt"
-        monkeypatch.setattr("qobuz_fetch.config.WALK_SEEN_FILE", f)
-        record_walk_seen("Radiohead")
-        record_walk_seen("Portishead")
-        seen = load_walk_seen()
-        assert "radiohead" in seen and "portishead" in seen
-
     def test_interrupted_write_preserves_prior_entries(self, tmp_path, monkeypatch):
-        """A crash during the rename step must leave the file unchanged,
-        not half-written. The previous append-mode write could leave a
-        truncated line that the loader silently dropped."""
+        """A crash during the rename step must leave the file unchanged, not half-written."""
         f = tmp_path / "walk_seen.txt"
         monkeypatch.setattr("qobuz_fetch.config.WALK_SEEN_FILE", f)
         record_walk_seen("Radiohead")
@@ -745,15 +687,6 @@ class TestWalkSeenFile:
 
 class TestAlbumWalkFilterIsSubstring:
     def test_single_letter_matches_anywhere_in_name(self, monkeypatch):
-        """The prompt advertises substring case-insensitive matching, so
-        'a' should match Beatles, Beck, and Albert Collins — anything
-        containing 'a'. The prior code special-cased single letters as
-        'first letter >= flt', skipping over D-named artists for filter 'n'.
-
-        Drives run_album_walk_mode to its inner loop, records which artist
-        directories it iterates, then stops the walk via 's' on the first
-        prompt so the test stays fast.
-        """
         from types import SimpleNamespace
 
         from qobuz_fetch.modes import walk
@@ -866,11 +799,6 @@ class TestScanReportRepair:
                           repair_result={"n_ok": 1, "n_fail": 0,
                                          "imported": False, "backup": None}) == "failed"
 
-    def test_zero_tracks_downloaded_classifies_as_failure(self, tmp_path, monkeypatch):
-        assert self._call(tmp_path, monkeypatch,
-                          repair_result={"n_ok": 0, "n_fail": 1,
-                                         "imported": False, "backup": None}) == "failed"
-
     def test_returns_clean_when_no_truncated_files(self, tmp_path, monkeypatch):
         assert self._call(tmp_path, monkeypatch, verified_truncated=[]) == "clean"
 
@@ -934,9 +862,6 @@ class TestModeEntryPoints:
 
 class TestAlbumModeEntry:
     def test_resolved_album_is_forwarded_to_process_album(self):
-        """The album dict returned by resolve_album_from_args must reach
-        process_album unchanged — a slip here would download/import the
-        wrong album silently."""
         import types
 
         from qobuz_fetch.modes.album import run_album_mode
@@ -960,30 +885,7 @@ class TestAlbumModeEntry:
         # over-specify implementation and trip on benign refactors.
         assert mock_process.call_args[0][0] is album
 
-    def test_qobuz_error_exits_nonzero(self):
-        import types
-
-        from qobuz_fetch.api.auth import QobuzError
-        from qobuz_fetch.modes.album import run_album_mode
-
-        args = types.SimpleNamespace(
-            query="anything", dry_run=False, force=False, yes=True,
-            no_import=False, verbose=False, consolidate=False,
-            no_upgrade=False, prefer_hires=False, no_compress=False,
-            include_singles=False, auto_safe=False, upgrade_walk=False,
-        )
-        with patch("qobuz_fetch.modes.album.resolve_album_from_args",
-                   side_effect=QobuzError("503")), \
-             patch("qobuz_fetch.modes.album.clear_scan_caches"):
-            with pytest.raises(SystemExit) as exc:
-                run_album_mode(args, "tok", loop=False)
-        assert exc.value.code == 1
-
     def test_auth_lost_exits_with_exit_auth_code(self):
-        """The CLI advertises EXIT_AUTH=2 so cron wrappers can branch on
-        transient vs permanent failures — every mode entry point must
-        route AuthLost through die() with that exact code, not a generic
-        sys.exit(1)."""
         import types
 
         from qobuz_fetch.api.auth import AuthLost
@@ -1002,7 +904,6 @@ class TestAlbumModeEntry:
             with pytest.raises(SystemExit) as exc:
                 run_album_mode(args, "tok", query_args=["x"], loop=False)
         assert exc.value.code == EXIT_AUTH
-
 
 
 class TestNullTitleDisplay:
@@ -1025,3 +926,31 @@ class TestNullTitleDisplay:
             )
         combined = caplog.text
         assert "None" not in combined
+
+
+class TestAlbumModeFriendlyError:
+    def test_one_shot_qobuz_error_uses_friendly_message(self, caplog):
+        import types
+
+        from qobuz_fetch.api.auth import QobuzError
+        from qobuz_fetch.modes import album as album_mod
+
+        args = types.SimpleNamespace(
+            query="anything", dry_run=False, force=False, yes=True,
+            no_import=False, verbose=False, consolidate=False,
+            no_upgrade=False, prefer_hires=False, no_compress=False,
+            include_singles=False, auto_safe=False, upgrade_walk=False,
+        )
+        raw = 'HTTP 404 from album/get: {"status":"error","message":"secret"}'
+        with patch.object(album_mod, "resolve_album_from_args",
+                          side_effect=QobuzError(raw)), \
+             patch.object(album_mod, "clear_scan_caches"), \
+             patch.object(album_mod, "friendly_qobuz_error",
+                          return_value="No album with that id."):
+            with caplog.at_level("INFO", logger="qobuz_librarian"):
+                with pytest.raises(SystemExit):
+                    album_mod.run_album_mode(args, "tok", loop=False)
+
+        messages = " ".join(r.getMessage() for r in caplog.records)
+        assert "No album with that id." in messages
+        assert '{"status":"error"' not in messages

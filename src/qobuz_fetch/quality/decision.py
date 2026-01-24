@@ -134,7 +134,10 @@ def load_capped():
         return {}
     try:
         with open(cfg.CAPPED_FILE, encoding="utf-8") as f:
-            return json.load(f) or {}
+            data = json.load(f)
+        # A malformed file that parses as a list/string would otherwise reach
+        # is_album_capped's `.get` and crash the upgrade scan.
+        return data if isinstance(data, dict) else {}
     except (OSError, json.JSONDecodeError):
         return {}
 
@@ -334,7 +337,7 @@ def scan_artist_for_upgrades(artist_name, artist_dir, token, args, capped=None):
         candidates.append({
             "qobuz_album":            qobuz_album,
             "album_dir":              album_dir,
-            "n_upgradeable":          len(existing),
+            "n_upgradeable":          qual["n_below"],
             "n_present":              len(existing),
             "n_total":                len(qobuz_tracks),
             "n_below":                qual["n_below"],

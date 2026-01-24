@@ -132,9 +132,14 @@ class TestQueuePersistence:
         assert saved_at is not None
         datetime.fromisoformat(saved_at)
 
+    def test_load_ignores_valid_json_that_is_not_an_object(self, tmp_path, monkeypatch):
+        # A queue file that parses as a list/string must not crash startup.
+        qfile = tmp_path / "queue.json"
+        qfile.write_text('["a", "b"]', encoding="utf-8")
+        monkeypatch.setattr("qobuz_fetch.config.PENDING_QUEUE_FILE", qfile)
+        assert load_pending_queue() == (None, None, None)
+
     def test_resume_keeps_queue_on_silent_beets_failure(self, tmp_path, monkeypatch):
-        """When the executor reports beets_ok=False, the resume flow must
-        leave queue.json on disk so the user can retry on next launch."""
         qfile = tmp_path / "queue.json"
         monkeypatch.setattr("qobuz_fetch.config.PENDING_QUEUE_FILE", qfile)
         save_pending_queue([self._make_item()], mode="walk_queue")
@@ -154,9 +159,7 @@ class TestQueuePersistence:
 # ── force_track_by_track decouples repair from the ratio heuristic ─────
 
 def test_executor_uses_per_track_urls_with_force_flag(monkeypatch):
-    """11 of 14 missing → ratio 0.78 ≥ 0.7, which WOULD trigger the
-    whole-album URL. With force_track_by_track the executor must hit
-    exactly the 11 track URLs, never the album URL."""
+    """11 of 14 missing → ratio 0.78 ≥ 0.7, which WOULD trigger the whole-album URL."""
     from qobuz_fetch.queue import executor
 
     tracks = [{"id": i, "title": f"T{i}"} for i in range(1, 15)]
@@ -213,3 +216,105 @@ def test_download_strategy_boundary(total, missing, expect_full, monkeypatch):
 
     executor._download_for_queue_item(item)
     assert any("/album/" in u for u in seen) is expect_full
+
+
+def test_executor_recovers_edition_suffix_track_that_landed(monkeypatch, tmp_path):
+    from qobuz_fetch.queue import executor
+
+    tracks = [{"id": i, "title": t} for i, t in enumerate(
+        ["A", "B", "C", "D", "Hungry Heart (Single Version)"], 1)]
+    item = _build_queue_item(
+        album={"id": "ALB", "tracks": {"items": tracks}},
+        album_dir=None, label="x", missing=[tracks[4]],
+        present=[{} for _ in range(4)], upgrade_only=False, auto_upgrade=False)
+    item["snapshot_before"] = set()
+
+    landed = tmp_path / "05 - Hungry Heart.flac"
+    landed.write_bytes(b"flac")
+
+    monkeypatch.setattr(executor, "rip_url", lambda url, **kw: (1, "error"))
+    monkeypatch.setattr(executor, "files_added_since", lambda _s: [landed])
+    monkeypatch.setattr(executor, "cleanup_lossy", lambda files: (list(files), []))
+    monkeypatch.setattr("qobuz_fetch.api.auth.detect_auth_lost", lambda _o: False)
+    monkeypatch.setattr(executor.time, "sleep", lambda _s: None)
+
+    executor._download_for_queue_item(item)
+
+    assert item["n_fail"] == 0
+    assert item["failed_tracks"] == []
+
+
+def test_executor_retries_lossy_track_once_recovers(monkeypatch, tmp_path):
+    from qobuz_fetch.queue import executor
+
+    tracks = [{"id": 1, "title": "A"}, {"id": 2, "title": "Star"}]
+    item = _build_queue_item(
+        album={"id": "ALB", "tracks": {"items": tracks}},
+        album_dir=None, label="x", missing=[tracks[1]],
+        present=[], upgrade_only=False, auto_upgrade=False)
+    item["snapshot_before"] = set()
+
+    recovered = tmp_path / "02 - Star.flac"
+    rip_calls = []
+
+    def fake_rip(url, **kw):
+        rip_calls.append(url)
+        if "track/2" in url:          # the per-track retry produces the FLAC
+            recovered.write_bytes(b"\x00" * 200_000)
+        return (0, "")
+
+    monkeypatch.setattr(executor, "rip_url", fake_rip)
+    monkeypatch.setattr(executor, "snapshot_staging", lambda: set())
+    monkeypatch.setattr(executor, "files_added_since",
+                        lambda _s: [recovered] if recovered.exists()
+                        else [tmp_path / "02 - Star.mp3"])
+    cleanup = {"n": 0}
+
+    def fake_cleanup(files):
+        cleanup["n"] += 1
+        if cleanup["n"] == 1:
+            return [], ["02 - Star"]   # initial: lossy, deleted
+        return [recovered], []         # retry: kept
+    monkeypatch.setattr(executor, "cleanup_lossy", fake_cleanup)
+    monkeypatch.setattr(executor.time, "sleep", lambda _s: None)
+
+    executor._download_for_queue_item(item)
+
+    assert rip_calls == ["https://play.qobuz.com/album/ALB",
+                         "https://play.qobuz.com/track/2"]
+    assert item["n_ok"] == 1
+    assert item["n_lossy"] == 0
+    assert item["n_fail"] == 0
+
+
+def test_executor_gap_fill_backup_restored_when_track_returns_lossy(monkeypatch, tmp_path):
+    """Queue-mode gap-fill backs up present tracks before re-ripping."""
+    from qobuz_fetch.library import backup as bkmod
+    from qobuz_fetch.queue import executor
+
+    album_dir = tmp_path / "music" / "Artist" / "Album"
+    album_dir.mkdir(parents=True)
+    (album_dir / "02 - kept.flac").write_bytes(b"\x00" * 1000)
+    monkeypatch.setattr("qobuz_fetch.config.UPGRADE_BACKUP_DIR", tmp_path / "backups")
+    owned = album_dir / "01 - owned.flac"
+    owned.write_bytes(b"the-owned-original")
+    gfb = bkmod.backup_gap_fill_files([str(owned)], album_dir)
+    assert gfb is not None and not owned.exists()
+
+    monkeypatch.setattr(executor, "find_album_dir_filesystem", lambda _a: album_dir)
+    monkeypatch.setattr(executor, "cleanup_duplicate_art", lambda _d: 0)
+
+    item = {
+        "album": {"id": "A", "artist": {"name": "Artist"}, "tracks": {"items": []}},
+        "album_dir": album_dir,
+        "backup_path": None,
+        "gap_fill_backup_path": gfb,
+        "siblings_to_delete": [],
+        "n_ok": 1, "n_fail": 0, "n_lossy": 1,
+        "auto_upgrade": False,
+    }
+    args = Namespace(migrate_multi_artist=False, no_import=False, consolidate=False)
+    executor._resolve_queue_item(item, args, imported_globally=True)
+
+    assert owned.exists()
+    assert owned.read_bytes() == b"the-owned-original"

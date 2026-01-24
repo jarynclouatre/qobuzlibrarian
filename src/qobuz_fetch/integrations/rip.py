@@ -31,6 +31,13 @@ def set_cancel_check(fn):
     global _CANCEL_CHECK
     _CANCEL_CHECK = fn
 
+
+def is_cancel_requested():
+    """True when the active web job has been cancelled. Always False on the
+    CLI path (no hook installed; Ctrl-C raises KeyboardInterrupt instead).
+    Lets post-rip code skip the beets import after a cancel."""
+    return bool(_CANCEL_CHECK and _CANCEL_CHECK())
+
 try:
     from mutagen.flac import FLAC as MutagenFLAC
     HAVE_MUTAGEN = True

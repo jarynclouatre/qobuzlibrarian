@@ -65,6 +65,22 @@ class TestComputeMissing:
         missing, present = compute_missing(qobuz, existing)
         assert len(missing) == 1 and len(present) == 0
 
+    def test_repeated_title_one_file_covers_only_one(self):
+        # An EP listing the same title twice (a reprise / alternate version):
+        # one file on disk satisfies exactly one of them, not both.
+        qobuz = [_qt("Dayvan Cowboy", disc=1), _qt("Dayvan Cowboy", disc=1)]
+        existing = [_et("Dayvan Cowboy", disc=1)]
+        missing, present = compute_missing(qobuz, existing)
+        assert len(present) == 1 and len(missing) == 1
+
+    def test_stripped_duplicate_not_double_counted(self):
+        # "Time" on disk must not also satisfy "Time (Bonus Track)".
+        qobuz = [_qt("Time", disc=1), _qt("Time (Bonus Track)", disc=1)]
+        existing = [_et("Time", disc=1)]
+        missing, present = compute_missing(qobuz, existing)
+        assert [t["title"] for t in present] == ["Time"]
+        assert [t["title"] for t in missing] == ["Time (Bonus Track)"]
+
 
 class TestFindExtrasInExisting:
     def test_no_extras_when_all_match(self):
@@ -77,6 +93,14 @@ class TestFindExtrasInExisting:
         existing = [_et("Song A", isrc="USRC1234567"), _et("Bonus Track", isrc="BONUS999")]
         extras = find_extras_in_existing(qobuz, existing)
         assert len(extras) == 1
+
+    def test_same_title_bonus_is_flagged_extra(self):
+        # Qobuz lists one "Time"; disk has it plus a same-stripped bonus. The
+        # bonus must be an extra so an upgrade wipe-replace can't delete it.
+        qobuz = [_qt("Time", disc=1)]
+        existing = [_et("Time", disc=1), _et("Time (Bonus Track)", disc=1)]
+        extras = find_extras_in_existing(qobuz, existing)
+        assert len(extras) == 1 and "Bonus" in extras[0]["title"]
 
 
 class TestAlbumYear:
@@ -266,8 +290,6 @@ class TestFindExpandedEdition:
         return {"isrc": isrc, "title": title, "discnumber": disc}
 
     def test_ranking_prefers_quality_when_extras_tied(self, tmp_path):
-        """Two candidates that cover identical existing tracks are sorted
-        quality-first (24-bit before 16-bit)."""
         from types import SimpleNamespace  # noqa: PLC0415
 
         from qobuz_fetch.library.catalog import find_expanded_edition
@@ -382,3 +404,31 @@ class TestPrimaryArtistOf:
     def test_empty_returns_empty(self):
         from qobuz_fetch.library.catalog import _primary_artist_of
         assert _primary_artist_of("") == ""
+
+
+class TestMultiArtistDirLookupBridge:
+    """Qobuz returns 'Jay Z and Kanye West' on some editions while the folder
+    is 'Jay Z, Kanye West'. The dir lookup must bridge the two via the primary
+    artist, or multi-artist migration is starved of a source dir and no-ops."""
+
+    def test_finds_comma_folder_when_qobuz_uses_and(self, tmp_path, monkeypatch):
+        from qobuz_fetch import config
+        from qobuz_fetch.library.catalog import find_album_dir_filesystem
+        from qobuz_fetch.library.scanner import clear_scan_caches
+
+        monkeypatch.setattr(config, "MUSIC_ROOT", tmp_path)
+        album_dir = tmp_path / "Jay Z, Kanye West" / "Watch The Throne (2011)"
+        album_dir.mkdir(parents=True)
+        clear_scan_caches()
+
+        album = {
+            "id": "X",
+            "artist": {"name": "Jay Z and Kanye West"},
+            "title": "Watch The Throne",
+            "release_date_original": "2011-08-08",
+        }
+        found = find_album_dir_filesystem(album)
+        clear_scan_caches()
+        assert found is not None
+        assert found.name == "Watch The Throne (2011)"
+        assert found.parent.name == "Jay Z, Kanye West"

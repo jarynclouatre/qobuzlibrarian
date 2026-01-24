@@ -36,7 +36,12 @@ def log_fetch(entry):
             except OSError:
                 first = b""
             if first == b"[":
-                _migrate_fetch_log_to_jsonl()
+                # If the legacy-array migration didn't complete, the file is
+                # still a JSON array — appending a JSONL line would leave a
+                # hybrid that can't be parsed and hides all history. Skip the
+                # write; the next call retries the migration.
+                if not _migrate_fetch_log_to_jsonl():
+                    return
             _rotate_fetch_log_if_needed()
         with open(cfg.FETCH_LOG_FILE, "a", encoding="utf-8") as f:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
@@ -57,18 +62,23 @@ def _rotate_fetch_log_if_needed():
 
 
 def _migrate_fetch_log_to_jsonl():
+    """Rewrite a legacy JSON-array log as JSONL. Returns True when the file is
+    safe to append to afterwards (migrated, or it wasn't an array), False when
+    migration failed and the file is still a JSON array."""
     try:
         with open(cfg.FETCH_LOG_FILE, encoding="utf-8") as f:
             data = json.load(f)
         if not isinstance(data, list):
-            return
+            return True
         tmp = cfg.FETCH_LOG_FILE.with_suffix(cfg.FETCH_LOG_FILE.suffix + ".tmp")
         with open(tmp, "w", encoding="utf-8") as f:
             for e in data:
                 f.write(json.dumps(e, ensure_ascii=False) + "\n")
         tmp.replace(cfg.FETCH_LOG_FILE)
+        return True
     except Exception as e:
         vlog(f"fetch-log migrate failed: {e}")
+        return False
 
 
 def _read_fetch_log(limit_tail=None):
@@ -148,7 +158,7 @@ def show_recent_fetches(limit=10):
     if not cfg.FETCH_LOG_FILE.exists():
         log.info(fmt(C.GRAY, "  No downloads yet."))
         return
-    entries = _read_fetch_log()
+    entries = _read_fetch_log(limit_tail=limit)
     if not entries:
         log.info(fmt(C.GRAY, "  No downloads yet."))
         return
@@ -254,7 +264,7 @@ def prompt_album_selection(albums, prefer_hires=False, can_load_more=False):
             return None
         if can_load_more and r == "m":
             return MORE
-        if r.isdigit():
+        if r.isdecimal():
             idx = int(r)
             if 1 <= idx <= len(albums):
                 return albums[idx - 1]
@@ -274,7 +284,7 @@ def parse_number_list(s, max_n):
             continue
         if "-" in tok:
             a, _, b = tok.partition("-")
-            if a.isdigit() and b.isdigit():
+            if a.isdecimal() and b.isdecimal():
                 lo, hi = int(a), int(b)
                 if lo > hi:
                     lo, hi = hi, lo
@@ -283,7 +293,7 @@ def parse_number_list(s, max_n):
                 if lo <= hi:
                     for n in range(lo, hi + 1):
                         selected.add(n)
-        elif tok.isdigit():
+        elif tok.isdecimal():
             n = int(tok)
             if 1 <= n <= max_n:
                 selected.add(n)
@@ -314,17 +324,20 @@ def interactive_query():
                 "or search by artist/title."))
             continue
         artist = line
-        try:
-            album = input(fmt(C.CYAN, "  Album (blank=search above text, ?=recent): ")).strip()
-        except EOFError:
-            return None
-        if album == "?":
-            show_recent_fetches()
-            print()
-            continue
-        # Blank album: use the artist/free-text input as a single combined query,
-        # mirroring the behaviour of the one-positional-arg non-interactive path.
-        return (artist, album)
+        # Inner loop so '?' here re-asks for the album, not the artist —
+        # otherwise the user loses the artist name they just typed.
+        while True:
+            try:
+                album = input(fmt(C.CYAN, "  Album (blank=search above text, ?=recent): ")).strip()
+            except EOFError:
+                return None
+            if album == "?":
+                show_recent_fetches()
+                print()
+                continue
+            # Blank album: use the artist/free-text input as a single combined
+            # query, mirroring the one-positional-arg non-interactive path.
+            return (artist, album)
 
 
 def prompt_edition_pick(current_album, current_extras_count, candidates,
@@ -409,7 +422,7 @@ def prompt_edition_pick(current_album, current_extras_count, candidates,
             return None, None
         if r == "" or r == str(keep_idx):
             return None, None
-        if r.isdigit():
+        if r.isdecimal():
             idx = int(r)
             if 1 <= idx <= len(candidates):
                 return candidates[idx - 1]

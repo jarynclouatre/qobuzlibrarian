@@ -19,6 +19,7 @@ from qobuz_fetch.integrations.lyrics import (
 from qobuz_fetch.integrations.rip import (
     cleanup_lossy,
     files_added_since,
+    is_cancel_requested,
     rip_url,
     snapshot_staging,
 )
@@ -155,27 +156,73 @@ def _download_for_queue_item(item):
     lossy_tracks = deleted
 
     def _stem_title(p):
-        s = p.stem
+        s = p.stem if hasattr(p, "stem") else str(p)
         m = re.match(r"^(?:\d+[-.])?\d+[\s\-–—.]+(.+)$", s)
         title = m.group(1) if m else s
         m = re.match(r"^.+?\s+-\s+(.+)$", title)
         return m.group(1) if m else title
+
+    # Single-track retry for lossy / 0-byte fallbacks, mirroring the direct
+    # album path (modes/process.py). A transient glitch shouldn't strand a
+    # track in the lossy bucket when a one-off per-track URL usually
+    # succeeds. One retry per track — no recursion, no loop.
+    if lossy_tracks and missing:
+        lossy_norms = {normalize(strip_edition_suffix(_stem_title(d)))
+                       for d in lossy_tracks}
+        retry_targets = [
+            t for t in missing
+            if normalize(strip_edition_suffix(t.get("title") or "")) in lossy_norms
+        ]
+        if retry_targets:
+            log.info(fmt(C.GRAY,
+                f"      ↻  Retrying {len(retry_targets)} lossy/empty "
+                "track(s) once via per-track URL"))
+            retry_snapshot = snapshot_staging()
+            for t in retry_targets:
+                tid = t.get("id")
+                if not tid:
+                    continue
+                rc, out = rip_url(f"https://play.qobuz.com/track/{tid}",
+                                  timeout=cfg.RIP_TIMEOUT,
+                                  quality=item.get("quality"))
+                if detect_auth_lost(out):
+                    raise AuthLost("rip output contained auth-lost markers")
+                if detect_disk_full(out):
+                    raise OSError(28, f"No space left on device at {cfg.STAGING_DIR}")
+                rate_limited = rate_limited or detect_rate_limited(out)
+            retry_audio = [f for f in files_added_since(retry_snapshot)
+                           if f.suffix.lower() in cfg.AUDIO_EXTS]
+            retry_kept, _ = cleanup_lossy(retry_audio)
+            if retry_kept:
+                recovered_norms = {
+                    normalize(strip_edition_suffix(_stem_title(p)))
+                    for p in retry_kept
+                }
+                lossy_tracks = [
+                    d for d in lossy_tracks
+                    if normalize(strip_edition_suffix(_stem_title(d)))
+                    not in recovered_norms
+                ]
+                kept = kept + retry_kept
+                n_ok = len(kept)
+                n_lossy = len(lossy_tracks)
+                log.info(fmt(C.GREEN,
+                    f"      ✓  Retry recovered {len(retry_kept)} track(s)"))
 
     if download_full_album and full_album_rc is not None:
         # Lossy-fallback tracks aren't a failure; subtract them so the
         # math holds (``n_ok + n_lossy + n_fail == n_attempted``).
         n_fail = max(0, len(missing) - n_ok - n_lossy)
         if n_fail > 0:
-            from pathlib import Path as _Path
             surviving = {normalize(strip_edition_suffix(_stem_title(p))) for p in kept}
             lossy_norms = {
-                normalize(strip_edition_suffix(_stem_title(_Path(stem))))
+                normalize(strip_edition_suffix(_stem_title(stem)))
                 for stem in lossy_tracks
             }
             failed_tracks = [
                 t.get("title") for t in missing
-                if normalize(t.get("title", "")) not in surviving
-                and normalize(t.get("title", "")) not in lossy_norms
+                if normalize(strip_edition_suffix(t.get("title", ""))) not in surviving
+                and normalize(strip_edition_suffix(t.get("title", ""))) not in lossy_norms
             ]
         else:
             failed_tracks = []
@@ -188,10 +235,11 @@ def _download_for_queue_item(item):
                 f"{full_album_rc} (streamrip post-processing error)"))
     elif failed_tracks and kept:
         surviving = {normalize(strip_edition_suffix(_stem_title(p))) for p in kept}
-        recovered = [t for t in failed_tracks if normalize(t) in surviving]
+        recovered = [t for t in failed_tracks
+                     if normalize(strip_edition_suffix(t)) in surviving]
         if recovered:
             failed_tracks = [t for t in failed_tracks
-                             if normalize(t) not in surviving]
+                             if normalize(strip_edition_suffix(t)) not in surviving]
             n_fail = max(0, n_fail - len(recovered))
             # Surface per-track reconciliation.
             log.info(fmt(C.GRAY,
@@ -358,7 +406,12 @@ def _resolve_queue_item(item, args, imported_globally):
     # Drop on success; restore in place if the queue item failed.
     gfb = item.get("gap_fill_backup_path")
     if gfb is not None and gfb.exists():
-        gap_fill_succeeded = had_any_success and item.get("n_fail", 0) == 0
+        # Require zero lossy-deletes too: if a re-ripped present track came
+        # back lossy and was deleted, the backed-up original must be restored,
+        # not cleared (mirrors the full-album gap-fill gate in process.py).
+        gap_fill_succeeded = (had_any_success
+                              and item.get("n_fail", 0) == 0
+                              and item.get("n_lossy", 0) == 0)
         if gap_fill_succeeded:
             try:
                 shutil.rmtree(gfb)
@@ -573,6 +626,10 @@ def _execute_download_queue(queue, args, token):
         imported_globally = False
     elif not any_landed:
         log.info(fmt(C.YELLOW, "  Skipping beets — nothing succeeded."))
+        imported_globally = False
+    elif is_cancel_requested():
+        log.info(fmt(C.YELLOW,
+            "  Cancelled — skipping beets import of the partial queue."))
         imported_globally = False
     else:
         section("Running beets on the queue")

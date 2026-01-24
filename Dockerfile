@@ -45,6 +45,7 @@ RUN pip install --no-cache-dir \
         packaging \
         "pillow>=12.2.0" \
         platformdirs \
+        pyacoustid \
         pyyaml \
         requests \
         requests-ratelimiter \
@@ -80,10 +81,13 @@ LABEL org.opencontainers.image.licenses="MIT"
 
 # ffmpeg: rip/compress (runtime). gosu: clean PUID/PGID drop.
 # procps: ps/top for operators debugging from inside the container.
+# libchromaprint-tools: fpcalc, for the optional beets `chroma` (AcoustID)
+# plugin used to identify untagged files.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ffmpeg \
         gosu \
         procps \
+        libchromaprint-tools \
     && rm -rf /var/lib/apt/lists/*
 
 ENV VIRTUAL_ENV=/opt/venv
@@ -114,6 +118,7 @@ COPY --from=builder --chown=appuser:appuser \
 
 # Default config templates (entrypoint seeds them into /config).
 COPY --chown=appuser:appuser docker/beets-default.yaml /app/docker/beets-default.yaml
+COPY --chown=appuser:appuser docker/beets-chroma.yaml /app/docker/beets-chroma.yaml
 COPY --chown=appuser:appuser docker/streamrip-default.toml /app/docker/streamrip-default.toml
 COPY docker/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh

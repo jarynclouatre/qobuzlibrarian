@@ -22,6 +22,7 @@ from qobuz_fetch.integrations.lyrics import (
 from qobuz_fetch.integrations.rip import (
     cleanup_lossy,
     files_added_since,
+    is_cancel_requested,
     rip_url,
     snapshot_staging,
 )
@@ -134,6 +135,58 @@ def detect_sibling_album_groups(album_dirs):
             continue
         groups.setdefault(bare, []).append(d)
     return [(k, v) for k, v in groups.items() if len(v) >= 2]
+
+
+def sweep_staging_artwork():
+    """Remove streamrip's `__artwork/cover-*.jpg` orphan dirs from staging
+    after beets has moved the audio out. `beet import` ignores non-audio
+    files, so without this sweep every job leaves a cover-image dir behind
+    and the next preflight reports a dirty staging area."""
+    try:
+        roots = list(cfg.STAGING_DIR.rglob("__artwork"))
+    except OSError:
+        return
+    for d in roots:
+        if d.is_dir():
+            shutil.rmtree(d, ignore_errors=True)
+
+
+def _retry_stem_title(p):
+    """Normalized track title from a staging stem or Path, used to match a
+    lossy-deleted file back to its Qobuz track for the single-track retry.
+    Accepts either a Path (real file) or a bare stem string — a Path's `.stem`
+    would mis-split titles like "01. ★" (pathlib treats ". ★" as a suffix), so
+    a string is used verbatim."""
+    s = p.stem if hasattr(p, "stem") else str(p)
+    m = re.match(r"^(?:\d+[-.])?\d+[\s\-–—.]+(.+)$", s)
+    t = m.group(1) if m else s
+    m = re.match(r"^.+?\s+-\s+(.+)$", t)
+    return normalize(strip_edition_suffix(m.group(1) if m else t))
+
+
+def _discard_staged_since(snapshot):
+    """Delete staging files added since `snapshot` (a cancelled job's partial
+    output) and prune the directories left empty, so a cancel leaves staging
+    as clean as it was before the rip started."""
+    try:
+        added = files_added_since(snapshot)
+    except OSError:
+        return
+    for f in added:
+        try:
+            Path(f).unlink()
+        except OSError:
+            pass
+    try:
+        descendants = sorted(cfg.STAGING_DIR.rglob("*"), key=lambda p: -len(p.parts))
+    except OSError:
+        return
+    for d in descendants:
+        if d.is_dir() and not any(d.iterdir()):
+            try:
+                d.rmdir()
+            except OSError:
+                pass
 
 
 def pick_canonical_sibling(dirs):
@@ -514,6 +567,13 @@ def process_album(album, args, *, allow_force=True, label=None,
                 log.info(fmt(C.GRAY, "\n  Consolidation interrupted."))
         return {"result": "already_complete", "n_total": len(qobuz_tracks)}
 
+    # A dry run has already printed the plan above; stop before the download
+    # confirm so we don't ask "proceed with downloading?" for a run that never
+    # downloads.
+    if args.dry_run:
+        log.info(fmt(C.YELLOW, "\n  --dry-run: stopping here, nothing downloaded.\n"))
+        return {"result": "dry_run", "n_missing": len(missing)}
+
     # Default NO: the missing-tracks list above is the user's chance to
     # decide; defaulting yes would mean every enter-press starts a download
     # they may not want. Press y to proceed.
@@ -522,10 +582,6 @@ def process_album(album, args, *, allow_force=True, label=None,
             default_yes=False, auto_yes=args.yes):
         log.info(fmt(C.GRAY, "  Skipped."))
         return {"result": "user_skipped", "n_missing": len(missing)}
-
-    if args.dry_run:
-        log.info(fmt(C.YELLOW, "\n  --dry-run: stopping here, nothing downloaded.\n"))
-        return {"result": "dry_run", "n_missing": len(missing)}
 
     # ── Pre-flight: staging dir state (BEFORE backup so sys.exit can't strand it)
     staging_preflight(args)
@@ -706,14 +762,11 @@ def process_album(album, args, *, allow_force=True, label=None,
         # when a one-off per-track URL almost always succeeds. Cap at one
         # retry per track (no recursion, no loop risk).
         if lossy_tracks and missing:
-            def _retry_stem_title(p):
-                s = p.stem if hasattr(p, "stem") else str(p)
-                m = re.match(r"^(?:\d+[-.])?\d+[\s\-–—.]+(.+)$", s)
-                t = m.group(1) if m else s
-                m = re.match(r"^.+?\s+-\s+(.+)$", t)
-                return normalize(strip_edition_suffix(m.group(1) if m else t))
-
-            lossy_norms = {_retry_stem_title(Path(d)) for d in lossy_tracks}
+            # lossy_tracks holds stem strings (cleanup_lossy returns f.stem);
+            # pass them straight in. Wrapping in Path() and re-.stem()-ing
+            # mangles titles like "01. ★" down to "01" (pathlib reads ". ★"
+            # as a suffix), so the retry lookup never matched.
+            lossy_norms = {_retry_stem_title(d) for d in lossy_tracks}
             retry_targets = []
             for t in missing:
                 if normalize(strip_edition_suffix(t.get("title") or "")) in lossy_norms:
@@ -744,7 +797,7 @@ def process_album(album, args, *, allow_force=True, label=None,
                     # re-list them as lossy.
                     recovered_norms = {_retry_stem_title(p) for p in retry_kept}
                     lossy_tracks = [d for d in lossy_tracks
-                                    if _retry_stem_title(Path(d))
+                                    if _retry_stem_title(d)
                                     not in recovered_norms]
                     kept = kept + retry_kept
                     n_ok = len(kept)
@@ -766,10 +819,11 @@ def process_album(album, args, *, allow_force=True, label=None,
                 m = re.match(r"^.+?\s+-\s+(.+)$", t)
                 return m.group(1) if m else t
             surviving = {normalize(strip_edition_suffix(_stem_title_t(p))) for p in kept}
-            recovered = [t for t in failed_tracks if normalize(t) in surviving]
+            recovered = [t for t in failed_tracks
+                         if normalize(strip_edition_suffix(t)) in surviving]
             if recovered:
                 failed_tracks = [t for t in failed_tracks
-                                 if normalize(t) not in surviving]
+                                 if normalize(strip_edition_suffix(t)) not in surviving]
                 n_fail = max(0, n_fail - len(recovered))
                 log.info(fmt(C.GRAY,
                     f"  · {len(recovered)} track(s) actually landed despite "
@@ -782,8 +836,11 @@ def process_album(album, args, *, allow_force=True, label=None,
             # the lossy bucket too.
             n_fail = max(0, len(missing) - n_ok - n_lossy)
             if n_fail > 0:
-                def _stem_title(p: Path) -> str:
-                    s = p.stem
+                def _stem_title(p) -> str:
+                    # cleanup_lossy hands back bare stem strings; only re-take
+                    # .stem on real paths, or pathlib trims a title like
+                    # "01. ★" down to "01" at the false "extension".
+                    s = p.stem if hasattr(p, "stem") else str(p)
                     # Strip leading track number (with optional disc prefix).
                     m = re.match(r"^(?:\d+[-.])?\d+[\s\-–—.]+(.+)$", s)
                     title = m.group(1) if m else s
@@ -799,23 +856,33 @@ def process_album(album, args, *, allow_force=True, label=None,
                 # from the failed list so the same title can't appear in
                 # both summary sections.
                 lossy_norms = {
-                    normalize(strip_edition_suffix(_stem_title(Path(stem))))
+                    normalize(strip_edition_suffix(_stem_title(stem)))
                     for stem in lossy_tracks
                 }
                 failed_tracks = [
                     t.get("title") for t in missing
-                    if normalize(t.get("title", "")) not in surviving_norms
-                    and normalize(t.get("title", "")) not in lossy_norms
+                    if normalize(strip_edition_suffix(t.get("title", ""))) not in surviving_norms
+                    and normalize(strip_edition_suffix(t.get("title", ""))) not in lossy_norms
                 ]
             else:
                 failed_tracks = []
 
         if n_lossy:
             log.info(fmt(C.YELLOW, f"  ⚠  {n_lossy} non-FLAC file(s) deleted (Qobuz quality fallback):"))
-            for d in deleted[:5]:
+            for d in lossy_tracks[:5]:
                 log.info(fmt(C.GRAY, f"     {d}"))
 
         elapsed = time.time() - t_start
+
+        # Cancelled mid-rip: the user hit stop, so the partial set must not be
+        # imported. Discard just this job's staged files and bail before the
+        # pre-import hooks + beets ever run.
+        if is_cancel_requested():
+            log.info(fmt(C.YELLOW,
+                "\n  Cancelled — discarding the partial download; nothing imported."))
+            _discard_staged_since(snapshot)
+            return {"result": "cancelled", "imported": False,
+                    "n_ok": n_ok, "n_lossy": n_lossy, "n_fail": n_fail}
 
         # ── Pre-import: compress + lyrics on STAGING ─────────────────────────────
         # compress + lyric_fetch run on staging BEFORE beets imports.
@@ -888,7 +955,8 @@ def process_album(album, args, *, allow_force=True, label=None,
             gap_fill_succeeded = (download_phase_completed
                                   and imported
                                   and n_ok > 0
-                                  and n_fail == 0)
+                                  and n_fail == 0
+                                  and n_lossy == 0)
             if gap_fill_succeeded:
                 try:
                     shutil.rmtree(gap_fill_backup_path)
@@ -905,6 +973,13 @@ def process_album(album, args, *, allow_force=True, label=None,
                 _n_back = restore_gap_fill_backup(gap_fill_backup_path, album_dir)
                 log.info(fmt(C.GREEN,
                     f"  ✓  Restored {_n_back} track(s) to {album_dir}."))
+
+        # `beet import` only moves audio. Streamrip's __artwork/ cover-image
+        # dirs are left behind in staging; sweep them once the import path
+        # has had its turn. Skipped when --no-import (the user wants staging
+        # left intact for manual review).
+        if imported and not args.no_import:
+            sweep_staging_artwork()
 
     # ── Consolidation ────────────────────────────────────────────────────────
     n_consolidated = 0

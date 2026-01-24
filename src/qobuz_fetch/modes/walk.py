@@ -275,7 +275,7 @@ def run_album_walk_mode(args, token):
                         seen.add(_album_seen_key(artist_query, _ad.name))
                     if _result == "already_complete":
                         n_albums_complete += 1
-                    elif _result == "user_skipped":
+                    else:
                         n_albums_prompted += 1
                 n_artists_scanned += 1
             except KeyboardInterrupt:
@@ -349,10 +349,7 @@ def run_library_walk_mode(args, token):
         flt = ""
     artists = all_artists
     if flt:
-        if len(flt) == 1 and flt.isalpha():
-            artists = [a for a in all_artists if a.name.lower() and a.name.lower()[0] >= flt]
-        else:
-            artists = [a for a in all_artists if flt in a.name.lower()]
+        artists = [a for a in all_artists if flt in a.name.lower()]
         log.info(fmt(C.GRAY, f"  {len(artists)} artist(s) match {flt!r}."))
         if not artists:
             return
@@ -456,10 +453,7 @@ def run_walk_queued_mode(args, token):
         flt = ""
     artists = all_artists
     if flt:
-        if len(flt) == 1 and flt.isalpha():
-            artists = [a for a in all_artists if a.name.lower() and a.name.lower()[0] >= flt]
-        else:
-            artists = [a for a in all_artists if flt in a.name.lower()]
+        artists = [a for a in all_artists if flt in a.name.lower()]
         log.info(fmt(C.GRAY, f"  {len(artists)} artist(s) match {flt!r}."))
         if not artists:
             return

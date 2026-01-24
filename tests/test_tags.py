@@ -160,8 +160,6 @@ class TestDownsampleAliasing:
         assert cfg.COMPRESS_ENABLED is True
 
     def test_settings_store_apply_mirrors_legacy_key(self, monkeypatch):
-        """Loading a settings file that still uses COMPRESS_ENABLED must
-        produce the same cfg state as a file using DOWNSAMPLE_HIRES_ENABLED."""
         from qobuz_fetch import config as cfg
         from qobuz_fetch.web import settings_store
 

@@ -186,16 +186,21 @@ def backup_gap_fill_files(file_paths, album_dir: Path):
         dst = bp / rel
         try:
             dst.parent.mkdir(parents=True, exist_ok=True)
-            if _same_filesystem(src.parent, dst.parent):
+            try:
                 os.rename(str(src), str(dst))
-            else:
-                # Cross-fs: copy + verify size + remove source. A mid-copy
-                # failure leaves the source intact.
+            except OSError:
+                # Two bind mounts of the same host disk share an st_dev but
+                # rename across them still raises EXDEV, so don't trust a
+                # same-filesystem guess here — fall back to copy + verify
+                # size + remove source. A mid-copy failure leaves the
+                # source intact.
                 src_size = src.stat().st_size
                 shutil.copy2(str(src), str(dst))
                 if dst.stat().st_size != src_size:
-                    try: dst.unlink()
-                    except OSError: pass
+                    try:
+                        dst.unlink()
+                    except OSError:
+                        pass
                     raise OSError(f"copy size mismatch ({dst.stat().st_size} != {src_size})")
                 src.unlink()
         except (OSError, shutil.Error) as e:

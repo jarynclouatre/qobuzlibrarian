@@ -61,9 +61,6 @@ class TestListLibraryArtists:
         assert result == []
 
     def test_skips_empty_artist_dirs(self, tmp_path):
-        """Artist directories with no audio files anywhere in their tree
-        should not be returned — they cost an API round-trip per walk and
-        produce confusing '(0 albums)' output for the user."""
         (tmp_path / "Empty Artist").mkdir()
         real = tmp_path / "Real Artist" / "Album"
         real.mkdir(parents=True)
@@ -74,8 +71,6 @@ class TestListLibraryArtists:
         assert names == ["Real Artist"]
 
     def test_skips_artist_dir_with_only_cover_jpg(self, tmp_path):
-        """An artist dir whose only content is a cover image (no audio
-        anywhere) is still empty for library purposes — skip it."""
         cover_only = tmp_path / "Cover Only Artist"
         cover_only.mkdir()
         (cover_only / "cover.jpg").write_bytes(b"img")
@@ -143,9 +138,7 @@ class TestReadAlbumDir:
         assert result[0]["bits"] == 24
 
     def test_symlink_loop_does_not_recurse(self, tmp_path):
-        """A symlink loop in the album dir must not crash or hang the scan.
-        Path.rglob follows symlinks by default and goes into unbounded
-        recursion; the helper must walk the loop entry as a leaf and return."""
+        """A symlink loop in the album dir must not crash or hang the scan."""
         album = tmp_path / "Album"
         album.mkdir()
         (album / "01 - Track.flac").write_bytes(b"")

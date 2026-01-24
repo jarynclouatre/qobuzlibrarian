@@ -83,14 +83,12 @@ def _net_reason(exc):
 def qobuz_get(endpoint, params, token):
     headers = {"X-App-Id": config.QOBUZ_APP_ID, "X-User-Auth-Token": token}
     url = f"{config.QOBUZ_API_BASE}/{endpoint}"
-    last_err = None
     for attempt in range(1, _MAX_ATTEMPTS + 1):
         try:
             with _session_lock:
                 r = _session.get(url, params=params, headers=headers,
                                  timeout=_REQUEST_TIMEOUT)
         except requests.RequestException as e:
-            last_err = e
             if attempt == _MAX_ATTEMPTS:
                 raise QobuzError(
                     f"{_net_reason(e)} (while calling {endpoint})") from e
@@ -100,30 +98,31 @@ def qobuz_get(endpoint, params, token):
             continue
         if r.status_code == 401:
             raise AuthLost(f"401 from Qobuz {endpoint}")
-        if r.status_code in _RETRY_STATUSES and attempt < _MAX_ATTEMPTS:
-            wait = _retry_after(r) or min(2 ** (attempt - 1), 8)
-            if r.status_code == 429:
-                # Surface rate-limit waits in the shared logger so the web
-                # SSE stream shows "rate-limited, waiting Ns" instead of a
-                # silent pause that looks like a hang.
-                log.info(fmt(C.YELLOW,
-                    f"  ⏳ Qobuz rate-limit — waiting {wait:.0f}s "
-                    f"(retry {attempt}/{_MAX_ATTEMPTS})"))
-            else:
-                vlog(f"{endpoint}: HTTP {r.status_code}; retry "
-                     f"{attempt}/{_MAX_ATTEMPTS} in {wait:.1f}s")
-            _retry_sleep(wait)
-            continue
+        if r.status_code in _RETRY_STATUSES:
+            if attempt < _MAX_ATTEMPTS:
+                wait = _retry_after(r) or min(2 ** (attempt - 1), 8)
+                if r.status_code == 429:
+                    # Surface rate-limit waits in the shared logger so the web
+                    # SSE stream shows "rate-limited, waiting Ns" instead of a
+                    # silent pause that looks like a hang.
+                    log.info(fmt(C.YELLOW,
+                        f"  ⏳ Qobuz rate-limit — waiting {wait:.0f}s "
+                        f"(retry {attempt}/{_MAX_ATTEMPTS})"))
+                else:
+                    vlog(f"{endpoint}: HTTP {r.status_code}; retry "
+                         f"{attempt}/{_MAX_ATTEMPTS} in {wait:.1f}s")
+                _retry_sleep(wait)
+                continue
+            raise QobuzError(
+                f"Qobuz API kept returning HTTP {r.status_code} after "
+                f"{_MAX_ATTEMPTS} attempts (while calling {endpoint}) — "
+                f"rate-limited or a temporary outage; try again later.")
         if r.status_code != 200:
             raise QobuzError(f"HTTP {r.status_code} from {endpoint}: {r.text[:200]}")
         try:
             return r.json()
         except json.JSONDecodeError as e:
             raise QobuzError(f"bad JSON from {endpoint}: {e}") from e
-    # All attempts exhausted on retryable failures.
-    raise QobuzError(
-        f"{_net_reason(last_err)} — still failing after {_MAX_ATTEMPTS} "
-        f"attempts (while calling {endpoint})")
 
 
 # ── Token preflight ───────────────────────────────────────────────────────────

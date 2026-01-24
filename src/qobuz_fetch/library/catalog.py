@@ -139,6 +139,14 @@ def predicted_album_paths(qobuz_album):
 
     artist_dirs = [config.MUSIC_ROOT / artist]
     artist_dirs.extend(_find_multi_artist_dirs(artist_raw))
+    # Qobuz returns "Jay Z and Kanye West" on some editions while the folder
+    # is "Jay Z, Kanye West"; searching multi-artist dirs under the primary
+    # name finds it, so the migration that follows isn't starved of a source dir.
+    primary_raw = _primary_artist_of(artist_raw)
+    if primary_raw and primary_raw != artist_raw:
+        for d in _find_multi_artist_dirs(primary_raw):
+            if d not in artist_dirs:
+                artist_dirs.append(d)
 
     years = []
     yr = album_year(qobuz_album)
@@ -276,52 +284,69 @@ def compute_missing(qobuz_tracks, existing_tracks):
          ('Foo (LP Version)' existing matches Qobuz 'Foo', and vice versa)
 
     Returns (missing, present) lists of Qobuz track dicts.
+
+    Matching is multiplicity-aware: each on-disk track satisfies at most one
+    Qobuz track. An album with a repeated title (a reprise, a hidden track,
+    multi-disc "Intro"s, two same-named versions) must still flag the duplicate
+    as missing — a set-membership check would mark every same-titled Qobuz
+    track present off a single file and silently leave a gap.
     """
-    have_isrcs = {t["isrc"] for t in existing_tracks if t.get("isrc")}
-    have_mbids = {t["mb_trackid"] for t in existing_tracks if t.get("mb_trackid")}
-    have_disc_titles = {
-        (t.get("discnumber", 1) or 1, t["normalized"])
-        for t in existing_tracks if t.get("normalized")
-    }
-    have_stripped_titles: set = set()
+    # One slot per on-disk track, consumed when it satisfies a Qobuz track.
+    slots = []
     for t in existing_tracks:
+        disc = t.get("discnumber", 1) or 1
+        norm = t.get("normalized") or ""
         ttl = t.get("title") or ""
-        if ttl:
-            stripped = normalize(strip_edition_suffix(ttl))
-            if stripped:
-                have_stripped_titles.add((t.get("discnumber", 1) or 1, stripped))
+        stripped = normalize(strip_edition_suffix(ttl)) if ttl else ""
+        slots.append({
+            "used": False,
+            "isrc": (t.get("isrc") or "").replace("-", "").upper(),
+            "mbid": (t.get("mb_trackid") or "").lower(),
+            "disc_title": (disc, norm) if norm else None,
+            "disc_stripped": (disc, stripped) if stripped else None,
+        })
 
-    missing, present = [], []
+    qkeys = []
     for qt in qobuz_tracks:
-        qisrc  = (qt.get("isrc") or "").replace("-", "").upper()
-        qmbid  = (qt.get("mbid") or "").lower()
         qtitle_raw = qt.get("title") or ""
-        qtitle = normalize(qtitle_raw)
-        qtitle_stripped = normalize(strip_edition_suffix(qtitle_raw))
-        qdisc  = qt.get("media_number", 1) or 1
+        qdisc = qt.get("media_number", 1) or 1
+        qkeys.append({
+            "isrc": (qt.get("isrc") or "").replace("-", "").upper(),
+            "mbid": (qt.get("mbid") or "").lower(),
+            "title": (qdisc, normalize(qtitle_raw)) if qtitle_raw else None,
+            "stripped": (qdisc, normalize(strip_edition_suffix(qtitle_raw))) if qtitle_raw else None,
+        })
 
-        if qisrc and qisrc in have_isrcs:
-            present.append(qt)
-            continue
-        if qmbid and qmbid in have_mbids:
-            present.append(qt)
-            continue
-        if qtitle and (qdisc, qtitle) in have_disc_titles:
-            present.append(qt)
-            continue
-        # Layer 4a: Qobuz title stripped matches existing normalized title
-        if qtitle_stripped and (qdisc, qtitle_stripped) in have_disc_titles:
-            present.append(qt)
-            continue
-        # Layer 4b: Qobuz title matches existing stripped title
-        if qtitle and (qdisc, qtitle) in have_stripped_titles:
-            present.append(qt)
-            continue
-        # Layer 4c: Qobuz stripped matches existing stripped
-        if qtitle_stripped and (qdisc, qtitle_stripped) in have_stripped_titles:
-            present.append(qt)
-            continue
-        missing.append(qt)
+    def _matches(k, s, layer):
+        if layer == "isrc":
+            return bool(k["isrc"]) and k["isrc"] == s["isrc"]
+        if layer == "mbid":
+            return bool(k["mbid"]) and k["mbid"] == s["mbid"]
+        if layer == "title":
+            return k["title"] is not None and k["title"] == s["disc_title"]
+        # stripped: edition-stripped variants on either side
+        return any(x is not None and x == y for x, y in (
+            (k["title"], s["disc_stripped"]),
+            (k["stripped"], s["disc_title"]),
+            (k["stripped"], s["disc_stripped"]),
+        ))
+
+    claimed = [False] * len(qobuz_tracks)
+    # Layer priority is load-bearing: claim the strongest identity first so an
+    # ISRC-identifiable track takes its exact slot before a weaker title match
+    # can consume it.
+    for layer in ("isrc", "mbid", "title", "stripped"):
+        for qi, k in enumerate(qkeys):
+            if claimed[qi]:
+                continue
+            for s in slots:
+                if not s["used"] and _matches(k, s, layer):
+                    s["used"] = True
+                    claimed[qi] = True
+                    break
+
+    missing = [qt for qi, qt in enumerate(qobuz_tracks) if not claimed[qi]]
+    present = [qt for qi, qt in enumerate(qobuz_tracks) if claimed[qi]]
     return missing, present
 
 
@@ -332,44 +357,60 @@ def find_extras_in_existing(qobuz_tracks, existing_tracks):
     the Qobuz album? Critical safety check before upgrade-replace — if the
     user has bonus tracks (custom rips, B-sides, deluxe extras), never wipe.
 
-    Uses the same 4-layer matching chain as compute_missing.
+    Multiplicity-aware (mirrors compute_missing): each Qobuz track accounts for
+    at most one on-disk track, so a genuine duplicate/bonus track on disk is
+    still flagged as an extra. Set membership would let one Qobuz track "cover"
+    several same-titled files and hide a real extra — dangerous here, since this
+    gates the upgrade wipe-and-replace.
     """
-    q_isrcs = {(qt.get("isrc") or "").replace("-", "").upper()
-               for qt in qobuz_tracks if qt.get("isrc")}
-    q_mbids = {(qt.get("mbid") or "").lower()
-               for qt in qobuz_tracks if qt.get("mbid")}
-    q_disc_titles = {
-        (qt.get("media_number", 1) or 1, normalize(qt.get("title") or ""))
-        for qt in qobuz_tracks if qt.get("title")
-    }
-    q_stripped_titles = {
-        (qt.get("media_number", 1) or 1, normalize(strip_edition_suffix(qt.get("title") or "")))
-        for qt in qobuz_tracks if qt.get("title")
-    }
+    # One slot per Qobuz track, consumed when it accounts for an on-disk track.
+    slots = []
+    for qt in qobuz_tracks:
+        qtitle_raw = qt.get("title") or ""
+        qdisc = qt.get("media_number", 1) or 1
+        slots.append({
+            "used": False,
+            "isrc": (qt.get("isrc") or "").replace("-", "").upper(),
+            "mbid": (qt.get("mbid") or "").lower(),
+            "disc_title": (qdisc, normalize(qtitle_raw)) if qtitle_raw else None,
+            "disc_stripped": (qdisc, normalize(strip_edition_suffix(qtitle_raw))) if qtitle_raw else None,
+        })
 
-    extras = []
+    ekeys = []
     for et in existing_tracks:
-        e_isrc  = et.get("isrc") or ""
-        e_mbid  = et.get("mb_trackid") or ""
         e_title_raw = et.get("title") or ""
-        e_norm  = normalize(e_title_raw)
-        e_stripped = normalize(strip_edition_suffix(e_title_raw))
-        e_disc  = et.get("discnumber", 1) or 1
+        e_disc = et.get("discnumber", 1) or 1
+        ekeys.append({
+            "isrc": (et.get("isrc") or "").replace("-", "").upper(),
+            "mbid": (et.get("mb_trackid") or "").lower(),
+            "title": (e_disc, normalize(e_title_raw)) if e_title_raw else None,
+            "stripped": (e_disc, normalize(strip_edition_suffix(e_title_raw))) if e_title_raw else None,
+        })
 
-        if e_isrc and e_isrc in q_isrcs:
-            continue
-        if e_mbid and e_mbid in q_mbids:
-            continue
-        if e_norm and (e_disc, e_norm) in q_disc_titles:
-            continue
-        if e_stripped and (e_disc, e_stripped) in q_disc_titles:
-            continue
-        if e_norm and (e_disc, e_norm) in q_stripped_titles:
-            continue
-        if e_stripped and (e_disc, e_stripped) in q_stripped_titles:
-            continue
-        extras.append(et)
-    return extras
+    def _matches(k, s, layer):
+        if layer == "isrc":
+            return bool(k["isrc"]) and k["isrc"] == s["isrc"]
+        if layer == "mbid":
+            return bool(k["mbid"]) and k["mbid"] == s["mbid"]
+        if layer == "title":
+            return k["title"] is not None and k["title"] == s["disc_title"]
+        return any(x is not None and x == y for x, y in (
+            (k["title"], s["disc_stripped"]),
+            (k["stripped"], s["disc_title"]),
+            (k["stripped"], s["disc_stripped"]),
+        ))
+
+    matched = [False] * len(existing_tracks)
+    for layer in ("isrc", "mbid", "title", "stripped"):
+        for ei, k in enumerate(ekeys):
+            if matched[ei]:
+                continue
+            for s in slots:
+                if not s["used"] and _matches(k, s, layer):
+                    s["used"] = True
+                    matched[ei] = True
+                    break
+    return [et for ei, et in enumerate(existing_tracks) if not matched[ei]]
 
 
 # ── Album metadata helpers ────────────────────────────────────────────────────

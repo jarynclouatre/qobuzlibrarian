@@ -139,7 +139,10 @@ def write_streamrip_creds(user_id, auth_token) -> bool:
             if _srv:
                 doc["misc"]["version"] = _srv
             doc["database"] = tomlkit.table()
-            doc["database"]["downloads_enabled"] = True
+            # Keep streamrip's downloads db off — on it blocks re-downloading
+            # any track the user deleted by hand. The entrypoint enforces the
+            # same on the bundled config; mirror it on the bare-metal fallback.
+            doc["database"]["downloads_enabled"] = False
             doc["database"]["failed_downloads_enabled"] = True
             # downloads_path / failed_downloads_path are set below,
             # deployment-agnostic, for every branch.

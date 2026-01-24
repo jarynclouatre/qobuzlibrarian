@@ -190,7 +190,10 @@ Auth is by **token**, not your password (it's the `password_or_token` field
 streamrip uses). You need a paid Qobuz account; this only downloads what your
 subscription already entitles you to. To get the token:
 
-- **Qobuz desktop app** → Help → Debug → copy `user_auth_token`, or
+- **Qobuz web player** — sign in at [play.qobuz.com](https://play.qobuz.com), open
+  your browser's dev tools (F12), then **Application → Local Storage →
+  play.qobuz.com**, click the `localuser` entry, and copy its `token` (the
+  `id` beside it is your user id), or
 - if you already use streamrip outside Docker, copy `password_or_token`
   from `~/.config/streamrip/config.toml` on your host.
 
@@ -324,6 +327,35 @@ if none exists. To use your existing beets database instead:
    (Or bind-mount a host directory at `/config/beets` in `compose.yaml`.)
 3. Start the container. It will not overwrite either file.
 
+## Tagging an untagged collection (AcoustID)
+
+Qobuz downloads always arrive fully tagged, so the normal import leaves the
+autotagger off. But for older, untagged files you already have, beets' built-in
+`chroma` plugin can identify them by audio fingerprint (AcoustID) and tag them.
+The fingerprint tool (`fpcalc`) and its Python binding ship in the image.
+
+This is a separate, opt-in run — it does not change Qobuz downloads. A
+ready-made config is bundled so you don't have to touch your normal beets
+settings:
+
+```bash
+docker compose run --rm -e BEETSDIR=/config/beets qobuz-librarian \
+  beet -c /app/docker/beets-chroma.yaml import /music/<your-untagged-folder>
+```
+
+- It fingerprints each file, looks it up on AcoustID, and shows the matching
+  MusicBrainz releases for you to confirm one album at a time. AcoustID isn't
+  always right, so you review each match — accept, skip, or pick another.
+- It tags files **in place**: tags are written where the files already are and
+  the files are added to your library database; nothing is moved, copied, or
+  deleted. Run `beet move` afterwards if you also want them re-foldered.
+- Lookups work out of the box — beets uses a built-in AcoustID key. You only
+  need your own key to *submit* fingerprints back with `beet submit`; get one
+  at <https://acoustid.org/new-application> and add `acoustid: {apikey: "KEY"}`
+  to your beets config.
+- Needs outbound network to acoustid.org and musicbrainz.org, and is best run
+  when no download/import is active (both use the same beets database).
+
 ## Default beets config
 
 The seeded `beets/config.yaml` is conservative so it doesn't surprise you
@@ -440,11 +472,12 @@ The CLI honours the same `.env` and `compose.yaml` settings as the web UI.
 | Container exits immediately on `docker compose up` | `.env` missing from the compose dir, or a required `QF_*` var is unset. `docker compose logs qobuz-librarian` shows which. |
 | `Volume not writable` (Settings → Diagnostics shows FAIL) | `PUID`/`PGID` don't match the host owner of the bind mount — `chown -R $(id -u):$(id -g) ./music ./staging` or set `PUID`/`PGID` in `.env`. |
 | Web UI loads but Library scan says "no artist folders found" | `/music` is mounted at an empty directory or one level off — make sure `QF_MUSIC_DIR` points at the artist-level folder, not the parent. |
-| Token rejected (Settings → Test) | Token expired, copied with surrounding quotes, or pasted with trailing whitespace — re-grab from the Qobuz desktop app → Help → Debug, paste clean. |
+| Token rejected (Settings → Test) | Token expired, copied with surrounding quotes, or pasted with trailing whitespace — re-grab it from play.qobuz.com (dev tools → Application → Local Storage → `localuser` → `token`), paste clean. |
 | Download stalls in "Importing into beets…" | A beets plugin is loaded without its required config block (e.g. lastgenre API key, replaygain backend). Disable it via `BEETS_PLUGINS` or add the block to `/config/beets/config.yaml`. |
 | `docker compose pull` 404 | Image hasn't been published under that tag yet — build from source (see [Building from source](#building-from-source)). |
 | Healthcheck failing but port reachable | Container couldn't reach its own `/healthz` — check container resource limits and `docker logs qobuz-librarian`. |
 | Upgrade walk fails with `Permission denied` backing up an album | An earlier `docker exec qobuz-librarian beet …` (or similar) ran as root, leaving root-owned files the librarian (PUID 1000) can't move. Either rerun with `docker exec --user 1000:1000 …`, or fix on the host: `sudo chown -R 1000:1000 ./music`. |
+| Music files vanished from `/music` after a manual `beet` command | `beet -d /config/beets …` reads `-d` as the *destination* directory, so with `move: yes` it relocates the whole library into the config volume (`beet ls -p` still prints `/music/…` because paths are stored relative). The container already exports `BEETSDIR`; run `beet …` with no `-d`, or `BEETSDIR=/config/beets beet …`. |
 
 ## Security & deployment shape
 
@@ -461,8 +494,8 @@ get on a fresh `docker compose up -d`:
   Synology/QNAP arm64 get native builds.
 - Persisted token files at `/config/streamrip/config.toml` and
   `/data/.qobuz_settings.json` land 0600.
-- CSRF (double-submit cookie + constant-time compare), strict CSP
-  (`frame-ancestors 'none'`, no `unsafe-eval`), HSTS on HTTPS only.
+- CSRF (double-submit cookie + constant-time compare), a CSP with
+  `frame-ancestors 'none'` and no `unsafe-eval`, HSTS on HTTPS only.
 - `--no-server-header` plus a middleware strip — uvicorn isn't
   advertised in responses.
 - `QF_CHECK_VOLUMES=1` at startup blocks write endpoints with 503 if

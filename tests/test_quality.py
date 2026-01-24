@@ -174,3 +174,11 @@ class TestCappedPersistence:
         loaded = load_capped()
         assert "old" not in loaded
         assert "new" in loaded
+
+    def test_load_returns_dict_when_file_is_a_json_list(self, tmp_path, monkeypatch):
+        # A malformed capped file that parses as a list would otherwise reach
+        # is_album_capped's `.get` and crash the upgrade scan.
+        cfile = tmp_path / "capped.json"
+        cfile.write_text('["x", "y"]', encoding="utf-8")
+        monkeypatch.setattr("qobuz_fetch.config.CAPPED_FILE", cfile)
+        assert load_capped() == {}

@@ -26,7 +26,7 @@ from pathlib import Path
 from qobuz_fetch import config as cfg
 from qobuz_fetch.library.scanner import clear_scan_caches
 from qobuz_fetch.ui_cli.colors import C, fmt
-from qobuz_fetch.ui_cli.errors import EXIT_AUTH, EXIT_GENERAL, die
+from qobuz_fetch.ui_cli.errors import EXIT_GENERAL, die
 from qobuz_fetch.ui_cli.logging import log, vlog
 
 
@@ -99,6 +99,149 @@ def _merge_split_folder(dest_dir, source_dir):
     return moved
 
 
+def _read_essential_tags(path):
+    """(albumartist, album) for a FLAC, falling back to artist for the first
+    (beets resolves albumartist→artist in the path template). Returns None if
+    the file can't be read at all — distinct from a readable file with empty
+    tags, so callers don't treat a transient read error as 'untagged'."""
+    try:
+        from mutagen.flac import FLAC
+        tags = FLAC(str(path))
+    except Exception:
+        return None
+    aa = (tags.get("albumartist") or tags.get("artist") or [""])[0].strip()
+    al = (tags.get("album") or [""])[0].strip()
+    return aa, al
+
+
+def _quarantine_untagged_staging():
+    """Move staged FLACs with no album/artist tags (or that can't be read) out
+    of the import set — never delete them.
+
+    beets files an untagged track under an empty-artist `/_/` folder, so these
+    can't just be imported. But a Qobuz download always carries tags, so a
+    tagless staging file is almost always a cancelled/crashed-rip fragment —
+    and on the rare chance it's a real file we merely couldn't read, destroying
+    it would be unacceptable. Move it to a timestamped quarantine dir under
+    DATA_DIR so it stays recoverable (and can be retagged by hand, e.g. with
+    beets' chroma/acoustid). Returns the list of original paths moved."""
+    moved = []
+    try:
+        flacs = list(cfg.STAGING_DIR.rglob("*.flac"))
+    except OSError:
+        return moved
+    quarantine = None
+    for f in flacs:
+        tags = _read_essential_tags(f)
+        if tags is not None and tags[0] and tags[1]:
+            continue  # properly tagged — leave it for beets
+        if quarantine is None:
+            quarantine = (cfg.DATA_DIR / ".untagged_staging"
+                          / datetime.now().strftime("%Y%m%d_%H%M%S"))
+        try:
+            rel = f.relative_to(cfg.STAGING_DIR)
+        except ValueError:
+            rel = Path(f.name)
+        dest = quarantine / rel
+        try:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(f), str(dest))
+            moved.append(f)
+        except OSError as e:
+            vlog(f"couldn't quarantine {f.name}: {e}")
+    if moved:
+        log.info(fmt(C.YELLOW,
+            f"  ⚠  Set aside {len(moved)} untagged file(s) → {quarantine}\n"
+            "     (cancelled-rip leftovers, or files needing a manual retag — "
+            "not deleted)."))
+    return moved
+
+
+def _normalize_staging_tags():
+    """Trim whitespace/quotes from the tags beets builds the path from.
+    streamrip writes tags from its own Qobuz fetch, so the API-boundary
+    cleaning never reaches them — without this, `Hunky Dory ` and `"Heroes"`
+    become the on-disk folder names."""
+    from qobuz_fetch.library.tags import clean_qobuz_string
+    try:
+        flacs = list(cfg.STAGING_DIR.rglob("*.flac"))
+    except OSError:
+        return
+    for f in flacs:
+        try:
+            from mutagen.flac import FLAC
+            tags = FLAC(str(f))
+        except Exception:
+            continue
+        changed = False
+        for key in ("album", "albumartist", "artist", "title"):
+            vals = tags.get(key)
+            if not vals:
+                continue
+            cleaned = [clean_qobuz_string(v) for v in vals]
+            if cleaned != list(vals):
+                tags[key] = cleaned
+                changed = True
+        if changed:
+            try:
+                tags.save()
+            except Exception:
+                pass
+
+
+def _build_import_override_yaml():
+    """The beets config override the import runs with, as a YAML string.
+
+    Forces only the keys the app needs (library/directory, non-interactive,
+    non-incremental) and lets everything else fall through to the user's
+    config.yaml. Optional path templates, a plugins list, and album-art
+    handling are derived from config. Emitting `plugins:` REPLACES the
+    config.yaml list (beets doesn't merge lists), so it's only emitted when a
+    plugins override or a non-default art mode requires it.
+    """
+    import re as _re
+    override_yaml = (
+        f"library: {_yaml_sq(cfg.BEETS_DB_PATH)}\n"
+        f"directory: {_yaml_sq(cfg.MUSIC_ROOT)}\n"
+        "import:\n"
+        "  quiet: yes\n"
+        "  incremental: no\n"
+    )
+    # Path templates are deployer-supplied and can contain single quotes
+    # (e.g. `$albumartist's stuff/$album`); _yaml_sq keeps the scalar safe.
+    _paths = []
+    if cfg.BEETS_PATH_DEFAULT:
+        _paths.append(f"  default: {_yaml_sq(cfg.BEETS_PATH_DEFAULT)}\n")
+    if cfg.BEETS_PATH_SINGLETON:
+        _paths.append(f"  singleton: {_yaml_sq(cfg.BEETS_PATH_SINGLETON)}\n")
+    if cfg.BEETS_PATH_COMP:
+        _paths.append(f"  comp: {_yaml_sq(cfg.BEETS_PATH_COMP)}\n")
+    if _paths:
+        override_yaml += "paths:\n" + "".join(_paths)
+
+    # fetchart saves a cover file; embedart embeds it into the tracks. ARTWORK
+    # picks which. Start from the user's plugin override (or the seeded
+    # `fetchart` default) and add what the art mode needs.
+    _plugins = list(cfg.BEETS_PLUGINS) if cfg.BEETS_PLUGINS else ["fetchart"]
+    _art = getattr(cfg, "ARTWORK", "sidecar")
+    if _art in ("embed", "both"):
+        for _p in ("fetchart", "embedart"):
+            if _p not in _plugins:
+                _plugins.append(_p)
+        # auto: embed after fetchart fetches the cover. remove_art_file drops
+        # the on-disk cover for embed-only; both keeps it.
+        override_yaml += ("embedart:\n"
+                          "  auto: yes\n"
+                          f"  remove_art_file: {'yes' if _art == 'embed' else 'no'}\n")
+    if cfg.BEETS_PLUGINS or _art in ("embed", "both"):
+        # Plugin names must be plain identifiers — anything else would break
+        # the YAML structure (and likely isn't a real beets plugin anyway).
+        safe_plugins = [p for p in _plugins if _re.match(r"^[A-Za-z0-9_]+$", p)]
+        if safe_plugins:
+            override_yaml += f"plugins: [{', '.join(safe_plugins)}]\n"
+    return override_yaml
+
+
 def beets_import_paths():
     """Run beets import on the staging directory.
 
@@ -109,6 +252,9 @@ def beets_import_paths():
         log.info(fmt(C.RED, "  ✗  `beet` not found on PATH — beets is not installed in this environment."))
         log.info(fmt(C.GRAY, "     The bundled Docker image includes beets; bare-metal installs need it separately."))
         return False
+
+    _quarantine_untagged_staging()
+    _normalize_staging_tags()
 
     user_config = cfg.BEETS_CONFIG_DIR / "config.yaml"
     if not user_config.exists():
@@ -122,49 +268,7 @@ def beets_import_paths():
     BEETS_OVERRIDE_NAME = ".beets_import_override.yaml"
     override_path = cfg.BEETS_DB_PATH.parent / BEETS_OVERRIDE_NAME
 
-    # Only force the keys the app genuinely needs for correctness; let
-    # everything else fall through to the user's /config/beets/config.yaml
-    # so toggles like `autotag`, `move`, `duplicate_action` are actually
-    # editable (the README documents them as user-tunable).
-    #
-    # Forced here:
-    #   library / directory  — the app dictates where the DB and music live
-    #   import.quiet         — non-interactive run; never block on a prompt
-    #   import.incremental   — must be false so a retry sees the same files
-    override_yaml = (
-        f"library: {_yaml_sq(cfg.BEETS_DB_PATH)}\n"
-        f"directory: {_yaml_sq(cfg.MUSIC_ROOT)}\n"
-        "import:\n"
-        "  quiet: yes\n"
-        "  incremental: no\n"
-    )
-
-    # Optional naming overrides. Only emit keys the user actually set, so
-    # an unset format falls through to their config.yaml / beets defaults.
-    # The values are deployer-supplied beets path templates — realistically
-    # things like `$albumartist's stuff/$album`, i.e. they contain single
-    # quotes. _yaml_sq emits a safe single-quoted scalar so a quote can't
-    # break the file or inject directives.
-    _paths = []
-    if cfg.BEETS_PATH_DEFAULT:
-        _paths.append(f"  default: {_yaml_sq(cfg.BEETS_PATH_DEFAULT)}\n")
-    if cfg.BEETS_PATH_SINGLETON:
-        _paths.append(f"  singleton: {_yaml_sq(cfg.BEETS_PATH_SINGLETON)}\n")
-    if cfg.BEETS_PATH_COMP:
-        _paths.append(f"  comp: {_yaml_sq(cfg.BEETS_PATH_COMP)}\n")
-    if _paths:
-        override_yaml += "paths:\n" + "".join(_paths)
-
-    # Optional plugins override. Unset = honour whatever the user's
-    # config.yaml has (seeded with `fetchart` only). Setting this replaces
-    # the plugins list entirely; beets config layering doesn't merge lists.
-    if cfg.BEETS_PLUGINS:
-        # Plugin names must be plain identifiers — anything else would break
-        # the YAML structure (and likely isn't a real beets plugin anyway).
-        import re as _re
-        safe_plugins = [p for p in cfg.BEETS_PLUGINS if _re.match(r"^[A-Za-z0-9_]+$", p)]
-        if safe_plugins:
-            override_yaml += f"plugins: [{', '.join(safe_plugins)}]\n"
+    override_yaml = _build_import_override_yaml()
 
     try:
         override_path.parent.mkdir(parents=True, exist_ok=True)
@@ -182,7 +286,10 @@ def beets_import_paths():
             except OSError:
                 pass
 
-    return _beets_direct(override_path, _clean)
+    imported = _beets_direct(override_path, _clean)
+    if imported:
+        _consolidate_duplicate_albums()
+    return imported
 
 
 def _wait_or_idle_kill(proc, last_output):
@@ -342,6 +449,105 @@ def _report_staging_remnants():
         log.info(fmt(C.GRAY, f"       … and {len(folders) - 20} more"))
 
 
+# Unit separator — can't appear in a filesystem path or a tag value, so it's
+# a safe field delimiter for parsing `beet ls -f` output.
+_ALBUM_FIELD_SEP = "\x1f"
+
+
+def _duplicate_album_dirs(listing):
+    """Directories that hold more than one beets album row for the SAME album.
+
+    `listing` is the output of
+    ``beet ls -a -f '$path<sep>$albumartist<sep>$album'``. A directory is
+    returned only when every row in it shares one (albumartist, album); a
+    directory where two genuinely different albums coexist is left alone.
+    """
+    by_dir: dict = {}
+    for line in listing.splitlines():
+        if line.count(_ALBUM_FIELD_SEP) != 2:
+            continue
+        path, artist, album = line.split(_ALBUM_FIELD_SEP)
+        if path:
+            by_dir.setdefault(path, []).append((artist, album))
+    return [d for d, rows in by_dir.items()
+            if len(rows) > 1 and len(set(rows)) == 1]
+
+
+def _consolidate_duplicate_albums():
+    """Fold any album folder that beets split into several album rows into one.
+
+    beets opens a fresh album row when an import drops tracks into a folder
+    that already holds an album — exactly what gap-fill, repair, and
+    re-downloads do, so the library ends up listing the album (and any
+    refilled track) more than once. beets' own `duplicate_action: merge` does
+    not combine these as-is imports, so reconcile with remove+import, which
+    leaves the database schema for beets to manage rather than hand-editing
+    rows. A folder is only touched when every row in it is the SAME album, so
+    two genuinely different albums sharing a directory are never merged.
+    """
+    if not shutil.which("beet"):
+        return
+    try:
+        override_path = cfg.BEETS_DB_PATH.parent / ".beets_consolidate_override.yaml"
+        override_path.write_text(_build_import_override_yaml(), encoding="utf-8")
+    except OSError:
+        return
+    beet_env = {**os.environ, "BEETSDIR": str(cfg.BEETS_CONFIG_DIR)}
+    base = ["beet", "-c", str(override_path)]
+    idle = cfg.BEETS_TIMEOUT if cfg.BEETS_TIMEOUT and cfg.BEETS_TIMEOUT > 0 else 600
+
+    def _drop_override():
+        try:
+            override_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+    try:
+        listing = subprocess.run(
+            base + ["ls", "-a", "-f",
+                    f"$path{_ALBUM_FIELD_SEP}$albumartist{_ALBUM_FIELD_SEP}$album"],
+            capture_output=True, text=True, env=beet_env, timeout=idle,
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        _drop_override()
+        return
+
+    dup_dirs = _duplicate_album_dirs(listing)
+
+    if dup_dirs:
+        log.info(fmt(C.GRAY,
+            f"  ⤷  Tidying {len(dup_dirs)} album folder(s) beets had split "
+            "into duplicate library entries…"))
+    for d in dup_dirs:
+        try:
+            subprocess.run(base + ["remove", "-f", "path:" + d],
+                           capture_output=True, text=True, env=beet_env,
+                           timeout=120)
+            # The remove just cleared every row for this folder; if the
+            # re-import fails the album is left untracked, which is worse than
+            # the duplicate. Surface that loudly so it can be re-imported.
+            # -A (as-is, no autotag): consolidation only folds duplicate rows
+            # back together — it must keep the tags the tracks already have, not
+            # re-guess them against MusicBrainz (which a user's autotag:yes
+            # config would otherwise trigger on the whole album).
+            imp = subprocess.run(base + ["import", "-A", d],
+                                 capture_output=True, text=True, env=beet_env,
+                                 timeout=idle)
+            if imp.returncode != 0:
+                log.info(fmt(C.YELLOW,
+                    f"  ⚠  Re-import after de-duplicating {d} exited "
+                    f"{imp.returncode}; the album may be untracked in beets. "
+                    f"Run `beet import` on that folder by hand."))
+        except (OSError, subprocess.SubprocessError) as e:
+            log.info(fmt(C.YELLOW,
+                f"  ⚠  Couldn't tidy duplicate entries for {d} ({e}); "
+                "run `beet import` on that folder by hand."))
+
+    _drop_override()
+    if dup_dirs:
+        clear_scan_caches()
+
+
 def staging_preflight(args):
     """Sweep streamrip non-audio residue, then handle any remaining leftovers."""
     from qobuz_fetch.integrations.rip import cleanup_staging_residue
@@ -372,7 +578,7 @@ def staging_preflight(args):
             return
         log.info(fmt(C.RED + C.BOLD,
             f"\n  ✗  Refusing --yes silent bypass: {len(files)} files exceeds threshold."))
-        sys.exit(EXIT_AUTH)
+        sys.exit(EXIT_GENERAL)
 
     print()
     log.info(fmt(C.CYAN, "  Options:"))

@@ -69,8 +69,6 @@ class TestValidateToken:
 
 class TestUserAgent:
     def test_user_agent_carries_installed_package_version(self):
-        """The session UA must reflect the running build, not a hard-coded
-        version string — otherwise the UA silently lies after a bump."""
         from importlib.metadata import version
 
         from qobuz_fetch.api.client import _session
@@ -83,10 +81,6 @@ class TestUserAgent:
 
 class TestConcurrentAccess:
     def test_concurrent_calls_serialize_through_lock(self):
-        """The shared requests.Session is wrapped in a lock so the web app's
-        run_in_executor fan-out can't corrupt urllib3/cookie state on the
-        Session. Spawn enough threads to expose a missing lock and assert
-        every call completes."""
         import threading
         from concurrent.futures import ThreadPoolExecutor
 

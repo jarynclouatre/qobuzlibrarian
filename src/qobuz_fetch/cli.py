@@ -131,7 +131,7 @@ class _ExitOneArgParser(argparse.ArgumentParser):
     """
 
     def exit(self, status=0, message=None):
-        if status == 2 and message:
+        if status == 2:
             status = EXIT_GENERAL
         return super().exit(status, message)
 
@@ -256,10 +256,16 @@ def parse_args():
     if args.include_singles and (args.upgrade_walk
                                  or (args.query and not args.artist)):
         p.error("--include-singles only applies to artist mode")
-    # --no-catalog skips the missing-albums step; only artist mode and
-    # upgrade walk have that step.
-    if args.no_catalog and args.query and not args.artist and not args.upgrade_walk:
-        p.error("--no-catalog only applies to artist mode or --upgrade-walk")
+    # --no-catalog skips artist mode's missing-albums step. The upgrade walk
+    # has no such step and never reads the flag, so reject it there too rather
+    # than accepting it silently. Bare --no-catalog stays valid for the menu.
+    if args.no_catalog and not args.artist and (args.query or args.upgrade_walk):
+        p.error("--no-catalog only applies to artist mode")
+    # The upgrade walk sweeps the whole library; a query would be silently
+    # dropped, so steer the user to --artist instead.
+    if args.upgrade_walk and args.query:
+        p.error("--upgrade-walk scans the whole library — drop the query, "
+                "or use --artist NAME for one artist")
     # --include-comps controls compilation filtering in artist mode.
     if args.include_comps and (args.upgrade_walk
                                or (args.query and not args.artist)):
@@ -267,6 +273,22 @@ def parse_args():
     # --no-upgrade with --upgrade-walk is contradictory.
     if args.no_upgrade and args.upgrade_walk:
         p.error("--no-upgrade conflicts with --upgrade-walk")
+    # --auto-safe only gates the unattended upgrade walk. With a query
+    # (album mode) or --artist it does nothing — reject it instead of
+    # accepting it silently. Bare --auto-safe stays valid: the interactive
+    # menu's upgrade option reads it.
+    if args.auto_safe and not args.upgrade_walk and (args.query or args.artist):
+        p.error("--auto-safe only applies to --upgrade-walk")
+    # --artist and --upgrade-walk are both whole-run modes; main() dispatches
+    # --artist first, so the walk would be silently dropped. Run one at a time.
+    if args.artist and args.upgrade_walk:
+        p.error("--artist and --upgrade-walk are separate modes — run one at "
+                "a time")
+    # --reset-walk-seen clears the walk-history files and exits on its own;
+    # pairing it with a mode or query silently skips that work.
+    if args.reset_walk_seen and (args.artist or args.upgrade_walk or args.query):
+        p.error("--reset-walk-seen runs on its own (it clears the walk history "
+                "and exits) — run your artist/query/upgrade-walk separately")
     return args
 
 

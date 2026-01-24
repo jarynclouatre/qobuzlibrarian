@@ -1,6 +1,7 @@
 """Upgrade walk mode — scan every artist for quality upgrade candidates.
 
 """
+import sys
 import time
 
 from qobuz_fetch import config as cfg
@@ -89,7 +90,12 @@ def run_upgrade_walk_mode(args, token):
             artist_name = artist_dir.name
 
             _scan_line = f"  [{i + 1}/{n}] Scanning {truncate(artist_name, 46)}…"
-            print(f"\r{_scan_line:<80}", end="", flush=True)
+            # The \r overwrite only makes sense on a terminal; piped/log output
+            # would just collect carriage returns, so keep it verbose-only there.
+            if sys.stdout.isatty():
+                print(f"\r{_scan_line:<80}", end="", flush=True)
+            else:
+                vlog(_scan_line.strip())
 
             try:
                 candidates = scan_artist_for_upgrades(

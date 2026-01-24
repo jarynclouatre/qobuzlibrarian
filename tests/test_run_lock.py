@@ -2,10 +2,7 @@
 
 
 def test_acquire_fsyncs_pid_to_disk(tmp_path, monkeypatch):
-    """The PID write must hit disk before acquire() returns. flush() alone
-    leaves the page cache holding the bytes; a hard crash within seconds
-    of acquiring then leaves the next launch reading an empty lock file
-    and reporting "(pid ?)" in LockBusy."""
+    """The PID write must hit disk before acquire() returns."""
     import os
 
     lock_file = tmp_path / "run.lock"

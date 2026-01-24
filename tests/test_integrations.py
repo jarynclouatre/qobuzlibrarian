@@ -6,7 +6,12 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from qobuz_fetch.integrations.beets import _merge_split_folder, _yaml_sq
+from qobuz_fetch.integrations.beets import (
+    _ALBUM_FIELD_SEP,
+    _duplicate_album_dirs,
+    _merge_split_folder,
+    _yaml_sq,
+)
 from qobuz_fetch.integrations.lyrics import (
     _resolve_signatures_to_paths,
     load_lyric_retry,
@@ -163,6 +168,17 @@ class TestLyricRetry:
         monkeypatch.setattr("qobuz_fetch.config.LYRIC_RETRY_VERSION", 1)
         assert load_lyric_retry() == []
 
+    def test_load_returns_empty_on_valid_json_that_is_not_an_object(
+            self, tmp_path, monkeypatch):
+        # A manifest that parses as JSON but is a list/string/number must not
+        # crash load_lyric_retry — it's called on the dashboard and at startup.
+        monkeypatch.setattr("qobuz_fetch.config.LYRIC_RETRY_VERSION", 1)
+        for payload in ('["a", "b"]', '"a string"', '42'):
+            rfile = tmp_path / "retry.json"
+            rfile.write_text(payload)
+            monkeypatch.setattr("qobuz_fetch.config.LYRIC_RETRY_FILE", rfile)
+            assert load_lyric_retry() == []
+
 
 class TestResolveSignaturesToPaths:
     def test_matches_flac_by_signature(self, tmp_path):
@@ -230,6 +246,20 @@ def test_yaml_sq_quote_cannot_inject_a_directive():
     assert "injected" not in doc
 
 
+def test_consolidation_targets_repeats_of_one_album_not_distinct_albums():
+    sep = _ALBUM_FIELD_SEP
+    listing = "\n".join([
+        f"/music/Aphex Twin/Windowlicker (1999){sep}Aphex Twin{sep}Windowlicker",
+        f"/music/Aphex Twin/Windowlicker (1999){sep}Aphex Twin{sep}Windowlicker",
+        f"/music/Sigur Ros/Von (1997){sep}Sigur Ros{sep}Von",
+        # one folder that (abnormally) holds two genuinely different albums:
+        # must NOT be merged, or the two would be welded into one.
+        f"/music/V/Split{sep}A{sep}First",
+        f"/music/V/Split{sep}B{sep}Second",
+    ])
+    assert _duplicate_album_dirs(listing) == ["/music/Aphex Twin/Windowlicker (1999)"]
+
+
 class TestKillProcessGroup:
     def test_group_killed_when_child_in_own_session(self):
         from qobuz_fetch.integrations import rip
@@ -284,8 +314,6 @@ class TestBeetsImportTimeout:
 
 class TestBeetsDirect:
     def test_beets_direct_sets_beetsdir_env(self, monkeypatch):
-        """_beets_direct must pass BEETSDIR=cfg.BEETS_CONFIG_DIR so beets
-        loads /config/beets/config.yaml (autotag:no, move:yes)."""
         from qobuz_fetch import config as cfg
         from qobuz_fetch.integrations import beets
 
@@ -309,8 +337,6 @@ class TestBeetsDirect:
         assert captured_env["BEETSDIR"] == str(cfg.BEETS_CONFIG_DIR)
 
     def test_silent_skip_detection_catches_skipping_dot(self, monkeypatch):
-        """beets prints 'Skipping.' on quiet-mode ambiguous MB match;
-        must be detected as failed import, not success."""
         from qobuz_fetch.integrations import beets
 
         class SkippingProc:
@@ -327,9 +353,6 @@ class TestBeetsDirect:
 
 class TestReportStagingRemnants:
     def test_lists_album_folders_with_track_counts(self, tmp_path, monkeypatch, caplog):
-        """After a beets failure, the user has to know which album folders
-        are stuck in staging — a bare "files remain in staging" line is
-        useless when a batch of 100 albums failed mid-import."""
         import logging
 
         from qobuz_fetch.integrations import beets
@@ -355,8 +378,6 @@ class TestReportStagingRemnants:
 
 class TestLyricHookRetryManifest:
     def test_hook_failure_records_staging_flacs(self, tmp_path, monkeypatch):
-        """When _run_lyric_hook raises, _pre_import_staging_hooks must
-        record the staging FLACs so the orphans can be retried later."""
         import types
 
         from qobuz_fetch.queue import executor
@@ -377,3 +398,139 @@ class TestLyricHookRetryManifest:
 
         from qobuz_fetch.integrations.lyrics import load_lyric_retry
         assert any("track.flac" in p for p in load_lyric_retry())
+
+
+class TestQuarantineUntaggedStaging:
+    """A cancelled or crashed rip can leave FLACs with no album/artist tags.
+    beets would file them under an empty-artist '/_/' folder, so they're moved
+    out of the import set before import — but set aside (recoverable), never
+    deleted, since they may be salvageable."""
+
+    @pytest.fixture(autouse=True)
+    def _need_ffmpeg(self):
+        import shutil
+        if shutil.which("ffmpeg") is None:
+            pytest.skip("ffmpeg not available")
+
+    def _make_flac(self, path):
+        import subprocess
+        path.parent.mkdir(parents=True, exist_ok=True)
+        subprocess.run(
+            ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+             "-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo",
+             "-t", "1", "-c:a", "flac", str(path)],
+            check=True,
+        )
+
+    def test_untagged_and_unreadable_set_aside_tagged_kept(self, tmp_path, monkeypatch):
+        from mutagen.flac import FLAC
+
+        from qobuz_fetch.integrations import beets
+        staging = tmp_path / "staging"
+        data = tmp_path / "data"
+        staging.mkdir()
+        data.mkdir()
+        monkeypatch.setattr("qobuz_fetch.config.STAGING_DIR", staging)
+        monkeypatch.setattr("qobuz_fetch.config.DATA_DIR", data)
+
+        tagged = staging / "Real Artist" / "Real Album" / "01 - Good.flac"
+        untagged = staging / "Partial" / "00 -.flac"
+        self._make_flac(tagged)
+        self._make_flac(untagged)
+        f = FLAC(str(tagged))
+        f["albumartist"] = ["Real Artist"]
+        f["album"] = ["Real Album"]
+        f["title"] = ["Good"]
+        f.save()
+        # A file mutagen can't parse must be set aside too, never deleted.
+        broken = staging / "Broken" / "x.flac"
+        broken.parent.mkdir(parents=True)
+        broken.write_bytes(b"not a flac at all")
+
+        moved = beets._quarantine_untagged_staging()
+
+        assert tagged.exists()                              # tagged → kept
+        assert not untagged.exists() and untagged in moved  # untagged → moved
+        assert not broken.exists() and broken in moved      # unreadable → moved
+        survivors = list((data / ".untagged_staging").rglob("*.flac"))
+        assert len(survivors) == 2                          # both recoverable
+
+
+class TestNormalizeStagingTags:
+    """streamrip writes tags from its own Qobuz fetch, so trailing whitespace
+    ('Hunky Dory ') and literal outer quotes ('\"Heroes\"') survive into the
+    on-disk folder unless the staged tags are cleaned before beets import."""
+
+    @pytest.fixture(autouse=True)
+    def _need_ffmpeg(self):
+        import shutil
+        if shutil.which("ffmpeg") is None:
+            pytest.skip("ffmpeg not available")
+
+    def _make_flac(self, path):
+        import subprocess
+        path.parent.mkdir(parents=True, exist_ok=True)
+        subprocess.run(
+            ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+             "-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo",
+             "-t", "1", "-c:a", "flac", str(path)],
+            check=True,
+        )
+
+    def test_trailing_space_and_quotes_stripped(self, tmp_path, monkeypatch):
+        from mutagen.flac import FLAC
+
+        from qobuz_fetch.integrations import beets
+        monkeypatch.setattr("qobuz_fetch.config.STAGING_DIR", tmp_path)
+
+        flac = tmp_path / "David Bowie" / "Hunky Dory" / "01.flac"
+        self._make_flac(flac)
+        f = FLAC(str(flac))
+        f["album"] = ["Hunky Dory "]
+        f["albumartist"] = ["David Bowie"]
+        f["title"] = ['"Heroes"']
+        f.save()
+
+        beets._normalize_staging_tags()
+
+        out = FLAC(str(flac))
+        assert out["album"] == ["Hunky Dory"]
+        assert out["title"] == ["Heroes"]
+        assert out["albumartist"] == ["David Bowie"]
+
+
+class TestImportOverrideArtwork:
+    """ARTWORK picks where cover art goes: a file (sidecar/fetchart), embedded
+    in the tracks (embed/embedart), or both."""
+
+    def _build(self, monkeypatch, **cfgvals):
+        from qobuz_fetch import config as cfg
+        from qobuz_fetch.integrations import beets
+        monkeypatch.setattr(cfg, "BEETS_DB_PATH", Path("/config/beets/musiclibrary.db"))
+        monkeypatch.setattr(cfg, "MUSIC_ROOT", Path("/music"))
+        monkeypatch.setattr(cfg, "BEETS_PATH_DEFAULT", "")
+        monkeypatch.setattr(cfg, "BEETS_PATH_SINGLETON", "")
+        monkeypatch.setattr(cfg, "BEETS_PATH_COMP", "")
+        monkeypatch.setattr(cfg, "BEETS_PLUGINS", [])
+        monkeypatch.setattr(cfg, "ARTWORK", "sidecar")
+        for k, v in cfgvals.items():
+            monkeypatch.setattr(cfg, k, v)
+        return beets._build_import_override_yaml()
+
+    def test_sidecar_default_leaves_config_plugins_alone(self, monkeypatch):
+        y = self._build(monkeypatch, ARTWORK="sidecar")
+        assert "embedart" not in y
+        assert "plugins:" not in y
+
+    def test_embed_adds_embedart_and_drops_file(self, monkeypatch):
+        y = self._build(monkeypatch, ARTWORK="embed")
+        assert "embedart:" in y and "remove_art_file: yes" in y
+        assert "fetchart" in y and "embedart" in y
+
+    def test_both_keeps_the_file(self, monkeypatch):
+        y = self._build(monkeypatch, ARTWORK="both")
+        assert "remove_art_file: no" in y
+
+    def test_embed_combines_with_user_plugins(self, monkeypatch):
+        y = self._build(monkeypatch, ARTWORK="embed", BEETS_PLUGINS=["lastgenre"])
+        assert "lastgenre" in y and "fetchart" in y and "embedart" in y

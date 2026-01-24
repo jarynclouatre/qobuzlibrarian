@@ -12,6 +12,8 @@ Two non-obvious bits of behaviour worth preserving:
 """
 import fcntl
 import os
+import shutil
+import subprocess
 import time
 from pathlib import Path
 
@@ -27,6 +29,43 @@ from qobuz_fetch.ui_cli.logging import log
 # is almost certainly truncated — the header survives tail damage and
 # lies about how much audio is actually present.
 _BYTE_SIZE_TRUNCATED_RATIO = 0.15
+
+# Walking every FLAC frame to verify CRCs costs a full read per file.
+# Worth it for an explicit repair scan: the cheap size+duration gates
+# can't see small tail-truncations (10 kB on a 100 MB file) or middle-zero
+# damage, which is exactly the failure mode interrupted-copy corruption
+# produces. ffmpeg is always available in the librarian's container
+# (downsample depends on it) so use that rather than the flac binary.
+_FLAC_DECODE_TIMEOUT_S = 300
+
+
+def _flac_decode_ok(path):
+    """End-to-end FLAC decode probe. Returns False only when ffmpeg reports
+    a real decode error (frame-CRC mismatch, broken header, premature EOF).
+    A missing file, missing ffmpeg, or unrelated OS error returns True
+    so the scanner doesn't fabricate verified_truncated entries for
+    cases that are someone else's problem.
+
+    ffmpeg returns rc=0 even when its decoder logs `invalid residual` /
+    `Decoding error` on tail-truncated input, so the rc isn't reliable
+    on its own — the diagnostic is in stderr. With `-v error`, an intact
+    decode leaves stderr empty.
+    """
+    if not path or not os.path.exists(path):
+        return True
+    if shutil.which("ffmpeg") is None:
+        return True
+    try:
+        result = subprocess.run(
+            ["ffmpeg", "-v", "error", "-i", str(path), "-f", "null", "-"],
+            capture_output=True,
+            timeout=_FLAC_DECODE_TIMEOUT_S,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return True
+    if result.returncode != 0:
+        return False
+    return not result.stderr.strip()
 
 
 def scan_dir_for_isrc_repairs(album_dir, token,
@@ -138,8 +177,28 @@ def scan_dir_for_isrc_repairs(album_dir, token,
                 "title": qt.get("title") or title,
                 "track_number": qt.get("track_number") or et.get("tracknumber") or 0,
             })
-        else:
-            report["verified_ok"] += 1
+            continue
+
+        # Both cheap gates passed — STREAMINFO and size look fine. A 10 kB
+        # tail-truncation on a 100 MB file survives both checks, as does
+        # middle-zero damage where the file size is unchanged. Decode
+        # probe catches frame-CRC mismatches that only show up on a
+        # full read.
+        if path and not _flac_decode_ok(path):
+            report["verified_truncated"].append({
+                "path": path,
+                "file_length": flen,
+                "qobuz_track": qt,
+                "qobuz_duration": qdur,
+                "isrc": isrc,
+                "title": qt.get("title") or title,
+                "track_number": qt.get("track_number") or et.get("tracknumber") or 0,
+                "actual_size": actual_size,
+                "reason": "decode_failed",
+            })
+            continue
+
+        report["verified_ok"] += 1
     return report
 
 

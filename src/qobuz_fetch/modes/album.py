@@ -199,7 +199,12 @@ def run_album_mode(args, token, *, query_args=None, loop=False):
                     return
                 continue
             except QobuzError as e:
-                log.info(fmt(C.RED, f"\n✗  Qobuz API error: {e}.\n"))
+                cleaned = friendly_qobuz_error(e)
+                if cleaned.startswith("HTTP 404"):
+                    log.info(fmt(C.RED,
+                        "\n✗  No album with that id — check the URL or search by name.\n"))
+                else:
+                    log.info(fmt(C.RED, f"\n✗  Qobuz API error: {cleaned}.\n"))
                 args.query = saved_query
                 if not loop:
                     # One-shot invocation: a Qobuz API failure is fatal.

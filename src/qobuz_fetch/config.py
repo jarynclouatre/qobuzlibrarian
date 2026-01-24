@@ -16,6 +16,10 @@ def _env(key, default):
     try:
         return type(default)(val)
     except (ValueError, TypeError):
+        import sys
+        print(f"warning: {key}={val!r} is not a valid "
+              f"{type(default).__name__}; using default {default!r}",
+              file=sys.stderr)
         return default
 
 
@@ -94,6 +98,14 @@ BEETS_PATH_COMP      = os.environ.get("BEETS_PATH_COMP", "").strip()
 BEETS_PLUGINS = [p.strip() for p in
                  os.environ.get("BEETS_PLUGINS", "").split(",")
                  if p.strip()]
+
+# Where fetched cover art ends up:
+#   sidecar = a cover image file in the album folder (beets `fetchart`, default)
+#   embed   = embedded in the track tags only, no leftover file (`embedart`)
+#   both    = a cover file AND embedded art
+ARTWORK = (os.environ.get("ARTWORK", "sidecar").strip().lower() or "sidecar")
+if ARTWORK not in ("sidecar", "embed", "both"):
+    ARTWORK = "sidecar"
 
 # COMPOSE_FILE is only used by the legacy docker-exec beets fallback (when
 # `beet` isn't on PATH and a compose file exists — never the case in the

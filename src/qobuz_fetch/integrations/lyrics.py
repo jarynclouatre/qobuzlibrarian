@@ -293,6 +293,11 @@ def load_lyric_retry():
         log.info(fmt(C.YELLOW,
             f"  ⚠  {cfg.LYRIC_RETRY_FILE.name} unreadable ({e}); ignoring."))
         return []
+    if not isinstance(payload, dict):
+        log.info(fmt(C.YELLOW,
+            f"  ⚠  {cfg.LYRIC_RETRY_FILE.name} is malformed (not an object); "
+            "ignoring."))
+        return []
     if payload.get("version") != cfg.LYRIC_RETRY_VERSION:
         log.info(fmt(C.YELLOW,
             f"  ⚠  {cfg.LYRIC_RETRY_FILE.name} version "

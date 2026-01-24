@@ -152,9 +152,6 @@ class TestSyncStreamripCredsFromEnv:
         assert write_streamrip_creds("u", "t") is False
 
     def test_written_config_is_streamrip_2_2_schema(self, tmp_path, monkeypatch):
-        """The seeded config must be valid for streamrip 2.2.0: `secrets` key
-        required, [misc].version present (suppresses migration prompt), db path
-        adjacent to the config file (not hardcoded /config)."""
         from qobuz_fetch import config
         cfg_path = tmp_path / "sr" / "config.toml"
         monkeypatch.setattr(config, "STREAMRIP_CONFIG", cfg_path)

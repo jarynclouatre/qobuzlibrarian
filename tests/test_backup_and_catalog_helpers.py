@@ -39,8 +39,6 @@ class TestBackupAlbumDir:
         assert not album.exists()
 
     def test_refuses_symlinked_album_dir(self, tmp_path, monkeypatch):
-        """A symlink at the album-dir level is unsafe: rename moves the link,
-        the target stays, the re-download writes back through the surviving link."""
         backup_root = tmp_path / "backups"
         monkeypatch.setattr("qobuz_fetch.config.UPGRADE_BACKUP_DIR", backup_root)
         target = tmp_path / "real_album"
@@ -65,8 +63,7 @@ class TestBackupAlbumDir:
         assert not (bp.with_name(bp.name + ".partial")).exists()
 
     def test_cross_fs_rmtree_failure_restores_original(self, tmp_path, monkeypatch):
-        """When cross-FS rmtree fails partway, the original album_dir is
-        restored from the in-place copy."""
+        """When cross-FS rmtree fails partway, the original album_dir is restored from the in-place copy."""
         from qobuz_fetch.library import backup as bkmod
         backup_root = tmp_path / "backups"
         monkeypatch.setattr("qobuz_fetch.config.UPGRADE_BACKUP_DIR", backup_root)
@@ -119,8 +116,6 @@ class TestRestoreUpgradeBackup:
         assert (original / "huge.flac").exists()
 
     def test_rmtree_failure_mid_walk_preserves_backup(self, tmp_path):
-        """If rmtree fails mid-walk, the original must be renamed aside first
-        so the backup move can still complete."""
         backup = tmp_path / "backup"
         backup.mkdir()
         (backup / "intact.flac").write_bytes(b"a" * 100_000)
@@ -155,11 +150,31 @@ class TestGapFillBackup:
         assert bp is not None and bp.exists()
         assert not f.exists()
 
-    def test_source_preserved_when_cross_fs_copy_fails(self, tmp_path, monkeypatch):
-        """Source files must survive intact when the cross-filesystem copy fails."""
+    def test_falls_back_to_copy_when_rename_is_cross_device(self, tmp_path, monkeypatch):
+        """Two bind mounts on one disk share a device but still reject rename with EXDEV."""
         from qobuz_fetch.library import backup as bkmod
         monkeypatch.setattr("qobuz_fetch.config.UPGRADE_BACKUP_DIR", tmp_path / "backups")
-        monkeypatch.setattr(bkmod, "_same_filesystem", lambda a, b: False)
+
+        def cross_device(*_a, **_kw):
+            raise OSError("Invalid cross-device link")
+        monkeypatch.setattr(bkmod.os, "rename", cross_device)
+
+        album = tmp_path / "album"
+        album.mkdir()
+        src = album / "track.flac"
+        src.write_bytes(b"audio-bytes")
+        bp = bkmod.backup_gap_fill_files([str(src)], album)
+        assert bp is not None
+        assert (bp / "track.flac").read_bytes() == b"audio-bytes"
+        assert not src.exists()
+
+    def test_source_preserved_when_cross_fs_copy_fails(self, tmp_path, monkeypatch):
+        from qobuz_fetch.library import backup as bkmod
+        monkeypatch.setattr("qobuz_fetch.config.UPGRADE_BACKUP_DIR", tmp_path / "backups")
+
+        def cross_device(*_a, **_kw):
+            raise OSError("Invalid cross-device link")
+        monkeypatch.setattr(bkmod.os, "rename", cross_device)
 
         def boom(*_a, **_kw):
             raise OSError("simulated disk-full during copy")
@@ -174,8 +189,7 @@ class TestGapFillBackup:
         assert src.read_bytes() == b"original-audio-bytes"
 
     def test_partial_failure_preserves_backup(self, tmp_path, monkeypatch):
-        """A failed restore must NOT destroy the backup — it is the only
-        surviving copy of those tracks."""
+        """A failed restore must NOT destroy the backup — it is the only surviving copy of those tracks."""
         if os.geteuid() == 0:
             pytest.skip("root bypasses the read-only perm that forces failure")
         monkeypatch.setattr("qobuz_fetch.config.UPGRADE_BACKUP_DIR",
@@ -211,8 +225,6 @@ class TestGapFillBackup:
     def test_keyboardinterrupt_mid_copy_keeps_backup_and_no_tmp(
         self, tmp_path, monkeypatch
     ):
-        """KeyboardInterrupt during the copy phase must leave the backup
-        intact and clean up any .restore_tmp sibling."""
         import qobuz_fetch.library.backup as bkmod
 
         monkeypatch.setattr("qobuz_fetch.config.UPGRADE_BACKUP_DIR",
@@ -264,8 +276,6 @@ class TestCleanupOldUpgradeBackups:
         assert legacy.exists()
 
     def test_skips_resweep_within_24h(self, tmp_path, monkeypatch):
-        """A fresh sweep stamp short-circuits the next call so a CLI session
-        churn doesn't restat the whole backup tree each invocation."""
         backup_root = tmp_path / "backups"
         backup_root.mkdir()
         monkeypatch.setattr("qobuz_fetch.config.UPGRADE_BACKUP_DIR", backup_root)
@@ -303,8 +313,6 @@ class TestCleanupDuplicateArt:
         assert not (tmp_path / "cover.1.jpg").exists()
 
     def test_keeps_user_curated_multi_art_without_base(self, tmp_path):
-        """If there is no cover.jpg, cover.1/cover.2 are the user's own
-        booklet scans — not a beets collision; leave them."""
         (tmp_path / "cover.1.jpg").write_bytes(b"booklet1")
         (tmp_path / "cover.2.jpg").write_bytes(b"booklet2")
         assert cleanup_duplicate_art(tmp_path) == 0
@@ -313,8 +321,7 @@ class TestCleanupDuplicateArt:
 
 class TestMergeAlbumDirs:
     def test_depth_cap_prevents_runaway_recursion(self, tmp_path):
-        """a deeply nested src/dst pair must bail at the
-        depth cap rather than recurse forever."""
+        """a deeply nested src/dst pair must bail at the depth cap rather than recurse forever."""
         src_root = tmp_path / "src"
         dst_root = tmp_path / "dst"
         depth = _MERGE_MAX_DEPTH + 5
