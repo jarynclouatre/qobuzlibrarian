@@ -70,7 +70,7 @@
         class="flex gap-2 mt-6 max-w-2xl mx-auto">
     <input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}">
     <input type="text" name="q" aria-label="Search Qobuz" placeholder="Artist, album, or Qobuz URL"
-           inputmode="search" enterkeyhint="search" autocapitalize="off" spellcheck="false"
+           inputmode="search" enterkeyhint="search" autocapitalize="off" spellcheck="false" maxlength="500"
            class="input input-bordered input-lg flex-1" autocomplete="off" autofocus>
     <button type="submit" class="btn btn-primary btn-lg gap-2">
       <span id="dashboard-search-spinner"
@@ -177,7 +177,7 @@
     <div class="flex items-center gap-3 mb-3">
       <span class="loading loading-spinner loading-sm text-warning"></span>
       <div>
-        <p class="font-semibold text-warning">Downloading</p>
+        <p class="font-semibold text-warning">{% if active_job.status.value == 'scanning' %}Scanning{% else %}Downloading{% endif %}</p>
         <p class="text-sm text-base-content/70">{% if active_job.artist %}{{ active_job.artist }} — {% endif %}{{ active_job.title }}</p>
       </div>
     </div>
@@ -197,6 +197,9 @@
   };
   src.addEventListener('done', () => {
     src.close();
+    // Don't reload out from under a search the user just ran on the dashboard.
+    const results = document.getElementById('search-results');
+    if (results && results.children.length) return;
     setTimeout(() => window.location.reload(), 1500);
   });
 })();

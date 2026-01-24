@@ -75,11 +75,14 @@ def resolve_artist(query, token):
     return best.get("id"), best.get("name")
 
 
-def _missing_albums(artist_id, artist_name, token):
+def _missing_albums(artist_id, artist_name, token, partial_only=False):
     """Yield Qobuz album dicts that need attention — either entirely
     absent from the library, or present on disk with track-level gaps.
     Partial albums get a `_partial_missing_count` key set on the dict
     so the candidate detail can show 'gap-fill: N missing'.
+
+    With partial_only, fully-missing albums are skipped — only on-disk
+    albums with track gaps are yielded (the album-fill use case).
     """
     catalog, total = get_artist_albums(artist_id, token,
                                        limit=cfg.ARTIST_CATALOG_LIMIT)
@@ -92,12 +95,24 @@ def _missing_albums(artist_id, artist_name, token):
     for album, _n_versions in pairs:
         existing, _album_dir = find_existing_tracks(album)
         if not existing:
-            yield album
+            if not partial_only:
+                yield album
             continue
         # On-disk: check for track gaps. process_album re-derives the
         # gap when the user approves, so we don't need to thread the
         # missing set through the candidate — just count it for the UI.
         qobuz_tracks = (album.get("tracks") or {}).get("items") or []
+        if not qobuz_tracks:
+            # get_artist_albums returns tracks_count but not the track list,
+            # so the gap check would be dead without materializing it. Only
+            # paid for on-disk albums (fully-missing ones short-circuit above).
+            try:
+                full = get_album(album.get("id"), token)
+            except AuthLost:
+                raise
+            except Exception:
+                full = None
+            qobuz_tracks = ((full or {}).get("tracks") or {}).get("items") or []
         if not qobuz_tracks:
             continue
         missing, _present = compute_missing(qobuz_tracks, existing)
@@ -141,7 +156,7 @@ def scan_artist(job, query, token):
     log.info(f"  {plural(n, 'missing album')} found for {artist_name}.")
 
 
-def scan_library(job, token):
+def scan_library(job, token, partial_only=False):
     clear_scan_caches()
     artists = list_library_artists()
     if not artists:
@@ -149,7 +164,8 @@ def scan_library(job, token):
         log.info("  Expected layout: $MUSIC_ROOT/<Artist>/<Album (Year)>/<track>.flac")
         log.info("  Check that QF_MUSIC_DIR in your .env points at the right place.")
         return
-    log.info(f"Scanning {plural(len(artists), 'library artist')} for missing albums ...")
+    target = "track gaps in owned albums" if partial_only else "missing albums"
+    log.info(f"Scanning {plural(len(artists), 'library artist')} for {target} ...")
     total = 0
     started = time.monotonic()
     for i, artist_dir in enumerate(artists, 1):
@@ -163,7 +179,8 @@ def scan_library(job, token):
         if not artist_id:
             continue
         try:
-            for album in _missing_albums(artist_id, artist_name, token):
+            for album in _missing_albums(artist_id, artist_name, token,
+                                         partial_only=partial_only):
                 _add_album_candidate(job, album, artist_name)
                 total += 1
         except AuthLost:
@@ -198,7 +215,10 @@ def execute_albums(job, chosen, token):
     # have moved since.
     clear_scan_caches()
     args = build_args()
+    _benign = {"already_complete", "skipped_already_higher_quality", "dry_run",
+               "user_skipped", "lossy_only", "no_tracks"}
     ok = 0
+    failed = 0
     processed = 0
     for i, cand in enumerate(chosen, 1):
         if job.cancel_requested:
@@ -213,17 +233,23 @@ def execute_albums(job, chosen, token):
             full = get_album(album_id, token)
         except Exception as e:
             log.info(f"  could not fetch album {album_id}: {e}")
+            failed += 1
             continue
         try:
             result = process_album(full, args, allow_force=False,
                                    already_confirmed=True, token=token)
         except Exception as e:
             log.info(f"  failed: {e}")
+            failed += 1
             continue
         if result and result.get("imported") and result.get("n_ok", 0) > 0:
             ok += 1
+        elif not (result and result.get("result") in _benign):
+            failed += 1
         time.sleep(cfg.ARTIST_API_DELAY)
     log.info(f"Finished — {ok}/{plural(len(chosen), 'album')} downloaded and imported.")
+    if failed:
+        job.error = f"{failed} of {plural(len(chosen), 'album')} didn't finish — see the log."
 
 
 # ── Upgrade flow ──────────────────────────────────────────────────────────────
@@ -286,7 +312,14 @@ def execute_upgrades(job, chosen, token):
     # off per-album consolidation prompts (the CLI upgrade walk does the same).
     args.auto_upgrade = True
     args.consolidate = False
+    # Outcomes that aren't a failure — the album just didn't need (or couldn't
+    # safely take) an upgrade. A backup-failed abort is NOT here: that's a real
+    # failure the user should see.
+    _skip = {"upgrade_only_no_op", "skipped_already_higher_quality",
+             "skipped_has_extras", "lossy_only", "no_tracks",
+             "user_skipped", "dry_run", "cancelled"}
     ok = 0
+    failed = 0
     processed = 0
     for i, cand in enumerate(chosen, 1):
         if job.cancel_requested:
@@ -304,15 +337,18 @@ def execute_upgrades(job, chosen, token):
                                    upgrade_only=True, token=token)
         except Exception as e:
             log.info(f"  failed: {e}")
+            failed += 1
             continue
-        if result and result.get("imported") and (result.get("result") not in (
-                "upgrade_only_no_op", "skipped_already_higher_quality",
-                "skipped_has_extras", "lossy_only", "no_tracks",
-                "user_skipped", "dry_run", "cancelled",
-                "upgrade_aborted_backup_failed")):
+        _res = (result or {}).get("result")
+        if result and result.get("imported") and _res not in (
+                _skip | {"upgrade_aborted_backup_failed"}):
             ok += 1
+        elif _res not in _skip:
+            failed += 1
         time.sleep(cfg.ARTIST_API_DELAY)
     log.info(f"Finished — upgraded {ok}/{plural(len(chosen), 'album')}.")
+    if failed:
+        job.error = f"{failed} of {plural(len(chosen), 'album')} couldn't be upgraded — see the log."
 
 
 # ── Repair flow ───────────────────────────────────────────────────────────────
@@ -361,6 +397,14 @@ def scan_repairs(job, token):
                              "verified_truncated": truncated},
                 )
                 total += 1
+            # Surface no-ISRC files that look damaged (size diagnostic). The
+            # repair flow can't refill these — no ISRC means no anchored
+            # Qobuz lookup — but the user still needs to know they exist.
+            suspicious = [e for e in scan.get("no_isrc_tag", [])
+                          if e.get("diagnostic")]
+            for e in suspicious:
+                log.info(f"    ⚠ {album_dir.name} — "
+                         f"{e.get('title') or '?'}: {e['diagnostic']}")
         time.sleep(cfg.ARTIST_API_DELAY)
     log.info(f"Done. {plural(total, 'album')} with truncated files.")
 
@@ -374,6 +418,7 @@ def execute_repairs(job, chosen, token):
     clear_scan_caches()
     args = build_args()
     fixed = 0
+    failed = 0
     processed = 0
     for i, cand in enumerate(chosen, 1):
         if job.cancel_requested:
@@ -389,11 +434,18 @@ def execute_repairs(job, chosen, token):
                                       p["artist_name"], args, token)
         except Exception as e:
             log.info(f"  failed: {e}")
+            failed += 1
             continue
+        # Every chosen album was flagged as having truncated files, so anything
+        # that didn't end up refilled-and-imported is a real failure.
         if result and result.get("n_ok", 0) > 0 and result.get("imported"):
             fixed += 1
+        else:
+            failed += 1
         time.sleep(cfg.ARTIST_API_DELAY)
     log.info(f"Finished — repaired {fixed}/{plural(len(chosen), 'album')}.")
+    if failed:
+        job.error = f"{failed} of {plural(len(chosen), 'album')} couldn't be repaired — see the log."
 
 
 def run_lyric_retry(job, token):

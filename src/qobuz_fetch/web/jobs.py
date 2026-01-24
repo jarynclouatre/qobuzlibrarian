@@ -276,14 +276,9 @@ def _friendly_job_error(exc, fallback: str) -> str:
     if isinstance(exc, QobuzError):
         return "Couldn't reach the Qobuz API — check the container's network."
     if isinstance(exc, FileNotFoundError):
-        # html.escape the filename — _friendly_job_error feeds into the
-        # job error banner which is rendered without further escaping by
-        # templates that treat job.error as trusted. Today every
-        # FileNotFoundError here traces back to subprocess invocations
-        # (rip/beet/ffprobe), but guarding now means future code paths
-        # that flow user input into a path can't surface a reflection bug.
-        import html as _html
-        fname = _html.escape(str(exc.filename)) if exc.filename else "see log"
+        # job.error is rendered through Jinja autoescape, so don't escape here
+        # too (that double-encodes characters like & in a path).
+        fname = str(exc.filename) if exc.filename else "see log"
         return f"Required tool or path missing — see log ({fname})."
     if isinstance(exc, OSError):
         import errno
@@ -464,12 +459,20 @@ def approve(job: Job, selected_ids) -> bool:
     selected_ids is the set of candidate ids the user kept. Returns False if
     the job isn't awaiting review or has no execute function.
     """
-    if job.status != JobStatus.AWAITING_REVIEW or job._execute_fn is None:
-        return False
-    keep = set(selected_ids)
-    for c in job.candidates:
-        c["selected"] = c["cid"] in keep
-    chosen = job.selected_candidates()
+    # Flip the status under the job lock so a second concurrent approve
+    # (double-click, two tabs) loses the check and can't enqueue the execute
+    # phase a second time — which would re-download and re-import every album.
+    # The registry and work queue are in-memory, so a process death here loses
+    # the whole job anyway; there's nothing to orphan.
+    with job._lock:
+        if job.status != JobStatus.AWAITING_REVIEW or job._execute_fn is None:
+            return False
+        job.status = JobStatus.PENDING
+        job.finished_at = None
+        keep = set(selected_ids)
+        for c in job.candidates:
+            c["selected"] = c["cid"] in keep
+        chosen = job.selected_candidates()
 
     def _execute(j: Job):
         j.phase = "execute"
@@ -479,23 +482,22 @@ def approve(job: Job, selected_ids) -> bool:
             return
         j._execute_fn(j, chosen)
 
-    # Enqueue before flipping status. The reverse order can orphan the
-    # job in PENDING with nothing queued if the process dies between the
-    # two statements. The conditional set leaves a worker-grabbed RUNNING
-    # alone in the lose-race case.
     _work_queue.put((job, _execute))
-    if job.status == JobStatus.AWAITING_REVIEW:
-        job.status = JobStatus.PENDING
-        job.finished_at = None
     return True
 
 
 def cancel_review(job: Job) -> bool:
     """Discard a job that's waiting for review without executing anything."""
-    if job.status != JobStatus.AWAITING_REVIEW:
-        return False
-    job.status = JobStatus.CANCELED
-    job.finished_at = time.time()
+    # Flip under the job lock so this can't race approve() (which also flips
+    # AWAITING_REVIEW under the lock); otherwise a cancel could land after an
+    # approve already queued the execute phase, showing CANCELED while work
+    # runs. end_stream() is called outside the lock — it re-acquires the lock
+    # to fan out, so calling it inside would deadlock.
+    with job._lock:
+        if job.status != JobStatus.AWAITING_REVIEW:
+            return False
+        job.status = JobStatus.CANCELED
+        job.finished_at = time.time()
     job.end_stream()
     return True
 

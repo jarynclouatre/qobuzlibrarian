@@ -13,7 +13,7 @@
       <input type="text" name="q" value="{{ q or '' }}"
              aria-label="Search Qobuz"
              placeholder="Artist, album, or Qobuz URL"
-             inputmode="search" enterkeyhint="search" autocapitalize="off" spellcheck="false"
+             inputmode="search" enterkeyhint="search" autocapitalize="off" spellcheck="false" maxlength="500"
              class="input input-bordered flex-1" autocomplete="off" autofocus>
       <button type="submit" class="btn btn-primary gap-2">
         <span id="search-spinner" class="loading loading-spinner loading-sm htmx-indicator"></span>

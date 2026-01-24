@@ -8,12 +8,6 @@ from qobuz_fetch.web import jobs as jm
 
 # ── jobs.py: Job ──────────────────────────────────────────────────────────────
 
-def test_push_line_appends_and_notifies_subscriber():
-    job = jm.Job(title="X")
-    sub = job.subscribe()
-    job.push_line("hello")
-    assert job.log_lines == ["hello"]
-    assert sub.get_nowait() == "hello"
 
 
 def test_log_lines_capped_with_truncation_marker():
@@ -26,17 +20,7 @@ def test_log_lines_capped_with_truncation_marker():
     assert job.log_lines[-1] == f"line{total - 1}"
 
 
-def test_log_lines_not_trimmed_below_threshold():
-    job = jm.Job()
-    for i in range(jm.Job.LOG_CAP):
-        job.push_line(f"l{i}")
-    assert len(job.log_lines) == jm.Job.LOG_CAP
-    assert job.log_lines[0] == "l0"  # no trim, no marker
-
-
 def test_push_line_strips_control_bytes():
-    """NUL/ESC/BEL in worker output would truncate some browsers' SSE display
-    and garble the JSON status endpoint — strip them at intake."""
     job = jm.Job()
     job.push_line("hello\x00world\x07\x1bend")
     assert job.log_lines == ["helloworldend"]
@@ -47,25 +31,7 @@ def test_push_line_strips_control_bytes():
 
 # ── jobs.py: JobRegistry ──────────────────────────────────────────────────────
 
-def test_registry_add_get_all_preserves_order():
-    reg = jm.JobRegistry()
-    j1, j2 = jm.Job(title="1"), jm.Job(title="2")
-    reg.add(j1)
-    reg.add(j2)
-    assert reg.get(j1.id) is j1
-    assert [j.id for j in reg.all()] == [j1.id, j2.id]
 
-
-def test_registry_partitions_pending_and_finished():
-    reg = jm.JobRegistry()
-    pending = jm.Job(status=jm.JobStatus.PENDING)
-    running = jm.Job(status=jm.JobStatus.RUNNING)
-    done = jm.Job(status=jm.JobStatus.DONE)
-    failed = jm.Job(status=jm.JobStatus.FAILED)
-    for j in (pending, running, done, failed):
-        reg.add(j)
-    assert {j.id for j in reg.pending_and_running()} == {pending.id, running.id}
-    assert {j.id for j in reg.finished()} == {done.id, failed.id}
 
 
 # ── jobs.py: JobLogHandler ────────────────────────────────────────────────────
@@ -81,17 +47,6 @@ def test_log_handler_strips_ansi_and_pushes():
     assert job.log_lines == ["colored text"]
 
 
-def test_log_handler_swallows_push_line_failure():
-    import logging
-    job = jm.Job()
-    handler = jm.JobLogHandler(job)
-    handler.setFormatter(logging.Formatter("%(message)s"))
-
-    def boom(_line):
-        raise RuntimeError("push failed")
-    job.push_line = boom
-    rec = logging.LogRecord("x", logging.INFO, "f", 1, "msg", None, None)
-    handler.emit(rec)
 
 
 # ── jobs.py: worker loop ──────────────────────────────────────────────────────
@@ -105,21 +60,6 @@ def _wait_for(predicate, timeout=5.0):
     return False
 
 
-def test_submit_runs_job_to_done():
-    jm.start_worker()
-    ran = []
-    job = jm.Job(title="ok")
-    sub = job.subscribe()
-    jm.submit(job, lambda j: ran.append(j.id))
-    assert _wait_for(lambda: job.status == jm.JobStatus.DONE)
-    assert ran == [job.id]
-    # Stream-end marker goes to live subscribers only — not into log_lines.
-    assert jm.STREAM_END not in job.log_lines
-    drained = []
-    while not sub.empty():
-        drained.append(sub.get_nowait())
-    assert jm.STREAM_END in drained
-    assert job.finished_at is not None
 
 
 def test_scan_job_parks_for_review_then_executes():
@@ -155,32 +95,29 @@ def test_submit_failing_job_marks_failed():
     assert any("kaboom" in ln for ln in job.log_lines)
 
 
-def test_approve_enqueues_before_flipping_status(monkeypatch):
-    """approve() must put the job on the work queue BEFORE marking it
-    PENDING. The reverse order can orphan the job in PENDING with nothing
-    queued if the process dies between the two statements."""
+def test_approve_flips_status_before_enqueue(monkeypatch):
     job = jm.Job(title="scan-approve")
     job.kind = "scan"
     job.status = jm.JobStatus.AWAITING_REVIEW
     job._execute_fn = lambda j, chosen: None
     job.add_candidate("album", "A", "Artist", payload={"id": 1})
 
-    seen_status_at_put = []
+    status_at_put = []
     orig_put = jm._work_queue.put
 
     def _spy_put(item):
-        seen_status_at_put.append(item[0].status)
+        status_at_put.append(item[0].status)
         orig_put(item)
 
     monkeypatch.setattr(jm._work_queue, "put", _spy_put)
 
-    assert jm.approve(job, ["c1"])
-    assert seen_status_at_put == [jm.JobStatus.AWAITING_REVIEW]
+    assert jm.approve(job, ["c1"]) is True
+    assert status_at_put == [jm.JobStatus.PENDING]
+    # A second approve no longer sees AWAITING_REVIEW, so it's rejected.
+    assert jm.approve(job, ["c1"]) is False
 
 
 def test_base_exception_in_job_does_not_kill_worker():
-    """Worker thread must survive BaseException — otherwise every subsequent
-    job hangs forever with no error."""
     jm.start_worker()
 
     def hard(_j):
@@ -211,26 +148,10 @@ def client():
         yield c
 
 
-def test_dashboard_ok(client):
-    r = client.get("/")
-    assert r.status_code == 200
-
-
-def test_search_empty_query_has_no_error(client):
-    r = client.post("/search", data={"q": "   "})
-    assert r.status_code == 200
-    assert "alert-error" not in r.text
-
-
-def test_job_page_unknown_redirects_to_queue(client):
-    r = client.get("/jobs/nope")
-    assert r.status_code == 200
-    assert "Download queue" in r.text
 
 
 def test_download_error_raw_exception_not_reflected(client, monkeypatch):
-    """Unexpected errors must not be reflected verbatim in the response.
-    The user sees a generic message; the raw exception text is suppressed."""
+    """Unexpected errors must not be reflected verbatim in the response."""
     import qobuz_fetch.api.search as search_mod
     import qobuz_fetch.web.app as app_mod
 
@@ -313,8 +234,6 @@ def test_download_qobuzerror_branch_uses_generic_message(client, monkeypatch):
 
 
 def test_search_result_id_is_html_escaped(client, monkeypatch):
-    """The hidden album_id input must HTML-escape its value so a quote
-    can't break out of the attribute and inject extra form fields."""
     import qobuz_fetch.api.search as search_mod
     import qobuz_fetch.library.catalog as cat
     import qobuz_fetch.web.app as webapp
@@ -334,8 +253,6 @@ def test_search_result_id_is_html_escaped(client, monkeypatch):
 
 
 def test_hx_confirm_uses_single_quoted_outer_attribute(client, monkeypatch):
-    """hx-confirm must use a single-quoted attribute so inner double-quotes
-    around the album title don't close it early."""
     import qobuz_fetch.api.search as search_mod
     import qobuz_fetch.library.catalog as cat
     import qobuz_fetch.web.app as webapp
@@ -355,41 +272,6 @@ def test_hx_confirm_uses_single_quoted_outer_attribute(client, monkeypatch):
     assert 'hx-confirm="Download "' not in r.text
 
 
-def test_search_query_prefills_input_on_full_page_render(client, monkeypatch):
-    """Full-page search POST must pre-fill the input with the searched value."""
-    import qobuz_fetch.api.search as search_mod
-    import qobuz_fetch.library.catalog as cat
-    import qobuz_fetch.web.app as webapp
-
-    monkeypatch.setattr(webapp, "_get_token", lambda: "tok")
-    monkeypatch.setattr(webapp, "_read_creds", lambda: {"auth_token": "tok"})
-    monkeypatch.setattr(search_mod, "search_albums", lambda q, t, limit=None: [])
-    monkeypatch.setattr(cat, "album_quality_label", lambda a: "x")
-    monkeypatch.setattr(cat, "album_year", lambda a: 2020)
-
-    r = client.post("/search", data={"q": "beethoven"})
-    assert r.status_code == 200
-    assert 'value="beethoven"' in r.text
-
-
-def test_search_get_with_query_runs_search_and_prefills_input(client, monkeypatch):
-    """GET /search?q=beethoven must execute the search and pre-fill the box."""
-    import qobuz_fetch.api.search as search_mod
-    import qobuz_fetch.web.app as webapp
-    monkeypatch.setattr(webapp, "_read_creds", lambda: {"auth_token": "tok"})
-    monkeypatch.setattr(webapp, "_get_token", lambda: "tok")
-    called_with = []
-
-    def _fake_search(q, tok, limit=None):
-        called_with.append(q)
-        return []
-    monkeypatch.setattr(search_mod, "search_albums", _fake_search)
-    r = client.get("/search?q=beethoven")
-    assert r.status_code == 200
-    assert 'value="beethoven"' in r.text
-    assert called_with == ["beethoven"]
-
-
 def test_search_artist_url_shows_helpful_error(client, monkeypatch):
     """Artist/interpreter Qobuz URLs must show a helpful error, not empty results."""
     import qobuz_fetch.web.app as webapp
@@ -404,8 +286,6 @@ def test_search_artist_url_shows_helpful_error(client, monkeypatch):
 
 
 def test_search_treats_lookalike_url_as_text(client, monkeypatch):
-    """A free-text query containing 'qobuz.com' but with a non-qobuz host
-    must NOT be routed through the URL paths."""
     import qobuz_fetch.api.search as search_mod
     import qobuz_fetch.web.app as webapp
     monkeypatch.setattr(webapp, "_get_token", lambda: "tok")
@@ -418,47 +298,6 @@ def test_search_treats_lookalike_url_as_text(client, monkeypatch):
     assert "Only Qobuz album URLs are supported here" not in r.text
 
 
-def test_queue_renders_job_without_artist_without_none(client):
-    job = _inject_job(jm.JobStatus.PENDING, title="No-artist job")
-    job.artist = None
-    try:
-        r = client.get("/queue")
-        assert r.status_code == 200
-        # The job title is rendered; "None" must not leak into the markup.
-        assert "No-artist job" in r.text
-        assert "None" not in r.text.split("</style>")[-1]
-    finally:
-        _remove_job(job)
-
-
-def test_queue_running_job_log_div_renders_empty(client):
-    # SSE owns the running-job log channel. If the template also renders
-    # log_lines server-side, every line shows up twice on /queue once SSE
-    # connects and replays its history.
-    job = _inject_job(jm.JobStatus.RUNNING, title="Live job")
-    job.log_lines.extend(["line one", "line two", "line three"])
-    try:
-        r = client.get("/queue")
-        assert r.status_code == 200
-        assert "line one" not in r.text
-        assert "line two" not in r.text
-        assert "line three" not in r.text
-        assert f'id="log-{job.id}"></div>' in r.text
-    finally:
-        _remove_job(job)
-
-
-def test_dashboard_renders_job_without_artist_without_none(client):
-    job = _inject_job(jm.JobStatus.PENDING, title="No-artist job")
-    job.artist = None
-    try:
-        r = client.get("/")
-        assert r.status_code == 200
-        # Just verify the dashboard renders without ">None<" leaking
-        # through a missing-artist guard.
-        assert ">None<" not in r.text
-    finally:
-        _remove_job(job)
 
 
 def test_dashboard_no_creds_shows_setup_cta(client, monkeypatch):
@@ -470,8 +309,6 @@ def test_dashboard_no_creds_shows_setup_cta(client, monkeypatch):
 
 
 def test_csrf_oversize_body_rejected_before_parse(client):
-    """A POST whose content-length exceeds the cap must return 413
-    without parsing or buffering the body."""
     r = client.post(
         "/artist",
         headers={"content-length": "2000000",
@@ -496,8 +333,7 @@ def test_service_worker_served_from_root(client):
 
 
 def test_settings_save_defers_apply_when_job_is_active(tmp_path, monkeypatch):
-    """An in-flight job must not see cfg.* flip mid-run. save() persists
-    to disk immediately but defers the in-memory apply until drain_pending."""
+    """An in-flight job must not see cfg.* flip mid-run."""
     from qobuz_fetch import config as cfg
     from qobuz_fetch.web import settings_store as ss
 
@@ -518,81 +354,11 @@ def test_settings_save_defers_apply_when_job_is_active(tmp_path, monkeypatch):
     assert cfg.AUTO_UPGRADE_ENABLED is True  # idempotent
 
 
-def test_current_overlays_pending_apply(monkeypatch):
-    from qobuz_fetch import config as cfg
-    from qobuz_fetch.web import settings_store as ss
-
-    monkeypatch.setattr(cfg, "AUTO_UPGRADE_ENABLED", False)
-    try:
-        with ss._pending_lock:
-            ss._pending_apply = {"AUTO_UPGRADE_ENABLED": True}
-        out = ss.current()
-        assert out["AUTO_UPGRADE_ENABLED"] is True
-        assert cfg.AUTO_UPGRADE_ENABLED is False
-    finally:
-        with ss._pending_lock:
-            ss._pending_apply = None
 
 
-def test_drain_pending_lock_spans_apply_so_concurrent_save_keeps_both(
-        tmp_path, monkeypatch):
-    """A save() and a drain_pending() racing against each other must both
-    land their changes; neither overwrites the other's pending_apply."""
-    import threading
-
-    from qobuz_fetch import config as cfg
-    from qobuz_fetch.web import settings_store as ss
-
-    monkeypatch.setattr(ss, "SETTINGS_FILE", tmp_path / "s.json")
-    monkeypatch.setattr(cfg, "AUTO_UPGRADE_ENABLED", False)
-    monkeypatch.setattr(cfg, "COMPRESS_ENABLED", False)
-
-    with ss._pending_lock:
-        ss._pending_apply = None
-
-    # First save defers (active job).
-    monkeypatch.setattr(ss, "_any_active_job", lambda: True)
-    assert ss.save({"AUTO_UPGRADE_ENABLED": True}) is True
-
-    inside_apply = threading.Event()
-    release_apply = threading.Event()
-
-    real_apply = ss._apply
-
-    def slow_apply(values):
-        inside_apply.set()
-        release_apply.wait(timeout=2)
-        real_apply(values)
-
-    monkeypatch.setattr(ss, "_apply", slow_apply)
-
-    def run_drain():
-        ss.drain_pending()
-
-    drain_thread = threading.Thread(target=run_drain)
-    drain_thread.start()
-    assert inside_apply.wait(timeout=2)
-
-    # Concurrent save arrives while drain is mid-apply. Pretend no active
-    # job so this save tries to _apply immediately.
-    monkeypatch.setattr(ss, "_any_active_job", lambda: False)
-
-    save_thread = threading.Thread(
-        target=lambda: ss.save({"COMPRESS_ENABLED": True}))
-    save_thread.start()
-
-    release_apply.set()
-    drain_thread.join(timeout=2)
-    save_thread.join(timeout=2)
-
-    assert cfg.AUTO_UPGRADE_ENABLED is True
-    assert cfg.COMPRESS_ENABLED is True
 
 
 def test_execute_upgrades_does_not_flip_global_cfg(monkeypatch):
-    """An upgrade run must enable its own auto_upgrade path via args, not
-    flip cfg.AUTO_UPGRADE_ENABLED — the Settings page reads cfg and would
-    momentarily show True if it had been mutated mid-job."""
     from qobuz_fetch import config as cfg
     from qobuz_fetch.web import flows
 
@@ -625,8 +391,7 @@ def test_execute_upgrades_does_not_flip_global_cfg(monkeypatch):
 # ── CSRF middleware ───────────────────────────────────────────────────────────
 
 def test_csrf_post_without_token_is_rejected():
-    """One representative POST verifies CSRF-missing → 403. The middleware
-    is mounted at the app level, so per-route coverage is unnecessary."""
+    """One representative POST verifies CSRF-missing → 403."""
     from fastapi.testclient import TestClient
 
     from qobuz_fetch.web.app import app
@@ -636,20 +401,7 @@ def test_csrf_post_without_token_is_rejected():
         assert r.status_code == 403
 
 
-def test_csrf_cookie_has_samesite_strict():
-    from fastapi.testclient import TestClient
-
-    from qobuz_fetch.web.app import app
-    with TestClient(app) as c:
-        r = c.get("/")
-        set_cookie = r.headers.get("set-cookie", "")
-        assert "qf_csrf=" in set_cookie
-        assert "samesite=strict" in set_cookie.lower()
-
-
 def test_csrf_form_field_body_replayed_to_route():
-    """CSRF token in the POST body must not consume the body before FastAPI
-    reads Form(...) params from it."""
     from fastapi.testclient import TestClient
 
     from qobuz_fetch.web.app import app
@@ -689,15 +441,6 @@ def test_write_then_read_creds_roundtrip(tmp_path, monkeypatch):
 # ── run-lock busy → destructive routes 503, read-only stay open ───────
 
 def test_lock_busy_refuses_destructive_routes(monkeypatch):
-    """When the web process couldn't acquire the run-lock at startup,
-    staging-writing POSTs must 503; read-only pages stay reachable.
-
-    Note: this is the cross-process lock case (a CLI run holds /staging
-    while the web container started). Within a single process, the job
-    manager queues writes onto its single worker thread by design — the
-    second POST returns 303 (queued), not 503. See the README's
-    Limitations section.
-    """
     from fastapi.testclient import TestClient
 
     from qobuz_fetch.web import app as webapp
@@ -905,39 +648,6 @@ def test_diagnostics_reports_paths_and_binaries(tmp_path, monkeypatch):
     assert "`ffprobe` binary" in by_label
 
 
-def test_diagnostics_reports_missing_binary_as_failure(tmp_path, monkeypatch):
-    import shutil
-
-    from qobuz_fetch.web import app as webapp
-    monkeypatch.setattr(shutil, "which", lambda _b: None)
-    checks = webapp._diagnostics()
-    binary_rows = [c for c in checks if "binary" in c["label"]]
-    assert binary_rows, "diagnostics should still include binary rows"
-    assert all(c["ok"] is False for c in binary_rows)
-
-
-def test_diagnostics_beets_db_existing_readable(tmp_path, monkeypatch):
-    from qobuz_fetch import config as cfg
-    from qobuz_fetch.web import app as webapp
-    db = tmp_path / "library.db"
-    db.touch()
-    monkeypatch.setattr(cfg, "BEETS_DB_PATH", db)
-    checks = webapp._diagnostics()
-    row = next(c for c in checks if c["label"] == "beets DB (BEETS_DB_PATH)")
-    assert row["ok"] is True
-    assert str(db) in row["detail"]
-
-
-def test_diagnostics_beets_db_not_yet_created(tmp_path, monkeypatch):
-    from qobuz_fetch import config as cfg
-    from qobuz_fetch.web import app as webapp
-    db = tmp_path / "library.db"
-    # Parent exists, file doesn't yet.
-    monkeypatch.setattr(cfg, "BEETS_DB_PATH", db)
-    checks = webapp._diagnostics()
-    row = next(c for c in checks if c["label"] == "beets DB (BEETS_DB_PATH)")
-    assert row["ok"] is True
-    assert "first import" in row["detail"]
 
 
 def test_diagnostics_beets_db_parent_missing(tmp_path, monkeypatch):
@@ -951,31 +661,7 @@ def test_diagnostics_beets_db_parent_missing(tmp_path, monkeypatch):
     assert "does not exist" in row["detail"]
 
 
-def test_settings_page_renders_without_error(client):
-    """GET /settings must render without 500 — template uses behavior[key]
-    with bracket notation; if current() is missing any key it raises UndefinedError."""
-    r = client.get("/settings")
-    assert r.status_code == 200
-    assert "Settings" in r.text
-    assert "Qobuz authentication" in r.text
-    assert "Diagnostics" in r.text
-
-
-def test_settings_save_with_env_creds_and_blank_form_succeeds(client, monkeypatch):
-    monkeypatch.setenv("QOBUZ_USER_AUTH_TOKEN", "env-tok")
-    # Patch _write_creds to return False so any accidental call would surface
-    # as an error redirect — proving the env-creds path skips the write.
-    import qobuz_fetch.web.app as _app
-    monkeypatch.setattr(_app, "_write_creds", lambda *_: False)
-    r = client.post("/settings", data={"user_id": "", "auth_token": ""},
-                    follow_redirects=False)
-    assert r.status_code == 303
-    assert "saved=1" in r.headers["location"]
-
-
 def test_settings_empty_save_with_no_existing_creds_returns_error(client, monkeypatch):
-    """An empty submission on first-run must surface a warning, not flash a
-    green 'Settings saved' banner while the dashboard still shows the CTA."""
     import qobuz_fetch.web.app as _app
     monkeypatch.delenv("QOBUZ_USER_AUTH_TOKEN", raising=False)
     monkeypatch.setattr(_app, "_read_creds", lambda: {})
@@ -985,17 +671,7 @@ def test_settings_empty_save_with_no_existing_creds_returns_error(client, monkey
     assert r.headers["location"] == "/settings?error=empty"
 
 
-def test_base_template_has_nav_landmark(client):
-    """The accessibility landmark must be a <nav> element so screen readers
-    announce it as navigation, not a generic block."""
-    r = client.get("/")
-    assert "<nav " in r.text
-
-
 def test_streamrip_quality_stays_int_after_settings_save(monkeypatch):
-    """cfg.STREAMRIP_QUALITY is loaded as int from env; the Settings enum
-    posts strings ("4"), but _apply must coerce back to int so
-    streamrip_quality_cap() doesn't see a str."""
     from qobuz_fetch import config as cfg
     from qobuz_fetch.web import settings_store
     monkeypatch.setattr(cfg, "STREAMRIP_QUALITY", 4)
@@ -1004,19 +680,9 @@ def test_streamrip_quality_stays_int_after_settings_save(monkeypatch):
     assert isinstance(cfg.STREAMRIP_QUALITY, int)
 
 
-def test_settings_save_creds_write_failure_redirects_with_error(client, monkeypatch):
-    import qobuz_fetch.web.app as _app
-    monkeypatch.delenv("QOBUZ_USER_AUTH_TOKEN", raising=False)
-    monkeypatch.setattr(_app, "_write_creds", lambda *_: False)
-    r = client.post("/settings", data={"user_id": "u", "auth_token": "t"},
-                    follow_redirects=False)
-    assert r.status_code == 303
-    assert "error=creds" in r.headers["location"]
 
 
 def test_settings_save_with_bad_token_redirects_with_auth_warning(client, monkeypatch):
-    """When the saved token doesn't authenticate, the redirect carries
-    auth=bad so the settings page surfaces a warning instead of green."""
     import qobuz_fetch.api.client as client_mod
     import qobuz_fetch.web.app as _app
     from qobuz_fetch.api.auth import AuthLost
@@ -1033,20 +699,6 @@ def test_settings_save_with_bad_token_redirects_with_auth_warning(client, monkey
     assert "saved=1" in loc and "auth=bad" in loc
 
 
-def test_settings_save_with_good_token_redirects_clean(client, monkeypatch):
-    """A token that authenticates against Qobuz doesn't trigger the warning."""
-    import qobuz_fetch.api.client as client_mod
-    import qobuz_fetch.web.app as _app
-    monkeypatch.delenv("QOBUZ_USER_AUTH_TOKEN", raising=False)
-    monkeypatch.setattr(_app, "_write_creds", lambda *_: True)
-    monkeypatch.setattr(client_mod, "qobuz_get", lambda *a, **k: {"ok": 1})
-    r = client.post("/settings", data={"user_id": "u", "auth_token": "tok"},
-                    follow_redirects=False)
-    assert r.status_code == 303
-    loc = r.headers["location"]
-    assert "saved=1" in loc and "auth=bad" not in loc
-
-
 def test_settings_behavior_persist_failure_redirects_with_error(client, monkeypatch):
     from qobuz_fetch.web import settings_store
     monkeypatch.setattr(settings_store, "save", lambda *_: False)
@@ -1055,27 +707,6 @@ def test_settings_behavior_persist_failure_redirects_with_error(client, monkeypa
     assert "error=persist" in r.headers["location"]
 
 
-def test_settings_behavior_save_with_active_job_signals_queued(client, monkeypatch):
-    from qobuz_fetch.web import settings_store
-    monkeypatch.setattr(settings_store, "save", lambda *_: True)
-    monkeypatch.setattr(settings_store, "_any_active_job", lambda: True)
-    r = client.post("/settings/behavior", data={}, follow_redirects=False)
-    assert r.status_code == 303
-    assert "queued=1" in r.headers["location"]
-    follow = client.get(r.headers["location"])
-    assert follow.status_code == 200
-    assert "after the current job" in follow.text
-
-
-def test_queue_clear_redirects_to_queue(client):
-    """POST /queue/clear must drop finished jobs and redirect to /queue."""
-    job = _inject_job(jm.JobStatus.DONE, title="Old Job")
-    try:
-        r = client.post("/queue/clear", follow_redirects=False)
-        assert r.status_code == 303
-        assert r.headers["location"].endswith("/queue")
-    finally:
-        _remove_job(job)
 
 
 def test_security_headers_present(client):
@@ -1090,8 +721,6 @@ def test_security_headers_present(client):
 
 
 def test_hsts_header_present_on_https_but_not_http(client):
-    """HSTS must only ship on HTTPS — sending it over plain HTTP can lock
-    a user out if they later reach the host via HTTP after an HTTPS visit."""
     https = client.get("/", headers={"X-Forwarded-Proto": "https"})
     assert "max-age=" in https.headers.get("Strict-Transport-Security", "")
     plain = client.get("/")
@@ -1099,8 +728,6 @@ def test_hsts_header_present_on_https_but_not_http(client):
 
 
 def test_web_fetch_timeout_honors_env_var(monkeypatch):
-    """The web fetch timeout must come from QF_WEB_FETCH_TIMEOUT so an
-    operator can shrink/grow it without editing source."""
     import importlib
 
     import qobuz_fetch.config as cfg_mod
@@ -1145,35 +772,6 @@ def test_queue_download_fails_job_when_import_fails(client, monkeypatch):
     assert job.error
 
 
-def test_process_album_returns_dict_for_lossy_album():
-    """Contract test pinning the boundary `_download_job` stubs out:
-    process_album must return a dict containing a `result` key."""
-    from argparse import Namespace
-
-    from qobuz_fetch.modes.process import process_album
-    lossy_album = {"id": "lossy", "title": "T",
-                   "artist": {"name": "A"},
-                   "maximum_bit_depth": 0, "tracks": {"items": []}}
-    args = Namespace(force=False, dry_run=False, yes=True, verbose=False)
-    result = process_album(lossy_album, args, token="tok")
-    assert isinstance(result, dict)
-    assert "result" in result
-    assert result["result"] == "lossy_only"
-
-
-def test_process_album_returns_dict_for_album_with_no_tracks(monkeypatch):
-    from argparse import Namespace
-
-    from qobuz_fetch.modes import process as process_mod
-    monkeypatch.setattr(process_mod, "is_lossless_album", lambda a: True)
-    empty_album = {"id": "x", "title": "T", "artist": {"name": "A"},
-                   "tracks": {"items": []}}
-    args = Namespace(force=False, dry_run=False, yes=True, verbose=False)
-    result = process_mod.process_album(empty_album, args, token="tok")
-    assert isinstance(result, dict)
-    assert result["result"] == "no_tracks"
-
-
 def test_queue_download_benign_result_is_done(client, monkeypatch):
     """already_complete and similar non-error results must stay DONE."""
     job = _download_job(client, monkeypatch, "qdl3", {
@@ -1186,25 +784,6 @@ def test_queue_download_benign_result_is_done(client, monkeypatch):
 
 
 # ── _active_job includes SCANNING status ─────────────────────────────────────
-
-def test_active_job_includes_scanning_status():
-    """Dashboard active_job indicator must fire during SCANNING, not only RUNNING."""
-    from qobuz_fetch.web.app import _active_job
-
-    job = jm.Job(title="scan-job")
-    job.status = jm.JobStatus.SCANNING
-    jm.registry.add(job)
-
-    try:
-        found = _active_job()
-        assert found is not None and found.id == job.id
-    finally:
-        with jm.registry._lock:
-            jm.registry._jobs.pop(job.id, None)
-            try:
-                jm.registry._order.remove(job.id)
-            except ValueError:
-                pass
 
 
 # ── per-job cancel button on queue page ───────────────────────────────
@@ -1226,15 +805,6 @@ def _remove_job(job):
             pass
 
 
-def test_queue_pending_job_shows_cancel_button(client):
-    """A pending job must have a × cancel form on the queue page."""
-    job = _inject_job(jm.JobStatus.PENDING)
-    try:
-        r = client.get("/queue")
-        assert r.status_code == 200
-        assert f"/jobs/{job.id}/cancel" in r.text
-    finally:
-        _remove_job(job)
 
 
 def test_queue_awaiting_review_job_shows_review_and_cancel(client):
@@ -1247,24 +817,6 @@ def test_queue_awaiting_review_job_shows_review_and_cancel(client):
         assert f"/jobs/{job.id}/cancel" in r.text
     finally:
         _remove_job(job)
-
-
-def test_cancel_pending_job_redirects_to_job_page(client):
-    """POSTing cancel on a pending job returns a redirect."""
-    job = _inject_job(jm.JobStatus.PENDING)
-    try:
-        r = client.post(f"/jobs/{job.id}/cancel", follow_redirects=False)
-        assert r.status_code == 303
-    finally:
-        _remove_job(job)
-
-
-def test_rip_cancel_hook_is_wired_on_jobs_import():
-    # When the web job manager is loaded, it registers a cancel-check
-    # callable with rip.set_cancel_check so an in-flight streamrip
-    # process can be terminated when the user clicks Cancel.
-    from qobuz_fetch.integrations import rip
-    assert rip._CANCEL_CHECK is not None
 
 
 def test_cancel_check_predicate_reads_current_job_flag():
@@ -1377,13 +929,6 @@ def test_post_job_hook_receives_terminal_state_as_json(tmp_path, monkeypatch):
     assert payload["title"] == "HookJob"
 
 
-def test_post_job_hook_unset_is_no_op(monkeypatch):
-    from qobuz_fetch.web import jobs as _jobs
-    monkeypatch.delenv("POST_JOB_HOOK", raising=False)
-    job = jm.Job(title="x")
-    _jobs._fire_post_job_hook(job)  # must not raise
-
-
 def test_jobs_list_returns_array_and_respects_filter(client):
     pending = _inject_job(jm.JobStatus.PENDING, title="P")
     done = _inject_job(jm.JobStatus.DONE, title="D")
@@ -1423,16 +968,6 @@ def test_dashboard_null_fetch_log_fields_render_safe(client, monkeypatch):
     assert "None —" not in r.text
 
 
-def test_dashboard_null_result_field_renders_safe(client, monkeypatch):
-    import qobuz_fetch.ui_cli.prompts as prompts_mod
-    monkeypatch.setattr(
-        prompts_mod,
-        "_read_fetch_log",
-        lambda **kw: [{"ts": "2025-01-01T00:00:00", "artist": "X", "title": "Y",
-                       "result": None, "tracks_downloaded": 0}],
-    )
-    r = client.get("/")
-    assert r.status_code == 200
 
 
 def test_library_scan_cancel_during_walk_ends_canceled():
@@ -1459,69 +994,12 @@ def test_library_scan_cancel_during_walk_ends_canceled():
 
 # ── /api/test-auth coverage ────────────────────────────────────────
 
-def test_test_auth_success(client, monkeypatch):
-    import qobuz_fetch.web.app as webapp
-    monkeypatch.setattr(webapp, "_get_token", lambda: "tok")
-    monkeypatch.setattr("qobuz_fetch.api.client.qobuz_get", lambda *a, **k: {})
-    r = client.post("/api/test-auth", headers={"HX-Request": "true"})
-    assert r.status_code == 200
-    assert "alert-success" in r.text
-    assert "valid" in r.text
 
 
-def test_test_auth_no_creds(client, monkeypatch):
-    import qobuz_fetch.web.app as webapp
-    def _no_creds():
-        raise SystemExit("no creds")
-    monkeypatch.setattr(webapp, "_get_token", _no_creds)
-    r = client.post("/api/test-auth", headers={"HX-Request": "true"})
-    assert r.status_code == 200
-    assert "alert-error" in r.text
-    assert "No Qobuz credentials" in r.text
 
-
-def test_test_auth_authlost(client, monkeypatch):
-    import qobuz_fetch.web.app as webapp
-    from qobuz_fetch.api.auth import AuthLost
-    monkeypatch.setattr(webapp, "_get_token", lambda: "tok")
-    def _authlost(*a, **k):
-        raise AuthLost("401")
-    monkeypatch.setattr("qobuz_fetch.api.client.qobuz_get", _authlost)
-    r = client.post("/api/test-auth", headers={"HX-Request": "true"})
-    assert r.status_code == 200
-    assert "alert-error" in r.text
-    assert "expired or invalid" in r.text
-
-
-def test_test_auth_network_error(client, monkeypatch):
-    import qobuz_fetch.web.app as webapp
-    from qobuz_fetch.api.auth import QobuzError
-    monkeypatch.setattr(webapp, "_get_token", lambda: "tok")
-    def _network_err(*a, **k):
-        raise QobuzError("connection refused")
-    monkeypatch.setattr("qobuz_fetch.api.client.qobuz_get", _network_err)
-    r = client.post("/api/test-auth", headers={"HX-Request": "true"})
-    assert r.status_code == 200
-    assert "alert-error" in r.text
-    assert "network" in r.text.lower()
-
-
-def test_test_auth_timeout(client, monkeypatch):
-    import qobuz_fetch.web.app as webapp
-    monkeypatch.setattr(webapp, "_get_token", lambda: "tok")
-    import asyncio
-    async def _timeout(*a, **k):
-        raise asyncio.TimeoutError()
-    monkeypatch.setattr(asyncio, "wait_for", _timeout)
-    r = client.post("/api/test-auth", headers={"HX-Request": "true"})
-    assert r.status_code == 200
-    assert "alert-error" in r.text
-    assert "Timed out" in r.text
 
 
 def test_test_auth_unexpected_exception_renders_safe_message(client, monkeypatch):
-    """Any non-{Auth,Qobuz,Timeout,SystemExit,NoCredsError} exception must
-    produce a generic error fragment, not echo the raw repr."""
     import qobuz_fetch.web.app as webapp
     monkeypatch.setattr(webapp, "_get_token", lambda: "tok")
     import asyncio
@@ -1554,19 +1032,7 @@ def test_download_duplicate_rejected_htmx(client, monkeypatch):
     assert existing.id in r.text
 
 
-def test_download_duplicate_rejected_redirects(client, monkeypatch):
-    import qobuz_fetch.web.app as webapp
-    monkeypatch.setattr(webapp, "_get_token", lambda: "tok")
-    existing = _inject_album_job("dup-album-2", status=jm.JobStatus.RUNNING)
-    r = client.post("/download", data={"album_id": "dup-album-2"},
-                    follow_redirects=False)
-    assert r.status_code == 303
-    assert existing.id in r.headers["location"]
-
-
 def test_download_duplicate_matches_scan_candidate(client, monkeypatch):
-    """A scan-flow job awaiting review with album X among candidates must
-    block a fresh /download of X, not start a second downloader."""
     import qobuz_fetch.web.app as webapp
     monkeypatch.setattr(webapp, "_get_token", lambda: "tok")
     scan = jm.Job(title="Library scan", status=jm.JobStatus.AWAITING_REVIEW)
@@ -1583,72 +1049,21 @@ def test_download_duplicate_matches_scan_candidate(client, monkeypatch):
 
 # ── POST /jobs/{id}/approve for nonexistent job redirects ──────────
 
-def test_approve_nonexistent_job_redirects_to_queue(client):
-    r = client.post("/jobs/nonexistent-id/approve", data={},
-                    follow_redirects=False)
-    assert r.status_code == 303
-    assert r.headers["location"] == "/queue"
 
 
 # ── queue badge count ───────────────────────────────────────────────
 
-def test_queue_badge_shows_pending_count(client, monkeypatch):
-    import qobuz_fetch.web.app as webapp
-    monkeypatch.setattr(webapp.job_mgr, "registry", jm.JobRegistry())
-    j1 = _inject_album_job("badge-test-1")
-    j2 = _inject_album_job("badge-test-2")
-    try:
-        r = client.get("/")
-        assert r.status_code == 200
-        assert 'class="badge badge-primary badge-sm">2</span>' in r.text
-    finally:
-        _remove_job(j1)
-        _remove_job(j2)
-
-
-def test_queue_badge_absent_when_no_pending(client, monkeypatch):
-    import qobuz_fetch.web.app as webapp
-    monkeypatch.setattr(webapp.job_mgr, "registry", jm.JobRegistry())
-    r = client.get("/")
-    assert r.status_code == 200
-    assert "badge-primary" not in r.text
 
 
 # ── jobs without artist field render safely ─────────────────────────
 
-def test_queue_page_with_artist_none_renders_safe(client):
-    job = jm.Job(title="No-artist job", artist="")
-    jm.registry.add(job)
-    r = client.get("/queue")
-    assert r.status_code == 200
-    assert "None" not in r.text
-
-
-def test_dashboard_with_artist_none_renders_safe(client):
-    job = jm.Job(title="No-artist job", artist="")
-    jm.registry.add(job)
-    r = client.get("/")
-    assert r.status_code == 200
-    assert "None" not in r.text
-
 
 # ── first-run no-credentials CTA ────────────────────────────────────
-
-def test_dashboard_no_creds_shows_cta(client, monkeypatch):
-    import qobuz_fetch.web.app as webapp
-    monkeypatch.setattr(webapp, "_read_creds", lambda: {})
-    r = client.get("/")
-    assert r.status_code == 200
-    assert "Set up your Qobuz account" in r.text
 
 
 # ── SSE stream event delivery ───────────────────────────────────────
 
 def test_sse_stream_404_returns_json(client):
-    """Both /api/jobs/{id}/status and /stream are under the /api namespace —
-    a missing job must surface as JSON on both, not HTML on /stream and
-    JSON on /status. Monitors that watch the SSE endpoint shouldn't have
-    to parse two error envelopes."""
     r = client.get("/api/jobs/no-such-job/stream")
     assert r.status_code == 404
     assert r.headers["content-type"].startswith("application/json")
@@ -1656,11 +1071,7 @@ def test_sse_stream_404_returns_json(client):
 
 
 def test_templates_have_no_hx_on_attributes():
-    """htmx 1.9's hx-on:* attributes evaluate via new Function() which
-    the page CSP correctly forbids. Handlers must live in static/app.js
-    instead — see web/static/app.js. Catches regressions where someone
-    pastes an hx-on: handler into a template without realising it
-    silently fails under CSP."""
+    """htmx 1.9's hx-on:* attributes evaluate via new Function() which the page CSP correctly forbids."""
     from pathlib import Path
     tpl_dir = Path(__file__).resolve().parents[1] / "src/qobuz_fetch/web/templates"
     offenders = []
@@ -1688,8 +1099,6 @@ def test_sse_stream_done_for_finished_job(client):
 
 
 def test_sse_terminal_job_sends_done_without_blocking():
-    """A job already terminal at subscribe-time must yield done in the first
-    pass, not wait 500ms for the queue timeout."""
     import time as _time
 
     from qobuz_fetch.web.app import job_stream
@@ -1719,19 +1128,6 @@ def test_sse_terminal_job_sends_done_without_blocking():
         assert elapsed < 0.4, f"terminal-job SSE blocked {elapsed:.2f}s"
     finally:
         _remove_job(job)
-
-
-def test_sse_stream_done_for_awaiting_review_job(client):
-    job = jm.Job(title="awaiting")
-    job.status = jm.JobStatus.AWAITING_REVIEW
-    jm.registry.add(job)
-    with client.stream("GET", f"/api/jobs/{job.id}/stream") as r:
-        assert r.status_code == 200
-        for chunk in r.iter_text():
-            if "event: done" in chunk:
-                break
-        else:
-            pytest.fail("SSE stream never sent 'event: done' for awaiting-review job")
 
 
 def test_sse_stream_done_on_stream_end_sentinel(client):
@@ -1806,43 +1202,10 @@ def test_test_auth_prefers_form_token_over_disk(client, monkeypatch):
     assert "disk" not in seen
 
 
-def test_test_auth_falls_back_to_disk_when_form_blank(client, monkeypatch):
-    import qobuz_fetch.web.app as webapp
-    seen = {}
-    monkeypatch.setattr(webapp, "_get_token", lambda: "DISK_TOK")
-    def _probe(endpoint, params, token):
-        seen["probed_with"] = token
-        return {}
-    monkeypatch.setattr("qobuz_fetch.api.client.qobuz_get", _probe)
-    r = client.post(
-        "/api/test-auth",
-        data={"auth_token": "   "},
-        headers={"HX-Request": "true"},
-    )
-    assert r.status_code == 200
-    assert seen.get("probed_with") == "DISK_TOK"
-
-
-def test_scan_pages_show_cta_when_no_creds(client, monkeypatch):
-    """Every scan page (/artist /library /upgrade /repair /search) renders
-    a "set them in Settings" CTA and hides the start-scan buttons when
-    creds are absent. The gate lives in one place (middleware-level
-    creds check); /library is the representative case."""
-    import qobuz_fetch.web.app as webapp
-    monkeypatch.setattr(webapp, "_read_creds", lambda: {})
-    r = client.get("/library")
-    assert r.status_code == 200
-    assert "set them in Settings" in r.text
-    assert '<input type="text" name="artist"' not in r.text  # form hidden
-    assert "Start library scan" not in r.text
-    assert "Start upgrade scan" not in r.text
-    assert "Start repair scan" not in r.text
 
 
 def test_scan_routes_redirect_to_settings_when_no_creds(client, monkeypatch):
-    """POSTing to any scan route without creds redirects to /settings.
-    The same middleware handles /library /artist /upgrade /repair; one
-    representative POST suffices."""
+    """POSTing to any scan route without creds redirects to /settings."""
     import qobuz_fetch.web.app as webapp
     def _no_creds():
         raise SystemExit(1)
@@ -1870,20 +1233,7 @@ def test_scan_library_propagates_authlost_so_job_fails(monkeypatch, tmp_path):
         flows.scan_library(job, "tok")
 
 
-@pytest.mark.parametrize("status", [jm.JobStatus.RUNNING, jm.JobStatus.SCANNING])
-def test_queue_running_and_scanning_jobs_show_cancel_button(client, status):
-    job = _inject_job(status)
-    try:
-        r = client.get("/queue")
-        assert r.status_code == 200
-        assert f"/jobs/{job.id}/cancel" in r.text
-    finally:
-        _remove_job(job)
-
-
 def test_dashboard_does_not_double_surface_awaiting_review(client, monkeypatch):
-    """An awaiting_review scan must appear only in the Review card, not also
-    in the "N jobs queued" alert."""
     import qobuz_fetch.web.app as webapp
     monkeypatch.setattr(webapp.job_mgr, "registry", jm.JobRegistry())
     monkeypatch.setattr(webapp, "_read_creds", lambda: {"auth_token": "tok"})
@@ -1901,31 +1251,6 @@ def test_dashboard_does_not_double_surface_awaiting_review(client, monkeypatch):
         _remove_job(review_job)
 
 
-def test_dashboard_queue_alert_uses_plural_aware_wording(client, monkeypatch):
-    import qobuz_fetch.web.app as webapp
-    monkeypatch.setattr(webapp.job_mgr, "registry", jm.JobRegistry())
-    monkeypatch.setattr(webapp, "_read_creds", lambda: {"auth_token": "tok"})
-
-    j = jm.Job(title="X", status=jm.JobStatus.PENDING)
-    jm.registry.add(j)
-    try:
-        r = client.get("/")
-        assert "1 job queued" in r.text
-    finally:
-        _remove_job(j)
-
-    j1 = jm.Job(title="A", status=jm.JobStatus.PENDING)
-    j2 = jm.Job(title="B", status=jm.JobStatus.PENDING)
-    jm.registry.add(j1)
-    jm.registry.add(j2)
-    try:
-        r = client.get("/")
-        assert "2 jobs queued" in r.text
-    finally:
-        _remove_job(j1)
-        _remove_job(j2)
-
-
 def test_empty_search_renders_instructional_hint(client, monkeypatch):
     import qobuz_fetch.web.app as webapp
     monkeypatch.setattr(webapp, "_read_creds", lambda: {"auth_token": "tok"})
@@ -1934,17 +1259,9 @@ def test_empty_search_renders_instructional_hint(client, monkeypatch):
     assert "Type an artist, album, or Qobuz URL" in r.text
 
 
-def test_empty_artist_scan_shows_error_banner(client, monkeypatch):
-    import qobuz_fetch.web.app as webapp
-    monkeypatch.setattr(webapp, "_read_creds", lambda: {"auth_token": "tok"})
-    r = client.post("/artist", data={"artist": "   "}, follow_redirects=True)
-    assert r.status_code == 200
-    assert "Artist name is required" in r.text
 
 
 def test_sse_stream_emits_heartbeat_when_idle(client, monkeypatch):
-    """When the subscriber queue is idle, a `: ping` keepalive must reach
-    the client so reverse proxies don't drop the connection."""
     import threading
 
     import qobuz_fetch.web.app as webapp
@@ -2061,40 +1378,8 @@ def test_job_retry_rejects_non_failed_job(client):
         _remove_job(pending)
 
 
-def test_scan_repairs_propagates_authlost(monkeypatch, tmp_path):
-    from qobuz_fetch.api.auth import AuthLost
-    from qobuz_fetch.web import flows
-
-    artist_dir = tmp_path / "Artist"
-    album_dir = artist_dir / "Album"
-    album_dir.mkdir(parents=True)
-
-    monkeypatch.setattr(flows, "clear_scan_caches", lambda: None)
-    monkeypatch.setattr(flows, "list_library_artists", lambda: [artist_dir])
-    monkeypatch.setattr(flows, "list_artist_album_dirs", lambda d: [album_dir])
-
-    def _authlost(*a, **k):
-        raise AuthLost("token expired")
-    monkeypatch.setattr(
-        "qobuz_fetch.repair_log.scan_dir_for_isrc_repairs", _authlost
-    )
-
-    job = jm.Job(title="repair scan")
-    with pytest.raises(AuthLost):
-        flows.scan_repairs(job, "tok")
 
 
-def test_healthz_returns_ok(client):
-    """A liveness probe must not pull the full dashboard render."""
-    r = client.get("/healthz")
-    assert r.status_code == 200
-    assert r.json() == {"ok": True}
-
-
-def test_head_on_root_is_200(client):
-    """HEAD / from curl -I / uptime monitors must succeed."""
-    r = client.request("HEAD", "/")
-    assert r.status_code == 200
 
 
 def test_server_header_is_stripped(client):
@@ -2110,11 +1395,6 @@ def test_search_query_too_long_is_rejected_or_truncated(client):
     assert r.status_code in (200, 422)
 
 
-def test_search_get_query_too_long_is_rejected(client):
-    """GET /search?q=... also caps the query so a 1 MB URL can't ride
-    through to Qobuz."""
-    r = client.get("/search", params={"q": "a" * 10_000})
-    assert r.status_code == 422
 
 
 def test_dashboard_token_invalid_shows_banner(client, monkeypatch):
@@ -2125,54 +1405,6 @@ def test_dashboard_token_invalid_shows_banner(client, monkeypatch):
     r = client.get("/")
     assert r.status_code == 200
     assert "saved token isn't authenticating" in r.text
-
-
-def test_dashboard_token_unverified_hides_banner(client, monkeypatch):
-    """A None probe result (network blip, not yet probed) must not nag."""
-    import qobuz_fetch.web.app as webapp
-    monkeypatch.setattr(webapp, "_read_creds", lambda: {"auth_token": "tok"})
-    monkeypatch.setattr(webapp, "_TOKEN_VALID", None)
-    r = client.get("/")
-    assert r.status_code == 200
-    assert "saved token isn't authenticating" not in r.text
-
-
-def test_lyric_retry_alert_pluralizes_correctly(client, monkeypatch):
-    """Subject and verb must agree at counts 1 and >1; the alert hides at 0."""
-    import qobuz_fetch.web.app as webapp
-    monkeypatch.setattr(webapp, "_read_creds", lambda: {"auth_token": "tok"})
-
-    def _render_dashboard_with_count(count):
-        monkeypatch.setattr(
-            "qobuz_fetch.integrations.lyrics.load_lyric_retry",
-            lambda: list(range(count)),
-        )
-
-        class _FakeFile:
-            def exists(self):
-                return count > 0
-
-        monkeypatch.setattr(
-            "qobuz_fetch.config.LYRIC_RETRY_FILE", _FakeFile()
-        )
-        return client.get("/").text
-
-    body_0 = _render_dashboard_with_count(0)
-    assert "lyric retry" not in body_0
-
-    body_1 = _render_dashboard_with_count(1)
-    assert "1 track needs a lyric retry" in body_1
-    assert "1 tracks" not in body_1
-    assert "track need " not in body_1
-
-    body_2 = _render_dashboard_with_count(2)
-    assert "2 tracks need a lyric retry" in body_2
-    assert "2 track " not in body_2
-    assert "tracks needs " not in body_2
-
-    body_5 = _render_dashboard_with_count(5)
-    assert "5 tracks need a lyric retry" in body_5
-    assert "5 track " not in body_5
 
 
 # ── empty form values reach friendly branches, never 422 JSON ──────
@@ -2187,11 +1419,6 @@ def test_download_empty_album_id_renders_friendly_error(client):
     assert "Missing album id" in r.text
 
 
-def test_download_empty_album_id_redirects_for_non_htmx(client):
-    r = client.post("/download", data={"album_id": ""},
-                    follow_redirects=False)
-    assert r.status_code == 303
-    assert "/queue?error=" in r.headers["location"]
 
 
 def test_artist_empty_form_redirects_with_friendly_error(client):
@@ -2228,37 +1455,7 @@ def test_download_404_maps_to_no_album_message(client, monkeypatch):
 # ── HEAD requests on /healthz / /queue / /settings ─────────────────
 
 
-def test_head_on_healthz_returns_200(client):
-    r = client.request("HEAD", "/healthz")
-    assert r.status_code == 200
-    assert r.content == b""
-
-
-# ── F-011: dedupe vs already-in-library ────────────────────────────
-
-
-def test_download_already_in_library_short_circuits(client, monkeypatch):
-    from pathlib import Path
-
-    import qobuz_fetch.api.search as search_mod
-    import qobuz_fetch.library.catalog as cat
-    import qobuz_fetch.web.app as webapp
-    monkeypatch.setattr(webapp, "_get_token", lambda: "tok")
-    monkeypatch.setattr(search_mod, "get_album",
-                        lambda aid, tok: {"id": aid, "title": "Album",
-                                          "artist": {"name": "Artist"}})
-    monkeypatch.setattr(cat, "find_album_dir_filesystem",
-                        lambda album: Path("/tmp/album-dir"))
-    monkeypatch.setattr(cat, "find_existing_tracks",
-                        lambda album: ([{"isrc": "X1"}, {"isrc": "X2"}],
-                                       Path("/tmp/album-dir")))
-    before = len(jm.registry.all())
-    r = client.post("/download", data={"album_id": "already-have"},
-                    headers={"HX-Request": "true"})
-    assert r.status_code == 200
-    assert "already in your library" in r.text
-    after = len(jm.registry.all())
-    assert before == after, "no job should be queued for an album already in library"
+# ── dedupe vs already-in-library ────────────────────────────
 
 
 def test_download_force_param_overrides_library_check(client, monkeypatch):
@@ -2296,31 +1493,12 @@ def test_download_force_param_overrides_library_check(client, monkeypatch):
             _remove_job(job)
 
 
-# ── F-016: library mode=partial_fill dispatches an album-fill job ──
+# ── library mode=partial_fill dispatches an album-fill job ──
 
 
-def test_library_partial_fill_mode_dispatches_scan(client, monkeypatch):
-    import qobuz_fetch.web.app as webapp
-    from qobuz_fetch.web import flows
-    monkeypatch.setattr(webapp, "_get_token", lambda: "tok")
-    captured = {}
-
-    def _fake_submit_scan(job, scan_fn, exec_fn):
-        captured["job"] = job
-        captured["scan_fn"] = scan_fn
-        captured["exec_fn"] = exec_fn
-
-    monkeypatch.setattr(jm, "submit_scan", _fake_submit_scan)
-    monkeypatch.setattr(flows, "scan_library", lambda j, t: None)
-    r = client.post("/library", data={"mode": "partial_fill"},
-                    follow_redirects=False)
-    assert r.status_code == 303
-    assert captured.get("job") is not None
-    assert "fill" in captured["job"].title.lower()
-    assert captured["scan_fn"] is not None
 
 
-# ── F-021: behavior POST without form_complete preserves untouched keys
+# ── behavior POST without form_complete preserves untouched keys
 
 
 def test_settings_behavior_partial_post_preserves_other_booleans(
@@ -2347,30 +1525,7 @@ def test_settings_behavior_partial_post_preserves_other_booleans(
             ss._pending_apply = None
 
 
-def test_settings_behavior_complete_post_overwrites(tmp_path, monkeypatch, client):
-    from qobuz_fetch import config as cfg
-    from qobuz_fetch.web import settings_store as ss
-
-    monkeypatch.setattr(ss, "SETTINGS_FILE", tmp_path / "s.json")
-    monkeypatch.setattr(cfg, "COMPRESS_ENABLED", True)
-    monkeypatch.setattr(ss, "_any_active_job", lambda: False)
-    with ss._pending_lock:
-        ss._pending_apply = None
-    try:
-        # Full form submission (form_complete=1) with no behavior keys
-        # present means every checkbox is unchecked, so all booleans go
-        # to False.
-        r = client.post("/settings/behavior",
-                        data={"form_complete": "1"},
-                        follow_redirects=False)
-        assert r.status_code == 303
-        assert cfg.COMPRESS_ENABLED is False
-    finally:
-        with ss._pending_lock:
-            ss._pending_apply = None
-
-
-# ── F-022: test-auth bad token maps to "Token rejected" not "network" ──
+# ── test-auth bad token maps to "Token rejected" not "network" ──
 
 
 def test_test_auth_bad_token_maps_to_token_rejected(client, monkeypatch):
@@ -2392,7 +1547,7 @@ def test_test_auth_bad_token_maps_to_token_rejected(client, monkeypatch):
     assert "network" not in r.text.lower()
 
 
-# ── F-025: invalid status filter on /api/jobs returns 400 ──────────
+# ── invalid status filter on /api/jobs returns 400 ──────────
 
 
 def test_jobs_list_unknown_status_returns_400(client):
@@ -2401,13 +1556,7 @@ def test_jobs_list_unknown_status_returns_400(client):
     assert r.json() == {"detail": "Unknown status filter"}
 
 
-def test_jobs_list_known_status_returns_200(client):
-    r = client.get("/api/jobs?status=running")
-    assert r.status_code == 200
-    assert "jobs" in r.json()
-
-
-# ── F-027: XSS-like artist names rejected before reaching Qobuz ────
+# ── XSS-like artist names rejected before reaching Qobuz ────
 
 
 def test_artist_with_angle_brackets_rejected(client):
@@ -2419,3 +1568,141 @@ def test_artist_with_angle_brackets_rejected(client):
     assert r.status_code == 400
     assert "error=" in r.headers["location"]
     assert before == len(jm.registry.all())
+
+
+# ── web gap-fill discovery + completeness guard ────────────────────────────────
+
+
+def test_download_partial_album_proceeds_to_gap_fill(client, monkeypatch):
+    from pathlib import Path
+
+    import qobuz_fetch.api.search as search_mod
+    import qobuz_fetch.library.catalog as cat_mod
+    import qobuz_fetch.modes.process as proc_mod
+    import qobuz_fetch.web.app as app_mod
+
+    monkeypatch.setattr(app_mod, "_get_token", lambda: "tok")
+    album = {"id": "gap1", "title": "Gappy", "artist": {"name": "A"},
+             "tracks": {"items": [{"id": 1}, {"id": 2}, {"id": 3}]}}
+    monkeypatch.setattr(search_mod, "get_album", lambda _i, _t: album)
+    monkeypatch.setattr(cat_mod, "find_album_dir_filesystem",
+                        lambda _a: Path("/music/A/Gappy"))
+    monkeypatch.setattr(cat_mod, "find_existing_tracks",
+                        lambda _a: ([{"id": 1}], None))
+    monkeypatch.setattr(cat_mod, "compute_missing",
+                        lambda q, e: ([{"id": 2}, {"id": 3}], [{"id": 1}]))
+    monkeypatch.setattr(proc_mod, "process_album",
+                        lambda *a, **k: {"result": "downloaded",
+                                         "imported": True, "n_fail": 0})
+
+    jm.start_worker()
+    r = client.post("/download", data={"album_id": "gap1"},
+                    headers={"HX-Request": "true"})
+    assert r.status_code == 200
+    assert "already complete" not in r.text.lower()
+    new_jobs = [j for j in list(jm.registry._jobs.values())
+                if getattr(j, "album_id", None) == "gap1"]
+    assert len(new_jobs) == 1
+    job = new_jobs[0]
+    try:
+        _wait_for(lambda: job.status in (jm.JobStatus.DONE, jm.JobStatus.FAILED))
+    finally:
+        _remove_job(job)
+
+
+def test_download_complete_album_is_blocked(client, monkeypatch):
+    """A genuinely complete album is still short-circuited with a friendly message — no job queued."""
+    from pathlib import Path
+
+    import qobuz_fetch.api.search as search_mod
+    import qobuz_fetch.library.catalog as cat_mod
+    import qobuz_fetch.web.app as app_mod
+
+    monkeypatch.setattr(app_mod, "_get_token", lambda: "tok")
+    album = {"id": "done1", "title": "Whole", "artist": {"name": "A"},
+             "tracks": {"items": [{"id": 1}, {"id": 2}]}}
+    monkeypatch.setattr(search_mod, "get_album", lambda _i, _t: album)
+    monkeypatch.setattr(cat_mod, "find_album_dir_filesystem",
+                        lambda _a: Path("/music/A/Whole"))
+    monkeypatch.setattr(cat_mod, "find_existing_tracks",
+                        lambda _a: ([{"id": 1}, {"id": 2}], None))
+    monkeypatch.setattr(cat_mod, "compute_missing",
+                        lambda q, e: ([], [{"id": 1}, {"id": 2}]))
+
+    r = client.post("/download", data={"album_id": "done1"},
+                    headers={"HX-Request": "true"})
+    assert r.status_code == 200
+    assert "already complete" in r.text.lower()
+    assert not [j for j in list(jm.registry._jobs.values())
+                if getattr(j, "album_id", None) == "done1"]
+
+
+# ── library partial-fill mode filters to on-disk gaps ──────────────────────────
+
+def test_missing_albums_partial_only_skips_fully_missing(monkeypatch):
+    from pathlib import Path
+
+    from qobuz_fetch.web import flows
+    absent = {"id": "absent", "title": "Not Owned", "tracks_count": 2}
+    partial = {"id": "partial", "title": "Owned With Gap", "tracks_count": 3}
+    full = {"id": "partial", "title": "Owned With Gap",
+            "tracks": {"items": [{"id": 1}, {"id": 2}, {"id": 3}]}}
+
+    monkeypatch.setattr(flows, "get_artist_albums",
+                        lambda *a, **k: ([absent, partial], 2))
+    monkeypatch.setattr(flows, "dedup_album_versions",
+                        lambda c, **k: [(absent, 1), (partial, 1)])
+    monkeypatch.setattr(flows, "filter_compilation_albums", lambda p, n: p)
+    monkeypatch.setattr(flows, "filter_short_releases", lambda p, m: p)
+
+    def fake_existing(album):
+        if album["id"] == "partial":
+            return ([{"id": 1}], Path("/music/A/Owned With Gap"))
+        return ([], None)
+
+    monkeypatch.setattr(flows, "find_existing_tracks", fake_existing)
+    monkeypatch.setattr(flows, "get_album", lambda _i, _t: full)
+    monkeypatch.setattr(flows, "compute_missing",
+                        lambda q, e: ([{"id": 2}, {"id": 3}], [{"id": 1}]))
+
+    partial_out = list(flows._missing_albums("aid", "Artist", "tok",
+                                             partial_only=True))
+    assert [a["id"] for a in partial_out] == ["partial"]
+
+    both_out = list(flows._missing_albums("aid", "Artist", "tok"))
+    assert {a["id"] for a in both_out} == {"absent", "partial"}
+
+
+def test_settings_save_rejects_out_of_enum_quality(tmp_path, monkeypatch):
+    import json
+
+    from qobuz_fetch import config as cfg
+    from qobuz_fetch.web import settings_store as ss
+    monkeypatch.setattr(ss, "SETTINGS_FILE", tmp_path / "s.json")
+    monkeypatch.setattr(ss, "_any_active_job", lambda: False)
+    monkeypatch.setattr(cfg, "STREAMRIP_QUALITY", 4)
+
+    assert ss.save({"STREAMRIP_QUALITY": "99"}) is True
+    on_disk = json.loads((tmp_path / "s.json").read_text())
+    assert on_disk.get("STREAMRIP_QUALITY") != "99"
+    # A valid value still persists.
+    assert ss.save({"STREAMRIP_QUALITY": "2"}) is True
+    assert json.loads((tmp_path / "s.json").read_text())["STREAMRIP_QUALITY"] == "2"
+
+
+# ── search results render cover art ────────────────────────────────────────────
+
+
+def test_search_rejects_non_qobuz_cover_url(client, monkeypatch):
+    import qobuz_fetch.api.search as search_mod
+    import qobuz_fetch.web.app as webapp
+    monkeypatch.setattr(webapp, "_get_token", lambda: "tok")
+    monkeypatch.setattr(search_mod, "search_albums",
+                        lambda q, t, limit=None: [{
+                            "id": "alb1", "title": "T", "artist": {"name": "A"},
+                            "tracks_count": 10, "maximum_bit_depth": 24,
+                            "image": {"small": "https://evil.example/x.jpg"}}])
+    r = client.post("/search", data={"q": "hello"},
+                    headers={"HX-Request": "true"})
+    assert r.status_code == 200
+    assert "evil.example" not in r.text

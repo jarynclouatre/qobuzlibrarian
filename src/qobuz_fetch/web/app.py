@@ -434,6 +434,8 @@ async def do_search(request: Request, q: str = Form("", max_length=500)):
                 if not a.get("id"):
                     continue
                 _bd = a.get("maximum_bit_depth") or 0
+                _img = a.get("image") or {}
+                _cover = _img.get("small") or _img.get("thumbnail") or ""
                 results.append({
                     "id":      a.get("id"),
                     "title":   a.get("title") or "?",
@@ -443,6 +445,8 @@ async def do_search(request: Request, q: str = Form("", max_length=500)):
                     "quality": album_quality_label(a),
                     "hires":   _bd >= 24,
                     "lossy":   _bd == 0,
+                    "cover":   _cover if _cover.startswith(
+                        "https://static.qobuz.com/") else "",
                 })
         except (SystemExit, NoCredsError):
             error = "No Qobuz credentials set — visit Settings."
@@ -495,6 +499,7 @@ async def queue_download(request: Request, album_id: str = Form(""),
         album = get_album(album_id, token)
         if not force_redownload:
             from qobuz_fetch.library.catalog import (
+                compute_missing,
                 find_album_dir_filesystem,
                 find_existing_tracks,
             )
@@ -507,8 +512,15 @@ async def queue_download(request: Request, album_id: str = Form(""),
                     existing_tracks, _ = find_existing_tracks(album)
                 except Exception:
                     existing_tracks = []
-                if existing_tracks:
-                    msg = ("This album is already in your library — "
+                qobuz_tracks = (album.get("tracks") or {}).get("items") or []
+                # Only block when the album is genuinely complete. A partial
+                # album (some tracks present, some missing) must fall through
+                # so process_album can gap-fill just the missing tracks rather
+                # than forcing a full re-download via force=1.
+                complete = bool(existing_tracks and qobuz_tracks) and not (
+                    compute_missing(qobuz_tracks, existing_tracks)[0])
+                if complete:
+                    msg = ("This album is already complete in your library — "
                            "no need to download it again.")
                     if _is_htmx(request):
                         return HTMLResponse(
@@ -528,7 +540,8 @@ async def queue_download(request: Request, album_id: str = Form(""),
             r = process_album(album, build_args(), allow_force=False,
                               already_confirmed=True, token=token) or {}
             benign = {"already_complete", "skipped_already_higher_quality",
-                      "dry_run", "user_skipped", "lossy_only", "no_tracks"}
+                      "dry_run", "user_skipped", "lossy_only", "no_tracks",
+                      "cancelled"}
             if r.get("result") not in benign and not r.get("imported"):
                 j.status = job_mgr.JobStatus.FAILED
                 j.error = (f"{plural(r['n_fail'], 'track')} failed"
@@ -625,14 +638,12 @@ async def library_scan(request: Request, mode: str = Form("missing_albums")):
         return _no_creds_response(request)
     from qobuz_fetch.web import flows
     mode_norm = (mode or "").strip().lower()
-    if mode_norm == "partial_fill":
-        title = "Library album-fill scan"
-    else:
-        title = "Library gap scan"
+    partial_only = mode_norm == "partial_fill"
+    title = "Library album-fill scan" if partial_only else "Library gap scan"
     job = job_mgr.Job(title=title)
     job_mgr.submit_scan(
         job,
-        lambda j: flows.scan_library(j, _get_token()),
+        lambda j: flows.scan_library(j, _get_token(), partial_only=partial_only),
         lambda j, chosen: flows.execute_albums(j, chosen, _get_token()),
     )
     return RedirectResponse(url=f"/jobs/{job.id}", status_code=303)
@@ -754,7 +765,8 @@ async def job_retry(request: Request, job_id: str):
             r = process_album(album, build_args(), allow_force=False,
                               already_confirmed=True, token=token) or {}
             benign = {"already_complete", "skipped_already_higher_quality",
-                      "dry_run", "user_skipped", "lossy_only", "no_tracks"}
+                      "dry_run", "user_skipped", "lossy_only", "no_tracks",
+                      "cancelled"}
             if r.get("result") not in benign and not r.get("imported"):
                 j.status = job_mgr.JobStatus.FAILED
                 j.error = (f"{plural(r['n_fail'], 'track')} failed"
@@ -1016,7 +1028,8 @@ async def test_auth(request: Request):
         if cleaned.startswith("HTTP 401") or cleaned.startswith("HTTP 400"):
             return HTMLResponse(
                 '<div class="alert alert-error py-2">Token rejected by Qobuz — '
-                're-grab it from the desktop app\'s Help &rarr; Debug.</div>')
+                're-grab it from play.qobuz.com (dev tools &rarr; Application '
+                '&rarr; Local Storage &rarr; localuser &rarr; token).</div>')
         return HTMLResponse('<div class="alert alert-error py-2">Couldn\'t reach the Qobuz API — check the container\'s network.</div>')
     except Exception:
         import logging as _logging

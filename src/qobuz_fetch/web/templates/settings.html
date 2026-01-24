@@ -8,8 +8,9 @@
 {% if auth_check == "bad" %}
 <div class="alert alert-warning mb-6">
   <span>Saved — but the token didn't authenticate against Qobuz.
-    Double-check the <code>user_auth_token</code> from the desktop app's
-    Help → Debug.</span>
+    Double-check the <code>user_auth_token</code> from play.qobuz.com — dev
+    tools → Application → Local Storage → the <code>localuser</code> entry's
+    <code>token</code>.</span>
 </div>
 {% else %}
 <div class="alert {% if queued %}alert-info{% else %}alert-success{% endif %} mb-6">
@@ -29,8 +30,9 @@
 </div>
 {% elif error == "empty" %}
 <div class="alert alert-warning mb-6">
-  <span>Token can't be empty — paste the <code>user_auth_token</code>
-  from the Qobuz desktop app's Help → Debug, or set
+  <span>Token can't be empty — paste the <code>user_auth_token</code> from
+  play.qobuz.com (dev tools → Application → Local Storage → <code>localuser</code>
+  → <code>token</code>), or set
   <code>QOBUZ_USER_AUTH_TOKEN</code> in your environment.</span>
 </div>
 {% elif error == "persist" %}
@@ -47,8 +49,9 @@
     <h2 class="card-title mb-1">Qobuz authentication</h2>
     <p class="text-sm text-base-content/60 mb-4">
       Your credentials are stored in the container's config volume and never leave your server.
-      To find your auth token: open the Qobuz desktop app → Help → Debug → copy
-      <code>user_auth_token</code>.
+      To find your auth token: sign in at play.qobuz.com, open dev tools (F12) →
+      Application → Local Storage → play.qobuz.com, and copy the
+      <code>localuser</code> entry's <code>token</code>.
     </p>
 
     {% if creds_from_env %}
@@ -191,9 +194,7 @@
       {% for d in diagnostics %}
       <div class="flex items-start gap-3 flex-wrap sm:flex-nowrap">
         <span class="shrink-0 mt-0.5">
-          {% if d.ok is none %}
-          <span class="badge badge-sm badge-warning">!</span>
-          {% elif d.ok %}
+          {% if d.ok %}
           <span class="badge badge-sm badge-success">✓</span>
           {% else %}
           <span class="badge badge-sm badge-error">✗</span>

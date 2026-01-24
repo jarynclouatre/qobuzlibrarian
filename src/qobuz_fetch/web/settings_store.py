@@ -52,6 +52,10 @@ TEXT_FIELDS = [
     ("LYRICS_FORMAT", "Lyrics format",
      "How lyrics are written when fetched.",
      "enum", ["embed", "sidecar", "both"], ""),
+    ("ARTWORK", "Album art",
+     "Where cover art goes: a file in the album folder (sidecar), embedded in "
+     "the track tags with no leftover file (embed), or both.",
+     "enum", ["sidecar", "embed", "both"], ""),
     ("LYRICS_PROVIDERS", "Lyrics providers",
      "Comma-separated list of providers to try in order. "
      "Available: Lrclib, NetEase, Musixmatch. Empty = built-in default (all three).",
@@ -174,7 +178,9 @@ def load():
     """Apply the persisted settings file over env defaults, if present."""
     try:
         if SETTINGS_FILE.exists():
-            _apply(json.loads(SETTINGS_FILE.read_text(encoding="utf-8")))
+            data = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                _apply(data)
     except (OSError, ValueError):
         pass
 
@@ -236,9 +242,17 @@ def _save_locked(values: dict) -> bool:
     for k in BEHAVIOR_KEYS:
         if k in values:
             merged[k] = bool(values[k])
-    for k in TEXT_KEYS:
-        if k in values:
-            merged[k] = values[k]
+    for key, _, _, kind, choices, _ in TEXT_FIELDS:
+        if key not in values:
+            continue
+        # Enum fields are validated here too (not just in _apply), so a
+        # forged POST can't persist an out-of-range value the loader would
+        # silently reject — the on-disk file stays consistent with cfg.
+        if kind == "enum" and choices:
+            v = str(values[key] or "").strip().lower()
+            if v not in choices:
+                continue
+        merged[key] = values[key]
 
     if _any_active_job():
         with _pending_lock:
