@@ -23,11 +23,9 @@ or the CLI.
 </p>
 
 By default it pulls the **best master your subscription serves** — 24-bit hi-res
-up to 192 kHz where Qobuz has it, CD-quality lossless where it doesn't. That's
-the point of a Qobuz subscription, so that's the default. Want smaller files
+up to 192 kHz where Qobuz has it, CD-quality lossless where it doesn't. Want smaller files
 instead? Drop the quality to CD lossless or 320 kbps with one setting (see
-[Download quality](#download-quality)). Your library, your call — the tool
-doesn't decide for you.
+[Download quality](#download-quality)).
 
 ## Features
 
@@ -122,8 +120,7 @@ downsample on import.
 
 ### Quality upgrades
 
-Upgrading existing files is its own **deliberate mode**, not something that
-happens to your library in the background. A plain gap-fill only fetches the
+Upgrading existing files is its own **deliberate mode**. A plain gap-fill only fetches the
 tracks you're missing — it never wipes and re-downloads an album you have.
 
 - **Upgrade walk** is its own mode (CLI and web). Running it *is* the opt-in:
