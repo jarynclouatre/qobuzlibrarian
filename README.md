@@ -241,17 +241,15 @@ command in a shell — only set it to a command you trust.
 
 | Variable             | Default  | Purpose                                          |
 |----------------------|----------|--------------------------------------------------|
-| `STREAMRIP_QUALITY`  | `4`      | 1=320k · 2=CD/16-bit · 3=24-bit ≤96kHz · 4=≤192kHz best master (Settings page too) |
+| `STREAMRIP_QUALITY`  | `4`      | Download tier 1–4; see [Download quality](#download-quality), or the Settings page |
 | `LYRICS_ENABLED`     | `true`   | Fetch lyrics on import (toggle on Settings page) |
 | `LYRICS_FORMAT`      | `embed`  | `embed` (FLAC tag), `sidecar` (.lrc), or `both`  |
 | `LYRICS_PROVIDERS`   | *(auto)* | Comma list, in order, e.g. `Lrclib,NetEase`      |
 
 ### beets & streamrip config
 
-beets and streamrip are bundled, but the tools are still fully yours. Their
-complete config files live in the persistent `config` volume, are seeded once
-with sensible defaults, and are **never overwritten** — anything those
-projects support, you can set:
+Their full config files live in the persistent `config` volume, seeded once and
+**never overwritten** — anything beets or streamrip supports, you can set:
 
 - `…/beets/config.yaml` — tagging, paths, plugins ([beets docs](https://beets.readthedocs.io/))
 - `…/streamrip/config.toml` — downloader settings ([streamrip docs](https://github.com/nathom/streamrip))
