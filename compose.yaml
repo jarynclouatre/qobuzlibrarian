@@ -153,3 +153,4 @@ volumes:
   qobuz-librarian-config:
     name: qobuz-librarian-config
   qobuz-librarian-data:
+    name: qobuz-librarian-data
