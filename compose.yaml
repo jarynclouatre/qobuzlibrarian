@@ -116,7 +116,7 @@ services:
       # CAPPED_RETENTION_DAYS: "90"
       # Downsample hi-res FLACs to 44.1/48 kHz before import to save space.
       # Leave false to keep whatever Qobuz delivers (CD quality is fine).
-      COMPRESS_ENABLED: "false"
+      DOWNSAMPLE_HIRES_ENABLED: "false"
 
       # ── Matching thresholds (advanced; defaults are well-tested) ──────────
       # Similarity score (0–1) for fuzzy directory-name matching.

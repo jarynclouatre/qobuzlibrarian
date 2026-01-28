@@ -115,7 +115,7 @@ that's all a release has). All four streamrip tiers are available:
 
 Change it on the **Settings** page (live, no restart) or via
 `STREAMRIP_QUALITY` in `compose.yaml`. To keep hi-res but not at full size,
-see [Compression](#optional-power-features) — pull the best master, then
+see [downsampling](#optional-power-features) — pull the best master, then
 downsample on import.
 
 ### Quality upgrades
@@ -136,7 +136,7 @@ tracks you're missing — it never wipes and re-downloads an album you have.
 
 Off by default because they change your files:
 
-- **Compression** (`COMPRESS_ENABLED`): downsample high-sample-rate FLACs
+- **Downsample hi-res** (`DOWNSAMPLE_HIRES_ENABLED`): downsample high-sample-rate FLACs
   (88.2/176.4/352.8 kHz → 44.1, 96/192/384 kHz → 48; bit depth preserved) on
   import. Pairs with the hi-res default: grab the best master, then store
   it at a sane sample rate. Still lossless FLAC; originals are replaced
@@ -510,7 +510,7 @@ get on a fresh `docker compose up -d`:
   Tidal/Deezer/SoundCloud aren't wired up here, even though streamrip
   itself can reach them. (Their config still lives in your `config.toml`
   if you use streamrip directly.)
-- **No lossy transcoding output.** `COMPRESS_ENABLED` can downsample hi-res
+- **No lossy transcoding output.** `DOWNSAMPLE_HIRES_ENABLED` can downsample hi-res
   FLACs to 44.1/48 kHz before import (still FLAC); there's no path to MP3
   or other lossy formats.
 - **English / Latin metadata matching is best.** Fuzzy matching uses
