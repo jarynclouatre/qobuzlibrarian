@@ -29,7 +29,7 @@
       {% if job.cancel_requested %}<span class="badge badge-ghost badge-sm ml-2">stopping</span>{% endif %}
     </p>
     {% if not job.cancel_requested %}
-    <form action="/jobs/{{ job.id }}/cancel" method="post">
+    <form id="cancel-running" action="/jobs/{{ job.id }}/cancel" method="post">
       <input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}">
       <button type="submit" class="btn btn-sm btn-ghost">Cancel</button>
     </form>
@@ -49,11 +49,12 @@
     };
     src.addEventListener('done', () => {
       src.close();
-      document.title = '✓ ' + baseTitle;
-      const banner = document.createElement('div');
-      banner.className = 'alert alert-success mt-3';
-      banner.innerHTML = 'Job finished — <button class="btn btn-sm btn-ghost ml-2" onclick="location.reload()">load summary</button>';
-      document.getElementById('log').insertAdjacentElement('afterend', banner);
+      // Job's finished, so the Cancel button below now discards the result
+      // instead of stopping work — drop it before reloading to the review
+      // or summary the final status renders.
+      const cancel = document.getElementById('cancel-running');
+      if (cancel) cancel.remove();
+      location.reload();
     });
   })();
   </script>
