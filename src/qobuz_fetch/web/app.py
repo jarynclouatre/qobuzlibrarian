@@ -436,13 +436,18 @@ async def do_search(request: Request, q: str = Form("", max_length=500)):
                 _bd = a.get("maximum_bit_depth") or 0
                 _img = a.get("image") or {}
                 _cover = _img.get("small") or _img.get("thumbnail") or ""
+                # The Hi-Res/CD/Lossy badge beside this already names the tier,
+                # so drop the repeated descriptor and keep just the bit/rate.
+                _qual = album_quality_label(a).replace(" (hi-res)", "")
+                if _qual == "lossy":
+                    _qual = ""
                 results.append({
                     "id":      a.get("id"),
                     "title":   a.get("title") or "?",
                     "artist":  (a.get("artist") or {}).get("name") or "?",
                     "year":    album_year(a) or "?",
                     "tracks":  a.get("tracks_count") or "?",
-                    "quality": album_quality_label(a),
+                    "quality": _qual,
                     "hires":   _bd >= 24,
                     "lossy":   _bd == 0,
                     "cover":   _cover if _cover.startswith(
