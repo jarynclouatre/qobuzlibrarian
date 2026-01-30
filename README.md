@@ -22,7 +22,7 @@ or the CLI.
   <img src="assets/screenshot-dashboard.png" alt="Web UI dashboard" width="800">
 </p>
 
-By default it pulls the **best master your subscription serves** — 24-bit hi-res
+By default it pulls the **highest quality your subscription serves** — 24-bit hi-res
 up to 192 kHz where Qobuz has it, CD-quality lossless where it doesn't. Want smaller files
 instead? Drop the quality to CD lossless or 320 kbps with one setting (see
 [Download quality](#download-quality)).
@@ -39,8 +39,8 @@ tracks you already have under slightly different names:
 3. disc number + title
 4. edition-stripped title (so "(Remastered)" / "(Deluxe)" don't cause dupes)
 
-**Best-quality by default.** New downloads come in at the highest master
-Qobuz offers for that release. Already have an album in a lower quality? The
+**Best available quality by default.** New downloads come in at the highest
+quality Qobuz offers for that release. Already have an album in a lower quality? The
 **Upgrade** mode finds everything Qobuz can now serve better and re-rips just
 those — backing the originals up first.
 
@@ -102,20 +102,20 @@ them all.
 
 ### Download quality
 
-A fresh install downloads at quality `4` — the best master Qobuz serves for
+A fresh install downloads at quality `4` — the highest quality Qobuz serves for
 each release (24-bit up to 192 kHz, falling back to CD-quality lossless when
 that's all a release has). All four streamrip tiers are available:
 
 | Tier | What you get                     | Good for                          |
 |------|----------------------------------|-----------------------------------|
-| `4`  | 24-bit ≤192 kHz (best master)    | **Default.** Archival, best source |
+| `4`  | 24-bit ≤192 kHz                  | **Default.** Archival              |
 | `3`  | 24-bit ≤96 kHz                   | Hi-res with a tighter size cap     |
 | `2`  | CD-quality 16-bit / 44.1 kHz     | Smaller files, still lossless      |
 | `1`  | 320 kbps lossy                   | Smallest, lossy                    |
 
 Change it on the **Settings** page (live, no restart) or via
 `STREAMRIP_QUALITY` in `compose.yaml`. To keep hi-res but not at full size,
-see [downsampling](#optional-power-features) — pull the best master, then
+see [downsampling](#optional-power-features) — pull the highest quality, then
 downsample on import.
 
 ### Quality upgrades
@@ -138,7 +138,7 @@ Off by default because they change your files:
 
 - **Downsample hi-res** (`DOWNSAMPLE_HIRES_ENABLED`): downsample high-sample-rate FLACs
   (88.2/176.4/352.8 kHz → 44.1, 96/192/384 kHz → 48; bit depth preserved) on
-  import. Pairs with the hi-res default: grab the best master, then store
+  import. Pairs with the hi-res default: grab the highest quality, then store
   it at a sane sample rate. Still lossless FLAC; originals are replaced
   atomically, so an interrupt can't corrupt a track.
 

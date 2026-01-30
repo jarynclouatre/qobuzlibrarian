@@ -922,6 +922,7 @@ async def settings_page(request: Request, saved: bool = False,
         "streamrip_config": cfg.STREAMRIP_CONFIG,
         "behavior_fields": settings_store.BEHAVIOR_FIELDS,
         "text_fields": settings_store.TEXT_FIELDS,
+        "option_labels": settings_store.ENUM_OPTION_LABELS,
         "behavior": values,
         "diagnostics": _diagnostics(),
     })

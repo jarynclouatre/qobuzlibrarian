@@ -142,7 +142,7 @@
           {% if kind == 'enum' %}
           <select name="{{ key }}" class="select select-bordered max-w-xs text-base sm:select-sm sm:text-xs">
             {% for c in choices %}
-            <option value="{{ c }}" {% if behavior[key] == c %}selected{% endif %}>{{ c }}</option>
+            <option value="{{ c }}" {% if behavior[key] == c %}selected{% endif %}>{{ (option_labels|default({})).get(key, {}).get(c, c) }}</option>
             {% endfor %}
           </select>
           {% else %}

@@ -168,8 +168,8 @@ QOBUZ_APP_ID   = os.environ.get("QOBUZ_APP_ID",   "798273057")
 
 # ── Download quality ──────────────────────────────────────────────────────────
 # streamrip quality code: 1=320kbps, 2=CD/16-bit·44.1kHz lossless,
-# 3=24-bit ≤96kHz, 4=24-bit ≤192kHz. Default 4: the best master your
-# subscription serves — that's what Qobuz is for. Drop to 2 for CD
+# 3=24-bit ≤96kHz, 4=24-bit ≤192kHz. Default 4: the highest quality your
+# subscription serves (hi-res where Qobuz has it). Drop to 2 for CD
 # lossless if you want smaller files. Passed to `rip -q`.
 STREAMRIP_QUALITY = _env("STREAMRIP_QUALITY", 4)
 

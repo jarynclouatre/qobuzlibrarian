@@ -84,7 +84,7 @@ services:
 
       # ── Download quality ──────────────────────────────────────────────────
       # streamrip quality: 1=320k, 2=CD/16-bit lossless, 3=24-bit ≤96kHz,
-      # 4=24-bit ≤192kHz. Default 4 = the best master Qobuz serves you.
+      # 4=24-bit ≤192kHz. Default 4 = the highest quality Qobuz has per release.
       # Set "2" for CD lossless if you'd rather have smaller files.
       STREAMRIP_QUALITY: "4"
 

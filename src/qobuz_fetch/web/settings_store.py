@@ -46,9 +46,9 @@ BEHAVIOR_KEYS = [k for k, _, _ in BEHAVIOR_FIELDS]
 # "list" — comma-separated; stored as list on cfg.
 TEXT_FIELDS = [
     ("STREAMRIP_QUALITY", "Download quality",
-     "1 = 320 kbps · 2 = CD/16-bit lossless · 3 = 24-bit ≤96 kHz · "
-     "4 = 24-bit ≤192 kHz",
-     "enum", ["1", "2", "3", "4"], ""),
+     "A ceiling, not a guarantee: Qobuz delivers the highest quality it has for "
+     "each release, up to this. Hi-res isn't available for every album.",
+     "enum", ["4", "3", "2", "1"], ""),
     ("LYRICS_FORMAT", "Lyrics format",
      "How lyrics are written when fetched.",
      "enum", ["embed", "sidecar", "both"], ""),
@@ -79,6 +79,17 @@ TEXT_FIELDS = [
      "list", None, "fetchart,lastgenre,replaygain"),
 ]
 TEXT_KEYS = [k for k, *_ in TEXT_FIELDS]
+
+# Friendlier dropdown text for enum values whose bare value isn't self-explaining;
+# falls back to the raw value for anything not listed.
+ENUM_OPTION_LABELS = {
+    "STREAMRIP_QUALITY": {
+        "4": "4 — 24-bit ≤192 kHz",
+        "3": "3 — 24-bit ≤96 kHz",
+        "2": "2 — 16-bit / 44.1 kHz",
+        "1": "1 — 320 kbps MP3",
+    },
+}
 
 
 def _list_to_str(v) -> str:
