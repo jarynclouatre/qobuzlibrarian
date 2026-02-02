@@ -14,12 +14,17 @@ document.addEventListener("htmx:afterOnLoad", function (evt) {
   if (t) t.scrollIntoView({ block: "center", behavior: "smooth" });
 });
 
-// On a successful download POST, mark the submit button "Queued" and
-// disable it so a double-click doesn't queue the same album twice.
+// Mark the submit button "Queued" and disable it so a double-click can't
+// queue the same album twice. The download endpoint answers 200 even when
+// it declines (album already owned, already queued) or errors, so key off
+// the genuine "added to queue" success alert rather than the status code —
+// on a decline or error htmx re-enables the button on its own.
 document.addEventListener("htmx:afterRequest", function (evt) {
   var form = evt.target;
   if (!form || !form.matches || !form.matches("form[data-queue-button]")) return;
   if (!evt.detail || !evt.detail.successful) return;
+  var xhr = evt.detail.xhr;
+  if (!xhr || xhr.responseText.indexOf("alert-success") === -1) return;
   var b = form.querySelector("button[type=submit]");
   if (!b) return;
   b.disabled = true;
