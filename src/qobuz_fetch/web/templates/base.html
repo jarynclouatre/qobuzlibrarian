@@ -15,7 +15,9 @@
   <meta name="apple-mobile-web-app-title" content="Qobuz Librarian">
   <!-- Vendored locally so the UI works on air-gapped / offline NAS boxes.
        Pinned versions; refresh from upstream when bumping. -->
-  <link href="/static/dist/app.css" rel="stylesheet">
+  <!-- ?v= the app version so a release busts a returning visitor's cached
+       CSS/JS instead of leaving them on the previous version's files. -->
+  <link href="/static/dist/app.css?v={{ app_version }}" rel="stylesheet">
   <script src="/static/vendor/htmx-1.9.12.min.js"></script>
   <script>
     // HTMX POSTs go through the CSRF middleware; lift the token from the
@@ -29,7 +31,7 @@
   <!-- CSP-safe htmx event handlers — see web/static/app.js. Replaces the
        inline-attribute style htmx 1.9 evaluates via new Function, which
        the page CSP correctly forbids ('unsafe-eval' not allowed). -->
-  <script src="/static/app.js"></script>
+  <script src="/static/app.js?v={{ app_version }}"></script>
   <style>
     .log-console {
       font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
