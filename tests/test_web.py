@@ -1632,7 +1632,7 @@ def test_download_complete_album_is_blocked(client, monkeypatch):
     r = client.post("/download", data={"album_id": "done1"},
                     headers={"HX-Request": "true"})
     assert r.status_code == 200
-    assert "already complete" in r.text.lower()
+    assert "already own" in r.text.lower()
     assert not [j for j in list(jm.registry._jobs.values())
                 if getattr(j, "album_id", None) == "done1"]
 

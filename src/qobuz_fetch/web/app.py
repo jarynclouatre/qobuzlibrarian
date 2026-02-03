@@ -525,8 +525,7 @@ async def queue_download(request: Request, album_id: str = Form(""),
                 complete = bool(existing_tracks and qobuz_tracks) and not (
                     compute_missing(qobuz_tracks, existing_tracks)[0])
                 if complete:
-                    msg = ("This album is already complete in your library — "
-                           "no need to download it again.")
+                    msg = "You already own this album."
                     if _is_htmx(request):
                         return HTMLResponse(
                             f'<div class="alert alert-warning">{html.escape(msg)} '
