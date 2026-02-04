@@ -37,6 +37,7 @@ from qobuz_fetch.library.tags import (
     similarity,
     strip_album_decorations,
     strip_edition_suffix,
+    strip_year_decoration,
 )
 from qobuz_fetch.ui_cli.colors import C, fmt
 from qobuz_fetch.ui_cli.logging import log, vlog
@@ -120,6 +121,40 @@ def _paths_equal(a: Path, b: Path) -> bool:
         except OSError:
             import os
         return os.path.normpath(str(a)) == os.path.normpath(str(b))
+
+
+def _is_split_album_merge(album_dir, post_dir, qartist):
+    """True when album_dir and post_dir hold one album split across two folders.
+
+    Two shapes get consolidated into post_dir (where beets just filed the new
+    tracks):
+
+      - multi-artist: existing tracks under 'Primary, Other/Album', new ones
+        under 'Primary/Album'.
+      - year decoration: a hand-named or migrated folder lacks the '($year)'
+        beets writes ('Black Sands' vs 'Black Sands (2010)').
+
+    The year case only matches folders under the same artist that differ by a
+    year tag alone — an edition or live album ('Album' vs 'Album (Live)') is
+    never fused with a different one.
+    """
+    if album_dir is None or post_dir is None:
+        return False
+    try:
+        if not album_dir.exists() or not post_dir.exists():
+            return False
+    except OSError:
+        return False
+    if _paths_equal(post_dir, album_dir) or not qartist:
+        return False
+    if (_is_multi_artist_subset(album_dir.parent.name, qartist)
+            and not _is_multi_artist_subset(post_dir.parent.name, qartist)):
+        return True
+    if _paths_equal(album_dir.parent, post_dir.parent):
+        a = normalize(strip_year_decoration(album_dir.name))
+        if a and a == normalize(strip_year_decoration(post_dir.name)):
+            return True
+    return False
 
 
 # ── Album dir resolution ──────────────────────────────────────────────────────

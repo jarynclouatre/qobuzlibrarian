@@ -227,3 +227,15 @@ def strip_album_decorations(name):
             break
         s = new
     return s or name
+
+
+def strip_year_decoration(name):
+    """Remove only a leading or trailing year tag from an album folder name.
+
+    'Black Sands (2010)' and '[2010] Black Sands' both reduce to 'Black Sands',
+    but edition/live/remaster tags are left attached — so 'Album (Live)' stays
+    distinct from 'Album (2018)' and the two are never treated as one album.
+    """
+    s = _LEADING_YEAR_RE.sub("", name).strip()
+    s = _YEAR_PAREN_RE.sub("", s).strip()
+    return s or name

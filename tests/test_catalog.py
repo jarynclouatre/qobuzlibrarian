@@ -8,6 +8,7 @@ from qobuz_fetch.library.catalog import (
     _has_separator_match,
     _is_migration_candidate,
     _is_multi_artist_subset,
+    _is_split_album_merge,
     _paths_equal,
     album_quality_label,
     album_year,
@@ -246,6 +247,24 @@ class TestIsMultiArtistSubset:
 
     def test_plain_artist_is_not_subset(self):
         assert _is_multi_artist_subset("Beatles", "Beatles") is False
+
+
+class TestIsSplitAlbumMerge:
+    def test_year_decoration_split_is_mergeable(self, tmp_path):
+        artist = tmp_path / "Bonobo"
+        bare = artist / "Black Sands"
+        canonical = artist / "Black Sands (2010)"
+        bare.mkdir(parents=True)
+        canonical.mkdir(parents=True)
+        assert _is_split_album_merge(bare, canonical, "Bonobo") is True
+
+    def test_edition_difference_is_not_merged(self, tmp_path):
+        artist = tmp_path / "Bonobo"
+        live = artist / "Black Sands (Live)"
+        canonical = artist / "Black Sands (2010)"
+        live.mkdir(parents=True)
+        canonical.mkdir(parents=True)
+        assert _is_split_album_merge(live, canonical, "Bonobo") is False
 
 
 class TestIsMigrationCandidate:

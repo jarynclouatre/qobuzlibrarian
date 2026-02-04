@@ -31,8 +31,7 @@ from qobuz_fetch.library.backup import (
 )
 from qobuz_fetch.library.catalog import (
     _count_audio_files_in,
-    _is_multi_artist_subset,
-    _paths_equal,
+    _is_split_album_merge,
     cleanup_duplicate_art,
     find_album_dir_filesystem,
     find_extras_in_existing,
@@ -335,19 +334,13 @@ def _resolve_queue_item(item, args, imported_globally):
     if had_any_success:
         if post_dir:
             cleanup_duplicate_art(post_dir)
-        # Split-folder auto-merge: gap-fill against a "Primary, Other/Album"
-        # folder makes beets file new tracks at "Primary/Album", splitting
-        # the album across two dirs. Merge the existing tracks into the new dir.
+        # Split-folder auto-merge: a gap-fill against a folder beets doesn't
+        # name canonically (multi-artist, or missing the year) makes it file
+        # the new tracks elsewhere, splitting the album. Pull the old tracks
+        # into the dir that now holds the fresh ones.
         try:
             split_artist = (item["album"].get("artist") or {}).get("name") or ""
-            if (album_dir is not None
-                    and album_dir.exists()
-                    and post_dir is not None
-                    and post_dir.exists()
-                    and not _paths_equal(post_dir, album_dir)
-                    and split_artist
-                    and _is_multi_artist_subset(album_dir.parent.name, split_artist)
-                    and not _is_multi_artist_subset(post_dir.parent.name, split_artist)):
+            if _is_split_album_merge(album_dir, post_dir, split_artist):
                 from qobuz_fetch.integrations.beets import _merge_split_folder
                 n_merged = _merge_split_folder(post_dir, album_dir)
                 if n_merged:

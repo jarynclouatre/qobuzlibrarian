@@ -33,8 +33,7 @@ from qobuz_fetch.library.backup import (
     restore_upgrade_backup,
 )
 from qobuz_fetch.library.catalog import (
-    _is_multi_artist_subset,
-    _paths_equal,
+    _is_split_album_merge,
     album_quality_label,
     cleanup_duplicate_art,
     compute_missing,
@@ -1012,13 +1011,7 @@ def process_album(album, args, *, allow_force=True, label=None,
             # Split-folder auto-merge.
             try:
                 split_artist = (album.get("artist") or {}).get("name") or ""
-                if (album_dir is not None
-                        and album_dir.exists()
-                        and post_dir.exists()
-                        and not _paths_equal(post_dir, album_dir)
-                        and split_artist
-                        and _is_multi_artist_subset(album_dir.parent.name, split_artist)
-                        and not _is_multi_artist_subset(post_dir.parent.name, split_artist)):
+                if _is_split_album_merge(album_dir, post_dir, split_artist):
                     n_merged = _merge_split_folder(post_dir, album_dir)
                     if n_merged:
                         log.info(fmt(C.GREEN,
