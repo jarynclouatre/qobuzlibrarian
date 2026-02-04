@@ -3,15 +3,23 @@
 """
 import shutil
 from collections import Counter
+from pathlib import Path
 
 from qobuz_fetch import config as cfg
 from qobuz_fetch.api.auth import AuthLost, QobuzError
 from qobuz_fetch.api.search import get_album
 from qobuz_fetch.library.backup import backup_gap_fill_files, restore_gap_fill_backup
+from qobuz_fetch.library.catalog import (
+    _paths_equal,
+    _sync_beets_db_after_file_move,
+    find_album_dir_filesystem,
+    maybe_remove_empty_dir,
+)
 from qobuz_fetch.library.scanner import (
     clear_scan_caches,
     list_artist_album_dirs,
     list_library_artists,
+    read_album_dir,
 )
 from qobuz_fetch.modes.artist import resolve_artist_dir
 from qobuz_fetch.queue.builder import _build_queue_item
@@ -26,6 +34,70 @@ def _format_mmss(secs):
     """Format a duration in seconds as m:ss (e.g. 163.4 → '2:43')."""
     s = max(0, int(round(float(secs or 0))))
     return f"{s // 60}:{s % 60:02d}"
+
+
+def _norm_isrc(raw):
+    return (raw or "").replace("-", "").upper().strip()
+
+
+def _relocate_refilled_into_album_dir(album_dir, landed_dir, wanted_isrcs,
+                                      before_paths, landed_was_new):
+    """Move refilled tracks beets filed elsewhere back into album_dir.
+
+    beets places imports by their tags, so a refilled EP/compilation/bonus
+    track whose canonical Qobuz album differs from the folder being repaired
+    lands in a separate folder instead of going home. Only newly-imported
+    files (not in before_paths) whose ISRC we set out to refill are moved, so
+    a pre-existing track that happens to share the recording is left alone.
+
+    landed_was_new flags a folder beets created solely for this misfiled
+    import — once emptied of audio it (and any stray cover art it picked up)
+    is removed wholesale. A folder the user already owned keeps its art.
+    Returns the number of files relocated.
+    """
+    if landed_dir is None or _paths_equal(landed_dir, album_dir):
+        return 0
+    moved = 0
+    for et in read_album_dir(landed_dir):
+        src = et.get("path") or ""
+        if not src or src in before_paths:
+            continue
+        if _norm_isrc(et.get("isrc")) not in wanted_isrcs:
+            continue
+        dst = album_dir / Path(src).name
+        if dst.exists():
+            continue
+        try:
+            album_dir.mkdir(parents=True, exist_ok=True)
+            shutil.move(src, str(dst))
+        except OSError as e:
+            log.info(fmt(C.YELLOW,
+                f"  ⚠  Couldn't move refilled track into "
+                f"{truncate(album_dir.name, 40)}: {e}"))
+            continue
+        _sync_beets_db_after_file_move(Path(src), dst)
+        moved += 1
+    if not moved:
+        return 0
+    log.info(fmt(C.GRAY,
+        f"  ⤷  Returned {moved} refilled track(s) to "
+        f"{truncate(album_dir.name, 40)}"))
+    if landed_was_new and not read_album_dir(landed_dir):
+        try:
+            shutil.rmtree(landed_dir)
+        except OSError:
+            maybe_remove_empty_dir(landed_dir)
+    else:
+        maybe_remove_empty_dir(landed_dir)
+    return moved
+
+
+def _refills_present_in(album_dir, wanted_isrcs):
+    """True once every refilled ISRC has a file back in album_dir."""
+    if not wanted_isrcs:
+        return True
+    present = {_norm_isrc(et.get("isrc")) for et in read_album_dir(album_dir)}
+    return wanted_isrcs.issubset(present)
 
 
 def _prompt_library_album_for_repair(args, token):
@@ -179,6 +251,17 @@ def repair_album_dir(album_dir, verified_truncated, artist_name, args, token):
             force_track_by_track=True,
         )
 
+        # Snapshot the album beets is likely to file these into — a track's
+        # canonical Qobuz album can differ from album_dir — so a freshly
+        # refilled file can be told apart from tracks already living there.
+        wanted_isrcs = {_norm_isrc(b.get("isrc")) for b in verified_truncated}
+        wanted_isrcs.discard("")
+        landed_pre = (find_album_dir_filesystem(album)
+                      if most_common_aid is not None else None)
+        before_paths = set()
+        if landed_pre is not None and not _paths_equal(landed_pre, album_dir):
+            before_paths = {et.get("path") for et in read_album_dir(landed_pre)}
+
         try:
             _execute_download_queue([qi], args, token)
         except AuthLost:
@@ -201,41 +284,52 @@ def repair_album_dir(album_dir, verified_truncated, artist_name, args, token):
                     f"     Re-run Repair to retry, or restore them by hand."))
             raise
 
+        # ── Put the refill back where it belongs ─────────────────────────
+        # beets files by tags, so a track whose canonical Qobuz album differs
+        # from album_dir (EPs, compilations, bonus tracks) lands in a stray
+        # folder. Move it home before judging success.
+        landed_post = qi.get("_resolved_post_dir") or find_album_dir_filesystem(album)
+        _relocate_refilled_into_album_dir(
+            album_dir,
+            Path(landed_post) if landed_post else None,
+            wanted_isrcs, before_paths, landed_was_new=landed_pre is None)
+
+        n_fail_final = qi.get("n_fail", 0)
+        n_ok_final = qi.get("n_ok", 0)
+        # Success is "the refilled tracks are back in album_dir", not merely
+        # "beets imported them somewhere".
+        repaired = (n_fail_final == 0 and n_ok_final > 0
+                    and qi.get("imported", False)
+                    and _refills_present_in(album_dir, wanted_isrcs))
+
         # ── Backup resolution ────────────────────────────────────────────
         if backup_path and backup_path.exists():
-            n_fail = qi.get("n_fail", 0)
-            imported = qi.get("imported", False)
-            if n_fail > 0:
+            if repaired:
+                try:
+                    shutil.rmtree(backup_path)
+                except OSError:
+                    pass
+            elif n_fail_final > 0:
                 log.info(fmt(C.YELLOW,
-                    f"  ⚠  {n_fail} track(s) failed to re-download. "
-                    f"Truncated originals preserved at:\n"
-                    f"     {backup_path}"))
-            elif not imported:
-                # Downloads succeeded but beets didn't import — replacements
-                # are stranded in staging and album_dir is missing the
-                # tracks we moved out. Auto-restore so the album is at
-                # least back to its pre-repair (truncated) state; user
-                # can re-run repair from a clean baseline.
+                    f"  ⚠  {n_fail_final} track(s) failed to re-download. "
+                    f"Truncated originals preserved at:\n     {backup_path}"))
+            else:
+                # Downloaded but the replacement never made it back into
+                # album_dir (beets didn't import, or filed it where we
+                # couldn't reclaim it). Restore so the album is at least back
+                # to its pre-repair state instead of silently short a track.
                 log.info(fmt(C.YELLOW,
-                    "  ⚠  beets import did not succeed — restoring "
-                    "truncated originals so the album isn't left short."))
+                    "  ⚠  Refill didn't return to the album folder — "
+                    "restoring truncated originals so it isn't left short."))
                 if restore_gap_fill_backup(backup_path, album_dir):
                     log.info(fmt(C.GREEN,
                         "  ✓  Restored truncated originals; re-run Repair to retry."))
                 else:
                     log.info(fmt(C.RED,
                         f"  ✗  Auto-restore failed. Backup at:\n     {backup_path}"))
-            else:
-                try:
-                    shutil.rmtree(backup_path)
-                except OSError:
-                    pass
 
-        # ── Replaced-tracks log ──────────────────────────────────────────
-        n_fail_final  = qi.get("n_fail", 0)
-        n_ok_final    = qi.get("n_ok", 0)
-        imported_final = qi.get("imported", False)
-        if n_fail_final == 0 and n_ok_final > 0 and imported_final:
+        # ── Replaced-tracks log (only on a genuine, in-place repair) ──────
+        if repaired:
             log_entries = [{
                 "artist": artist_name,
                 "album":  album_dir.name,
@@ -247,9 +341,13 @@ def repair_album_dir(album_dir, verified_truncated, artist_name, args, token):
                     f"refresh these albums on any offline client:\n"
                     f"     {cfg.REPAIR_LOG_PATH}"))
 
-        return {"n_ok": n_ok_final, "n_fail": n_fail_final,
-                "imported": imported_final,
-                "backup": str(backup_path) if backup_path else None}
+        return {
+            "n_ok": n_ok_final if repaired else 0,
+            "n_fail": (n_fail_final if repaired
+                       else max(n_fail_final, len(verified_truncated))),
+            "imported": repaired,
+            "backup": str(backup_path) if backup_path else None,
+        }
     finally:
         args.no_upgrade = saved_no_upgrade
 

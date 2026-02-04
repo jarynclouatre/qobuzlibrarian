@@ -275,41 +275,136 @@ class TestScanDirRealFlacRoundTrip:
         assert result["verified_truncated"][0]["reason"] == "decode_failed"
 
 
-class TestWebScanRepairsSurfacesNoIsrcDiagnostic:
-    """The CLI repair flow shows the size diagnostic on no-ISRC files
-    (e.g. 5 kB stubs). The web /repair scan must surface the same hint —
-    otherwise a user with a damaged file gets 'no truncated files' even
-    though scan_dir_for_isrc_repairs flagged something."""
+class TestWebScanRepairsNoIsrcRecovery:
+    """A damaged file with no readable ISRC can't be surgically refilled, so
+    the web /repair scan offers a whole-album re-download when it can match
+    the folder to a Qobuz album, and falls back to a hand-verify hint when it
+    can't."""
 
-    def test_suspicious_no_isrc_entry_emits_log_line(self, tmp_path, caplog):
-        from qobuz_fetch.web import flows
-        artist_dir = tmp_path / "Artist"
-        album_dir = artist_dir / "Album"
-        album_dir.mkdir(parents=True)
-        scan_result = {
+    def _scan_result(self, album_dir):
+        return {
             "verified_truncated": [],
             "verified_ok": 0,
             "no_isrc_tag": [{
                 "path": str(album_dir / "01.flac"),
                 "title": "Bad Track",
                 "size_bytes": 5_000,
-                "diagnostic": "likely-corrupted (5,000 B); hand-verify",
+                "diagnostic": "likely-corrupted (5,000 B)",
             }],
             "isrc_no_match": [],
         }
+
+    def _run(self, tmp_path, caplog, matched):
+        from qobuz_fetch.web import flows
+        artist_dir = tmp_path / "Artist"
+        album_dir = artist_dir / "Album"
+        album_dir.mkdir(parents=True)
         job = MagicMock()
         job.cancel_requested = False
         with patch.object(flows, "list_library_artists", return_value=[artist_dir]), \
              patch.object(flows, "list_artist_album_dirs", return_value=[album_dir]), \
              patch.object(flows, "clear_scan_caches"), \
+             patch.object(flows, "find_qobuz_album_for_dir", return_value=matched), \
              patch("qobuz_fetch.repair_log.scan_dir_for_isrc_repairs",
-                   return_value=scan_result):
+                   return_value=self._scan_result(album_dir)):
             with caplog.at_level("INFO", logger="qobuz_librarian"):
                 flows.scan_repairs(job, "token")
+        return job, " ".join(r.getMessage() for r in caplog.records)
 
-        messages = " ".join(r.getMessage() for r in caplog.records)
-        assert "Bad Track" in messages and "likely-corrupted" in messages
-        assert not job.add_candidate.called  # no_isrc_tag is not actionable
+    def test_matched_album_offers_whole_album_redownload(self, tmp_path, caplog):
+        matched = {"id": "alb123", "title": "Real Album",
+                   "release_date_original": "2013-01-01"}
+        job, _ = self._run(tmp_path, caplog, matched)
+        assert job.add_candidate.called
+        kwargs = job.add_candidate.call_args.kwargs
+        assert kwargs["kind"] == "redownload"
+        assert kwargs["payload"]["album_id"] == "alb123"
+        assert "Real Album" in kwargs["detail"]
+
+    def test_unmatched_album_falls_back_to_hand_verify(self, tmp_path, caplog):
+        job, messages = self._run(tmp_path, caplog, None)
+        assert not job.add_candidate.called
+        assert "Bad Track" in messages and "check by hand" in messages
+
+    def test_failed_redownload_restores_the_original_folder(
+            self, tmp_path, monkeypatch):
+        from qobuz_fetch.web import flows
+        album_dir = tmp_path / "Album"
+        album_dir.mkdir()
+        backup_dir = tmp_path / "backup"
+        restored = {}
+        monkeypatch.setattr(flows, "get_album", lambda *a: {"id": "x"})
+        monkeypatch.setattr("qobuz_fetch.library.backup.backup_album_dir",
+                            lambda d: backup_dir)
+        monkeypatch.setattr("qobuz_fetch.modes.process.process_album",
+                            lambda *a, **k: {"imported": False, "n_ok": 0})
+        monkeypatch.setattr(
+            "qobuz_fetch.library.backup.restore_upgrade_backup",
+            lambda bp, d: restored.update(bp=bp, dir=d) or True)
+
+        res = flows._redownload_damaged_album(
+            {"album_dir": str(album_dir), "album_id": "x"}, "token")
+
+        assert res["n_ok"] == 0
+        assert restored == {"bp": backup_dir, "dir": album_dir}
+
+
+class TestRepairRelocatesRefill:
+    """A repaired track must end up in the folder being repaired, not in
+    whatever folder beets' tags filed the re-download into."""
+
+    def test_refill_filed_elsewhere_is_moved_back(self, tmp_path, monkeypatch):
+        from qobuz_fetch.modes import repair
+        album_dir = tmp_path / "First Fires (2013)"
+        landed_dir = tmp_path / "The North Borders (2013)"
+        album_dir.mkdir()
+        landed_dir.mkdir()
+        refill = landed_dir / "01 - First Fires.flac"
+        refill.write_bytes(b"flac-bytes")
+        # beets also drops a cover.jpg into the folder it invented.
+        (landed_dir / "cover.jpg").write_bytes(b"art")
+
+        monkeypatch.setattr(
+            repair, "read_album_dir",
+            lambda d: ([{"path": str(refill), "isrc": "GBCFB1300101"}]
+                       if d == landed_dir and refill.exists() else []))
+        monkeypatch.setattr(repair, "_sync_beets_db_after_file_move",
+                            lambda *a: None)
+
+        moved = repair._relocate_refilled_into_album_dir(
+            album_dir, landed_dir, {"GBCFB1300101"},
+            before_paths=set(), landed_was_new=True)
+
+        assert moved == 1
+        assert (album_dir / "01 - First Fires.flac").exists()
+        assert not refill.exists()
+        # the invented folder is removed wholesale, stray cover and all
+        assert not landed_dir.exists()
+
+    def test_preexisting_track_sharing_the_recording_is_left_alone(
+            self, tmp_path, monkeypatch):
+        from qobuz_fetch.modes import repair
+        album_dir = tmp_path / "First Fires (2013)"
+        owned_dir = tmp_path / "The North Borders (2013)"
+        album_dir.mkdir()
+        owned_dir.mkdir()
+        owned = owned_dir / "01 - First Fires.flac"
+        owned.write_bytes(b"already-here")
+
+        monkeypatch.setattr(
+            repair, "read_album_dir",
+            lambda d: ([{"path": str(owned), "isrc": "GBCFB1300101"}]
+                       if d == owned_dir else []))
+        monkeypatch.setattr(repair, "_sync_beets_db_after_file_move",
+                            lambda *a: None)
+
+        moved = repair._relocate_refilled_into_album_dir(
+            album_dir, owned_dir, {"GBCFB1300101"},
+            before_paths={str(owned)}, landed_was_new=False)
+
+        assert moved == 0
+        assert owned.exists()  # was present before the refill — untouched
+        assert not (album_dir / "01 - First Fires.flac").exists()
 
 
 class TestParseArgsGuards:

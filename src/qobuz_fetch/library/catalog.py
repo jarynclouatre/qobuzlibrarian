@@ -920,6 +920,40 @@ def _sync_beets_db_after_move(old_dir: Path, new_dir: Path) -> None:
             "Run `beet update` to re-scan."))
 
 
+def _sync_beets_db_after_file_move(old_file: Path, new_file: Path) -> None:
+    """Update beets' items.path for one file moved outside beets' control.
+
+    Same rationale as _sync_beets_db_after_move, but matches a single exact
+    path rather than a directory prefix — used when a repaired track beets
+    filed under its tag-derived album is relocated into the folder actually
+    being repaired.
+    """
+    db_path = getattr(config, "BEETS_DB_PATH", None)
+    if not db_path:
+        return
+    db_path = Path(str(db_path))
+    if not db_path.exists():
+        return
+    music_root = Path(str(config.MUSIC_ROOT))
+    try:
+        old_rel = old_file.resolve().relative_to(music_root.resolve())
+        new_rel = new_file.resolve().relative_to(music_root.resolve())
+    except (ValueError, OSError):
+        return
+    import sqlite3
+    try:
+        with sqlite3.connect(str(db_path)) as conn:
+            conn.execute(
+                "UPDATE items SET path = ? WHERE path = ?",
+                (str(new_rel).encode("utf-8"), str(old_rel).encode("utf-8")),
+            )
+            conn.commit()
+    except sqlite3.Error as e:
+        log.info(fmt(C.YELLOW,
+            f"  ⚠  beets DB path sync failed ({e}). "
+            "Run `beet update` to re-scan."))
+
+
 def prompt_and_migrate_multi_artist_folder(album, args):
     """If `album` landed in a multi-artist folder ('Primary, Other'), move
     it under 'Primary'. No-op when:

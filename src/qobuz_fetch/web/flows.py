@@ -23,6 +23,7 @@ from qobuz_fetch.library.catalog import (
     filter_compilation_albums,
     filter_short_releases,
     find_existing_tracks,
+    find_qobuz_album_for_dir,
 )
 from qobuz_fetch.library.scanner import (
     clear_scan_caches,
@@ -397,20 +398,88 @@ def scan_repairs(job, token):
                              "verified_truncated": truncated},
                 )
                 total += 1
-            # Surface no-ISRC files that look damaged (size diagnostic). The
-            # repair flow can't refill these — no ISRC means no anchored
-            # Qobuz lookup — but the user still needs to know they exist.
+            # Damaged files with no readable ISRC can't be surgically refilled
+            # (no anchored Qobuz lookup). Identify the album from the folder
+            # and offer a whole-album re-download instead — the user sees the
+            # matched album in the review and confirms before it runs.
             suspicious = [e for e in scan.get("no_isrc_tag", [])
                           if e.get("diagnostic")]
-            for e in suspicious:
-                log.info(f"    ⚠ {album_dir.name} — "
-                         f"{e.get('title') or '?'}: {e['diagnostic']}")
+            if suspicious:
+                matched = find_qobuz_album_for_dir(album_dir, name, token)
+                if matched and matched.get("id"):
+                    m_title = matched.get("title") or album_dir.name
+                    m_year = album_year(matched) or "?"
+                    job.add_candidate(
+                        kind="redownload",
+                        title=album_dir.name,
+                        artist=name,
+                        detail=(f"{plural(len(suspicious), 'damaged file')} "
+                                f"can't be verified by ID — re-download the whole "
+                                f"album fresh as “{m_title}” ({m_year})"),
+                        payload={"album_dir": str(album_dir),
+                                 "artist_name": name,
+                                 "album_id": matched.get("id"),
+                                 "matched_title": m_title},
+                    )
+                    total += 1
+                else:
+                    for e in suspicious:
+                        log.info(f"    ⚠ {album_dir.name} — "
+                                 f"{e.get('title') or '?'}: {e['diagnostic']}; "
+                                 "couldn't match this folder to a Qobuz album "
+                                 "to re-download — check by hand.")
         time.sleep(cfg.ARTIST_API_DELAY)
-    log.info(f"Done. {plural(total, 'album')} with truncated files.")
+    log.info(f"Done. {plural(total, 'album')} flagged.")
+
+
+def _redownload_damaged_album(payload, token):
+    """Re-fetch a whole album whose damaged file couldn't be ID-verified.
+
+    The folder is moved aside first so beets imports a clean copy instead of
+    colliding with the broken files (the --force path can't be used here: it
+    needs an interactive deletion confirm the web has no way to answer). If
+    the re-download doesn't complete, the original folder is moved back so the
+    user is never left worse off.
+    """
+    import shutil as _shutil
+
+    from qobuz_fetch.library.backup import (
+        backup_album_dir,
+        restore_upgrade_backup,
+    )
+    from qobuz_fetch.modes.process import process_album
+
+    log.info("  The damaged file can't be verified by its ID, so the whole "
+             "album is being re-downloaded fresh from Qobuz.")
+    full = get_album(payload["album_id"], token)
+    album_dir = Path(payload["album_dir"])
+    backup = backup_album_dir(album_dir) if album_dir.exists() else None
+    if album_dir.exists() and backup is None:
+        log.info("  Couldn't safely move the existing folder out of the way, "
+                 "so leaving this album alone to avoid damaging it. "
+                 "See the log above.")
+        return {"imported": False, "n_ok": 0, "result": "backup_failed"}
+    try:
+        result = process_album(full, build_args(), allow_force=False,
+                               already_confirmed=True, token=token) or {}
+    except Exception:
+        if backup:
+            restore_upgrade_backup(backup, album_dir)
+        raise
+    succeeded = bool(result.get("imported")) and result.get("n_ok", 0) > 0
+    if backup:
+        if succeeded:
+            _shutil.rmtree(backup, ignore_errors=True)
+        else:
+            log.info("  Re-download didn't complete — restoring the original "
+                     "album folder.")
+            restore_upgrade_backup(backup, album_dir)
+    return result
 
 
 def execute_repairs(job, chosen, token):
-    """Refill the truncated files in each chosen album, ISRC-anchored."""
+    """Refill ISRC-verified truncated tracks, or re-download whole albums
+    whose damage couldn't be ID-verified — depending on each candidate."""
     from pathlib import Path
 
     from qobuz_fetch.modes.repair import repair_album_dir
@@ -429,15 +498,18 @@ def execute_repairs(job, chosen, token):
         p = cand["payload"]
         log.info(f"[{i}/{len(chosen)}] {p['artist_name']} — {cand['title']}")
         try:
-            result = repair_album_dir(Path(p["album_dir"]),
-                                      p["verified_truncated"],
-                                      p["artist_name"], args, token)
+            if cand.get("kind") == "redownload":
+                result = _redownload_damaged_album(p, token)
+            else:
+                result = repair_album_dir(Path(p["album_dir"]),
+                                          p["verified_truncated"],
+                                          p["artist_name"], args, token)
         except Exception as e:
             log.info(f"  failed: {e}")
             failed += 1
             continue
-        # Every chosen album was flagged as having truncated files, so anything
-        # that didn't end up refilled-and-imported is a real failure.
+        # Each chosen album was flagged as damaged, so anything that didn't end
+        # up downloaded-and-imported is a real failure.
         if result and result.get("n_ok", 0) > 0 and result.get("imported"):
             fixed += 1
         else:
