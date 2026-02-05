@@ -189,7 +189,10 @@ def scan_library(job, token, partial_only=False):
         except Exception as e:
             log.info(f"    skipped {name}: {e}")
         time.sleep(cfg.ARTIST_API_DELAY)
-    log.info(f"Done. {plural(total, 'missing album')} across the library.")
+    if partial_only:
+        log.info(f"Done. {plural(total, 'album')} with track gaps across the library.")
+    else:
+        log.info(f"Done. {plural(total, 'missing album')} across the library.")
 
 
 def _fmt_eta(started: float, done: int, total: int) -> str:
