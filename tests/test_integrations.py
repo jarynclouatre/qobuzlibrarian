@@ -577,3 +577,9 @@ class TestImportOverrideArtwork:
     def test_embed_combines_with_user_plugins(self, monkeypatch):
         y = self._build(monkeypatch, ARTWORK="embed", BEETS_PLUGINS=["lastgenre"])
         assert "lastgenre" in y and "fetchart" in y and "embedart" in y
+
+    def test_inline_kept_when_plugin_list_replaced(self, monkeypatch):
+        # The seeded path template's multi-disc field comes from inline; a
+        # custom plugin list must not drop it.
+        y = self._build(monkeypatch, BEETS_PLUGINS=["lastgenre"])
+        assert "inline" in y

@@ -262,6 +262,11 @@ def _build_import_override_yaml():
                           "  auto: yes\n"
                           f"  remove_art_file: {'yes' if _art == 'embed' else 'no'}\n")
     if cfg.BEETS_PLUGINS or _art in ("embed", "both"):
+        # Emitting `plugins:` replaces the config.yaml list, so re-add inline —
+        # the seeded path template's `multidisc` field comes from it, and
+        # dropping it would flatten multi-disc albums into one folder.
+        if "inline" not in _plugins:
+            _plugins.append("inline")
         # Plugin names must be plain identifiers — anything else would break
         # the YAML structure (and likely isn't a real beets plugin anyway).
         safe_plugins = [p for p in _plugins if _re.match(r"^[A-Za-z0-9_]+$", p)]

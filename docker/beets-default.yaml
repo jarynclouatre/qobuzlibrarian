@@ -13,12 +13,19 @@ import:
   duplicate_action: merge
 
 paths:
-  default: $albumartist/$album ($year)/$track - $title
+  default: $albumartist/$album ($year)/%if{$multidisc,Disc $disc/}$track - $title
   singleton: $albumartist/$album ($year)/$track - $title
-  comp: Various Artists/$album ($year)/$track - $title
+  comp: Various Artists/$album ($year)/%if{$multidisc,Disc $disc/}$track - $title
 
 plugins:
   - fetchart
+  - inline
+
+# A "Disc N" subfolder only when the album spans several discs; single-disc
+# albums stay flat. beets has no built-in multi-disc flag, so the inline
+# plugin derives one from disctotal.
+item_fields:
+  multidisc: 1 if disctotal and disctotal > 1 else 0
 
 fetchart:
   auto: yes
