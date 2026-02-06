@@ -129,6 +129,18 @@ class TestSyncStreamripCredsFromEnv:
         assert data["qobuz"]["use_auth_token"] is True
         assert sync_streamrip_creds_from_env() is None
 
+    def test_blank_user_id_not_written_as_placeholder(self, tmp_path, monkeypatch):
+        from qobuz_fetch import config
+        cfg_path = tmp_path / "config.toml"
+        monkeypatch.setattr(config, "QOBUZ_USER_AUTH_TOKEN", "tok-xyz")
+        monkeypatch.setattr(config, "QOBUZ_USER_ID", "")
+        monkeypatch.setattr(config, "STREAMRIP_CONFIG", cfg_path)
+        monkeypatch.setattr(config, "STAGING_DIR", tmp_path / "staging")
+        assert sync_streamrip_creds_from_env() is True
+        data = tomllib.load(open(cfg_path, "rb"))
+        assert data["qobuz"]["email_or_userid"] == ""
+        assert data["qobuz"]["password_or_token"] == "tok-xyz"
+
     def test_stale_token_is_rewritten(self, tmp_path, monkeypatch):
         from qobuz_fetch import config
         cfg_path = tmp_path / "config.toml"

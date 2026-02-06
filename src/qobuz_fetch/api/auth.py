@@ -207,7 +207,10 @@ def sync_streamrip_creds_from_env():
     token = config.QOBUZ_USER_AUTH_TOKEN
     if not token:
         return None
-    user_id = config.QOBUZ_USER_ID or "<env-token>"
+    # No user id set: leave the field blank rather than stamping the
+    # "<env-token>" display placeholder into the on-disk config. streamrip
+    # authenticates from the token under use_auth_token, so the id is unused.
+    user_id = config.QOBUZ_USER_ID or ""
     if config.STREAMRIP_CONFIG.exists():
         try:
             with open(config.STREAMRIP_CONFIG, "rb") as f:
