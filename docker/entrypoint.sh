@@ -19,12 +19,14 @@ done
 
 if [ ! -f "$BEETS_DIR/config.yaml" ]; then
     echo "[init] Creating default beets config at $BEETS_DIR/config.yaml"
-    cp /app/docker/beets-default.yaml "$BEETS_DIR/config.yaml"
+    cp /app/docker/beets-default.yaml "$BEETS_DIR/config.yaml" 2>/dev/null || \
+        echo "[warn] couldn't seed beets config — mount /config read-write." >&2
 fi
 
 if [ ! -f "$STREAMRIP_DIR/config.toml" ]; then
     echo "[init] Creating default streamrip config at $STREAMRIP_DIR/config.toml"
-    cp /app/docker/streamrip-default.toml "$STREAMRIP_DIR/config.toml"
+    cp /app/docker/streamrip-default.toml "$STREAMRIP_DIR/config.toml" 2>/dev/null || \
+        echo "[warn] couldn't seed streamrip config — mount /config read-write." >&2
 fi
 
 # Enforce the streamrip settings the librarian depends on, every boot. These
