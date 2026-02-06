@@ -142,6 +142,49 @@ class TestMergeSplitFolder:
         assert count == 0
         assert (dst / "track.flac").read_bytes() == b"dst_audio"
 
+    def test_drops_identical_cover_and_removes_source(self, tmp_path):
+        src = tmp_path / "src"
+        dst = tmp_path / "dst"
+        src.mkdir()
+        dst.mkdir()
+        (src / "01 - a.flac").write_bytes(b"audio")
+        (src / "cover.jpg").write_bytes(b"IMG")
+        (dst / "cover.jpg").write_bytes(b"IMG")
+        count = _merge_split_folder(dst, src)
+        assert count == 1
+        assert (dst / "01 - a.flac").exists()
+        assert not src.exists()
+
+    def test_keeps_a_differing_cover(self, tmp_path):
+        src = tmp_path / "src"
+        dst = tmp_path / "dst"
+        src.mkdir()
+        dst.mkdir()
+        (src / "cover.jpg").write_bytes(b"OLD")
+        (dst / "cover.jpg").write_bytes(b"NEW")
+        count = _merge_split_folder(dst, src)
+        assert count == 0
+        assert (src / "cover.jpg").read_bytes() == b"OLD"
+        assert src.exists()
+
+    def test_repoints_beets_db_for_moved_file(self, tmp_path, monkeypatch):
+        import sqlite3
+        db = tmp_path / "library.db"
+        with sqlite3.connect(str(db)) as conn:
+            conn.execute("CREATE TABLE items (id INTEGER PRIMARY KEY, path BLOB)")
+            conn.execute("INSERT INTO items (path) VALUES (?)",
+                         (b"Artist/Album/01 - x.flac",))
+        monkeypatch.setattr("qobuz_fetch.config.MUSIC_ROOT", tmp_path)
+        monkeypatch.setattr("qobuz_fetch.config.BEETS_DB_PATH", db)
+        source = tmp_path / "Artist" / "Album"
+        dest = tmp_path / "Artist" / "Album (2010)"
+        source.mkdir(parents=True)
+        (source / "01 - x.flac").write_bytes(b"audio")
+        _merge_split_folder(dest, source)
+        with sqlite3.connect(str(db)) as conn:
+            paths = [r[0] for r in conn.execute("SELECT path FROM items")]
+        assert paths == [b"Artist/Album (2010)/01 - x.flac"]
+
 
 class TestLyricRetry:
     def test_round_trip(self, tmp_path, monkeypatch):

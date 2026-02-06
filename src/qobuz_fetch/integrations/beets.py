@@ -14,6 +14,7 @@ Two non-obvious behaviours kept here:
   see the file move beets just performed (the in-memory listing cache
   would otherwise still point at the empty staging dir).
 """
+import filecmp
 import os
 import shutil
 import subprocess
@@ -42,11 +43,25 @@ def _yaml_sq(value):
     return "'" + s.replace("'", "''") + "'"
 
 
-def _merge_split_folder(dest_dir, source_dir):
-    """Consolidate two folders: move all files from source_dir into dest_dir.
+def _files_identical(a, b):
+    """Byte-for-byte equal? An unreadable file counts as not-identical so the
+    caller stays on the conservative (keep-it) path."""
+    try:
+        return filecmp.cmp(str(a), str(b), shallow=False)
+    except OSError:
+        return False
 
-    Conservative on overlaps: if a destination filename already exists,
-    we leave the source in place. Returns the count of files moved.
+
+def _merge_split_folder(dest_dir, source_dir):
+    """Consolidate two folders: move files from source_dir into dest_dir.
+
+    Conservative on overlaps: an audio file whose name already exists in the
+    destination is left alone (it may be a different master). A non-audio
+    duplicate (cover art, a sidecar) is dropped only when it's byte-identical
+    to the destination copy, so a redundant file doesn't strand the source
+    folder. beets' items.path is updated for each moved file so a later
+    `beet update` doesn't read the move as a deletion. Returns the count of
+    files moved.
     """
     if not isinstance(dest_dir, Path) or not isinstance(source_dir, Path):
         return 0
@@ -63,6 +78,7 @@ def _merge_split_folder(dest_dir, source_dir):
         log.info(fmt(C.YELLOW, f"  ⚠  merge: couldn't create {dest_dir}: {e}."))
         return 0
     moved = 0
+    moved_pairs = []
     for src in list(source_dir.rglob("*")):
         if not src.is_file():
             continue
@@ -72,14 +88,26 @@ def _merge_split_folder(dest_dir, source_dir):
             continue
         dst = dest_dir / rel
         if dst.exists():
-            vlog(f"merge: skip {rel} — destination exists")
+            if (src.suffix.lower() not in cfg.AUDIO_EXTS
+                    and _files_identical(src, dst)):
+                try:
+                    src.unlink()
+                except OSError:
+                    pass
+            else:
+                vlog(f"merge: skip {rel} — destination exists")
             continue
         try:
             dst.parent.mkdir(parents=True, exist_ok=True)
             shutil.move(str(src), str(dst))
             moved += 1
+            moved_pairs.append((src, dst))
         except OSError as e:
             log.info(fmt(C.YELLOW, f"  ⚠  merge: couldn't move {src.name}: {e}."))
+    if moved_pairs:
+        from qobuz_fetch.library.catalog import _sync_beets_db_after_file_move
+        for old, new in moved_pairs:
+            _sync_beets_db_after_file_move(old, new)
     for d in sorted([p for p in source_dir.rglob("*") if p.is_dir()],
                     key=lambda p: len(p.parts), reverse=True):
         try:
