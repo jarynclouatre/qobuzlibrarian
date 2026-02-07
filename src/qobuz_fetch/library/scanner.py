@@ -86,8 +86,8 @@ def read_flac_meta(path: Path):
     info = f.info
     return {
         "title":       first("TITLE") or first("title"),
-        "isrc":        (first("ISRC") or first("isrc") or "").replace("-", "").upper(),
-        "mb_trackid":  (first("MUSICBRAINZ_TRACKID") or first("musicbrainz_trackid") or "").lower(),
+        "isrc":        (first("ISRC") or first("isrc") or "").strip().replace("-", "").upper(),
+        "mb_trackid":  (first("MUSICBRAINZ_TRACKID") or first("musicbrainz_trackid") or "").strip().lower(),
         "album":       first("ALBUM"),
         "albumartist": first("ALBUMARTIST") or first("ARTIST"),
         "tracknumber": parse_track_num(first("TRACKNUMBER") or first("tracknumber")),

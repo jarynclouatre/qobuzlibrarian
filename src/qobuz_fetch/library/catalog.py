@@ -123,20 +123,36 @@ def _paths_equal(a: Path, b: Path) -> bool:
         return os.path.normpath(str(a)) == os.path.normpath(str(b))
 
 
-def _is_split_album_merge(album_dir, post_dir, qartist):
-    """True when album_dir and post_dir hold one album split across two folders.
+_DECORATION_YEAR_RE = re.compile(
+    r"[(\[](\d{4})[)\]]\s*$"      # trailing '(2010)' / '[2010]'
+    r"|^\[(\d{4})\]\s+"          # leading '[2010] Title'
+    r"|^(\d{4})\s*[-–—]\s+"      # leading '2010 - Title'
+)
 
-    Two shapes get consolidated into post_dir (where beets just filed the new
-    tracks):
+
+def _decoration_year(name):
+    """The 4-digit year a folder name uses as a decoration ('' if none). A year
+    that IS the title ('1984', '2112 - song') is not a decoration here."""
+    m = _DECORATION_YEAR_RE.search(name or "")
+    return next((g for g in m.groups() if g), "") if m else ""
+
+
+def _is_split_album_merge(album_dir, post_dir, qartist):
+    """True when album_dir and post_dir are the SAME album split across two
+    folders, safe to consolidate into post_dir (where beets just filed the new
+    tracks). Two shapes:
 
       - multi-artist: existing tracks under 'Primary, Other/Album', new ones
         under 'Primary/Album'.
-      - year decoration: a hand-named or migrated folder lacks the '($year)'
-        beets writes ('Black Sands' vs 'Black Sands (2010)').
+      - year decoration: a hand-named/migrated folder lacks the '($year)' beets
+        writes ('Black Sands' vs 'Black Sands (2010)').
 
-    The year case only matches folders under the same artist that differ by a
-    year tag alone — an edition or live album ('Album' vs 'Album (Live)') is
-    never fused with a different one.
+    Both require the two names to be the same album: equal once the year tag is
+    stripped (so an edition/live folder isn't fused with the studio album), and
+    not pinning two DIFFERENT years (different years are different releases — a
+    reissue, an annual live album — never one split). Resolution can fuzzy-match
+    a similarly-titled but DIFFERENT album into album_dir, so these string
+    guards are what stop an unrelated album from being consumed.
     """
     if album_dir is None or post_dir is None:
         return False
@@ -147,14 +163,16 @@ def _is_split_album_merge(album_dir, post_dir, qartist):
         return False
     if _paths_equal(post_dir, album_dir) or not qartist:
         return False
+    a = normalize(strip_year_decoration(album_dir.name))
+    if not a or a != normalize(strip_year_decoration(post_dir.name)):
+        return False
+    ay, py = _decoration_year(album_dir.name), _decoration_year(post_dir.name)
+    if ay and py and ay != py:
+        return False
     if (_is_multi_artist_subset(album_dir.parent.name, qartist)
             and not _is_multi_artist_subset(post_dir.parent.name, qartist)):
         return True
-    if _paths_equal(album_dir.parent, post_dir.parent):
-        a = normalize(strip_year_decoration(album_dir.name))
-        if a and a == normalize(strip_year_decoration(post_dir.name)):
-            return True
-    return False
+    return bool(_paths_equal(album_dir.parent, post_dir.parent))
 
 
 # ── Album dir resolution ──────────────────────────────────────────────────────
@@ -308,6 +326,18 @@ def find_existing_tracks(qobuz_album):
 
 
 # ── Track-presence detection ──────────────────────────────────────────────────
+def _norm_isrc(value):
+    """Canonical ISRC for identity comparison. A blank or whitespace-only tag
+    must collapse to '' so two un-identified tracks aren't treated as the same
+    recording (which would hide a real gap, or a bonus track before a wipe)."""
+    return (value or "").strip().replace("-", "").upper()
+
+
+def _norm_mbid(value):
+    """Canonical MBID for identity comparison; blank/whitespace → ''."""
+    return (value or "").strip().lower()
+
+
 def compute_missing(qobuz_tracks, existing_tracks):
     """Classify qobuz_tracks into missing/present against existing_tracks.
 
@@ -335,8 +365,8 @@ def compute_missing(qobuz_tracks, existing_tracks):
         stripped = normalize(strip_edition_suffix(ttl)) if ttl else ""
         slots.append({
             "used": False,
-            "isrc": (t.get("isrc") or "").replace("-", "").upper(),
-            "mbid": (t.get("mb_trackid") or "").lower(),
+            "isrc": _norm_isrc(t.get("isrc")),
+            "mbid": _norm_mbid(t.get("mb_trackid")),
             "disc_title": (disc, norm) if norm else None,
             "disc_stripped": (disc, stripped) if stripped else None,
         })
@@ -346,8 +376,8 @@ def compute_missing(qobuz_tracks, existing_tracks):
         qtitle_raw = qt.get("title") or ""
         qdisc = qt.get("media_number", 1) or 1
         qkeys.append({
-            "isrc": (qt.get("isrc") or "").replace("-", "").upper(),
-            "mbid": (qt.get("mbid") or "").lower(),
+            "isrc": _norm_isrc(qt.get("isrc")),
+            "mbid": _norm_mbid(qt.get("mbid")),
             "title": (qdisc, normalize(qtitle_raw)) if qtitle_raw else None,
             "stripped": (qdisc, normalize(strip_edition_suffix(qtitle_raw))) if qtitle_raw else None,
         })
@@ -405,8 +435,8 @@ def find_extras_in_existing(qobuz_tracks, existing_tracks):
         qdisc = qt.get("media_number", 1) or 1
         slots.append({
             "used": False,
-            "isrc": (qt.get("isrc") or "").replace("-", "").upper(),
-            "mbid": (qt.get("mbid") or "").lower(),
+            "isrc": _norm_isrc(qt.get("isrc")),
+            "mbid": _norm_mbid(qt.get("mbid")),
             "disc_title": (qdisc, normalize(qtitle_raw)) if qtitle_raw else None,
             "disc_stripped": (qdisc, normalize(strip_edition_suffix(qtitle_raw))) if qtitle_raw else None,
         })
@@ -416,8 +446,8 @@ def find_extras_in_existing(qobuz_tracks, existing_tracks):
         e_title_raw = et.get("title") or ""
         e_disc = et.get("discnumber", 1) or 1
         ekeys.append({
-            "isrc": (et.get("isrc") or "").replace("-", "").upper(),
-            "mbid": (et.get("mb_trackid") or "").lower(),
+            "isrc": _norm_isrc(et.get("isrc")),
+            "mbid": _norm_mbid(et.get("mb_trackid")),
             "title": (e_disc, normalize(e_title_raw)) if e_title_raw else None,
             "stripped": (e_disc, normalize(strip_edition_suffix(e_title_raw))) if e_title_raw else None,
         })

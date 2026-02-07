@@ -82,6 +82,13 @@ class TestComputeMissing:
         assert [t["title"] for t in present] == ["Time"]
         assert [t["title"] for t in missing] == ["Time (Bonus Track)"]
 
+    def test_whitespace_isrc_is_not_a_shared_identity(self):
+        # A blank/whitespace ISRC tag must not pair two unrelated tracks.
+        qobuz = [_qt("Track One", isrc="   ")]
+        existing = [_et("Track Two", isrc="   ")]
+        missing, present = compute_missing(qobuz, existing)
+        assert len(present) == 0 and len(missing) == 1
+
 
 class TestFindExtrasInExisting:
     def test_no_extras_when_all_match(self):
@@ -102,6 +109,14 @@ class TestFindExtrasInExisting:
         existing = [_et("Time", disc=1), _et("Time (Bonus Track)", disc=1)]
         extras = find_extras_in_existing(qobuz, existing)
         assert len(extras) == 1 and "Bonus" in extras[0]["title"]
+
+    def test_whitespace_isrc_does_not_hide_a_bonus(self):
+        # All tracks carry a blank ISRC tag; the off-Qobuz bonus must still be
+        # flagged so the upgrade wipe-replace can't silently delete it.
+        qobuz = [_qt("T1", isrc=" "), _qt("T2", isrc=" ")]
+        existing = [_et("Bonus", isrc=" "), _et("T1", isrc=" "), _et("T2", isrc=" ")]
+        extras = find_extras_in_existing(qobuz, existing)
+        assert [t["title"] for t in extras] == ["Bonus"]
 
 
 class TestAlbumYear:
@@ -265,6 +280,30 @@ class TestIsSplitAlbumMerge:
         live.mkdir(parents=True)
         canonical.mkdir(parents=True)
         assert _is_split_album_merge(live, canonical, "Bonobo") is False
+
+    def test_multi_artist_same_album_is_merged(self, tmp_path):
+        collab = tmp_path / "Run DMC, Aerosmith" / "Walk This Way"
+        solo = tmp_path / "Run DMC" / "Walk This Way (1986)"
+        collab.mkdir(parents=True)
+        solo.mkdir(parents=True)
+        assert _is_split_album_merge(collab, solo, "Run DMC") is True
+
+    def test_different_album_under_multi_artist_not_fused(self, tmp_path):
+        # A solo album fuzzy-resolved into a collaboration folder must not be
+        # fused with the unrelated album already there.
+        collab = tmp_path / "Beats Crew, DJ Guest" / "Chapter One (2018)"
+        solo = tmp_path / "Beats Crew" / "Chapter Two (2020)"
+        collab.mkdir(parents=True)
+        solo.mkdir(parents=True)
+        assert _is_split_album_merge(collab, solo, "Beats Crew") is False
+
+    def test_same_title_different_year_not_fused(self, tmp_path):
+        artist = tmp_path / "Artist"
+        a = artist / "Live (2010)"
+        b = artist / "Live (2011)"
+        a.mkdir(parents=True)
+        b.mkdir(parents=True)
+        assert _is_split_album_merge(a, b, "Artist") is False
 
 
 class TestIsMigrationCandidate:
