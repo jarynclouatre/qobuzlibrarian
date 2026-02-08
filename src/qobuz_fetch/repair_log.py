@@ -153,7 +153,13 @@ def scan_dir_for_isrc_repairs(album_dir, token,
             actual_size = 0
         if sample_rate > 0 and bits > 0 and actual_size > 0:
             expected_uncompressed = qdur * sample_rate * channels * (bits / 8)
-            if actual_size < expected_uncompressed * _BYTE_SIZE_TRUNCATED_RATIO:
+            # Impossibly small for the claimed duration usually means a tail
+            # truncation — but silent / very-quiet material (ambient, classical
+            # passages, hidden tracks) legitimately compresses this far and
+            # decodes fine. Confirm with a decode before flagging so a healthy
+            # quiet track isn't re-downloaded; a real truncation fails the read.
+            if (actual_size < expected_uncompressed * _BYTE_SIZE_TRUNCATED_RATIO
+                    and path and not _flac_decode_ok(path)):
                 report["verified_truncated"].append({
                     "path": path,
                     "file_length": flen,

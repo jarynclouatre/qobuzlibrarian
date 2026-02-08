@@ -274,6 +274,34 @@ class TestScanDirRealFlacRoundTrip:
         assert len(result["verified_truncated"]) == 1, result
         assert result["verified_truncated"][0]["reason"] == "decode_failed"
 
+    def test_quiet_full_length_flac_not_flagged_despite_tiny_size(self, tmp_path):
+        import subprocess
+
+        from mutagen.flac import FLAC
+        album = tmp_path / "Artist" / "Album"
+        album.mkdir(parents=True)
+        flac = album / "01.flac"
+        # Silence compresses far below the byte-size gate's 0.15x threshold, but
+        # the file is healthy and full-length — the decode corroboration must
+        # keep it from being flagged (ambient/classical/hidden tracks do this).
+        subprocess.run(
+            ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+             "-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo",
+             "-t", "30", "-c:a", "flac", str(flac)],
+            check=True,
+        )
+        f = FLAC(str(flac))
+        f["isrc"] = ["US1234500003"]
+        f["title"] = ["Silent"]
+        f["tracknumber"] = ["1"]
+        f.save()
+        assert flac.stat().st_size < 100_000  # well under 0.15 x uncompressed
+        qt = {"duration": 30.0, "title": "Silent", "track_number": 1}
+        with patch("qobuz_fetch.repair_log.find_qobuz_track_by_isrc", return_value=qt):
+            result = scan_dir_for_isrc_repairs(album, "token")
+        assert result["verified_truncated"] == [], result
+        assert result["verified_ok"] == 1
+
 
 class TestWebScanRepairsNoIsrcRecovery:
     """A damaged file with no readable ISRC can't be surgically refilled, so
