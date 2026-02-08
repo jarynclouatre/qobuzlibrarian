@@ -418,6 +418,16 @@ def process_album(album, args, *, allow_force=True, label=None,
                     return {"result": "skipped_has_extras",
                             "n_total": len(qobuz_tracks),
                             "n_extras": len(extras)}
+            elif qual.get("n_unknown"):
+                # Some on-disk tracks have unreadable bit depth/sample rate, so
+                # we can't confirm the download is actually an upgrade for them.
+                # Refuse the destructive wipe-replace (it could silently
+                # downgrade an unreadable hi-res file) and fill any gaps instead.
+                log.info(fmt(C.YELLOW,
+                    f"\n  ⚠  Can't auto-upgrade — {qual['n_unknown']} track(s) "
+                    f"have unreadable quality and would be replaced unverified; "
+                    f"filling gaps only."))
+                # Fall through to plain gap-fill; do NOT set auto_upgrade_active.
             else:
                 # No extras — auto-upgrade is safe. Build a louder banner with an
                 # explicit before→after quality contrast so the user sees at a

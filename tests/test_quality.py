@@ -112,6 +112,13 @@ class TestCompareAlbumQuality:
         r = compare_album_quality(tracks, self._qalbum(bd=24, sr=96.0))
         assert r["classification"] == "all_equal"
 
+    def test_unreadable_track_surfaced_as_unknown(self):
+        # A track whose quality couldn't be read must be counted (n_unknown), so
+        # the upgrade path can refuse to wipe-replace it unverified.
+        tracks = [{"bits": 16, "sample_rate": 44100}, {"bits": 0, "sample_rate": 0}]
+        r = compare_album_quality(tracks, self._qalbum(bd=24, sr=96.0))
+        assert r["n_unknown"] == 1
+
 
 class TestTrackQualityCmp:
     def test_higher_quality_wins(self):
