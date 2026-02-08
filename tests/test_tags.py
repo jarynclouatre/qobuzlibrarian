@@ -129,6 +129,13 @@ class TestStripAlbumDecorations:
         # `$year - $album/` produces "1971 - Hunky Dory".
         assert strip_album_decorations("1971 - Hunky Dory") == "Hunky Dory"
 
+    def test_keeps_a_title_that_is_a_year(self):
+        # A bare 4-digit title must not be eaten as a year prefix, or owning
+        # "1989" would never suppress "1989 (Deluxe Edition)" in the scan.
+        assert strip_album_decorations("1989 (Deluxe Edition)") == "1989"
+        assert strip_album_decorations("2112 (2012 Remaster)") == "2112"
+        assert strip_album_decorations("1984") == "1984"
+
 
 class TestDownsampleAliasing:
     """The user-facing toggle is "Downsample hi-res before import" — the

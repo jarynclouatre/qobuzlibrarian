@@ -490,3 +490,34 @@ class TestMultiArtistDirLookupBridge:
         assert found is not None
         assert found.name == "Watch The Throne (2011)"
         assert found.parent.name == "Jay Z, Kanye West"
+
+
+class TestDiacriticArtistLookup:
+    """Qobuz and the on-disk folder often disagree on diacritics; the dir
+    lookup must bridge 'Beyoncé'/'Beyonce' or the album reads as missing."""
+
+    def test_ascii_qobuz_resolves_diacritic_folder(self, tmp_path, monkeypatch):
+        from qobuz_fetch import config
+        from qobuz_fetch.library.catalog import find_album_dir_filesystem
+        from qobuz_fetch.library.scanner import clear_scan_caches
+        monkeypatch.setattr(config, "MUSIC_ROOT", tmp_path)
+        (tmp_path / "Motörhead" / "Ace of Spades (1980)").mkdir(parents=True)
+        clear_scan_caches()
+        album = {"id": "X", "artist": {"name": "Motorhead"},
+                 "title": "Ace of Spades", "release_date_original": "1980-11-08"}
+        found = find_album_dir_filesystem(album)
+        clear_scan_caches()
+        assert found is not None and found.parent.name == "Motörhead"
+
+    def test_missing_artist_still_none(self, tmp_path, monkeypatch):
+        from qobuz_fetch import config
+        from qobuz_fetch.library.catalog import find_album_dir_filesystem
+        from qobuz_fetch.library.scanner import clear_scan_caches
+        monkeypatch.setattr(config, "MUSIC_ROOT", tmp_path)
+        (tmp_path / "Motörhead" / "Ace of Spades (1980)").mkdir(parents=True)
+        clear_scan_caches()
+        album = {"id": "X", "artist": {"name": "Some Other Band"},
+                 "title": "Unrelated", "release_date_original": "2020-01-01"}
+        found = find_album_dir_filesystem(album)
+        clear_scan_caches()
+        assert found is None

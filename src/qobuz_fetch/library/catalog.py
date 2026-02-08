@@ -290,6 +290,16 @@ def find_album_dir_filesystem(qobuz_album):
         for ma in _find_multi_artist_dirs(av):
             _push(ma)
 
+    # Diacritics often differ between Qobuz and disk ('Beyoncé' vs 'Beyonce',
+    # 'Motörhead' vs 'Motorhead'); the exact .exists() checks above miss those,
+    # so also take any artist folder whose ASCII-folded name matches. The
+    # per-album title-similarity gate below still guards against a wrong folder.
+    artist_norms = {normalize(av) for av in artist_variants if normalize(av)}
+    if artist_norms and config.MUSIC_ROOT.exists():
+        for d in _list_artist_subdirs_cached(config.MUSIC_ROOT):
+            if normalize(d.name) in artist_norms:
+                _push(d)
+
     global_best, global_best_score = None, 0.0
     for artist_dir in search_dirs:
         vlog(f"scanning artist dir: {artist_dir}")

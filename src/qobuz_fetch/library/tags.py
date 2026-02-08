@@ -168,8 +168,11 @@ _YEAR_PAREN_RE     = re.compile(r"\s*\([^)]*\d{4}[^)]*\)\s*$")
 _TRAILING_PAREN_RE = re.compile(r"\s*\([^)]*\)\s*$")
 # Leading-year forms from alternate beets path templates, e.g.
 # `[$year] $album/` produces "[1971] Hunky Dory"; `$year - $album/`
-# produces "1971 - Hunky Dory".
-_LEADING_YEAR_RE   = re.compile(r"^\s*(?:\[\s*\d{4}\s*\]|\d{4})\s*[-–—]?\s+")
+# produces "1971 - Hunky Dory". A bare year requires a dash separator so a
+# title that simply IS a year ("1989", "2112 (Deluxe)") isn't mistaken for a
+# year prefix and eaten; the bracketed form is unambiguous.
+_LEADING_YEAR_RE   = re.compile(
+    r"^\s*(?:\[\s*\d{4}\s*\]\s*[-–—]?|\d{4}\s*[-–—])\s+")
 
 # Edition keywords to strip from album title suffixes.
 # Deliberately excluded (different products, stay separate):
