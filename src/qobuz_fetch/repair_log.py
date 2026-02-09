@@ -156,10 +156,13 @@ def scan_dir_for_isrc_repairs(album_dir, token,
             # Impossibly small for the claimed duration usually means a tail
             # truncation — but silent / very-quiet material (ambient, classical
             # passages, hidden tracks) legitimately compresses this far and
-            # decodes fine. Confirm with a decode before flagging so a healthy
-            # quiet track isn't re-downloaded; a real truncation fails the read.
+            # decodes fine. When ffmpeg is present, confirm with a decode before
+            # flagging so a healthy quiet track isn't re-downloaded. Without
+            # ffmpeg we can't tell quiet from truncated, so keep the byte flag.
+            # (Short-circuit keeps the decode probe off non-byte-short files.)
             if (actual_size < expected_uncompressed * _BYTE_SIZE_TRUNCATED_RATIO
-                    and path and not _flac_decode_ok(path)):
+                    and not (shutil.which("ffmpeg") is not None
+                             and path and _flac_decode_ok(path))):
                 report["verified_truncated"].append({
                     "path": path,
                     "file_length": flen,
