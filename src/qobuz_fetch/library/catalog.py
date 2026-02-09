@@ -610,11 +610,28 @@ def filter_owned_albums(catalog_pairs, owned_bare_titles):
                 continue
             missing.append((album, n_versions))
             continue
-        is_owned_fuzzy = any(
-            similarity(key, owned) >= config.CONSOLIDATE_THRESH
-            for owned in owned_bare_titles
-        )
-        if is_owned_fuzzy:
+        # Fuzzy fallback for edition variants the stripper didn't fully
+        # normalize. Require the catalog title to be the owned one plus a
+        # suffix (an un-stripped edition tag) AND a nearby year — without those
+        # guards, sequels and numbered entries ('Load'/'Reload', 'Vol 1'/'Vol
+        # 2', 'II'/'III') get silently hidden from the missing list as owned.
+        catalog_yr_str = album_year(album)
+        try:
+            cat_yr = int(catalog_yr_str) if catalog_yr_str else None
+        except ValueError:
+            cat_yr = None
+        owned_fuzzy = False
+        for owned, owned_years in owned_bare_titles.items():
+            if not owned or not (key.startswith(owned) or owned.startswith(key)):
+                continue
+            if similarity(key, owned) < config.CONSOLIDATE_THRESH:
+                continue
+            if (cat_yr is None or None in owned_years
+                    or any(abs(oy - cat_yr) <= 3
+                           for oy in owned_years if oy is not None)):
+                owned_fuzzy = True
+                break
+        if owned_fuzzy:
             continue
         missing.append((album, n_versions))
     return missing

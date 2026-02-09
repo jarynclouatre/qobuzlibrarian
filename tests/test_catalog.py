@@ -209,6 +209,17 @@ class TestFilterOwnedAlbums:
         pairs = [self._pair("Revolver", year=1966)]
         assert len(filter_owned_albums(pairs, {"revolver": [None]})) == 0
 
+    def test_sequel_not_hidden_by_owned_base(self):
+        # Owning 'Load' must not hide the distinct 'Reload' from the missing
+        # list (the fuzzy fallback used to drop it on title similarity alone).
+        pairs = [self._pair("Reload", year=1997)]
+        result = filter_owned_albums(pairs, {"load": [1996]})
+        assert [a["title"] for a, _ in result] == ["Reload"]
+
+    def test_edition_variant_still_dropped(self):
+        pairs = [self._pair("Album (Deluxe Edition)", year=2010)]
+        assert filter_owned_albums(pairs, {"album": [2010]}) == []
+
 
 class TestFilterCompilationAlbums:
     def _album(self, title, artist_name, is_compilation=False):
