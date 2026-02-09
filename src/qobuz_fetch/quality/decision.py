@@ -108,8 +108,8 @@ def _track_quality_cmp(t1, t2):
     Returns 1 if t1 > t2, -1 if t1 < t2, 0 if equal.
     Keyed on (bit_depth, sample_rate) matching --prefer-hires sort order.
     """
-    q1 = (t1.get("bits", 0), t1.get("sample_rate", 0))
-    q2 = (t2.get("bits", 0), t2.get("sample_rate", 0))
+    q1 = (t1.get("bits") or 0, t1.get("sample_rate") or 0)
+    q2 = (t2.get("bits") or 0, t2.get("sample_rate") or 0)
     return (q1 > q2) - (q1 < q2)
 
 

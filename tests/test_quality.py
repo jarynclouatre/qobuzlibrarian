@@ -133,6 +133,13 @@ class TestTrackQualityCmp:
             {"bits": 24, "sample_rate": 96000},
         ) == 0
 
+    def test_none_bits_does_not_crash(self):
+        # A track dict carrying bits=None must not raise on comparison.
+        assert _track_quality_cmp(
+            {"bits": None, "sample_rate": 44100},
+            {"bits": 24, "sample_rate": 96000},
+        ) == -1
+
 
 class TestQualityChangeSummary:
     def _t(self, bits, rate):
