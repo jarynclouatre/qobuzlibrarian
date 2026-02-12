@@ -164,6 +164,12 @@ class TestDedupAlbums:
         result = dedup_albums(albums, prefer_hires=True)
         assert len(result) == 1 and result[0][0]["maximum_bit_depth"] == 24
 
+    def test_non_latin_titles_not_dropped(self):
+        # Pure-CJK titles ASCII-fold to '' — they must still survive dedup as
+        # distinct albums rather than vanish from the missing list.
+        albums = [self._album("東京", 2020), self._album("大阪", 2021)]
+        assert len(dedup_albums(albums)) == 2
+
 
 class TestFilterShortReleases:
     def test_drops_short(self):
@@ -237,6 +243,12 @@ class TestFilterCompilationAlbums:
     def test_drops_explicit_compilation_flag(self):
         pairs = [self._album("Greatest Hits", "The Beatles", is_compilation=True)]
         assert len(filter_compilation_albums(pairs, "The Beatles")) == 0
+
+    def test_optional_the_prefix_still_matches(self):
+        # Library folder 'Beatles' (no 'The') must not make the whole catalog
+        # read as compilations.
+        pairs = [self._album("Abbey Road", "The Beatles")]
+        assert len(filter_compilation_albums(pairs, "Beatles")) == 1
 
 
 class TestDedupAlbumVersions:

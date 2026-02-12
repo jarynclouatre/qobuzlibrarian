@@ -548,7 +548,10 @@ def dedup_albums(albums, prefer_hires=False):
     groups: dict = {}
     for a in albums:
         bare = strip_album_decorations(a.get("title") or "")
-        key_title = normalize(bare)
+        # Pure-CJK / emoji titles normalize to '' (ASCII-fold drops them);
+        # fall back to the raw title so they aren't silently dropped from the
+        # missing list. Only a genuinely empty title is skipped.
+        key_title = normalize(bare) or bare.strip().casefold()
         if not key_title:
             continue
         key = (key_title, album_year_int(a))
@@ -689,7 +692,10 @@ def dedup_album_versions(albums, prefer_hires=False):
     groups = {}
     for a in albums:
         bare = strip_album_decorations(a.get("title") or "")
-        key_title = normalize(bare)
+        # Pure-CJK / emoji titles normalize to '' (ASCII-fold drops them);
+        # fall back to the raw title so they aren't silently dropped from the
+        # missing list. Only a genuinely empty title is skipped.
+        key_title = normalize(bare) or bare.strip().casefold()
         if not key_title:
             continue
         # Include year in the group key. Without this, any trailing
@@ -729,6 +735,15 @@ def dedup_album_versions(albums, prefer_hires=False):
     return representatives
 
 
+def _artist_name_sim(a, b):
+    """Artist-name similarity that treats a leading 'The' as optional, so
+    'The Beatles' and 'Beatles' match."""
+    def _bare(s):
+        s = (s or "").strip()
+        return s[4:].strip() if s[:4].lower() == "the " else s
+    return max(similarity(a, b), similarity(_bare(a), _bare(b)))
+
+
 def filter_compilation_albums(catalog_pairs, artist_name):
     """Drop entries that look like compilations or have a different primary artist."""
     kept = []
@@ -738,7 +753,7 @@ def filter_compilation_albums(catalog_pairs, artist_name):
             continue
         # If the album's primary artist isn't a strong match for the queried
         # artist, it's almost certainly a compilation/various-artists release.
-        if similarity(a_artist, artist_name) < config.ARTIST_NAME_THRESH:
+        if _artist_name_sim(a_artist, artist_name) < config.ARTIST_NAME_THRESH:
             continue
         # Some Qobuz records flag compilations explicitly; honor it when present.
         if album.get("is_compilation") is True:
