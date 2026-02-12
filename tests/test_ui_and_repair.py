@@ -169,6 +169,18 @@ class TestScanDirForIsrcRepairs:
                 result = scan_dir_for_isrc_repairs(tmp_path, "token")
         assert result["verified_ok"] == 1
 
+    def test_corrupt_file_flagged_without_qobuz_duration(self, tmp_path):
+        # No Qobuz duration to compare, but a decode probe still catches an
+        # outright-corrupt file instead of passing it as ok.
+        track = self._make_track(length=0.0)
+        track["path"] = str(tmp_path / "x.flac")
+        qt = {"duration": 0, "title": "T", "track_number": 1}
+        with patch("qobuz_fetch.repair_log.read_album_dir", return_value=[track]), \
+             patch("qobuz_fetch.repair_log.find_qobuz_track_by_isrc", return_value=qt), \
+             patch("qobuz_fetch.repair_log._flac_decode_ok", return_value=False):
+            result = scan_dir_for_isrc_repairs(tmp_path, "token")
+        assert len(result["verified_truncated"]) == 1
+
     def test_no_isrc_entry_records_file_size(self, tmp_path):
         flac_file = tmp_path / "tiny.flac"
         flac_file.write_bytes(b"\x00" * 5_000)

@@ -114,7 +114,7 @@ def scan_dir_for_isrc_repairs(album_dir, token,
             # be obviously broken is almost certainly a damaged download.
             # Surface a friendlier hint so the user knows to hand-verify
             # rather than chasing the bland "skipped — can't verify".
-            if 0 < size_bytes < 50_000:
+            if size_bytes < 50_000:
                 entry["diagnostic"] = (
                     f"likely-corrupted ({size_bytes:,} B); hand-verify "
                     "before refilling")
@@ -133,10 +133,23 @@ def scan_dir_for_isrc_repairs(album_dir, token,
         except (TypeError, ValueError):
             qdur = 0.0
         if qdur <= 0:
-            # Qobuz didn't report a duration; can't compare. Treat as "ok"
-            # rather than fabricate a flag. Real truncations almost always
-            # come with a non-zero Qobuz duration on the matched record.
-            report["verified_ok"] += 1
+            # Qobuz didn't report a duration; the byte/duration gates can't run.
+            # A decode probe is duration-independent, so still catch an
+            # outright-corrupt file rather than passing it as ok. (No-op when
+            # ffmpeg is absent — _flac_decode_ok returns True.)
+            if path and not _flac_decode_ok(path):
+                report["verified_truncated"].append({
+                    "path": path,
+                    "file_length": flen,
+                    "qobuz_track": qt,
+                    "qobuz_duration": qdur,
+                    "isrc": isrc,
+                    "title": qt.get("title") or title,
+                    "track_number": qt.get("track_number") or et.get("tracknumber") or 0,
+                    "reason": "decode_failed",
+                })
+            else:
+                report["verified_ok"] += 1
             continue
 
         # Byte-size sanity gate. flen comes from the FLAC STREAMINFO
