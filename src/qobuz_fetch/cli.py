@@ -289,6 +289,11 @@ def parse_args():
     if args.reset_walk_seen and (args.artist or args.upgrade_walk or args.query):
         p.error("--reset-walk-seen runs on its own (it clears the walk history "
                 "and exits) — run your artist/query/upgrade-walk separately")
+    # An empty --artist (e.g. `--artist "$VAR"` with VAR unset) is falsy, so it
+    # would silently fall through to the interactive menu instead of running
+    # artist mode — confusing in a script. Reject it.
+    if args.artist is not None and not args.artist.strip():
+        p.error("--artist needs an artist name")
     return args
 
 

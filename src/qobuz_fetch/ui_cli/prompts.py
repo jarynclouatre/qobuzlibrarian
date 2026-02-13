@@ -328,8 +328,10 @@ def interactive_query():
         # otherwise the user loses the artist name they just typed.
         while True:
             try:
-                album = input(fmt(C.CYAN, "  Album (blank=search above text, ?=recent): ")).strip()
+                album = input(fmt(C.CYAN, "  Album (blank=search above text, q=cancel, ?=recent): ")).strip()
             except EOFError:
+                return None
+            if album.lower() in ("q", "quit", "exit"):
                 return None
             if album == "?":
                 show_recent_fetches()

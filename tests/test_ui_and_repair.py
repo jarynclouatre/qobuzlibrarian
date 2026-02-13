@@ -48,6 +48,12 @@ class TestInteractiveQueryAdvertisesHelp:
                 assert p.interactive_query() is None
         assert fake_show.call_count == 1
 
+    def test_q_at_album_prompt_cancels(self):
+        # First prompt gets an artist, then 'q' at the Album sub-prompt cancels
+        # (the parent prompt advertises q=cancel).
+        with patch("builtins.input", side_effect=["Radiohead", "q"]):
+            assert interactive_query() is None
+
 
 class TestConfirm:
     def test_auto_yes_returns_true(self):
@@ -462,6 +468,14 @@ class TestParseArgsGuards:
     def test_force_with_artist_rejected(self):
         with pytest.raises(SystemExit):
             self._parse(["--force", "--artist", "Radiohead"])
+
+    def test_empty_artist_rejected(self):
+        # An empty value (e.g. `--artist "$UNSET"`) is falsy and would fall
+        # through to the interactive menu instead of running artist mode.
+        with pytest.raises(SystemExit):
+            self._parse(["--artist", ""])
+        with pytest.raises(SystemExit):
+            self._parse(["--artist", "   "])
 
 
     def test_no_catalog_in_album_mode_rejected(self):
