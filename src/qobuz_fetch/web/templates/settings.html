@@ -41,6 +41,17 @@
   volume not writable) — it won't survive a restart. Check volume
   permissions / <code>PUID</code>/<code>PGID</code>.</span>
 </div>
+{% elif error %}
+<div class="alert alert-warning mb-6"><span>{{ error }}</span></div>
+{% endif %}
+
+{% if mode_changed == "cli" %}
+<div class="alert alert-info mb-6">
+  <span>Handed off to the terminal. Downloads and scans here are paused until
+  you resume the web app below.</span>
+</div>
+{% elif mode_changed == "web" %}
+<div class="alert alert-success mb-6"><span>Web app resumed.</span></div>
 {% endif %}
 
 <!-- Qobuz auth -->
@@ -105,6 +116,46 @@
       </div>
       <div id="auth-status" class="mt-3"></div>
     </form>
+  </div>
+</div>
+
+<!-- Mode -->
+<div class="card bg-base-200 shadow mb-6">
+  <div class="card-body">
+    <h2 class="card-title mb-1">Mode</h2>
+    <p class="text-sm text-base-content/60 mb-3">
+      The web app and the command-line tool can't run at the same time — they
+      share one download lock. Hand control to the terminal here, run your CLI
+      commands ({{ "docker exec -it qobuz-librarian qobuz-librarian" }}), then
+      resume. Downloads in the web UI are paused while the terminal has control.
+    </p>
+    {% if cli_mode %}
+    <div class="flex items-center gap-3 flex-wrap">
+      <span class="badge badge-warning gap-1">Terminal (CLI) mode</span>
+      <span class="text-sm text-base-content/70">Web downloads are paused.</span>
+      <form action="/settings/mode" method="post" class="ml-auto">
+        <input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}">
+        <input type="hidden" name="target" value="web">
+        <button type="submit" class="btn btn-primary btn-sm">Resume web app</button>
+      </form>
+    </div>
+    {% if cli_only_env %}
+    <p class="text-xs text-base-content/50 mt-2">
+      <code>QF_CLI_ONLY</code> is set, so this resets to terminal mode on every
+      restart. Remove it to default to the web app.
+    </p>
+    {% endif %}
+    {% else %}
+    <div class="flex items-center gap-3 flex-wrap">
+      <span class="badge badge-success gap-1">Web app active</span>
+      <span class="text-sm text-base-content/70">The CLI is locked out.</span>
+      <form action="/settings/mode" method="post" class="ml-auto">
+        <input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}">
+        <input type="hidden" name="target" value="cli">
+        <button type="submit" class="btn btn-outline btn-sm">Hand off to terminal</button>
+      </form>
+    </div>
+    {% endif %}
   </div>
 </div>
 

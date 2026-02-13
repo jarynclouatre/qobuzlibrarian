@@ -110,6 +110,14 @@
     </div>
   </nav>
 
+  {% if cli_mode %}
+  <div class="bg-warning text-warning-content px-4 py-2 text-sm text-center">
+    Terminal (CLI) mode is on — downloads and scans here are paused while the
+    terminal has control.
+    <a href="/settings" class="underline font-semibold">Resume web app</a>
+  </div>
+  {% endif %}
+
   <!-- Main content -->
   <main class="container mx-auto px-4 py-6 max-w-5xl flex-1 w-full">
     {% block content %}{% endblock %}

@@ -100,6 +100,14 @@ interactive menu (Album · Artist · three Library-walk variants ·
 Repair · Upgrade), or pass flags for unattended runs — `--help` lists
 them all.
 
+**Web app and CLI take turns.** They share one download lock, so only one
+can run at a time. To use the CLI without stopping the container, open
+**Settings → Mode → Hand off to terminal**; the web UI pauses its downloads
+and hands the lock over. Run your terminal commands
+(`docker exec -it qobuz-librarian qobuz-librarian …`), then click **Resume web
+app**. For a terminal-first box, set `QF_CLI_ONLY=1` so the container always
+starts handed-off (the web UI still serves for browsing and Settings).
+
 ### Download quality
 
 A fresh install downloads at quality `4` — the highest quality Qobuz serves for

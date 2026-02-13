@@ -73,12 +73,12 @@ def acquire_run_lock():
         die(fmt(C.RED,
             f"\n✗  Another Qobuz Librarian run is in progress (pid {busy.pid}).\n"
             f"   Lock file: {cfg.LOCK_FILE}\n\n"
-            f"   The web container is probably holding the lock. Either:\n"
-            f"     1. Use the web UI (http://<host>:{cfg.WEB_PORT}) to queue this download —\n"
-            f"        every CLI mode is also a web action, so nothing is CLI-only.\n"
-            f"     2. Stop the web container first if you really need the CLI:\n"
-            f"          docker compose stop {_svc}\n"
-            f"        Then re-run, then `docker compose start {_svc}`.\n\n"
+            f"   The web app is probably holding the lock. Either:\n"
+            f"     1. In the web UI (http://<host>:{cfg.WEB_PORT}), open Settings → Mode\n"
+            f"        and click 'Hand off to terminal', then re-run this command.\n"
+            f"        (Or just use the web UI — every CLI mode is also a web action.)\n"
+            f"     2. Stop the web container instead:  docker compose stop {_svc}\n"
+            f"        then re-run, then `docker compose start {_svc}`.\n\n"
             f"   Only one writer can use /staging at a time.\n"),
             EXIT_LOCK_BUSY)
 

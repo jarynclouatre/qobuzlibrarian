@@ -35,6 +35,12 @@ _RUN_LOCK_HANDLE = None
 # search, settings view) stay open so the user can still figure out what's
 # going on.
 _LOCK_BUSY_PID = None
+# True when the web app has deliberately released the run-lock so the terminal
+# (CLI) can use it — set by the Settings "Mode" toggle, or at startup when
+# QF_CLI_ONLY is set. Distinct from _LOCK_BUSY_PID (another process grabbed the
+# lock unexpectedly): in CLI mode the web holds no lock on purpose and pauses
+# its own download/scan endpoints so the two can't race over /staging.
+_CLI_MODE = False
 # Tri-state result of the startup token probe. None until the probe runs
 # (or if the network glitched); True if Qobuz accepted the saved token;
 # False if Qobuz returned AuthLost. The dashboard banner only fires on the
@@ -45,7 +51,12 @@ _TOKEN_VALID: bool | None = None
 def _lock_busy_response(request):
     """Return a 503 response if the run-lock is busy OR a critical volume
     was unwritable at startup, else None."""
-    if _LOCK_BUSY_PID is not None:
+    if _CLI_MODE:
+        msg = ("Terminal (CLI) mode is on — the web app has handed the run-lock "
+               "to the terminal, so downloads and scans are paused here. Run "
+               "your CLI commands, then switch back on Settings → Mode "
+               "(Resume web app).")
+    elif _LOCK_BUSY_PID is not None:
         msg = (f"Another Qobuz Librarian instance holds the run-lock "
                f"(pid {_LOCK_BUSY_PID}). Stop that invocation first "
                f"(likely a `docker compose run` CLI session left open), "
@@ -74,8 +85,9 @@ _UNWRITABLE_VOLUMES: list[str] = []
 @asynccontextmanager
 async def _lifespan(_app: FastAPI):
     import logging
+    import os
     import shutil
-    global _RUN_LOCK_HANDLE, _LOCK_BUSY_PID
+    global _RUN_LOCK_HANDLE, _LOCK_BUSY_PID, _CLI_MODE
     _log = logging.getLogger("qobuz_librarian")
     from qobuz_fetch.ui_cli.logging import attach_file_handler
     attach_file_handler(cfg.APP_LOG_FILE, cfg.LOG_LEVEL)
@@ -96,17 +108,28 @@ async def _lifespan(_app: FastAPI):
     # CAN'T acquire it, _LOCK_BUSY_PID is set and every destructive route
     # refuses with 503 — silently continuing without the lock would let
     # two writers race in /staging and corrupt both their downloads.
-    try:
-        _RUN_LOCK_HANDLE = run_lock.acquire()
+    if os.environ.get("QF_CLI_ONLY", "").strip().lower() in ("1", "true", "yes", "on"):
+        # Terminal-first deployment: don't take the lock, so `docker exec ...
+        # qobuz-librarian` always works. The web UI still serves for browsing
+        # and Settings; its download/scan endpoints stay paused until the user
+        # resumes web mode (which lasts until the next restart).
+        _CLI_MODE = True
         _LOCK_BUSY_PID = None
-    except run_lock.LockBusy as busy:
-        _LOCK_BUSY_PID = busy.pid
-        _log.error(
-            "STARTUP: another Qobuz Librarian run holds the lock (pid %s). "
-            "Background task will retry acquisition every 30s; in the "
-            "meantime download/scan endpoints will return 503.",
-            busy.pid,
-        )
+        _log.info("QF_CLI_ONLY set — starting in terminal (CLI) mode; the web "
+                  "app holds no lock and download/scan endpoints are paused.")
+    else:
+        _CLI_MODE = False
+        try:
+            _RUN_LOCK_HANDLE = run_lock.acquire()
+            _LOCK_BUSY_PID = None
+        except run_lock.LockBusy as busy:
+            _LOCK_BUSY_PID = busy.pid
+            _log.error(
+                "STARTUP: another Qobuz Librarian run holds the lock (pid %s). "
+                "Background task will retry acquisition every 30s; in the "
+                "meantime download/scan endpoints will return 503.",
+                busy.pid,
+            )
 
     async def _retry_lock():
         global _RUN_LOCK_HANDLE, _LOCK_BUSY_PID
@@ -270,6 +293,7 @@ def _tr(request, name, context):
         "pending_job_count",
         len(job_mgr.registry.pending_and_running()),
     )
+    context.setdefault("cli_mode", _CLI_MODE)
     return templates.TemplateResponse(request=request, name=name, context=context)
 
 
@@ -903,7 +927,7 @@ def _diagnostics():
 @app.get("/settings", response_class=HTMLResponse)
 async def settings_page(request: Request, saved: bool = False,
                         queued: bool = False, auth: str = "",
-                        error: str = ""):
+                        error: str = "", mode: str = ""):
     from qobuz_fetch.web import settings_store
     creds = _read_creds()
     values = settings_store.current()
@@ -911,10 +935,14 @@ async def settings_page(request: Request, saved: bool = False,
     # via the form is overridden on next process start — let the user know.
     import os
     creds_from_env = bool(os.environ.get("QOBUZ_USER_AUTH_TOKEN"))
+    cli_only_env = os.environ.get("QF_CLI_ONLY", "").strip().lower() in (
+        "1", "true", "yes", "on")
     return _tr(request, "settings.html", {
         "user_id": creds.get("user_id", ""),
         "auth_token_set": bool(creds.get("auth_token")),
         "creds_from_env": creds_from_env,
+        "cli_only_env": cli_only_env,
+        "mode_changed": (mode or "").strip().lower(),
         "saved": saved,
         "queued": queued,
         "auth_check": auth,
@@ -1003,6 +1031,44 @@ async def save_behavior(request: Request):
         return RedirectResponse(url="/settings?error=persist", status_code=303)
     suffix = "&queued=1" if settings_store._any_active_job() else ""
     return RedirectResponse(url=f"/settings?saved=1{suffix}", status_code=303)
+
+
+@app.post("/settings/mode")
+async def set_mode(request: Request, target: str = Form("")):
+    """Hand the run-lock to the terminal (CLI), or take it back for the web.
+
+    Switching to CLI is refused while a download/scan is active — releasing the
+    lock under a running job would let the CLI race the worker over /staging.
+    """
+    global _RUN_LOCK_HANDLE, _LOCK_BUSY_PID, _CLI_MODE
+    from qobuz_fetch import run_lock
+    want = (target or "").strip().lower()
+    if want == "cli":
+        if job_mgr.registry.pending_and_running():
+            return RedirectResponse(url="/settings?error=" + urllib.parse.quote(
+                "Finish or cancel the active download before handing off to the "
+                "terminal."), status_code=303)
+        if _RUN_LOCK_HANDLE is not None:
+            try:
+                _RUN_LOCK_HANDLE.close()  # closing the handle releases the flock
+            except OSError:
+                pass
+            _RUN_LOCK_HANDLE = None
+        _CLI_MODE = True
+        _LOCK_BUSY_PID = None
+        return RedirectResponse(url="/settings?mode=cli", status_code=303)
+    if want == "web":
+        try:
+            _RUN_LOCK_HANDLE = run_lock.acquire()
+            _CLI_MODE = False
+            _LOCK_BUSY_PID = None
+            return RedirectResponse(url="/settings?mode=web", status_code=303)
+        except run_lock.LockBusy:
+            # A CLI session still holds the lock — can't take it back yet.
+            return RedirectResponse(url="/settings?error=" + urllib.parse.quote(
+                "The terminal is still using it — finish your CLI command, then "
+                "resume."), status_code=303)
+    return RedirectResponse(url="/settings", status_code=303)
 
 
 @app.post("/api/test-auth", response_class=HTMLResponse)

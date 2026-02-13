@@ -1706,3 +1706,51 @@ def test_search_rejects_non_qobuz_cover_url(client, monkeypatch):
                     headers={"HX-Request": "true"})
     assert r.status_code == 200
     assert "evil.example" not in r.text
+
+
+# ── CLI/web mode hand-off ───────────────────────────────────────────────────────
+
+
+def test_mode_handoff_to_cli_pauses_web_downloads(client, monkeypatch):
+    import qobuz_fetch.web.app as app_mod
+    # No active job (the registry is a shared singleton across tests).
+    monkeypatch.setattr(app_mod.job_mgr.registry, "pending_and_running",
+                        lambda: [])
+    r = client.post("/settings/mode", data={"target": "cli"},
+                    follow_redirects=False)
+    assert r.status_code == 303 and r.headers["location"] == "/settings?mode=cli"
+    assert app_mod._CLI_MODE is True
+    # The banner shows everywhere, and download/scan endpoints are paused.
+    assert "Terminal (CLI) mode" in client.get("/").text
+    blocked = client.post("/download", data={"album_id": "123"},
+                          follow_redirects=False)
+    assert blocked.status_code == 503 and "Terminal (CLI) mode" in blocked.text
+    # Resume restores web mode.
+    back = client.post("/settings/mode", data={"target": "web"},
+                       follow_redirects=False)
+    assert back.status_code == 303 and back.headers["location"] == "/settings?mode=web"
+    assert app_mod._CLI_MODE is False
+
+
+def test_mode_handoff_refused_while_a_job_is_active(client, monkeypatch):
+    import qobuz_fetch.web.app as app_mod
+    monkeypatch.setattr(app_mod.job_mgr.registry, "pending_and_running",
+                        lambda: [object()])
+    r = client.post("/settings/mode", data={"target": "cli"},
+                    follow_redirects=False)
+    assert r.status_code == 303 and "error=" in r.headers["location"]
+    assert app_mod._CLI_MODE is False
+
+
+def test_qf_cli_only_env_starts_in_cli_mode(monkeypatch):
+    monkeypatch.setenv("QF_CLI_ONLY", "1")
+    from fastapi.testclient import TestClient
+
+    import qobuz_fetch.web.app as app_mod
+    with TestClient(app_mod.app) as c:
+        assert app_mod._CLI_MODE is True
+        c.get("/")
+        tok = c.cookies.get("qf_csrf")
+        r = c.post("/download", data={"album_id": "x", "_csrf_token": tok},
+                   headers={"X-CSRF-Token": tok}, follow_redirects=False)
+        assert r.status_code == 503 and "Terminal (CLI) mode" in r.text

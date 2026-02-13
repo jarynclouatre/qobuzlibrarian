@@ -65,6 +65,10 @@ services:
       # Refuse downloads/scans at startup if /music or /staging aren't writable
       # by the container user (typical on a NAS with the wrong PUID/PGID).
       QF_CHECK_VOLUMES: "1"
+      # Terminal-first mode: set QF_CLI_ONLY=1 in .env to start handed-off to
+      # the CLI (web UI serves but its downloads stay paused). Empty = web app.
+      # Or hand off case-by-case from Settings → Mode in the web UI.
+      QF_CLI_ONLY: "${QF_CLI_ONLY:-}"
       # Optional: shell command run after every terminal job. The job state
       # (id/status/title/artist/error/finished_at) is piped to it as JSON on
       # stdin. Useful for desktop notifications, ntfy/Apprise, etc.
