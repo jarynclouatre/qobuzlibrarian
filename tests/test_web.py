@@ -1754,3 +1754,24 @@ def test_qf_cli_only_env_starts_in_cli_mode(monkeypatch):
         r = c.post("/download", data={"album_id": "x", "_csrf_token": tok},
                    headers={"X-CSRF-Token": tok}, follow_redirects=False)
         assert r.status_code == 503 and "Terminal (CLI) mode" in r.text
+
+
+def test_settings_save_requires_user_id_with_token(client, monkeypatch):
+    """A token with no user id passes the API probe and the Test button, but
+    streamrip's login() and load_qobuz_token() both require the user id — so
+    the save must refuse instead of writing a config that tests green yet
+    fails with 'no credentials' on the first search."""
+    import qobuz_librarian.web.app as app_mod
+
+    monkeypatch.delenv("QOBUZ_USER_AUTH_TOKEN", raising=False)
+    monkeypatch.setattr(app_mod, "_read_creds", lambda: {})
+    wrote = []
+    monkeypatch.setattr(app_mod, "_write_creds",
+                        lambda uid, tok: wrote.append((uid, tok)) or True)
+
+    r = client.post("/settings",
+                    data={"user_id": "", "auth_token": "a-real-looking-token"},
+                    follow_redirects=False)
+    assert r.status_code == 303
+    assert "error=needuser" in r.headers["location"]
+    assert wrote == []

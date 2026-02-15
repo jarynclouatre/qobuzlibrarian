@@ -978,6 +978,16 @@ async def save_settings(request: Request, user_id: str = Form(""), auth_token: s
         return RedirectResponse(url="/settings?saved=1", status_code=303)
     new_token = auth_token.strip() or existing.get("auth_token", "")
     new_uid = user_id.strip() or existing.get("user_id", "")
+    # Both fields are mandatory. The token authenticates our API calls on its
+    # own, so the save-time probe below (and the Test button) pass with just a
+    # token — but load_qobuz_token() and streamrip's login() both require the
+    # user id, so a token-only save would look saved and test green yet fail
+    # with "no credentials" on the first search, and downloads would raise
+    # MissingCredentialsError. Refuse a half-config and name the missing field.
+    if new_token and not new_uid:
+        return RedirectResponse(url="/settings?error=needuser", status_code=303)
+    if new_uid and not new_token:
+        return RedirectResponse(url="/settings?error=empty", status_code=303)
     ok = _write_creds(new_uid, new_token)
     if not ok:
         return RedirectResponse(url="/settings?error=creds", status_code=303)

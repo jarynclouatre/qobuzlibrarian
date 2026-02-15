@@ -35,6 +35,11 @@
   → <code>token</code>), or set
   <code>QOBUZ_USER_AUTH_TOKEN</code> in your environment.</span>
 </div>
+{% elif error == "needuser" %}
+<div class="alert alert-warning mb-6">
+  <span>Add your User ID / Email as well — a token on its own isn't enough
+  to use the app. Fill in both fields, then save.</span>
+</div>
 {% elif error == "persist" %}
 <div class="alert alert-warning mb-6">
   <span>Applied for this session, but couldn't be saved to disk (data
