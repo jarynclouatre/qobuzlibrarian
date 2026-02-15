@@ -18,13 +18,13 @@ import pytest
 def _isolate_data_dir():
     """Point cfg.DATA_DIR and the files derived from it at a temp dir for
     the test session, so tests don't pollute the dev machine's HOME."""
-    from qobuz_fetch import config as cfg
+    from qobuz_librarian import config as cfg
 
     tmp_root = Path(tempfile.mkdtemp(prefix="qobuz-librarian-tests-"))
     cfg.DATA_DIR = tmp_root
 
     # Re-derive every path that was built off DATA_DIR at import time.
-    cfg.FETCH_LOG_FILE       = tmp_root / ".qobuz_fetch_log.json"
+    cfg.FETCH_LOG_FILE       = tmp_root / ".qobuz_librarian_log.json"
     cfg.WALK_SEEN_FILE       = tmp_root / ".qobuz_walk_seen.txt"
     cfg.ALBUM_WALK_SEEN_FILE = tmp_root / ".qobuz_album_walk_seen.txt"
     cfg.PENDING_QUEUE_FILE   = tmp_root / ".qobuz_pending_queue.json"
@@ -48,4 +48,4 @@ def _fast_qobuz_retries(monkeypatch):
     exponential backoff. In tests that's pure dead time — patch the
     indirection to a no-op so the suite stays fast. (Don't patch
     time.sleep globally; other modules sleep too.)"""
-    monkeypatch.setattr("qobuz_fetch.api.client._retry_sleep", lambda *_: None)
+    monkeypatch.setattr("qobuz_librarian.api.client._retry_sleep", lambda *_: None)

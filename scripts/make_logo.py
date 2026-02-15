@@ -4,8 +4,8 @@
 Run:  python scripts/make_logo.py
 Outputs (committed, so the tool ships with its branding):
   assets/logo.png                       full horizontal lockup (README)
-  src/qobuz_fetch/web/static/logo.png   same lockup (web UI navbar)
-  src/qobuz_fetch/web/static/icon.png   icon only (favicon)
+  src/qobuz_librarian/web/static/logo.png   same lockup (web UI navbar)
+  src/qobuz_librarian/web/static/icon.png   icon only (favicon)
 
 The logo is rendered at 4x and downsampled for clean antialiasing.
 Requires Pillow (dev-only; not a runtime dependency).
@@ -120,11 +120,11 @@ def build():
         print(f"wrote {path.relative_to(ROOT)} ({w}x{h})")
 
     save(img, ROOT / "assets" / "logo.png", 1100)
-    save(img, ROOT / "src/qobuz_fetch/web/static/logo.png", 880)
+    save(img, ROOT / "src/qobuz_librarian/web/static/logo.png", 880)
 
     icon = tile.resize((512, 512), Image.LANCZOS)
-    icon.save(ROOT / "src/qobuz_fetch/web/static/icon.png")
-    print("wrote src/qobuz_fetch/web/static/icon.png (512x512)")
+    icon.save(ROOT / "src/qobuz_librarian/web/static/icon.png")
+    print("wrote src/qobuz_librarian/web/static/icon.png (512x512)")
 
 
 if __name__ == "__main__":

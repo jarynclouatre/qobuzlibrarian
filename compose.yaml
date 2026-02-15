@@ -64,11 +64,11 @@ services:
       WEB_PORT: "8666"
       # Refuse downloads/scans at startup if /music or /staging aren't writable
       # by the container user (typical on a NAS with the wrong PUID/PGID).
-      QF_CHECK_VOLUMES: "1"
-      # Terminal-first mode: set QF_CLI_ONLY=1 in .env to start handed-off to
+      QL_CHECK_VOLUMES: "1"
+      # Terminal-first mode: set QL_CLI_ONLY=1 in .env to start handed-off to
       # the CLI (web UI serves but its downloads stay paused). Empty = web app.
       # Or hand off case-by-case from Settings → Mode in the web UI.
-      QF_CLI_ONLY: "${QF_CLI_ONLY:-}"
+      QL_CLI_ONLY: "${QL_CLI_ONLY:-}"
       # Optional: shell command run after every terminal job. The job state
       # (id/status/title/artist/error/finished_at) is piped to it as JSON on
       # stdin. Useful for desktop notifications, ntfy/Apprise, etc.
@@ -136,22 +136,22 @@ services:
       # Per-request timeout (seconds) for the web UI's Qobuz API calls.
       # WEB_FETCH_TIMEOUT bounds album/track fetches and the search box;
       # WEB_TEST_AUTH_TIMEOUT bounds the startup + Settings token probe.
-      QF_WEB_FETCH_TIMEOUT:     "${QF_WEB_FETCH_TIMEOUT:-12.0}"
-      QF_WEB_TEST_AUTH_TIMEOUT: "${QF_WEB_TEST_AUTH_TIMEOUT:-8.0}"
+      QL_WEB_FETCH_TIMEOUT:     "${QL_WEB_FETCH_TIMEOUT:-12.0}"
+      QL_WEB_TEST_AUTH_TIMEOUT: "${QL_WEB_TEST_AUTH_TIMEOUT:-8.0}"
 
     volumes:
       # Host paths come from a .env file (see .env.example). Defaults to
       # ./music, ./staging, ./upgrade_backups so a fresh clone runs as-is.
       # Music library (read-write so beets can move files in)
-      - ${QF_MUSIC_DIR:-./music}:/music
+      - ${QL_MUSIC_DIR:-./music}:/music
       # Staging area for streamrip downloads
-      - ${QF_STAGING_DIR:-./staging}:/staging
+      - ${QL_STAGING_DIR:-./staging}:/staging
       # Persistent config: beets db, streamrip config, app state
       - qobuz-librarian-config:/config
       # App data: fetch log, queue persistence, repair log
       - qobuz-librarian-data:/data
       # Upgrade backups
-      - ${QF_UPGRADE_BACKUPS:-./upgrade_backups}:/upgrade_backups
+      - ${QL_UPGRADE_BACKUPS:-./upgrade_backups}:/upgrade_backups
 
 volumes:
   qobuz-librarian-config:

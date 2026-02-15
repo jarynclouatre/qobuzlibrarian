@@ -1,0 +1,262 @@
+{% extends "base.html" %}
+{% block title %}Settings — Qobuz Librarian{% endblock %}
+{% block content %}
+
+<h1 class="text-2xl font-bold mb-6">Settings</h1>
+
+{% if saved %}
+{% if auth_check == "bad" %}
+<div class="alert alert-warning mb-6">
+  <span>Saved — but the token didn't authenticate against Qobuz.
+    Double-check the <code>user_auth_token</code> from play.qobuz.com — dev
+    tools → Application → Local Storage → the <code>localuser</code> entry's
+    <code>token</code>.</span>
+</div>
+{% else %}
+<div class="alert {% if queued %}alert-info{% else %}alert-success{% endif %} mb-6">
+  <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
+  </svg>
+  <span>{% if queued %}Saved. Takes effect after the current job finishes.{% else %}Settings saved.{% endif %}</span>
+</div>
+{% endif %}
+{% endif %}
+
+{% if error == "creds" %}
+<div class="alert alert-error mb-6">
+  <span>Couldn't write credentials — the config volume isn't writable.
+  On a NAS, set <code>PUID</code>/<code>PGID</code> and grant that user
+  write access to the config volume.</span>
+</div>
+{% elif error == "empty" %}
+<div class="alert alert-warning mb-6">
+  <span>Token can't be empty — paste the <code>user_auth_token</code> from
+  play.qobuz.com (dev tools → Application → Local Storage → <code>localuser</code>
+  → <code>token</code>), or set
+  <code>QOBUZ_USER_AUTH_TOKEN</code> in your environment.</span>
+</div>
+{% elif error == "persist" %}
+<div class="alert alert-warning mb-6">
+  <span>Applied for this session, but couldn't be saved to disk (data
+  volume not writable) — it won't survive a restart. Check volume
+  permissions / <code>PUID</code>/<code>PGID</code>.</span>
+</div>
+{% elif error %}
+<div class="alert alert-warning mb-6"><span>{{ error }}</span></div>
+{% endif %}
+
+{% if mode_changed == "cli" %}
+<div class="alert alert-info mb-6">
+  <span>Handed off to the terminal. Downloads and scans here are paused until
+  you resume the web app below.</span>
+</div>
+{% elif mode_changed == "web" %}
+<div class="alert alert-success mb-6"><span>Web app resumed.</span></div>
+{% endif %}
+
+<!-- Qobuz auth -->
+<div class="card bg-base-200 shadow mb-6">
+  <div class="card-body">
+    <h2 class="card-title mb-1">Qobuz authentication</h2>
+    <p class="text-sm text-base-content/60 mb-4">
+      Your credentials are stored in the container's config volume and never leave your server.
+      To find your auth token: sign in at play.qobuz.com, open dev tools (F12) →
+      Application → Local Storage → play.qobuz.com, and copy the
+      <code>localuser</code> entry's <code>token</code>.
+    </p>
+
+    {% if creds_from_env %}
+    <div class="alert alert-info mb-4">
+      <span>
+        Credentials are being provided by the <code>QOBUZ_USER_AUTH_TOKEN</code> environment
+        variable (set in <code>compose.yaml</code> or <code>.env</code>). Anything you save
+        here is written to the streamrip config file but will be overridden on the next
+        container restart. Unset the env var to manage credentials from this page.
+      </span>
+    </div>
+    {% endif %}
+
+    <form action="/settings" method="post">
+      <input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}">
+      <div class="form-control mb-4">
+        <label class="label"><span class="label-text">User ID / Email</span></label>
+        <input type="text" name="user_id" value="{{ user_id or '' }}"
+               placeholder="your@email.com or numeric user ID"
+               class="input input-bordered w-full max-w-lg">
+      </div>
+      <div class="form-control mb-4">
+        <label class="label flex-wrap gap-2">
+          <span class="label-text">Auth Token</span>
+          {% if auth_token_set %}
+          <span class="label-text-alt text-success whitespace-nowrap">Token is set — leave blank to keep</span>
+          {% endif %}
+        </label>
+        <input type="password" name="auth_token"
+               aria-label="Qobuz auth token"
+               autocomplete="off" autocorrect="off" spellcheck="false"
+               placeholder="{% if auth_token_set %}•••••••• (paste a new token to replace){% else %}paste user_auth_token here{% endif %}"
+               class="input input-bordered w-full max-w-lg font-mono text-base sm:text-sm">
+        <label class="label">
+          <span class="label-text-alt text-base-content/40">
+            This is the <code>password_or_token</code> field in streamrip's config — a long string, not your password.
+          </span>
+        </label>
+      </div>
+
+      <div class="flex gap-3 flex-wrap">
+        <button type="button" class="btn btn-ghost"
+                hx-post="/api/test-auth" hx-target="#auth-status" hx-swap="innerHTML"
+                hx-include="closest form"
+                hx-indicator="#auth-test-spinner"
+                data-scroll-target="#auth-status">
+          <span id="auth-test-spinner" class="loading loading-spinner loading-sm htmx-indicator"></span>
+          Test token
+        </button>
+        <button type="submit" class="btn btn-primary">Save credentials</button>
+      </div>
+      <div id="auth-status" class="mt-3"></div>
+    </form>
+  </div>
+</div>
+
+<!-- Mode -->
+<div class="card bg-base-200 shadow mb-6">
+  <div class="card-body">
+    <h2 class="card-title mb-1">Mode</h2>
+    <p class="text-sm text-base-content/60 mb-3">
+      The web app and the command-line tool can't run at the same time — they
+      share one download lock. Hand control to the terminal here, run your CLI
+      commands ({{ "docker exec -it qobuz-librarian qobuz-librarian" }}), then
+      resume. Downloads in the web UI are paused while the terminal has control.
+    </p>
+    {% if cli_mode %}
+    <div class="flex items-center gap-3 flex-wrap">
+      <span class="badge badge-warning gap-1">Terminal (CLI) mode</span>
+      <span class="text-sm text-base-content/70">Web downloads are paused.</span>
+      <form action="/settings/mode" method="post" class="ml-auto">
+        <input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}">
+        <input type="hidden" name="target" value="web">
+        <button type="submit" class="btn btn-primary btn-sm">Resume web app</button>
+      </form>
+    </div>
+    {% if cli_only_env %}
+    <p class="text-xs text-base-content/50 mt-2">
+      <code>QL_CLI_ONLY</code> is set, so this resets to terminal mode on every
+      restart. Remove it to default to the web app.
+    </p>
+    {% endif %}
+    {% else %}
+    <div class="flex items-center gap-3 flex-wrap">
+      <span class="badge badge-success gap-1">Web app active</span>
+      <span class="text-sm text-base-content/70">The CLI is locked out.</span>
+      <form action="/settings/mode" method="post" class="ml-auto">
+        <input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}">
+        <input type="hidden" name="target" value="cli">
+        <button type="submit" class="btn btn-outline btn-sm">Hand off to terminal</button>
+      </form>
+    </div>
+    {% endif %}
+  </div>
+</div>
+
+<!-- Behaviour -->
+<div class="card bg-base-200 shadow mb-6">
+  <div class="card-body">
+    <h2 class="card-title mb-1">Behaviour</h2>
+    <p class="text-sm text-base-content/60 mb-4">
+      These take effect on the next job — no restart needed. They override the
+      defaults from <code>compose.yaml</code>.
+    </p>
+    <form action="/settings/behavior" method="post">
+      <input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}">
+      <input type="hidden" name="form_complete" value="1">
+      <div class="space-y-4 mb-5">
+        {% for key, label, help in behavior_fields %}
+        <div class="flex items-start gap-3">
+          <input type="checkbox" name="{{ key }}"
+                 class="toggle toggle-primary mt-1"
+                 {% if behavior[key] %}checked{% endif %}>
+          <div>
+            <div class="font-medium">{{ label }}</div>
+            <div class="text-sm text-base-content/50">{{ help }}</div>
+          </div>
+        </div>
+        {% endfor %}
+      </div>
+
+      <div class="divider text-base-content/30 text-xs">Details</div>
+
+      <div class="space-y-4 mb-5">
+        {% for key, label, help, kind, choices, placeholder in text_fields %}
+        <div class="form-control">
+          <label class="label py-1"><span class="label-text font-medium">{{ label }}</span></label>
+          {% if kind == 'enum' %}
+          <select name="{{ key }}" class="select select-bordered max-w-xs text-base sm:select-sm sm:text-xs">
+            {% for c in choices %}
+            <option value="{{ c }}" {% if behavior[key] == c %}selected{% endif %}>{{ (option_labels|default({})).get(key, {}).get(c, c) }}</option>
+            {% endfor %}
+          </select>
+          {% else %}
+          <input type="text" name="{{ key }}" value="{{ behavior[key] }}"
+                 placeholder="{{ placeholder }}"
+                 class="input input-bordered w-full max-w-lg font-mono text-base sm:input-sm sm:text-xs">
+          {% endif %}
+          <label class="label py-0"><span class="label-text-alt text-base-content/50">{{ help }}</span></label>
+        </div>
+        {% endfor %}
+      </div>
+
+      <button type="submit" class="btn btn-primary">Save behaviour</button>
+    </form>
+  </div>
+</div>
+
+<!-- Paths (read-only info) -->
+<div class="card bg-base-200 shadow mb-6">
+  <div class="card-body">
+    <h2 class="card-title mb-3">Container paths</h2>
+    <p class="text-sm text-base-content/60 mb-3">
+      Where the container reads and writes inside its own filesystem.
+      The defaults work for a normal Docker install — only worth touching
+      if you've changed the bind mounts in <code>compose.yaml</code>. A
+      restart is required after editing.
+    </p>
+    <dl class="grid grid-cols-1 sm:grid-cols-[max-content_1fr] gap-x-4 gap-y-2 text-xs font-mono">
+      <dt class="text-base-content/60">MUSIC_ROOT</dt>
+      <dd class="break-all">{{ music_root }}</dd>
+      <dt class="text-base-content/60">STAGING_DIR</dt>
+      <dd class="break-all">{{ staging_dir }}</dd>
+      <dt class="text-base-content/60">BEETS_DB_PATH</dt>
+      <dd class="break-all">{{ beets_db }}</dd>
+      <dt class="text-base-content/60">STREAMRIP_CONFIG</dt>
+      <dd class="break-all">{{ streamrip_config }}</dd>
+    </dl>
+  </div>
+</div>
+
+<div class="card bg-base-200 shadow mb-6">
+  <div class="card-body">
+    <h2 class="card-title mb-1">Diagnostics</h2>
+    <p class="text-sm text-base-content/60 mb-3">
+      Read-only checks from the container's point of view. Run these
+      before your first scan to catch an unmounted or unwritable volume.
+    </p>
+    <div class="space-y-2">
+      {% for d in diagnostics %}
+      <div class="flex items-start gap-3 flex-wrap sm:flex-nowrap">
+        <span class="shrink-0 mt-0.5">
+          {% if d.ok %}
+          <span class="badge badge-sm badge-success">✓</span>
+          {% else %}
+          <span class="badge badge-sm badge-error">✗</span>
+          {% endif %}
+        </span>
+        <span class="text-sm shrink-0">{{ d.label }}</span>
+        <span class="font-mono text-xs text-base-content/60 break-all min-w-0 sm:ml-auto">{{ d.detail }}</span>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+</div>
+
+{% endblock %}

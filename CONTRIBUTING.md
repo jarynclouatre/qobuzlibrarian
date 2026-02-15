@@ -9,7 +9,7 @@ Open an issue with:
 
 - What you ran (CLI flags, the URL/album you fed it, or which web page).
 - What happened, what you expected.
-- A relevant chunk of the log. The fetch log lives at `/data/.qobuz_fetch_log.json`
+- A relevant chunk of the log. The fetch log lives at `/data/.qobuz_librarian_log.json`
   inside the container; the Docker log (`docker compose logs qobuz-librarian`)
   is also useful.
 - Container or pipx install, and your `docker compose version` / Python version.
@@ -63,7 +63,7 @@ requires `Pillow`; run it outside the container.
 `conftest.py` fixture that redirects `DATA_DIR` won't redirect `MUSIC_ROOT`
 — any test that resolves a path relative to `MUSIC_ROOT` may touch real
 files. The safe workaround is to run tests in a fresh shell where
-`QF_MUSIC_ROOT` is not set and no `/music` directory is present.
+`QL_MUSIC_ROOT` is not set and no `/music` directory is present.
 
 ## Behavioral changes
 

@@ -105,7 +105,7 @@ can run at a time. To use the CLI without stopping the container, open
 **Settings → Mode → Hand off to terminal**; the web UI pauses its downloads
 and hands the lock over. Run your terminal commands
 (`docker exec -it qobuz-librarian qobuz-librarian …`), then click **Resume web
-app**. For a terminal-first box, set `QF_CLI_ONLY=1` so the container always
+app**. For a terminal-first box, set `QL_CLI_ONLY=1` so the container always
 starts handed-off (the web UI still serves for browsing and Settings).
 
 ### Download quality
@@ -160,7 +160,7 @@ mkdir qobuz-librarian && cd qobuz-librarian
 curl -O https://raw.githubusercontent.com/jarynclouatre/qobuz-librarian/main/compose.yaml
 curl -O https://raw.githubusercontent.com/jarynclouatre/qobuz-librarian/main/.env.example
 cp .env.example .env
-# edit .env — at minimum point QF_MUSIC_DIR at your music folder
+# edit .env — at minimum point QL_MUSIC_DIR at your music folder
 # (see Configuration below for the full list of variables)
 docker compose up -d
 ```
@@ -224,9 +224,9 @@ Host paths and the web port are read from a gitignored `.env` file. Copy
 
 | Variable             | Default             | Purpose                                |
 |----------------------|---------------------|----------------------------------------|
-| `QF_MUSIC_DIR`       | `./music`           | Music library; beets imports into this |
-| `QF_STAGING_DIR`     | `./staging`         | Scratch space for in-progress downloads|
-| `QF_UPGRADE_BACKUPS` | `./upgrade_backups` | Backups taken before a quality upgrade  |
+| `QL_MUSIC_DIR`       | `./music`           | Music library; beets imports into this |
+| `QL_STAGING_DIR`     | `./staging`         | Scratch space for in-progress downloads|
+| `QL_UPGRADE_BACKUPS` | `./upgrade_backups` | Backups taken before a quality upgrade  |
 | `WEB_PORT`           | `8666`              | Host port for the web UI               |
 
 These four variables are read by Docker Compose on the **host** — they set
@@ -242,7 +242,7 @@ working default you can override.
 
 Advanced thresholds (fuzzy-match cutoffs, retention windows,
 `POST_JOB_HOOK`) live in the `compose.yaml` env block; see
-`src/qobuz_fetch/config.py` for what each does. `POST_JOB_HOOK` runs your
+`src/qobuz_librarian/config.py` for what each does. `POST_JOB_HOOK` runs your
 command in a shell — only set it to a command you trust.
 
 ### Lyrics & download quality
@@ -308,7 +308,7 @@ Hidden directories (`startswith(".")`) and the staging dir are skipped.
 Layouts it won't detect: flat (`/music/<track>.flac`) or extra-nested
 (`/music/<Genre>/<Artist>/…`, `/music/<Artist>/<Year>/<Album>/…`) — anything
 that isn't exactly artist directory, then album directory. Set
-`QF_MUSIC_DIR` in your `.env` to point at the artist-level directory on
+`QL_MUSIC_DIR` in your `.env` to point at the artist-level directory on
 the host.
 
 ## Bringing your existing beets database
@@ -471,10 +471,10 @@ The CLI honours the same `.env` and `compose.yaml` settings as the web UI.
 | Symptom | Likely cause / next step |
 |---------|--------------------------|
 | `Another Qobuz Librarian run is in progress` | Web container holds the lock — use the web UI, or `docker compose stop qobuz-librarian` for CLI. |
-| `MUSIC_ROOT missing or inaccessible` | Bind mount unset or wrong path — check `QF_MUSIC_DIR` in `.env` and that the host path exists. |
-| Container exits immediately on `docker compose up` | `.env` missing from the compose dir, or a required `QF_*` var is unset. `docker compose logs qobuz-librarian` shows which. |
+| `MUSIC_ROOT missing or inaccessible` | Bind mount unset or wrong path — check `QL_MUSIC_DIR` in `.env` and that the host path exists. |
+| Container exits immediately on `docker compose up` | `.env` missing from the compose dir, or a required `QL_*` var is unset. `docker compose logs qobuz-librarian` shows which. |
 | `Volume not writable` (Settings → Diagnostics shows FAIL) | `PUID`/`PGID` don't match the host owner of the bind mount — `chown -R $(id -u):$(id -g) ./music ./staging` or set `PUID`/`PGID` in `.env`. |
-| Web UI loads but Library scan says "no artist folders found" | `/music` is mounted at an empty directory or one level off — make sure `QF_MUSIC_DIR` points at the artist-level folder, not the parent. |
+| Web UI loads but Library scan says "no artist folders found" | `/music` is mounted at an empty directory or one level off — make sure `QL_MUSIC_DIR` points at the artist-level folder, not the parent. |
 | Token rejected (Settings → Test) | Token expired, copied with surrounding quotes, or pasted with trailing whitespace — re-grab it from play.qobuz.com (dev tools → Application → Local Storage → `localuser` → `token`), paste clean. |
 | Download stalls in "Importing into beets…" | A beets plugin is loaded without its required config block (e.g. lastgenre API key, replaygain backend). Disable it via `BEETS_PLUGINS` or add the block to `/config/beets/config.yaml`. |
 | `docker compose pull` 404 | Image hasn't been published under that tag yet — build from source (see [Building from source](#building-from-source)). |
@@ -501,7 +501,7 @@ get on a fresh `docker compose up -d`:
   `frame-ancestors 'none'` and no `unsafe-eval`, HSTS on HTTPS only.
 - `--no-server-header` plus a middleware strip — uvicorn isn't
   advertised in responses.
-- `QF_CHECK_VOLUMES=1` at startup blocks write endpoints with 503 if
+- `QL_CHECK_VOLUMES=1` at startup blocks write endpoints with 503 if
   `/staging` or `/music` aren't writable, so the container fails
   loudly on a wrong PUID/PGID instead of silently mis-owned files.
 

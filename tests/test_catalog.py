@@ -4,7 +4,7 @@ from unittest.mock import patch
 
 import pytest
 
-from qobuz_fetch.library.catalog import (
+from qobuz_librarian.library.catalog import (
     _has_separator_match,
     _is_migration_candidate,
     _is_multi_artist_subset,
@@ -30,7 +30,7 @@ def _qt(title, isrc="", mbid="", disc=1, **kw):
 
 
 def _et(title, isrc="", mb_trackid="", disc=1, **kw):
-    from qobuz_fetch.library.tags import normalize
+    from qobuz_librarian.library.tags import normalize
     return {"title": title, "isrc": isrc, "mb_trackid": mb_trackid,
             "discnumber": disc, "normalized": normalize(title), **kw}
 
@@ -373,7 +373,7 @@ class TestFindExpandedEdition:
     def test_ranking_prefers_quality_when_extras_tied(self, tmp_path):
         from types import SimpleNamespace  # noqa: PLC0415
 
-        from qobuz_fetch.library.catalog import find_expanded_edition
+        from qobuz_librarian.library.catalog import find_expanded_edition
 
         existing = [
             self._et("ISRC001", "Track 1"),
@@ -387,9 +387,9 @@ class TestFindExpandedEdition:
         cand_redbook = self._make_album(
             "redbook", "Test Artist", "Test Album", 16, 44.1, orig_tracks)
 
-        with patch("qobuz_fetch.library.catalog.search_albums",
+        with patch("qobuz_librarian.library.catalog.search_albums",
                    return_value=[cand_hires, cand_redbook]), \
-             patch("qobuz_fetch.library.catalog.get_album",
+             patch("qobuz_librarian.library.catalog.get_album",
                    side_effect=lambda aid, tok: cand_hires if aid == "hires" else cand_redbook):
             results = find_expanded_edition(album, tmp_path, existing, "tok",
                                             SimpleNamespace())
@@ -402,7 +402,7 @@ class TestFindExpandedEdition:
         """A candidate that drops zero extras ranks before one that drops one."""
         from types import SimpleNamespace  # noqa: PLC0415
 
-        from qobuz_fetch.library.catalog import find_expanded_edition
+        from qobuz_librarian.library.catalog import find_expanded_edition
 
         existing = [
             self._et("ISRC001", "Track 1"),
@@ -418,9 +418,9 @@ class TestFindExpandedEdition:
         full_b_tracks = [self._qt("ISRC001", "Track 1"), self._qt("ISRC003", "Bonus")]
         cand_b = self._make_album("cand_b", "Test Artist", "Test Album", 24, 96.0, full_b_tracks)
 
-        with patch("qobuz_fetch.library.catalog.search_albums",
+        with patch("qobuz_librarian.library.catalog.search_albums",
                    return_value=[cand_a, cand_b]), \
-             patch("qobuz_fetch.library.catalog.get_album",
+             patch("qobuz_librarian.library.catalog.get_album",
                    side_effect=lambda aid, tok: cand_a if aid == "cand_a" else cand_b):
             results = find_expanded_edition(album, tmp_path, existing, "tok",
                                             SimpleNamespace())
@@ -437,11 +437,11 @@ class TestPredictedAlbumPathsCoversBeetsPathTemplates:
     # surface as "missing" after a format change.
 
     def test_includes_trailing_paren_and_bracket_year(self, monkeypatch):
-        from qobuz_fetch import config as cfg
-        from qobuz_fetch.library.catalog import predicted_album_paths
+        from qobuz_librarian import config as cfg
+        from qobuz_librarian.library.catalog import predicted_album_paths
         monkeypatch.setattr(cfg, "MUSIC_ROOT", __import__("pathlib").Path("/music"))
         monkeypatch.setattr(
-            "qobuz_fetch.library.catalog._find_multi_artist_dirs",
+            "qobuz_librarian.library.catalog._find_multi_artist_dirs",
             lambda *a, **k: [],
         )
 
@@ -463,27 +463,27 @@ class TestPrimaryArtistOf:
     # the same album) so the migration target matches the on-disk folder.
 
     def test_handles_comma_space(self):
-        from qobuz_fetch.library.catalog import _primary_artist_of
+        from qobuz_librarian.library.catalog import _primary_artist_of
         assert _primary_artist_of("Jay Z, Kanye West") == "Jay Z"
 
     def test_handles_and(self):
-        from qobuz_fetch.library.catalog import _primary_artist_of
+        from qobuz_librarian.library.catalog import _primary_artist_of
         assert _primary_artist_of("Jay Z and Kanye West") == "Jay Z"
 
     def test_handles_ampersand(self):
-        from qobuz_fetch.library.catalog import _primary_artist_of
+        from qobuz_librarian.library.catalog import _primary_artist_of
         assert _primary_artist_of("Daft Punk & The Weeknd") == "Daft Punk"
 
     def test_handles_feat(self):
-        from qobuz_fetch.library.catalog import _primary_artist_of
+        from qobuz_librarian.library.catalog import _primary_artist_of
         assert _primary_artist_of("Bruno Mars feat. Cardi B") == "Bruno Mars"
 
     def test_single_artist_unchanged(self):
-        from qobuz_fetch.library.catalog import _primary_artist_of
+        from qobuz_librarian.library.catalog import _primary_artist_of
         assert _primary_artist_of("Daft Punk") == "Daft Punk"
 
     def test_empty_returns_empty(self):
-        from qobuz_fetch.library.catalog import _primary_artist_of
+        from qobuz_librarian.library.catalog import _primary_artist_of
         assert _primary_artist_of("") == ""
 
 
@@ -493,9 +493,9 @@ class TestMultiArtistDirLookupBridge:
     artist, or multi-artist migration is starved of a source dir and no-ops."""
 
     def test_finds_comma_folder_when_qobuz_uses_and(self, tmp_path, monkeypatch):
-        from qobuz_fetch import config
-        from qobuz_fetch.library.catalog import find_album_dir_filesystem
-        from qobuz_fetch.library.scanner import clear_scan_caches
+        from qobuz_librarian import config
+        from qobuz_librarian.library.catalog import find_album_dir_filesystem
+        from qobuz_librarian.library.scanner import clear_scan_caches
 
         monkeypatch.setattr(config, "MUSIC_ROOT", tmp_path)
         album_dir = tmp_path / "Jay Z, Kanye West" / "Watch The Throne (2011)"
@@ -520,9 +520,9 @@ class TestDiacriticArtistLookup:
     lookup must bridge 'Beyoncé'/'Beyonce' or the album reads as missing."""
 
     def test_ascii_qobuz_resolves_diacritic_folder(self, tmp_path, monkeypatch):
-        from qobuz_fetch import config
-        from qobuz_fetch.library.catalog import find_album_dir_filesystem
-        from qobuz_fetch.library.scanner import clear_scan_caches
+        from qobuz_librarian import config
+        from qobuz_librarian.library.catalog import find_album_dir_filesystem
+        from qobuz_librarian.library.scanner import clear_scan_caches
         monkeypatch.setattr(config, "MUSIC_ROOT", tmp_path)
         (tmp_path / "Motörhead" / "Ace of Spades (1980)").mkdir(parents=True)
         clear_scan_caches()
@@ -533,9 +533,9 @@ class TestDiacriticArtistLookup:
         assert found is not None and found.parent.name == "Motörhead"
 
     def test_missing_artist_still_none(self, tmp_path, monkeypatch):
-        from qobuz_fetch import config
-        from qobuz_fetch.library.catalog import find_album_dir_filesystem
-        from qobuz_fetch.library.scanner import clear_scan_caches
+        from qobuz_librarian import config
+        from qobuz_librarian.library.catalog import find_album_dir_filesystem
+        from qobuz_librarian.library.scanner import clear_scan_caches
         monkeypatch.setattr(config, "MUSIC_ROOT", tmp_path)
         (tmp_path / "Motörhead" / "Ace of Spades (1980)").mkdir(parents=True)
         clear_scan_caches()

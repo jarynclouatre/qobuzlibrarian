@@ -120,7 +120,7 @@ run() {
 # ── Dispatch ──────────────────────────────────────────────────────────────────
 case "${1:-web}" in
     web)
-        run uvicorn qobuz_fetch.web.app:app \
+        run uvicorn qobuz_librarian.web.app:app \
             --host "${WEB_HOST:-0.0.0.0}" \
             --port "${WEB_PORT:-8666}" \
             --workers 1 \

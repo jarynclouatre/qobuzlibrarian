@@ -6,21 +6,21 @@ from unittest.mock import patch
 
 import pytest
 
-from qobuz_fetch.library.backup import (
+from qobuz_librarian.library.backup import (
     backup_album_dir,
     backup_gap_fill_files,
     cleanup_old_upgrade_backups,
     restore_gap_fill_backup,
     restore_upgrade_backup,
 )
-from qobuz_fetch.library.catalog import (
+from qobuz_librarian.library.catalog import (
     _MERGE_MAX_DEPTH,
     _merge_album_dirs,
     _sync_beets_db_after_move,
     cleanup_duplicate_art,
     maybe_remove_empty_dir,
 )
-from qobuz_fetch.modes.consolidate import (
+from qobuz_librarian.modes.consolidate import (
     execute_consolidation,
     find_sibling_album_dirs,
     match_sibling_track,
@@ -30,7 +30,7 @@ from qobuz_fetch.modes.consolidate import (
 class TestBackupAlbumDir:
     def test_moves_dir_to_backup(self, tmp_path, monkeypatch):
         backup_root = tmp_path / "backups"
-        monkeypatch.setattr("qobuz_fetch.config.UPGRADE_BACKUP_DIR", backup_root)
+        monkeypatch.setattr("qobuz_librarian.config.UPGRADE_BACKUP_DIR", backup_root)
         album = tmp_path / "My Album"
         album.mkdir()
         (album / "track.flac").write_bytes(b"audio")
@@ -40,7 +40,7 @@ class TestBackupAlbumDir:
 
     def test_refuses_symlinked_album_dir(self, tmp_path, monkeypatch):
         backup_root = tmp_path / "backups"
-        monkeypatch.setattr("qobuz_fetch.config.UPGRADE_BACKUP_DIR", backup_root)
+        monkeypatch.setattr("qobuz_librarian.config.UPGRADE_BACKUP_DIR", backup_root)
         target = tmp_path / "real_album"
         target.mkdir()
         (target / "track.flac").write_bytes(b"audio")
@@ -50,9 +50,9 @@ class TestBackupAlbumDir:
         assert target.exists()
 
     def test_cross_filesystem_copy_verify_commit(self, tmp_path, monkeypatch):
-        from qobuz_fetch.library import backup as bkmod
+        from qobuz_librarian.library import backup as bkmod
         backup_root = tmp_path / "backups"
-        monkeypatch.setattr("qobuz_fetch.config.UPGRADE_BACKUP_DIR", backup_root)
+        monkeypatch.setattr("qobuz_librarian.config.UPGRADE_BACKUP_DIR", backup_root)
         monkeypatch.setattr(bkmod, "_same_filesystem", lambda a, b: False)
         album = tmp_path / "Album"
         album.mkdir()
@@ -64,9 +64,9 @@ class TestBackupAlbumDir:
 
     def test_cross_fs_rmtree_failure_restores_original(self, tmp_path, monkeypatch):
         """When cross-FS rmtree fails partway, the original album_dir is restored from the in-place copy."""
-        from qobuz_fetch.library import backup as bkmod
+        from qobuz_librarian.library import backup as bkmod
         backup_root = tmp_path / "backups"
-        monkeypatch.setattr("qobuz_fetch.config.UPGRADE_BACKUP_DIR", backup_root)
+        monkeypatch.setattr("qobuz_librarian.config.UPGRADE_BACKUP_DIR", backup_root)
         monkeypatch.setattr(bkmod, "_same_filesystem", lambda a, b: False)
         album = tmp_path / "Album"
         album.mkdir()
@@ -128,7 +128,7 @@ class TestRestoreUpgradeBackup:
         def fail_rmtree(*args, **kwargs):
             raise OSError("simulated mid-walk failure")
 
-        with patch("qobuz_fetch.library.backup.shutil.rmtree",
+        with patch("qobuz_librarian.library.backup.shutil.rmtree",
                    side_effect=fail_rmtree):
             result = restore_upgrade_backup(backup, original)
 
@@ -141,7 +141,7 @@ class TestRestoreUpgradeBackup:
 
 class TestGapFillBackup:
     def test_moves_files_to_backup(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("qobuz_fetch.config.UPGRADE_BACKUP_DIR", tmp_path / "backups")
+        monkeypatch.setattr("qobuz_librarian.config.UPGRADE_BACKUP_DIR", tmp_path / "backups")
         album = tmp_path / "album"
         album.mkdir()
         f = album / "track.flac"
@@ -152,8 +152,8 @@ class TestGapFillBackup:
 
     def test_falls_back_to_copy_when_rename_is_cross_device(self, tmp_path, monkeypatch):
         """Two bind mounts on one disk share a device but still reject rename with EXDEV."""
-        from qobuz_fetch.library import backup as bkmod
-        monkeypatch.setattr("qobuz_fetch.config.UPGRADE_BACKUP_DIR", tmp_path / "backups")
+        from qobuz_librarian.library import backup as bkmod
+        monkeypatch.setattr("qobuz_librarian.config.UPGRADE_BACKUP_DIR", tmp_path / "backups")
 
         def cross_device(*_a, **_kw):
             raise OSError("Invalid cross-device link")
@@ -169,8 +169,8 @@ class TestGapFillBackup:
         assert not src.exists()
 
     def test_source_preserved_when_cross_fs_copy_fails(self, tmp_path, monkeypatch):
-        from qobuz_fetch.library import backup as bkmod
-        monkeypatch.setattr("qobuz_fetch.config.UPGRADE_BACKUP_DIR", tmp_path / "backups")
+        from qobuz_librarian.library import backup as bkmod
+        monkeypatch.setattr("qobuz_librarian.config.UPGRADE_BACKUP_DIR", tmp_path / "backups")
 
         def cross_device(*_a, **_kw):
             raise OSError("Invalid cross-device link")
@@ -192,7 +192,7 @@ class TestGapFillBackup:
         """A failed restore must NOT destroy the backup — it is the only surviving copy of those tracks."""
         if os.geteuid() == 0:
             pytest.skip("root bypasses the read-only perm that forces failure")
-        monkeypatch.setattr("qobuz_fetch.config.UPGRADE_BACKUP_DIR",
+        monkeypatch.setattr("qobuz_librarian.config.UPGRADE_BACKUP_DIR",
                             tmp_path / "backups")
         album = tmp_path / "album"
         album.mkdir()
@@ -209,7 +209,7 @@ class TestGapFillBackup:
 
     def test_restore_overwrites_partial_left_by_failed_rip(self, tmp_path, monkeypatch):
         """Restore must atomically replace any partial file at the same path."""
-        monkeypatch.setattr("qobuz_fetch.config.UPGRADE_BACKUP_DIR",
+        monkeypatch.setattr("qobuz_librarian.config.UPGRADE_BACKUP_DIR",
                             tmp_path / "backups")
         album = tmp_path / "album"
         album.mkdir()
@@ -225,9 +225,9 @@ class TestGapFillBackup:
     def test_keyboardinterrupt_mid_copy_keeps_backup_and_no_tmp(
         self, tmp_path, monkeypatch
     ):
-        import qobuz_fetch.library.backup as bkmod
+        import qobuz_librarian.library.backup as bkmod
 
-        monkeypatch.setattr("qobuz_fetch.config.UPGRADE_BACKUP_DIR",
+        monkeypatch.setattr("qobuz_librarian.config.UPGRADE_BACKUP_DIR",
                             tmp_path / "backups")
         album = tmp_path / "album"
         album.mkdir()
@@ -254,8 +254,8 @@ class TestCleanupOldUpgradeBackups:
     def test_removes_old_backup(self, tmp_path, monkeypatch):
         backup_root = tmp_path / "backups"
         backup_root.mkdir()
-        monkeypatch.setattr("qobuz_fetch.config.UPGRADE_BACKUP_DIR", backup_root)
-        monkeypatch.setattr("qobuz_fetch.config.DATA_DIR", tmp_path)
+        monkeypatch.setattr("qobuz_librarian.config.UPGRADE_BACKUP_DIR", backup_root)
+        monkeypatch.setattr("qobuz_librarian.config.DATA_DIR", tmp_path)
         old = backup_root / "20200101_120000_old_album"
         old.mkdir()
         count = cleanup_old_upgrade_backups(retention_days=1)
@@ -266,8 +266,8 @@ class TestCleanupOldUpgradeBackups:
         """A backup dir without a YYYYMMDD_ prefix must be skipped, not deleted."""
         backup_root = tmp_path / "backups"
         backup_root.mkdir()
-        monkeypatch.setattr("qobuz_fetch.config.UPGRADE_BACKUP_DIR", backup_root)
-        monkeypatch.setattr("qobuz_fetch.config.DATA_DIR", tmp_path)
+        monkeypatch.setattr("qobuz_librarian.config.UPGRADE_BACKUP_DIR", backup_root)
+        monkeypatch.setattr("qobuz_librarian.config.DATA_DIR", tmp_path)
         legacy = backup_root / "my_hand_restored_album"
         legacy.mkdir()
         os.utime(legacy, (0, 0))
@@ -278,8 +278,8 @@ class TestCleanupOldUpgradeBackups:
     def test_skips_resweep_within_24h(self, tmp_path, monkeypatch):
         backup_root = tmp_path / "backups"
         backup_root.mkdir()
-        monkeypatch.setattr("qobuz_fetch.config.UPGRADE_BACKUP_DIR", backup_root)
-        monkeypatch.setattr("qobuz_fetch.config.DATA_DIR", tmp_path)
+        monkeypatch.setattr("qobuz_librarian.config.UPGRADE_BACKUP_DIR", backup_root)
+        monkeypatch.setattr("qobuz_librarian.config.DATA_DIR", tmp_path)
         old = backup_root / "20200101_120000_old_album"
         old.mkdir()
         # Stamp the sweep marker recent
@@ -352,7 +352,7 @@ class TestMergeAlbumDirs:
         monkeypatch.setattr(type(src_file), "replace", lambda self, t: _bad_replace(t))
 
         # confirm() is imported locally in _merge_album_dirs; patch the source.
-        import qobuz_fetch.ui_cli.prompts as prompts_mod
+        import qobuz_librarian.ui_cli.prompts as prompts_mod
         monkeypatch.setattr(prompts_mod, "confirm", lambda *a, **kw: True)
         _merge_album_dirs(src, dst)
 
@@ -370,10 +370,10 @@ class TestSearchLimitsRouteThroughConfig:
     def test_no_literal_search_limits_in_internal_callsites(self):
         import re
         files = [
-            "src/qobuz_fetch/library/catalog.py",
-            "src/qobuz_fetch/modes/artist.py",
-            "src/qobuz_fetch/quality/decision.py",
-            "src/qobuz_fetch/web/flows.py",
+            "src/qobuz_librarian/library/catalog.py",
+            "src/qobuz_librarian/modes/artist.py",
+            "src/qobuz_librarian/quality/decision.py",
+            "src/qobuz_librarian/web/flows.py",
         ]
         bad = []
         # Matches: search_albums(..., limit=10) / search_artists(..., limit=5)
@@ -404,8 +404,8 @@ class TestSyncBeetsDBAfterMove:
             for i, p in enumerate(rows, 1):
                 conn.execute("INSERT INTO items (id, path) VALUES (?, ?)", (i, p))
             conn.commit()
-        monkeypatch.setattr("qobuz_fetch.library.catalog.config.BEETS_DB_PATH", str(db))
-        monkeypatch.setattr("qobuz_fetch.library.catalog.config.MUSIC_ROOT", music_root)
+        monkeypatch.setattr("qobuz_librarian.library.catalog.config.BEETS_DB_PATH", str(db))
+        monkeypatch.setattr("qobuz_librarian.library.catalog.config.MUSIC_ROOT", music_root)
         return music_root, db
 
     def _read(self, db):
@@ -448,9 +448,9 @@ class TestSyncBeetsDBAfterMove:
         music_root = tmp_path / "music"
         music_root.mkdir()
         monkeypatch.setattr(
-            "qobuz_fetch.library.catalog.config.BEETS_DB_PATH",
+            "qobuz_librarian.library.catalog.config.BEETS_DB_PATH",
             str(tmp_path / "nonexistent.db"))
-        monkeypatch.setattr("qobuz_fetch.library.catalog.config.MUSIC_ROOT", music_root)
+        monkeypatch.setattr("qobuz_librarian.library.catalog.config.MUSIC_ROOT", music_root)
         old = music_root / "old"
         new = music_root / "new"
         old.mkdir()
@@ -485,7 +485,7 @@ class TestMatchSiblingTrack:
 
 class TestFindSiblingAlbumDirs:
     def test_finds_remaster_sibling(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("qobuz_fetch.config.CONSOLIDATE_THRESH", 0.70)
+        monkeypatch.setattr("qobuz_librarian.config.CONSOLIDATE_THRESH", 0.70)
         artist = tmp_path / "Artist"
         primary = artist / "Revolver"
         sibling = artist / "Revolver (2009 Remaster)"
@@ -495,7 +495,7 @@ class TestFindSiblingAlbumDirs:
         assert len(result) == 1 and result[0][0] == sibling
 
     def test_excludes_unrelated_album(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("qobuz_fetch.config.CONSOLIDATE_THRESH", 0.70)
+        monkeypatch.setattr("qobuz_librarian.config.CONSOLIDATE_THRESH", 0.70)
         artist = tmp_path / "Artist"
         primary = artist / "Revolver"
         unrelated = artist / "Greatest Hits"
@@ -504,7 +504,7 @@ class TestFindSiblingAlbumDirs:
         assert find_sibling_album_dirs({"title": "Revolver"}, primary) == []
 
     def test_sorted_by_score_desc(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("qobuz_fetch.config.CONSOLIDATE_THRESH", 0.70)
+        monkeypatch.setattr("qobuz_librarian.config.CONSOLIDATE_THRESH", 0.70)
         artist = tmp_path / "Artist"
         primary = artist / "Revolver"
         (artist / "Revolver (Remaster)").mkdir(parents=True)
@@ -532,7 +532,7 @@ class TestExecuteConsolidation:
     def test_oserror_counted_as_failure(self, tmp_path, monkeypatch):
         f = tmp_path / "locked.flac"
         f.write_bytes(b"audio")
-        import qobuz_fetch.modes.consolidate as cmod
+        import qobuz_librarian.modes.consolidate as cmod
         monkeypatch.setattr(cmod.Path, "unlink",
                             lambda self, missing_ok=False: (_ for _ in ()).throw(
                                 OSError("permission denied")))

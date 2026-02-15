@@ -17,8 +17,8 @@ def _run_process_album_full(monkeypatch, tmp_path, *,
     """Drive process_album down the full-album rip path with controlled
     kept/lossy snapshots. Returns the result dict + the captured local
     variables we need to assert against."""
-    from qobuz_fetch import config as cfg
-    from qobuz_fetch.modes import process as proc
+    from qobuz_librarian import config as cfg
+    from qobuz_librarian.modes import process as proc
 
     # The album has 7 tracks. One landed lossy (deleted), 5 landed as FLAC,
     # 1 missing entirely. Expected: n_ok=5, n_lossy=1, n_fail=1, total=7.
@@ -152,8 +152,8 @@ def test_no_lossy_keeps_pre_existing_fail_count(monkeypatch, tmp_path):
 
 def test_lossy_track_retried_once_recovers(monkeypatch, tmp_path):
     """A 0-byte / lossy-deleted FLAC gets one single-track retry."""
-    from qobuz_fetch import config as cfg
-    from qobuz_fetch.modes import process as proc
+    from qobuz_librarian import config as cfg
+    from qobuz_librarian.modes import process as proc
 
     qobuz_tracks = [
         {"id": 1, "title": "Track A", "duration": 200, "media_number": 1, "track_number": 1},
@@ -265,8 +265,8 @@ def test_lossy_track_retried_once_recovers(monkeypatch, tmp_path):
 
 def test_sweep_staging_artwork_removes_artwork_dirs(monkeypatch, tmp_path):
     """`beet import` leaves streamrip's __artwork/ cover-image dirs behind in staging."""
-    from qobuz_fetch import config as cfg
-    from qobuz_fetch.modes import process as proc
+    from qobuz_librarian import config as cfg
+    from qobuz_librarian.modes import process as proc
 
     staging = tmp_path / "staging"
     staging.mkdir()
@@ -289,8 +289,8 @@ def test_sweep_staging_artwork_removes_artwork_dirs(monkeypatch, tmp_path):
 
 def test_sweep_staging_artwork_missing_staging_dir_is_noop(monkeypatch, tmp_path):
     """A missing STAGING_DIR (cold start, broken mount) must not raise."""
-    from qobuz_fetch import config as cfg
-    from qobuz_fetch.modes import process as proc
+    from qobuz_librarian import config as cfg
+    from qobuz_librarian.modes import process as proc
 
     monkeypatch.setattr(cfg, "STAGING_DIR", tmp_path / "does-not-exist")
     proc.sweep_staging_artwork()
@@ -309,8 +309,8 @@ def test_cancel_mid_rip_skips_beets_import(monkeypatch, tmp_path):
 
 def test_retry_stem_title_handles_star_track_stem():
     """A lossy stem like '01."""
-    from qobuz_fetch.library.tags import normalize, strip_edition_suffix
-    from qobuz_fetch.modes.process import _retry_stem_title
+    from qobuz_librarian.library.tags import normalize, strip_edition_suffix
+    from qobuz_librarian.modes.process import _retry_stem_title
 
     expected = normalize(strip_edition_suffix("★"))
     assert _retry_stem_title("01. ★") == expected
@@ -354,8 +354,8 @@ def test_edition_suffix_track_not_flagged_failed(monkeypatch, tmp_path):
 
 def test_gap_fill_backup_restored_when_track_returns_lossy(monkeypatch, tmp_path):
     """A full-album gap-fill backs up the already-owned tracks before ripping."""
-    from qobuz_fetch import config as cfg
-    from qobuz_fetch.modes import process as proc
+    from qobuz_librarian import config as cfg
+    from qobuz_librarian.modes import process as proc
 
     qobuz_tracks = [
         {"id": i, "title": f"T{i}", "duration": 200, "media_number": 1, "track_number": i}
@@ -418,10 +418,10 @@ def test_gap_fill_backup_restored_when_track_returns_lossy(monkeypatch, tmp_path
 
 
 def test_staging_overflow_under_yes_exits_general_not_auth(monkeypatch, tmp_path):
-    from qobuz_fetch import config as cfg
-    from qobuz_fetch.integrations import beets as beets_mod
-    from qobuz_fetch.integrations import rip as rip_mod
-    from qobuz_fetch.ui_cli.errors import EXIT_GENERAL
+    from qobuz_librarian import config as cfg
+    from qobuz_librarian.integrations import beets as beets_mod
+    from qobuz_librarian.integrations import rip as rip_mod
+    from qobuz_librarian.ui_cli.errors import EXIT_GENERAL
 
     staging = tmp_path / "staging"
     staging.mkdir()

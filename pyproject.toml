@@ -51,12 +51,12 @@ lyrics = ["syncedlyrics>=0.4"]
 test = ["pytest>=7", "httpx>=0.27", "ruff>=0.5"]
 
 [project.scripts]
-qobuz-librarian = "qobuz_fetch.cli:_entry"
-qobuz-librarian-web = "qobuz_fetch.web.app:start"
+qobuz-librarian = "qobuz_librarian.cli:_entry"
+qobuz-librarian-web = "qobuz_librarian.web.app:start"
 
 [tool.hatch.build.targets.wheel]
-# Distribution is "qobuz-librarian" but the import package stays qobuz_fetch.
-packages = ["src/qobuz_fetch"]
+# Distribution is "qobuz-librarian" but the import package stays qobuz_librarian.
+packages = ["src/qobuz_librarian"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -1,6 +1,6 @@
 module.exports = {
   content: [
-    "./src/qobuz_fetch/web/templates/**/*.html",
-    "./src/qobuz_fetch/web/static/**/*.js",
+    "./src/qobuz_librarian/web/templates/**/*.html",
+    "./src/qobuz_librarian/web/static/**/*.js",
   ],
 };

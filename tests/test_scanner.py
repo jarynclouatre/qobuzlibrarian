@@ -1,10 +1,10 @@
-"""Tests for qobuz_fetch.library.scanner."""
+"""Tests for qobuz_librarian.library.scanner."""
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from qobuz_fetch.library.scanner import (
+from qobuz_librarian.library.scanner import (
     _list_artist_subdirs_cached,
     clear_scan_caches,
     list_artist_album_dirs,
@@ -38,8 +38,8 @@ class TestListLibraryArtists:
     def test_returns_artist_dirs(self, tmp_path):
         self._seed(tmp_path, "Pink Floyd")
         self._seed(tmp_path, "Radiohead")
-        with patch("qobuz_fetch.config.MUSIC_ROOT", tmp_path), \
-             patch("qobuz_fetch.config.STAGING_DIR", tmp_path / ".staging"):
+        with patch("qobuz_librarian.config.MUSIC_ROOT", tmp_path), \
+             patch("qobuz_librarian.config.STAGING_DIR", tmp_path / ".staging"):
             result = list_library_artists()
         names = [d.name for d in result]
         assert "Pink Floyd" in names
@@ -48,15 +48,15 @@ class TestListLibraryArtists:
     def test_excludes_dot_folders(self, tmp_path):
         self._seed(tmp_path, "Pink Floyd")
         (tmp_path / ".AppleDouble").mkdir()
-        with patch("qobuz_fetch.config.MUSIC_ROOT", tmp_path), \
-             patch("qobuz_fetch.config.STAGING_DIR", tmp_path / ".staging"):
+        with patch("qobuz_librarian.config.MUSIC_ROOT", tmp_path), \
+             patch("qobuz_librarian.config.STAGING_DIR", tmp_path / ".staging"):
             result = list_library_artists()
         names = [d.name for d in result]
         assert ".AppleDouble" not in names
         assert "Pink Floyd" in names
 
     def test_returns_empty_when_music_root_missing(self, tmp_path):
-        with patch("qobuz_fetch.config.MUSIC_ROOT", tmp_path / "nonexistent"):
+        with patch("qobuz_librarian.config.MUSIC_ROOT", tmp_path / "nonexistent"):
             result = list_library_artists()
         assert result == []
 
@@ -65,8 +65,8 @@ class TestListLibraryArtists:
         real = tmp_path / "Real Artist" / "Album"
         real.mkdir(parents=True)
         (real / "01 - Track.flac").write_bytes(b"audio")
-        with patch("qobuz_fetch.config.MUSIC_ROOT", tmp_path), \
-             patch("qobuz_fetch.config.STAGING_DIR", tmp_path / ".staging"):
+        with patch("qobuz_librarian.config.MUSIC_ROOT", tmp_path), \
+             patch("qobuz_librarian.config.STAGING_DIR", tmp_path / ".staging"):
             names = [d.name for d in list_library_artists()]
         assert names == ["Real Artist"]
 
@@ -77,8 +77,8 @@ class TestListLibraryArtists:
         real = tmp_path / "Real Artist" / "Album"
         real.mkdir(parents=True)
         (real / "01.flac").write_bytes(b"audio")
-        with patch("qobuz_fetch.config.MUSIC_ROOT", tmp_path), \
-             patch("qobuz_fetch.config.STAGING_DIR", tmp_path / ".staging"):
+        with patch("qobuz_librarian.config.MUSIC_ROOT", tmp_path), \
+             patch("qobuz_librarian.config.STAGING_DIR", tmp_path / ".staging"):
             names = [d.name for d in list_library_artists()]
         assert names == ["Real Artist"]
 
@@ -103,20 +103,20 @@ class TestReadAlbumDir:
     def test_finds_flac_files(self, tmp_path):
         (tmp_path / "01 - Track One.flac").write_bytes(b"")
         (tmp_path / "02 - Track Two.flac").write_bytes(b"")
-        with patch("qobuz_fetch.library.scanner.HAVE_MUTAGEN", False):
+        with patch("qobuz_librarian.library.scanner.HAVE_MUTAGEN", False):
             result = read_album_dir(tmp_path)
         assert len(result) == 2
 
     def test_skips_non_audio_files(self, tmp_path):
         (tmp_path / "cover.jpg").write_bytes(b"")
         (tmp_path / "01 - Track.flac").write_bytes(b"")
-        with patch("qobuz_fetch.library.scanner.HAVE_MUTAGEN", False):
+        with patch("qobuz_librarian.library.scanner.HAVE_MUTAGEN", False):
             result = read_album_dir(tmp_path)
         assert len(result) == 1
 
     def test_filename_fallback_parses_track_number(self, tmp_path):
         (tmp_path / "05 - My Song.flac").write_bytes(b"")
-        with patch("qobuz_fetch.library.scanner.HAVE_MUTAGEN", False):
+        with patch("qobuz_librarian.library.scanner.HAVE_MUTAGEN", False):
             result = read_album_dir(tmp_path)
         assert result[0]["tracknumber"] == 5
         assert result[0]["title"] == "My Song"
@@ -130,8 +130,8 @@ class TestReadAlbumDir:
             "albumartist": "Artist", "bits": 24, "sample_rate": 96000,
             "length": 245.0, "path": str(flac),
         }
-        with patch("qobuz_fetch.library.scanner.HAVE_MUTAGEN", True), \
-             patch("qobuz_fetch.library.scanner.read_flac_meta",
+        with patch("qobuz_librarian.library.scanner.HAVE_MUTAGEN", True), \
+             patch("qobuz_librarian.library.scanner.read_flac_meta",
                    return_value=fake_meta):
             result = read_album_dir(tmp_path)
         assert result[0]["title"] == "Real Title"
@@ -145,7 +145,7 @@ class TestReadAlbumDir:
         sub = album / "sub"
         sub.mkdir()
         (sub / "loop").symlink_to(album)
-        with patch("qobuz_fetch.library.scanner.HAVE_MUTAGEN", False):
+        with patch("qobuz_librarian.library.scanner.HAVE_MUTAGEN", False):
             result = read_album_dir(album)
         assert len(result) == 1
         assert result[0]["tracknumber"] == 1

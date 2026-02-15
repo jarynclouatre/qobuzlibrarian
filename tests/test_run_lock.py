@@ -6,13 +6,13 @@ def test_acquire_fsyncs_pid_to_disk(tmp_path, monkeypatch):
     import os
 
     lock_file = tmp_path / "run.lock"
-    monkeypatch.setattr("qobuz_fetch.config.LOCK_FILE", lock_file)
+    monkeypatch.setattr("qobuz_librarian.config.LOCK_FILE", lock_file)
 
     fsynced_fds = []
     orig_fsync = os.fsync
     monkeypatch.setattr(os, "fsync", lambda fd: fsynced_fds.append(fd) or orig_fsync(fd))
 
-    from qobuz_fetch import run_lock
+    from qobuz_librarian import run_lock
 
     fp = run_lock.acquire()
     try:

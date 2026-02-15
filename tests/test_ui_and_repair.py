@@ -5,16 +5,16 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from qobuz_fetch.modes.walk import (
+from qobuz_librarian.modes.walk import (
     _album_seen_key,
     load_album_walk_seen,
     load_walk_seen,
     record_album_walk_seen,
     record_walk_seen,
 )
-from qobuz_fetch.repair_log import append_repair_log, scan_dir_for_isrc_repairs
-from qobuz_fetch.ui_cli.menu import interactive_session_mode
-from qobuz_fetch.ui_cli.prompts import (
+from qobuz_librarian.repair_log import append_repair_log, scan_dir_for_isrc_repairs
+from qobuz_librarian.ui_cli.menu import interactive_session_mode
+from qobuz_librarian.ui_cli.prompts import (
     _read_fetch_log,
     confirm,
     interactive_query,
@@ -42,7 +42,7 @@ class TestInteractiveQueryAdvertisesHelp:
         assert any("?=recent" in str(c.args) for c in fake.call_args_list)
 
     def test_question_mark_shows_recent_then_reprompts(self):
-        from qobuz_fetch.ui_cli import prompts as p
+        from qobuz_librarian.ui_cli import prompts as p
         with patch.object(p, "show_recent_fetches") as fake_show:
             with patch("builtins.input", side_effect=["?", ""]):
                 assert p.interactive_query() is None
@@ -85,26 +85,26 @@ class TestParseNumberList:
 
 class TestFetchLog:
     def test_round_trip_single_entry(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("qobuz_fetch.config.FETCH_LOG_FILE", tmp_path / "log.json")
+        monkeypatch.setattr("qobuz_librarian.config.FETCH_LOG_FILE", tmp_path / "log.json")
         log_fetch({"ts": "2026-01-01", "artist": "Artist", "title": "Album"})
         entries = _read_fetch_log()
         assert len(entries) == 1 and entries[0]["artist"] == "Artist"
 
     def test_returns_empty_when_file_absent(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("qobuz_fetch.config.FETCH_LOG_FILE", tmp_path / "absent.json")
+        monkeypatch.setattr("qobuz_librarian.config.FETCH_LOG_FILE", tmp_path / "absent.json")
         assert _read_fetch_log() == []
 
     def test_skips_malformed_jsonl_line(self, tmp_path, monkeypatch):
         f = tmp_path / "log.json"
         f.write_text('{"artist":"A"}\nNOT JSON\n{"artist":"B"}\n')
-        monkeypatch.setattr("qobuz_fetch.config.FETCH_LOG_FILE", f)
+        monkeypatch.setattr("qobuz_librarian.config.FETCH_LOG_FILE", f)
         assert len(_read_fetch_log()) == 2
 
     def test_failed_migration_does_not_corrupt_legacy_array(self, tmp_path, monkeypatch):
-        from qobuz_fetch.ui_cli import prompts
+        from qobuz_librarian.ui_cli import prompts
         f = tmp_path / "log.json"
         f.write_text(json.dumps([{"artist": "old"}]), encoding="utf-8")
-        monkeypatch.setattr("qobuz_fetch.config.FETCH_LOG_FILE", f)
+        monkeypatch.setattr("qobuz_librarian.config.FETCH_LOG_FILE", f)
         monkeypatch.setattr(prompts, "_migrate_fetch_log_to_jsonl", lambda: False)
         log_fetch({"artist": "new"})
         assert json.loads(f.read_text(encoding="utf-8")) == [{"artist": "old"}]
@@ -113,20 +113,20 @@ class TestFetchLog:
 class TestAppendRepairLog:
     def test_returns_true_on_success(self, tmp_path, monkeypatch):
         f = tmp_path / "repair.log"
-        monkeypatch.setattr("qobuz_fetch.config.REPAIR_LOG_PATH", f)
+        monkeypatch.setattr("qobuz_librarian.config.REPAIR_LOG_PATH", f)
         assert append_repair_log([{"artist": "A", "album": "B", "title": "T"}]) is True
         assert f.exists()
 
     def test_no_header_on_second_write(self, tmp_path, monkeypatch):
         f = tmp_path / "repair.log"
-        monkeypatch.setattr("qobuz_fetch.config.REPAIR_LOG_PATH", f)
+        monkeypatch.setattr("qobuz_librarian.config.REPAIR_LOG_PATH", f)
         append_repair_log([{"artist": "A", "album": "B", "title": "T1"}])
         append_repair_log([{"artist": "A", "album": "B", "title": "T2"}])
         assert f.read_text().count("# Replaced-tracks log") == 1
 
     def test_pipe_char_escaped_in_artist(self, tmp_path, monkeypatch):
         f = tmp_path / "repair.log"
-        monkeypatch.setattr("qobuz_fetch.config.REPAIR_LOG_PATH", f)
+        monkeypatch.setattr("qobuz_librarian.config.REPAIR_LOG_PATH", f)
         append_repair_log([{"artist": "AC|DC", "album": "Back in Black", "title": "Hells Bells"}])
         assert "AC|DC" not in f.read_text().split("\n")[-2]
 
@@ -134,7 +134,7 @@ class TestAppendRepairLog:
         from concurrent.futures import ThreadPoolExecutor
 
         f = tmp_path / "repair.log"
-        monkeypatch.setattr("qobuz_fetch.config.REPAIR_LOG_PATH", f)
+        monkeypatch.setattr("qobuz_librarian.config.REPAIR_LOG_PATH", f)
         with ThreadPoolExecutor(max_workers=8) as pool:
             futures = [pool.submit(
                 append_repair_log,
@@ -155,23 +155,23 @@ class TestScanDirForIsrcRepairs:
         return {"isrc": isrc, "length": length, "title": "Track", "path": "/music/track.flac"}
 
     def test_empty_dir_returns_empty(self, tmp_path):
-        with patch("qobuz_fetch.repair_log.read_album_dir", return_value=[]):
+        with patch("qobuz_librarian.repair_log.read_album_dir", return_value=[]):
             result = scan_dir_for_isrc_repairs(tmp_path, "token")
         assert result["verified_truncated"] == [] and result["verified_ok"] == 0
 
     def test_both_gates_must_fire_for_truncation(self, tmp_path):
         track = self._make_track(length=169.0)
         qt = {"duration": 200.0, "title": "T", "track_number": 1}
-        with patch("qobuz_fetch.repair_log.read_album_dir", return_value=[track]):
-            with patch("qobuz_fetch.repair_log.find_qobuz_track_by_isrc", return_value=qt):
+        with patch("qobuz_librarian.repair_log.read_album_dir", return_value=[track]):
+            with patch("qobuz_librarian.repair_log.find_qobuz_track_by_isrc", return_value=qt):
                 result = scan_dir_for_isrc_repairs(tmp_path, "token")
         assert len(result["verified_truncated"]) == 1
 
     def test_zero_qobuz_duration_treated_as_ok(self, tmp_path):
         track = self._make_track(length=10.0)
         qt = {"duration": 0, "title": "T", "track_number": 1}
-        with patch("qobuz_fetch.repair_log.read_album_dir", return_value=[track]):
-            with patch("qobuz_fetch.repair_log.find_qobuz_track_by_isrc", return_value=qt):
+        with patch("qobuz_librarian.repair_log.read_album_dir", return_value=[track]):
+            with patch("qobuz_librarian.repair_log.find_qobuz_track_by_isrc", return_value=qt):
                 result = scan_dir_for_isrc_repairs(tmp_path, "token")
         assert result["verified_ok"] == 1
 
@@ -181,9 +181,9 @@ class TestScanDirForIsrcRepairs:
         track = self._make_track(length=0.0)
         track["path"] = str(tmp_path / "x.flac")
         qt = {"duration": 0, "title": "T", "track_number": 1}
-        with patch("qobuz_fetch.repair_log.read_album_dir", return_value=[track]), \
-             patch("qobuz_fetch.repair_log.find_qobuz_track_by_isrc", return_value=qt), \
-             patch("qobuz_fetch.repair_log._flac_decode_ok", return_value=False):
+        with patch("qobuz_librarian.repair_log.read_album_dir", return_value=[track]), \
+             patch("qobuz_librarian.repair_log.find_qobuz_track_by_isrc", return_value=qt), \
+             patch("qobuz_librarian.repair_log._flac_decode_ok", return_value=False):
             result = scan_dir_for_isrc_repairs(tmp_path, "token")
         assert len(result["verified_truncated"]) == 1
 
@@ -200,7 +200,7 @@ class TestScanDirForIsrcRepairs:
             "channels": 2,
             "tracknumber": 1,
         }
-        with patch("qobuz_fetch.repair_log.read_album_dir",
+        with patch("qobuz_librarian.repair_log.read_album_dir",
                    return_value=[track]):
             result = scan_dir_for_isrc_repairs(tmp_path, "token")
         assert len(result["no_isrc_tag"]) == 1
@@ -226,8 +226,8 @@ class TestScanDirForIsrcRepairs:
             "tracknumber": 1,
         }
         qt = {"duration": 200.0, "title": "T", "track_number": 1}
-        with patch("qobuz_fetch.repair_log.read_album_dir", return_value=[track]):
-            with patch("qobuz_fetch.repair_log.find_qobuz_track_by_isrc", return_value=qt):
+        with patch("qobuz_librarian.repair_log.read_album_dir", return_value=[track]):
+            with patch("qobuz_librarian.repair_log.find_qobuz_track_by_isrc", return_value=qt):
                 result = scan_dir_for_isrc_repairs(tmp_path, "token")
         assert len(result["verified_truncated"]) == 1
         assert result["verified_truncated"][0]["reason"] == "byte_size_short"
@@ -287,7 +287,7 @@ class TestScanDirRealFlacRoundTrip:
         flac.write_bytes(flac.read_bytes()[:-10_240])
 
         qt = {"duration": 10.0, "title": "Tail Truncated", "track_number": 1}
-        with patch("qobuz_fetch.repair_log.find_qobuz_track_by_isrc", return_value=qt):
+        with patch("qobuz_librarian.repair_log.find_qobuz_track_by_isrc", return_value=qt):
             result = scan_dir_for_isrc_repairs(album, "token")
         assert len(result["verified_truncated"]) == 1, result
         assert result["verified_truncated"][0]["reason"] == "decode_failed"
@@ -315,7 +315,7 @@ class TestScanDirRealFlacRoundTrip:
         f.save()
         assert flac.stat().st_size < 100_000  # well under 0.15 x uncompressed
         qt = {"duration": 30.0, "title": "Silent", "track_number": 1}
-        with patch("qobuz_fetch.repair_log.find_qobuz_track_by_isrc", return_value=qt):
+        with patch("qobuz_librarian.repair_log.find_qobuz_track_by_isrc", return_value=qt):
             result = scan_dir_for_isrc_repairs(album, "token")
         assert result["verified_truncated"] == [], result
         assert result["verified_ok"] == 1
@@ -341,7 +341,7 @@ class TestWebScanRepairsNoIsrcRecovery:
         }
 
     def _run(self, tmp_path, caplog, matched):
-        from qobuz_fetch.web import flows
+        from qobuz_librarian.web import flows
         artist_dir = tmp_path / "Artist"
         album_dir = artist_dir / "Album"
         album_dir.mkdir(parents=True)
@@ -351,7 +351,7 @@ class TestWebScanRepairsNoIsrcRecovery:
              patch.object(flows, "list_artist_album_dirs", return_value=[album_dir]), \
              patch.object(flows, "clear_scan_caches"), \
              patch.object(flows, "find_qobuz_album_for_dir", return_value=matched), \
-             patch("qobuz_fetch.repair_log.scan_dir_for_isrc_repairs",
+             patch("qobuz_librarian.repair_log.scan_dir_for_isrc_repairs",
                    return_value=self._scan_result(album_dir)):
             with caplog.at_level("INFO", logger="qobuz_librarian"):
                 flows.scan_repairs(job, "token")
@@ -374,18 +374,18 @@ class TestWebScanRepairsNoIsrcRecovery:
 
     def test_failed_redownload_restores_the_original_folder(
             self, tmp_path, monkeypatch):
-        from qobuz_fetch.web import flows
+        from qobuz_librarian.web import flows
         album_dir = tmp_path / "Album"
         album_dir.mkdir()
         backup_dir = tmp_path / "backup"
         restored = {}
         monkeypatch.setattr(flows, "get_album", lambda *a: {"id": "x"})
-        monkeypatch.setattr("qobuz_fetch.library.backup.backup_album_dir",
+        monkeypatch.setattr("qobuz_librarian.library.backup.backup_album_dir",
                             lambda d: backup_dir)
-        monkeypatch.setattr("qobuz_fetch.modes.process.process_album",
+        monkeypatch.setattr("qobuz_librarian.modes.process.process_album",
                             lambda *a, **k: {"imported": False, "n_ok": 0})
         monkeypatch.setattr(
-            "qobuz_fetch.library.backup.restore_upgrade_backup",
+            "qobuz_librarian.library.backup.restore_upgrade_backup",
             lambda bp, d: restored.update(bp=bp, dir=d) or True)
 
         res = flows._redownload_damaged_album(
@@ -400,7 +400,7 @@ class TestRepairRelocatesRefill:
     whatever folder beets' tags filed the re-download into."""
 
     def test_refill_filed_elsewhere_is_moved_back(self, tmp_path, monkeypatch):
-        from qobuz_fetch.modes import repair
+        from qobuz_librarian.modes import repair
         album_dir = tmp_path / "First Fires (2013)"
         landed_dir = tmp_path / "The North Borders (2013)"
         album_dir.mkdir()
@@ -429,7 +429,7 @@ class TestRepairRelocatesRefill:
 
     def test_preexisting_track_sharing_the_recording_is_left_alone(
             self, tmp_path, monkeypatch):
-        from qobuz_fetch.modes import repair
+        from qobuz_librarian.modes import repair
         album_dir = tmp_path / "First Fires (2013)"
         owned_dir = tmp_path / "The North Borders (2013)"
         album_dir.mkdir()
@@ -457,7 +457,7 @@ class TestParseArgsGuards:
     def _parse(self, argv):
         import sys
 
-        from qobuz_fetch.cli import parse_args
+        from qobuz_librarian.cli import parse_args
         with patch.object(sys, "argv", ["qobuz-librarian", *argv]):
             return parse_args()
 
@@ -525,7 +525,7 @@ class TestVerboseComposeDiagnostic:
         """Replay the --verbose diagnostic print block from cli.main in
         isolation. Patches `_in_container` to the given value and captures
         what the function would log."""
-        from qobuz_fetch import cli
+        from qobuz_librarian import cli
 
         captured = []
         monkeypatch.setattr(cli, "_in_container", lambda: in_container)
@@ -563,8 +563,8 @@ class TestCLISettingsLoad:
     def test_main_loads_persisted_settings_before_parse(self, monkeypatch):
         import sys
 
-        from qobuz_fetch import cli
-        from qobuz_fetch.web import settings_store
+        from qobuz_librarian import cli
+        from qobuz_librarian.web import settings_store
 
         load_count = [0]
         monkeypatch.setattr(
@@ -582,13 +582,13 @@ class TestCLISettingsLoad:
 
 class TestScanETA:
     def test_eta_empty_before_first_item(self):
-        from qobuz_fetch.web.flows import _fmt_eta
+        from qobuz_librarian.web.flows import _fmt_eta
         assert _fmt_eta(0.0, 0, 10) == ""
 
     def test_eta_minutes_format(self, monkeypatch):
         import time as _t
 
-        from qobuz_fetch.web import flows
+        from qobuz_librarian.web import flows
         # 5 done at t=60s, 95 to go → ETA 1140s = 19m 0s
         monkeypatch.setattr(_t, "monotonic", lambda: 60.0)
         eta = flows._fmt_eta(0.0, 5, 100)
@@ -597,7 +597,7 @@ class TestScanETA:
 
 class TestFileLogging:
     def test_attach_file_handler_writes_to_file(self, tmp_path):
-        from qobuz_fetch.ui_cli import logging as qlog
+        from qobuz_librarian.ui_cli import logging as qlog
         log_path = tmp_path / "qobuz-librarian.log"
         # Reset _file_handler so the call actually runs.
         if qlog._file_handler is not None:
@@ -619,7 +619,7 @@ class TestQuietFlag:
     def test_quiet_raises_logger_threshold_above_info(self):
         import logging
 
-        from qobuz_fetch.ui_cli.logging import log, set_quiet
+        from qobuz_librarian.ui_cli.logging import log, set_quiet
         set_quiet(True)
         try:
             assert log.level == logging.WARNING
@@ -630,7 +630,7 @@ class TestQuietFlag:
 
 class TestExitCodes:
     def test_die_uses_provided_code(self, capsys):
-        from qobuz_fetch.ui_cli.errors import EXIT_AUTH, die
+        from qobuz_librarian.ui_cli.errors import EXIT_AUTH, die
         with pytest.raises(SystemExit) as ei:
             die("auth failure msg", EXIT_AUTH)
         assert ei.value.code == EXIT_AUTH
@@ -639,7 +639,7 @@ class TestExitCodes:
 
 class TestParseQobuzURL:
     def _p(self, url):
-        from qobuz_fetch.cli import parse_qobuz_url
+        from qobuz_librarian.cli import parse_qobuz_url
         return parse_qobuz_url(url)
 
     def test_play_url(self):
@@ -654,7 +654,7 @@ def test_interactive_query_warns_on_non_qobuz_url(caplog):
     """A pasted non-Qobuz http URL must warn and re-prompt, not text-search it."""
     import logging
 
-    from qobuz_fetch.ui_cli.prompts import interactive_query
+    from qobuz_librarian.ui_cli.prompts import interactive_query
 
     with patch("builtins.input",
                side_effect=["https://example.com/album/123", "q"]):
@@ -668,7 +668,7 @@ def test_album_mode_track_url_at_interactive_prompt_explains_clearly(capsys):
     """A track URL at the interactive prompt must say so, not "Bad URL"."""
     import types
 
-    from qobuz_fetch.modes.album import run_album_mode
+    from qobuz_librarian.modes.album import run_album_mode
 
     args = types.SimpleNamespace(
         query=[], dry_run=False, force=False, yes=False,
@@ -677,9 +677,9 @@ def test_album_mode_track_url_at_interactive_prompt_explains_clearly(capsys):
         include_singles=False, auto_safe=False, upgrade_walk=False,
     )
 
-    with patch("qobuz_fetch.modes.album.interactive_query",
+    with patch("qobuz_librarian.modes.album.interactive_query",
                return_value=("__url__", "https://play.qobuz.com/track/12345")), \
-         patch("qobuz_fetch.modes.album.clear_scan_caches"):
+         patch("qobuz_librarian.modes.album.clear_scan_caches"):
         with pytest.raises(SystemExit):
             run_album_mode(args, "tok", loop=False)
     assert "track URL" in capsys.readouterr().err
@@ -688,8 +688,8 @@ def test_album_mode_track_url_at_interactive_prompt_explains_clearly(capsys):
 def test_album_mode_aborted_at_query_prompt_breaks_loop():
     import types
 
-    from qobuz_fetch.api.auth import Aborted
-    from qobuz_fetch.modes.album import run_album_mode
+    from qobuz_librarian.api.auth import Aborted
+    from qobuz_librarian.modes.album import run_album_mode
 
     album = {"id": "A1", "title": "Album", "artist": {"name": "Artist"}}
     args = types.SimpleNamespace(
@@ -706,10 +706,10 @@ def test_album_mode_aborted_at_query_prompt_breaks_loop():
             return album
         raise Aborted("loop exit")
 
-    with patch("qobuz_fetch.modes.album.resolve_album_from_args",
+    with patch("qobuz_librarian.modes.album.resolve_album_from_args",
                side_effect=fake_resolve), \
-         patch("qobuz_fetch.modes.album._interactive_album_action"), \
-         patch("qobuz_fetch.modes.album.process_album") as mock_process:
+         patch("qobuz_librarian.modes.album._interactive_album_action"), \
+         patch("qobuz_librarian.modes.album.process_album") as mock_process:
         run_album_mode(args, "tok", loop=True)
 
     assert mock_process.called is False
@@ -723,15 +723,15 @@ class TestRepairBackupResolution:
     def _call_repair(self, tmp_path, monkeypatch, *, n_ok, n_fail, imported):
         from argparse import Namespace
 
-        import qobuz_fetch.modes.repair as repair_mod
+        import qobuz_librarian.modes.repair as repair_mod
 
         album_dir = tmp_path / "Artist" / "Album (2020)"
         album_dir.mkdir(parents=True)
         track = album_dir / "01 - Track.flac"
         track.write_bytes(b"\x00" * 200)
 
-        monkeypatch.setattr("qobuz_fetch.config.UPGRADE_BACKUP_DIR", tmp_path / "backups")
-        monkeypatch.setattr("qobuz_fetch.config.REPAIR_LOG_PATH", tmp_path / "repair.log")
+        monkeypatch.setattr("qobuz_librarian.config.UPGRADE_BACKUP_DIR", tmp_path / "backups")
+        monkeypatch.setattr("qobuz_librarian.config.REPAIR_LOG_PATH", tmp_path / "repair.log")
         monkeypatch.setattr(repair_mod, "get_album",
                             lambda aid, tok: {"id": aid, "title": "Album",
                                              "tracks": {"items": []}})
@@ -750,7 +750,7 @@ class TestRepairBackupResolution:
                "file_length": 5.0}]
         args = Namespace(force=False, yes=True, prefer_hires=False,
                          consolidate=False, no_upgrade=False)
-        from qobuz_fetch.modes.repair import repair_album_dir
+        from qobuz_librarian.modes.repair import repair_album_dir
         return repair_album_dir(album_dir, vt, "Artist", args, "tok")
 
     def _backup_files(self, tmp_path):
@@ -777,7 +777,7 @@ class TestRepairBackupResolution:
     def test_backup_failure_leaves_original_intact(self, tmp_path, monkeypatch):
         from argparse import Namespace
 
-        import qobuz_fetch.modes.repair as repair_mod
+        import qobuz_librarian.modes.repair as repair_mod
 
         album_dir = tmp_path / "Artist" / "Album (2020)"
         album_dir.mkdir(parents=True)
@@ -805,13 +805,13 @@ class TestRepairBackupResolution:
 class TestWalkSeenFile:
     def test_parses_written_artist(self, tmp_path, monkeypatch):
         f = tmp_path / "walk_seen.txt"
-        monkeypatch.setattr("qobuz_fetch.config.WALK_SEEN_FILE", f)
+        monkeypatch.setattr("qobuz_librarian.config.WALK_SEEN_FILE", f)
         record_walk_seen("Radiohead")
         assert "radiohead" in load_walk_seen()
 
     def test_record_is_idempotent(self, tmp_path, monkeypatch):
         f = tmp_path / "walk_seen.txt"
-        monkeypatch.setattr("qobuz_fetch.config.WALK_SEEN_FILE", f)
+        monkeypatch.setattr("qobuz_librarian.config.WALK_SEEN_FILE", f)
         record_walk_seen("Beatles")
         record_walk_seen("Beatles")
         lines = [l for l in f.read_text().splitlines()
@@ -821,11 +821,11 @@ class TestWalkSeenFile:
     def test_interrupted_write_preserves_prior_entries(self, tmp_path, monkeypatch):
         """A crash during the rename step must leave the file unchanged, not half-written."""
         f = tmp_path / "walk_seen.txt"
-        monkeypatch.setattr("qobuz_fetch.config.WALK_SEEN_FILE", f)
+        monkeypatch.setattr("qobuz_librarian.config.WALK_SEEN_FILE", f)
         record_walk_seen("Radiohead")
         prior_bytes = f.read_bytes()
 
-        import qobuz_fetch.modes.walk as walk_mod
+        import qobuz_librarian.modes.walk as walk_mod
         monkeypatch.setattr(walk_mod.os, "replace",
                             lambda *_a: (_ for _ in ()).throw(OSError("crashed")))
         record_walk_seen("Portishead")
@@ -838,7 +838,7 @@ class TestAlbumWalkFilterIsSubstring:
     def test_single_letter_matches_anywhere_in_name(self, monkeypatch):
         from types import SimpleNamespace
 
-        from qobuz_fetch.modes import walk
+        from qobuz_librarian.modes import walk
 
         def _fake_artist(name):
             p = MagicMock(spec=Path)
@@ -890,13 +890,13 @@ class TestAlbumWalkSeenFile:
 
     def test_parses_written_entry(self, tmp_path, monkeypatch):
         f = tmp_path / "album_walk_seen.txt"
-        monkeypatch.setattr("qobuz_fetch.config.ALBUM_WALK_SEEN_FILE", f)
+        monkeypatch.setattr("qobuz_librarian.config.ALBUM_WALK_SEEN_FILE", f)
         record_album_walk_seen("Radiohead", "OK Computer")
         assert _album_seen_key("Radiohead", "OK Computer") in load_album_walk_seen()
 
     def test_record_is_idempotent(self, tmp_path, monkeypatch):
         f = tmp_path / "album_walk_seen.txt"
-        monkeypatch.setattr("qobuz_fetch.config.ALBUM_WALK_SEEN_FILE", f)
+        monkeypatch.setattr("qobuz_librarian.config.ALBUM_WALK_SEEN_FILE", f)
         record_album_walk_seen("Beatles", "Abbey Road")
         record_album_walk_seen("Beatles", "Abbey Road")
         lines = [l for l in f.read_text().splitlines()
@@ -909,8 +909,8 @@ class TestScanReportRepair:
               verified_truncated=None, yes=True, input_return="y"):
         from argparse import Namespace
 
-        import qobuz_fetch.modes.repair as repair_mod
-        from qobuz_fetch.modes.repair import _scan_report_repair
+        import qobuz_librarian.modes.repair as repair_mod
+        from qobuz_librarian.modes.repair import _scan_report_repair
 
         album_dir = tmp_path / "Artist" / "Album (2022)"
         album_dir.mkdir(parents=True)
@@ -960,8 +960,8 @@ class TestModeEntryPoints:
         """CatalogMiss in non-loop mode causes run_album_mode to return."""
         import types
 
-        from qobuz_fetch.api.auth import CatalogMiss
-        from qobuz_fetch.modes.album import run_album_mode
+        from qobuz_librarian.api.auth import CatalogMiss
+        from qobuz_librarian.modes.album import run_album_mode
 
         args = types.SimpleNamespace(
             query="test query", dry_run=False, force=False, yes=True,
@@ -969,9 +969,9 @@ class TestModeEntryPoints:
             no_upgrade=False, prefer_hires=False, no_compress=False,
             include_singles=False, auto_safe=False, upgrade_walk=False,
         )
-        with patch("qobuz_fetch.modes.album.resolve_album_from_args",
+        with patch("qobuz_librarian.modes.album.resolve_album_from_args",
                    side_effect=CatalogMiss("not found")), \
-             patch("qobuz_fetch.modes.album.clear_scan_caches"):
+             patch("qobuz_librarian.modes.album.clear_scan_caches"):
             result = run_album_mode(args, "tok", loop=False)
         assert result is None
 
@@ -979,16 +979,16 @@ class TestModeEntryPoints:
         """User cancelling the picker in non-loop mode causes clean return."""
         import types
 
-        from qobuz_fetch.modes.repair import run_album_repair_mode
+        from qobuz_librarian.modes.repair import run_album_repair_mode
 
         args = types.SimpleNamespace(
             query=None, dry_run=False, force=False, yes=False,
             no_import=False, verbose=False, consolidate=False,
             no_upgrade=False, prefer_hires=False, no_compress=False,
         )
-        with patch("qobuz_fetch.modes.repair._prompt_library_album_for_repair",
+        with patch("qobuz_librarian.modes.repair._prompt_library_album_for_repair",
                    return_value=(None, None)), \
-             patch("qobuz_fetch.modes.repair.clear_scan_caches"):
+             patch("qobuz_librarian.modes.repair.clear_scan_caches"):
             result = run_album_repair_mode(args, "tok", loop=False)
         assert result is None
 
@@ -996,15 +996,15 @@ class TestModeEntryPoints:
         """Empty library causes upgrade walk to return without prompting."""
         import types
 
-        from qobuz_fetch.modes.upgrade import run_upgrade_walk_mode
+        from qobuz_librarian.modes.upgrade import run_upgrade_walk_mode
 
         args = types.SimpleNamespace(
             dry_run=False, yes=False, auto_safe=False, force=False,
             consolidate=False, no_import=False, verbose=False,
             no_compress=False, prefer_hires=False,
         )
-        with patch("qobuz_fetch.modes.upgrade.list_library_artists", return_value=[]), \
-             patch("qobuz_fetch.modes.upgrade.clear_scan_caches"):
+        with patch("qobuz_librarian.modes.upgrade.list_library_artists", return_value=[]), \
+             patch("qobuz_librarian.modes.upgrade.clear_scan_caches"):
             result = run_upgrade_walk_mode(args, "tok")
         assert result is None
 
@@ -1013,7 +1013,7 @@ class TestAlbumModeEntry:
     def test_resolved_album_is_forwarded_to_process_album(self):
         import types
 
-        from qobuz_fetch.modes.album import run_album_mode
+        from qobuz_librarian.modes.album import run_album_mode
 
         album = {"id": "A1", "title": "Abbey Road",
                  "artist": {"name": "The Beatles"}}
@@ -1023,10 +1023,10 @@ class TestAlbumModeEntry:
             no_upgrade=False, prefer_hires=False, no_compress=False,
             include_singles=False, auto_safe=False, upgrade_walk=False,
         )
-        with patch("qobuz_fetch.modes.album.resolve_album_from_args",
+        with patch("qobuz_librarian.modes.album.resolve_album_from_args",
                    return_value=album), \
-             patch("qobuz_fetch.modes.album.process_album") as mock_process, \
-             patch("qobuz_fetch.modes.album.clear_scan_caches"):
+             patch("qobuz_librarian.modes.album.process_album") as mock_process, \
+             patch("qobuz_librarian.modes.album.clear_scan_caches"):
             run_album_mode(args, "tok", loop=False)
 
         # Single behavioural assert: the same album dict made it through.
@@ -1037,9 +1037,9 @@ class TestAlbumModeEntry:
     def test_auth_lost_exits_with_exit_auth_code(self):
         import types
 
-        from qobuz_fetch.api.auth import AuthLost
-        from qobuz_fetch.modes.album import run_album_mode
-        from qobuz_fetch.ui_cli.errors import EXIT_AUTH
+        from qobuz_librarian.api.auth import AuthLost
+        from qobuz_librarian.modes.album import run_album_mode
+        from qobuz_librarian.ui_cli.errors import EXIT_AUTH
 
         args = types.SimpleNamespace(
             query=["x"], dry_run=False, force=False, yes=False,
@@ -1047,9 +1047,9 @@ class TestAlbumModeEntry:
             no_upgrade=False, prefer_hires=False, no_compress=False,
             include_singles=False, auto_safe=False, upgrade_walk=False,
         )
-        with patch("qobuz_fetch.modes.album.resolve_album_from_args",
+        with patch("qobuz_librarian.modes.album.resolve_album_from_args",
                    side_effect=AuthLost("401 from test")), \
-             patch("qobuz_fetch.modes.album.clear_scan_caches"):
+             patch("qobuz_librarian.modes.album.clear_scan_caches"):
             with pytest.raises(SystemExit) as exc:
                 run_album_mode(args, "tok", query_args=["x"], loop=False)
         assert exc.value.code == EXIT_AUTH
@@ -1081,8 +1081,8 @@ class TestAlbumModeFriendlyError:
     def test_one_shot_qobuz_error_uses_friendly_message(self, caplog):
         import types
 
-        from qobuz_fetch.api.auth import QobuzError
-        from qobuz_fetch.modes import album as album_mod
+        from qobuz_librarian.api.auth import QobuzError
+        from qobuz_librarian.modes import album as album_mod
 
         args = types.SimpleNamespace(
             query="anything", dry_run=False, force=False, yes=True,

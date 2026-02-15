@@ -66,8 +66,8 @@ RUN pip install --no-cache-dir -r requirements.txt \
 COPY package.json package-lock.json tailwind.config.js ./
 RUN npm ci --no-audit --no-fund \
  && ./node_modules/.bin/tailwindcss \
-        -i src/qobuz_fetch/web/static/src/app.css \
-        -o src/qobuz_fetch/web/static/dist/app.css \
+        -i src/qobuz_librarian/web/static/src/app.css \
+        -o src/qobuz_librarian/web/static/dist/app.css \
         --minify
 
 # ── Runtime ───────────────────────────────────────────────────────────────────
@@ -113,8 +113,8 @@ COPY --chown=appuser:appuser src/ ./src/
 
 # Tailwind CSS bundle built in the builder stage.
 COPY --from=builder --chown=appuser:appuser \
-     /app/src/qobuz_fetch/web/static/dist/ \
-     /app/src/qobuz_fetch/web/static/dist/
+     /app/src/qobuz_librarian/web/static/dist/ \
+     /app/src/qobuz_librarian/web/static/dist/
 
 # Default config templates (entrypoint seeds them into /config).
 COPY --chown=appuser:appuser docker/beets-default.yaml /app/docker/beets-default.yaml
@@ -127,7 +127,7 @@ EXPOSE 8666
 
 # Explicit marker for the `_in_container()` runtime check in cli.py — Docker
 # also creates /.dockerenv, but this also covers Podman/Buildah/rootless.
-ENV QF_IN_CONTAINER=1
+ENV QL_IN_CONTAINER=1
 # entrypoint.sh exports BEETSDIR for the PID-1 process tree, but
 # `docker exec ... beet ...` doesn't inherit that. Set it at the image
 # level so ad-hoc beets commands inside the container find the library

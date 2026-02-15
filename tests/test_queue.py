@@ -7,8 +7,8 @@ from unittest.mock import patch
 
 import pytest
 
-from qobuz_fetch.queue.builder import _build_queue_item
-from qobuz_fetch.queue.persistence import (
+from qobuz_librarian.queue.builder import _build_queue_item
+from qobuz_librarian.queue.persistence import (
     _deserialize_queue_item,
     _serialize_queue_item,
     clear_pending_queue,
@@ -93,7 +93,7 @@ class TestQueuePersistence:
 
     def test_round_trip_single_item(self, tmp_path, monkeypatch):
         qfile = tmp_path / "queue.json"
-        monkeypatch.setattr("qobuz_fetch.config.PENDING_QUEUE_FILE", qfile)
+        monkeypatch.setattr("qobuz_librarian.config.PENDING_QUEUE_FILE", qfile)
         item = self._make_item(title="Album A")
         save_pending_queue([item], mode="album_walk")
         items, mode, _ = load_pending_queue()
@@ -103,7 +103,7 @@ class TestQueuePersistence:
 
     def test_load_rejects_wrong_version(self, tmp_path, monkeypatch):
         qfile = tmp_path / "queue.json"
-        monkeypatch.setattr("qobuz_fetch.config.PENDING_QUEUE_FILE", qfile)
+        monkeypatch.setattr("qobuz_librarian.config.PENDING_QUEUE_FILE", qfile)
         payload = {"version": 99, "items": [], "mode": "album_walk", "count": 0}
         qfile.write_text(json.dumps(payload))
         items, mode, _ = load_pending_queue()
@@ -111,7 +111,7 @@ class TestQueuePersistence:
 
     def test_clear_removes_file(self, tmp_path, monkeypatch):
         qfile = tmp_path / "queue.json"
-        monkeypatch.setattr("qobuz_fetch.config.PENDING_QUEUE_FILE", qfile)
+        monkeypatch.setattr("qobuz_librarian.config.PENDING_QUEUE_FILE", qfile)
         save_pending_queue([self._make_item()], mode="album_walk")
         assert qfile.exists()
         clear_pending_queue()
@@ -119,14 +119,14 @@ class TestQueuePersistence:
 
     def test_save_failure_does_not_raise(self, tmp_path, monkeypatch):
         qfile = tmp_path / "nowrite" / "queue.json"
-        monkeypatch.setattr("qobuz_fetch.config.PENDING_QUEUE_FILE", qfile)
+        monkeypatch.setattr("qobuz_librarian.config.PENDING_QUEUE_FILE", qfile)
         with patch("pathlib.Path.mkdir", side_effect=OSError("no perms")):
             save_pending_queue([self._make_item()], mode="album_walk")
         assert not qfile.exists()
 
     def test_saved_at_is_valid_iso(self, tmp_path, monkeypatch):
         qfile = tmp_path / "queue.json"
-        monkeypatch.setattr("qobuz_fetch.config.PENDING_QUEUE_FILE", qfile)
+        monkeypatch.setattr("qobuz_librarian.config.PENDING_QUEUE_FILE", qfile)
         save_pending_queue([self._make_item()], mode="album_walk")
         _, _, saved_at = load_pending_queue()
         assert saved_at is not None
@@ -136,12 +136,12 @@ class TestQueuePersistence:
         # A queue file that parses as a list/string must not crash startup.
         qfile = tmp_path / "queue.json"
         qfile.write_text('["a", "b"]', encoding="utf-8")
-        monkeypatch.setattr("qobuz_fetch.config.PENDING_QUEUE_FILE", qfile)
+        monkeypatch.setattr("qobuz_librarian.config.PENDING_QUEUE_FILE", qfile)
         assert load_pending_queue() == (None, None, None)
 
     def test_resume_keeps_queue_on_silent_beets_failure(self, tmp_path, monkeypatch):
         qfile = tmp_path / "queue.json"
-        monkeypatch.setattr("qobuz_fetch.config.PENDING_QUEUE_FILE", qfile)
+        monkeypatch.setattr("qobuz_librarian.config.PENDING_QUEUE_FILE", qfile)
         save_pending_queue([self._make_item()], mode="walk_queue")
         assert qfile.exists()
 
@@ -149,7 +149,7 @@ class TestQueuePersistence:
             return [], False
 
         monkeypatch.setattr(
-            "qobuz_fetch.queue.executor._execute_download_queue", fake_execute)
+            "qobuz_librarian.queue.executor._execute_download_queue", fake_execute)
         monkeypatch.setattr("builtins.input", lambda _prompt: "y")
 
         offer_resume_pending_queue(Namespace(), "tok")
@@ -160,7 +160,7 @@ class TestQueuePersistence:
 
 def test_executor_uses_per_track_urls_with_force_flag(monkeypatch):
     """11 of 14 missing → ratio 0.78 ≥ 0.7, which WOULD trigger the whole-album URL."""
-    from qobuz_fetch.queue import executor
+    from qobuz_librarian.queue import executor
 
     tracks = [{"id": i, "title": f"T{i}"} for i in range(1, 15)]
     missing = tracks[:11]
@@ -179,7 +179,7 @@ def test_executor_uses_per_track_urls_with_force_flag(monkeypatch):
 
     monkeypatch.setattr(executor, "rip_url", fake_rip)
     monkeypatch.setattr(executor, "files_added_since", lambda _s: [])
-    monkeypatch.setattr("qobuz_fetch.api.auth.detect_auth_lost", lambda _o: False)
+    monkeypatch.setattr("qobuz_librarian.api.auth.detect_auth_lost", lambda _o: False)
     monkeypatch.setattr(executor.time, "sleep", lambda _s: None)
 
     executor._download_for_queue_item(item)
@@ -198,7 +198,7 @@ def test_executor_uses_per_track_urls_with_force_flag(monkeypatch):
     (5, 4, True),      # hits the floor of 4 → full-album
 ])
 def test_download_strategy_boundary(total, missing, expect_full, monkeypatch):
-    from qobuz_fetch.queue import executor
+    from qobuz_librarian.queue import executor
 
     tracks = [{"id": i, "title": f"T{i}"} for i in range(total)]
     item = _build_queue_item(
@@ -211,7 +211,7 @@ def test_download_strategy_boundary(total, missing, expect_full, monkeypatch):
     monkeypatch.setattr(executor, "rip_url",
                         lambda url, **kw: (seen.append(url), (0, ""))[1])
     monkeypatch.setattr(executor, "files_added_since", lambda _s: [])
-    monkeypatch.setattr("qobuz_fetch.api.auth.detect_auth_lost", lambda _o: False)
+    monkeypatch.setattr("qobuz_librarian.api.auth.detect_auth_lost", lambda _o: False)
     monkeypatch.setattr(executor.time, "sleep", lambda _s: None)
 
     executor._download_for_queue_item(item)
@@ -219,7 +219,7 @@ def test_download_strategy_boundary(total, missing, expect_full, monkeypatch):
 
 
 def test_executor_recovers_edition_suffix_track_that_landed(monkeypatch, tmp_path):
-    from qobuz_fetch.queue import executor
+    from qobuz_librarian.queue import executor
 
     tracks = [{"id": i, "title": t} for i, t in enumerate(
         ["A", "B", "C", "D", "Hungry Heart (Single Version)"], 1)]
@@ -235,7 +235,7 @@ def test_executor_recovers_edition_suffix_track_that_landed(monkeypatch, tmp_pat
     monkeypatch.setattr(executor, "rip_url", lambda url, **kw: (1, "error"))
     monkeypatch.setattr(executor, "files_added_since", lambda _s: [landed])
     monkeypatch.setattr(executor, "cleanup_lossy", lambda files: (list(files), []))
-    monkeypatch.setattr("qobuz_fetch.api.auth.detect_auth_lost", lambda _o: False)
+    monkeypatch.setattr("qobuz_librarian.api.auth.detect_auth_lost", lambda _o: False)
     monkeypatch.setattr(executor.time, "sleep", lambda _s: None)
 
     executor._download_for_queue_item(item)
@@ -245,7 +245,7 @@ def test_executor_recovers_edition_suffix_track_that_landed(monkeypatch, tmp_pat
 
 
 def test_executor_retries_lossy_track_once_recovers(monkeypatch, tmp_path):
-    from qobuz_fetch.queue import executor
+    from qobuz_librarian.queue import executor
 
     tracks = [{"id": 1, "title": "A"}, {"id": 2, "title": "Star"}]
     item = _build_queue_item(
@@ -289,13 +289,13 @@ def test_executor_retries_lossy_track_once_recovers(monkeypatch, tmp_path):
 
 def test_executor_gap_fill_backup_restored_when_track_returns_lossy(monkeypatch, tmp_path):
     """Queue-mode gap-fill backs up present tracks before re-ripping."""
-    from qobuz_fetch.library import backup as bkmod
-    from qobuz_fetch.queue import executor
+    from qobuz_librarian.library import backup as bkmod
+    from qobuz_librarian.queue import executor
 
     album_dir = tmp_path / "music" / "Artist" / "Album"
     album_dir.mkdir(parents=True)
     (album_dir / "02 - kept.flac").write_bytes(b"\x00" * 1000)
-    monkeypatch.setattr("qobuz_fetch.config.UPGRADE_BACKUP_DIR", tmp_path / "backups")
+    monkeypatch.setattr("qobuz_librarian.config.UPGRADE_BACKUP_DIR", tmp_path / "backups")
     owned = album_dir / "01 - owned.flac"
     owned.write_bytes(b"the-owned-original")
     gfb = bkmod.backup_gap_fill_files([str(owned)], album_dir)

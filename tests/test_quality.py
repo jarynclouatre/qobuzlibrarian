@@ -4,7 +4,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from qobuz_fetch.quality.decision import (
+from qobuz_librarian.quality.decision import (
     _track_quality_cmp,
     album_max_quality,
     compare_album_quality,
@@ -15,7 +15,7 @@ from qobuz_fetch.quality.decision import (
     quality_change_summary,
     save_capped,
 )
-from qobuz_fetch.quality.tiers import (
+from qobuz_librarian.quality.tiers import (
     format_quality,
     streamrip_quality_cap,
 )
@@ -26,7 +26,7 @@ def fresh_quality_cap():
     """Reset the streamrip cap cache so tests that read it see config, not
     state leaked from a previous case. Previous shape used setup_method /
     teardown_method which hid this precondition inside three classes."""
-    import qobuz_fetch.quality.tiers as tiers_mod
+    import qobuz_librarian.quality.tiers as tiers_mod
     tiers_mod._streamrip_cap_cache = None
     yield
     tiers_mod._streamrip_cap_cache = None
@@ -36,7 +36,7 @@ def fresh_quality_cap():
 def primed_quality_cap_24_192():
     """Seed the cap cache with (24, 192000) so album_max_quality tests
     can exercise the cap logic without dragging in a streamrip subprocess."""
-    import qobuz_fetch.quality.tiers as tiers_mod
+    import qobuz_librarian.quality.tiers as tiers_mod
     tiers_mod._streamrip_cap_cache = (24, 192000)
     yield
     tiers_mod._streamrip_cap_cache = None
@@ -60,13 +60,13 @@ class TestStreamripQualityCap:
         ("3", (24, 96000)),
     ])
     def test_cap_for_quality(self, quality, expected):
-        with patch("qobuz_fetch.config.STREAMRIP_QUALITY", quality):
+        with patch("qobuz_librarian.config.STREAMRIP_QUALITY", quality):
             assert streamrip_quality_cap() == expected
 
     def test_result_is_cached(self):
-        with patch("qobuz_fetch.config.STREAMRIP_QUALITY", 3):
+        with patch("qobuz_librarian.config.STREAMRIP_QUALITY", 3):
             first = streamrip_quality_cap()
-        with patch("qobuz_fetch.config.STREAMRIP_QUALITY", 4):
+        with patch("qobuz_librarian.config.STREAMRIP_QUALITY", 4):
             second = streamrip_quality_cap()
         assert first == second == (24, 96000)
 
@@ -80,7 +80,7 @@ class TestAlbumMaxQuality:
         assert bd == 24 and sr == 96000
 
     def test_cap_applied_at_96khz(self):
-        import qobuz_fetch.quality.tiers as tiers_mod
+        import qobuz_librarian.quality.tiers as tiers_mod
         tiers_mod._streamrip_cap_cache = (24, 96000)
         album = {"maximum_bit_depth": 24, "maximum_sampling_rate": 192.0}
         bd, sr = album_max_quality(album)
@@ -171,14 +171,14 @@ class TestIsAlbumCapped:
 
 class TestCappedPersistence:
     def test_round_trip(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("qobuz_fetch.config.CAPPED_FILE", tmp_path / "capped.json")
+        monkeypatch.setattr("qobuz_librarian.config.CAPPED_FILE", tmp_path / "capped.json")
         ts = datetime.now(timezone.utc).isoformat()
         data = {"123": {"ts": ts, "title": "Alive"}}
         save_capped(data)
         assert load_capped() == {"123": {"ts": ts, "title": "Alive"}}
 
     def test_save_prunes_expired_entries(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("qobuz_fetch.config.CAPPED_FILE", tmp_path / "capped.json")
+        monkeypatch.setattr("qobuz_librarian.config.CAPPED_FILE", tmp_path / "capped.json")
         old_ts = (datetime.now(timezone.utc) - timedelta(days=100)).isoformat()
         fresh_ts = datetime.now(timezone.utc).isoformat()
         save_capped({
@@ -194,5 +194,5 @@ class TestCappedPersistence:
         # is_album_capped's `.get` and crash the upgrade scan.
         cfile = tmp_path / "capped.json"
         cfile.write_text('["x", "y"]', encoding="utf-8")
-        monkeypatch.setattr("qobuz_fetch.config.CAPPED_FILE", cfile)
+        monkeypatch.setattr("qobuz_librarian.config.CAPPED_FILE", cfile)
         assert load_capped() == {}

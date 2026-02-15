@@ -1,7 +1,7 @@
-"""Tests for qobuz_fetch.library.tags"""
+"""Tests for qobuz_librarian.library.tags"""
 import pytest
 
-from qobuz_fetch.library.tags import (
+from qobuz_librarian.library.tags import (
     beets_sanitize,
     clean_qobuz_string,
     normalize,
@@ -151,7 +151,7 @@ class TestDownsampleAliasing:
         monkeypatch.delenv("DOWNSAMPLE_HIRES_ENABLED", raising=False)
         import importlib
 
-        from qobuz_fetch import config as cfg
+        from qobuz_librarian import config as cfg
         importlib.reload(cfg)
         assert cfg.DOWNSAMPLE_HIRES_ENABLED is True
         assert cfg.COMPRESS_ENABLED is True
@@ -161,14 +161,14 @@ class TestDownsampleAliasing:
         monkeypatch.setenv("DOWNSAMPLE_HIRES_ENABLED", "1")
         import importlib
 
-        from qobuz_fetch import config as cfg
+        from qobuz_librarian import config as cfg
         importlib.reload(cfg)
         assert cfg.DOWNSAMPLE_HIRES_ENABLED is True
         assert cfg.COMPRESS_ENABLED is True
 
     def test_settings_store_apply_mirrors_legacy_key(self, monkeypatch):
-        from qobuz_fetch import config as cfg
-        from qobuz_fetch.web import settings_store
+        from qobuz_librarian import config as cfg
+        from qobuz_librarian.web import settings_store
 
         monkeypatch.setattr(cfg, "DOWNSAMPLE_HIRES_ENABLED", False)
         monkeypatch.setattr(cfg, "COMPRESS_ENABLED", False)
@@ -177,8 +177,8 @@ class TestDownsampleAliasing:
         assert cfg.COMPRESS_ENABLED is True
 
     def test_settings_store_apply_canonical_key_sets_both(self, monkeypatch):
-        from qobuz_fetch import config as cfg
-        from qobuz_fetch.web import settings_store
+        from qobuz_librarian import config as cfg
+        from qobuz_librarian.web import settings_store
 
         monkeypatch.setattr(cfg, "DOWNSAMPLE_HIRES_ENABLED", False)
         monkeypatch.setattr(cfg, "COMPRESS_ENABLED", False)
@@ -187,7 +187,7 @@ class TestDownsampleAliasing:
         assert cfg.COMPRESS_ENABLED is True
 
     def test_have_downsample_alias_exists(self):
-        from qobuz_fetch.integrations import compress as comp_mod
+        from qobuz_librarian.integrations import compress as comp_mod
         assert hasattr(comp_mod, "HAVE_DOWNSAMPLE")
         assert hasattr(comp_mod, "HAVE_COMPRESS")
         assert comp_mod.HAVE_DOWNSAMPLE == comp_mod.HAVE_COMPRESS

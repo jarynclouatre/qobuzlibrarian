@@ -6,18 +6,18 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from qobuz_fetch.integrations.beets import (
+from qobuz_librarian.integrations.beets import (
     _ALBUM_FIELD_SEP,
     _duplicate_album_dirs,
     _merge_split_folder,
     _yaml_sq,
 )
-from qobuz_fetch.integrations.lyrics import (
+from qobuz_librarian.integrations.lyrics import (
     _resolve_signatures_to_paths,
     load_lyric_retry,
     save_lyric_retry,
 )
-from qobuz_fetch.integrations.rip import (
+from qobuz_librarian.integrations.rip import (
     cleanup_lossy,
     cleanup_staging_residue,
     files_added_since,
@@ -57,7 +57,7 @@ class TestCleanupLossy:
     def test_keeps_valid_flac(self, tmp_path):
         f = tmp_path / "track.flac"
         f.write_bytes(b"\x00" * 200_000)
-        with patch("qobuz_fetch.integrations.rip.is_flac", return_value=True):
+        with patch("qobuz_librarian.integrations.rip.is_flac", return_value=True):
             kept, deleted = cleanup_lossy([f])
         assert f in kept
 
@@ -71,7 +71,7 @@ class TestCleanupLossy:
 
 class TestStagingSnapshot:
     def test_files_added_since_finds_new_files(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("qobuz_fetch.config.STAGING_DIR", tmp_path)
+        monkeypatch.setattr("qobuz_librarian.config.STAGING_DIR", tmp_path)
         existing = tmp_path / "old.flac"
         existing.write_bytes(b"x")
         prior = {existing}
@@ -84,7 +84,7 @@ class TestStagingSnapshot:
 
 class TestCleanupStagingResidue:
     def test_removes_jpg_files(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("qobuz_fetch.config.STAGING_DIR", tmp_path)
+        monkeypatch.setattr("qobuz_librarian.config.STAGING_DIR", tmp_path)
         jpg = tmp_path / "cover.jpg"
         jpg.write_bytes(b"img")
         count = cleanup_staging_residue()
@@ -93,7 +93,7 @@ class TestCleanupStagingResidue:
 
     def test_keeps_residue_named_album_with_audio(self, tmp_path, monkeypatch):
         """A dir whose name matches a residue entry but holds audio is a real album."""
-        monkeypatch.setattr("qobuz_fetch.config.STAGING_DIR", tmp_path)
+        monkeypatch.setattr("qobuz_librarian.config.STAGING_DIR", tmp_path)
         album = tmp_path / "Athlete" / "Artwork"
         album.mkdir(parents=True)
         (album / "01 - Track.flac").write_bytes(b"audio data" * 1000)
@@ -104,7 +104,7 @@ class TestCleanupStagingResidue:
 
     def test_keeps_residue_named_dir_with_cue_file(self, tmp_path, monkeypatch):
         """A dir containing a .cue sheet is a real album dir, not residue."""
-        monkeypatch.setattr("qobuz_fetch.config.STAGING_DIR", tmp_path)
+        monkeypatch.setattr("qobuz_librarian.config.STAGING_DIR", tmp_path)
         cover = tmp_path / "cover"
         cover.mkdir()
         (cover / "disc.cue").write_text("FILE track.flac WAVE")
@@ -113,7 +113,7 @@ class TestCleanupStagingResidue:
 
     def test_removes_residue_named_dir_with_only_images(self, tmp_path, monkeypatch):
         """A residue-named dir containing only images is streamrip residue — remove it."""
-        monkeypatch.setattr("qobuz_fetch.config.STAGING_DIR", tmp_path)
+        monkeypatch.setattr("qobuz_librarian.config.STAGING_DIR", tmp_path)
         cover = tmp_path / "cover"
         cover.mkdir()
         (cover / "cover.jpg").write_bytes(b"img")
@@ -174,8 +174,8 @@ class TestMergeSplitFolder:
             conn.execute("CREATE TABLE items (id INTEGER PRIMARY KEY, path BLOB)")
             conn.execute("INSERT INTO items (path) VALUES (?)",
                          (b"Artist/Album/01 - x.flac",))
-        monkeypatch.setattr("qobuz_fetch.config.MUSIC_ROOT", tmp_path)
-        monkeypatch.setattr("qobuz_fetch.config.BEETS_DB_PATH", db)
+        monkeypatch.setattr("qobuz_librarian.config.MUSIC_ROOT", tmp_path)
+        monkeypatch.setattr("qobuz_librarian.config.BEETS_DB_PATH", db)
         source = tmp_path / "Artist" / "Album"
         dest = tmp_path / "Artist" / "Album (2010)"
         source.mkdir(parents=True)
@@ -189,16 +189,16 @@ class TestMergeSplitFolder:
 class TestLyricRetry:
     def test_round_trip(self, tmp_path, monkeypatch):
         rfile = tmp_path / "retry.json"
-        monkeypatch.setattr("qobuz_fetch.config.LYRIC_RETRY_FILE", rfile)
-        monkeypatch.setattr("qobuz_fetch.config.LYRIC_RETRY_VERSION", 1)
+        monkeypatch.setattr("qobuz_librarian.config.LYRIC_RETRY_FILE", rfile)
+        monkeypatch.setattr("qobuz_librarian.config.LYRIC_RETRY_VERSION", 1)
         save_lyric_retry(["/music/a.flac", "/music/b.flac"])
         loaded = load_lyric_retry()
         assert loaded == ["/music/a.flac", "/music/b.flac"]
 
     def test_save_empty_removes_file(self, tmp_path, monkeypatch):
         rfile = tmp_path / "retry.json"
-        monkeypatch.setattr("qobuz_fetch.config.LYRIC_RETRY_FILE", rfile)
-        monkeypatch.setattr("qobuz_fetch.config.LYRIC_RETRY_VERSION", 1)
+        monkeypatch.setattr("qobuz_librarian.config.LYRIC_RETRY_FILE", rfile)
+        monkeypatch.setattr("qobuz_librarian.config.LYRIC_RETRY_VERSION", 1)
         save_lyric_retry(["/music/a.flac"])
         assert rfile.exists()
         save_lyric_retry([])
@@ -207,19 +207,19 @@ class TestLyricRetry:
     def test_load_returns_empty_on_corrupt_json(self, tmp_path, monkeypatch):
         rfile = tmp_path / "retry.json"
         rfile.write_text("NOT JSON")
-        monkeypatch.setattr("qobuz_fetch.config.LYRIC_RETRY_FILE", rfile)
-        monkeypatch.setattr("qobuz_fetch.config.LYRIC_RETRY_VERSION", 1)
+        monkeypatch.setattr("qobuz_librarian.config.LYRIC_RETRY_FILE", rfile)
+        monkeypatch.setattr("qobuz_librarian.config.LYRIC_RETRY_VERSION", 1)
         assert load_lyric_retry() == []
 
     def test_load_returns_empty_on_valid_json_that_is_not_an_object(
             self, tmp_path, monkeypatch):
         # A manifest that parses as JSON but is a list/string/number must not
         # crash load_lyric_retry — it's called on the dashboard and at startup.
-        monkeypatch.setattr("qobuz_fetch.config.LYRIC_RETRY_VERSION", 1)
+        monkeypatch.setattr("qobuz_librarian.config.LYRIC_RETRY_VERSION", 1)
         for payload in ('["a", "b"]', '"a string"', '42'):
             rfile = tmp_path / "retry.json"
             rfile.write_text(payload)
-            monkeypatch.setattr("qobuz_fetch.config.LYRIC_RETRY_FILE", rfile)
+            monkeypatch.setattr("qobuz_librarian.config.LYRIC_RETRY_FILE", rfile)
             assert load_lyric_retry() == []
 
 
@@ -228,7 +228,7 @@ class TestResolveSignaturesToPaths:
         f = tmp_path / "track.flac"
         f.write_bytes(b"\x00" * 1000)
         sig = ("artist", "album", 1, 1, "title")
-        with patch("qobuz_fetch.integrations.rip._flac_signature", return_value=sig):
+        with patch("qobuz_librarian.integrations.rip._flac_signature", return_value=sig):
             result = _resolve_signatures_to_paths([(sig, "staging/track.flac")], [tmp_path])
         assert str(f) in result
 
@@ -237,7 +237,7 @@ class TestResolveSignaturesToPaths:
         f.write_bytes(b"\x00" * 1000)
         sig_wanted = ("artist", "album", 1, 1, "wanted")
         sig_actual = ("artist", "album", 1, 1, "other")
-        with patch("qobuz_fetch.integrations.rip._flac_signature", return_value=sig_actual):
+        with patch("qobuz_librarian.integrations.rip._flac_signature", return_value=sig_actual):
             result = _resolve_signatures_to_paths([(sig_wanted, "staging/track.flac")], [tmp_path])
         assert result == []
 
@@ -246,7 +246,7 @@ class TestWriteLyrics:
 
     def _fake_flac(self):
         import importlib
-        importlib.import_module("qobuz_fetch.integrations.lyrics")
+        importlib.import_module("qobuz_librarian.integrations.lyrics")
         import lyric_fetch
         from mutagen.flac import VCFLACDict
 
@@ -305,7 +305,7 @@ def test_consolidation_targets_repeats_of_one_album_not_distinct_albums():
 
 class TestKillProcessGroup:
     def test_group_killed_when_child_in_own_session(self):
-        from qobuz_fetch.integrations import rip
+        from qobuz_librarian.integrations import rip
         proc = MagicMock()
         proc.pid = 4242
         with patch("os.getpgid", return_value=9999), \
@@ -316,7 +316,7 @@ class TestKillProcessGroup:
 
     def test_does_not_killpg_own_group_before_setsid(self):
         """When child pgid matches caller's, killpg is skipped."""
-        from qobuz_fetch.integrations import rip
+        from qobuz_librarian.integrations import rip
         proc = MagicMock()
         proc.pid = 4242
         with patch("os.getpgid", return_value=1000), \
@@ -330,8 +330,8 @@ class TestKillProcessGroup:
 class TestBeetsImportTimeout:
     def test_idle_import_is_killed(self, monkeypatch):
         """Zero output for BEETS_TIMEOUT → killed; cleanup_fn called."""
-        from qobuz_fetch import config as cfg
-        from qobuz_fetch.integrations import beets
+        from qobuz_librarian import config as cfg
+        from qobuz_librarian.integrations import beets
         monkeypatch.setattr(cfg, "BEETS_TIMEOUT", 1)
 
         killed, cleaned = [], []
@@ -357,8 +357,8 @@ class TestBeetsImportTimeout:
 
 class TestBeetsDirect:
     def test_beets_direct_sets_beetsdir_env(self, monkeypatch):
-        from qobuz_fetch import config as cfg
-        from qobuz_fetch.integrations import beets
+        from qobuz_librarian import config as cfg
+        from qobuz_librarian.integrations import beets
 
         captured_env = {}
 
@@ -380,7 +380,7 @@ class TestBeetsDirect:
         assert captured_env["BEETSDIR"] == str(cfg.BEETS_CONFIG_DIR)
 
     def test_silent_skip_detection_catches_skipping_dot(self, monkeypatch):
-        from qobuz_fetch.integrations import beets
+        from qobuz_librarian.integrations import beets
 
         class SkippingProc:
             stdout = iter(["Skipping.\n"])
@@ -398,7 +398,7 @@ class TestReportStagingRemnants:
     def test_lists_album_folders_with_track_counts(self, tmp_path, monkeypatch, caplog):
         import logging
 
-        from qobuz_fetch.integrations import beets
+        from qobuz_librarian.integrations import beets
 
         staging = tmp_path / "staging"
         staging.mkdir()
@@ -407,8 +407,8 @@ class TestReportStagingRemnants:
         (staging / "Artist One - Album A" / "02.flac").write_bytes(b"b")
         (staging / "Artist Two - Album B").mkdir()
         (staging / "Artist Two - Album B" / "01.flac").write_bytes(b"c")
-        monkeypatch.setattr("qobuz_fetch.config.STAGING_DIR", staging)
-        monkeypatch.setattr("qobuz_fetch.config.AUDIO_EXTS", [".flac"])
+        monkeypatch.setattr("qobuz_librarian.config.STAGING_DIR", staging)
+        monkeypatch.setattr("qobuz_librarian.config.AUDIO_EXTS", [".flac"])
 
         with caplog.at_level(logging.INFO, logger="qobuz_librarian"):
             beets._report_staging_remnants()
@@ -423,15 +423,15 @@ class TestLyricHookRetryManifest:
     def test_hook_failure_records_staging_flacs(self, tmp_path, monkeypatch):
         import types
 
-        from qobuz_fetch.queue import executor
+        from qobuz_librarian.queue import executor
 
         staging = tmp_path / "staging"
         staging.mkdir()
         (staging / "track.flac").write_bytes(b"\x00" * 100)
-        monkeypatch.setattr("qobuz_fetch.config.STAGING_DIR", staging)
-        monkeypatch.setattr("qobuz_fetch.config.LYRIC_RETRY_FILE",
+        monkeypatch.setattr("qobuz_librarian.config.STAGING_DIR", staging)
+        monkeypatch.setattr("qobuz_librarian.config.LYRIC_RETRY_FILE",
                             tmp_path / "retry.json")
-        monkeypatch.setattr("qobuz_fetch.config.LYRIC_RETRY_VERSION", 1)
+        monkeypatch.setattr("qobuz_librarian.config.LYRIC_RETRY_VERSION", 1)
         monkeypatch.setattr(executor, "_run_lyric_hook",
                             lambda _d: (_ for _ in ()).throw(RuntimeError("hook crash")))
 
@@ -439,7 +439,7 @@ class TestLyricHookRetryManifest:
         sigs = executor._pre_import_staging_hooks(args)
         assert sigs == []
 
-        from qobuz_fetch.integrations.lyrics import load_lyric_retry
+        from qobuz_librarian.integrations.lyrics import load_lyric_retry
         assert any("track.flac" in p for p in load_lyric_retry())
 
 
@@ -468,13 +468,13 @@ class TestQuarantineUntaggedStaging:
     def test_untagged_and_unreadable_set_aside_tagged_kept(self, tmp_path, monkeypatch):
         from mutagen.flac import FLAC
 
-        from qobuz_fetch.integrations import beets
+        from qobuz_librarian.integrations import beets
         staging = tmp_path / "staging"
         data = tmp_path / "data"
         staging.mkdir()
         data.mkdir()
-        monkeypatch.setattr("qobuz_fetch.config.STAGING_DIR", staging)
-        monkeypatch.setattr("qobuz_fetch.config.DATA_DIR", data)
+        monkeypatch.setattr("qobuz_librarian.config.STAGING_DIR", staging)
+        monkeypatch.setattr("qobuz_librarian.config.DATA_DIR", data)
 
         tagged = staging / "Real Artist" / "Real Album" / "01 - Good.flac"
         untagged = staging / "Partial" / "00 -.flac"
@@ -523,8 +523,8 @@ class TestNormalizeStagingTags:
     def test_trailing_space_and_quotes_stripped(self, tmp_path, monkeypatch):
         from mutagen.flac import FLAC
 
-        from qobuz_fetch.integrations import beets
-        monkeypatch.setattr("qobuz_fetch.config.STAGING_DIR", tmp_path)
+        from qobuz_librarian.integrations import beets
+        monkeypatch.setattr("qobuz_librarian.config.STAGING_DIR", tmp_path)
 
         flac = tmp_path / "David Bowie" / "Hunky Dory" / "01.flac"
         self._make_flac(flac)
@@ -547,8 +547,8 @@ class TestImportOverrideArtwork:
     in the tracks (embed/embedart), or both."""
 
     def _build(self, monkeypatch, **cfgvals):
-        from qobuz_fetch import config as cfg
-        from qobuz_fetch.integrations import beets
+        from qobuz_librarian import config as cfg
+        from qobuz_librarian.integrations import beets
         monkeypatch.setattr(cfg, "BEETS_DB_PATH", Path("/config/beets/musiclibrary.db"))
         monkeypatch.setattr(cfg, "MUSIC_ROOT", Path("/music"))
         monkeypatch.setattr(cfg, "BEETS_PATH_DEFAULT", "")

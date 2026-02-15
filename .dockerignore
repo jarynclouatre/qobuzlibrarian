@@ -13,7 +13,7 @@ htmlcov/
 # installs fresh inside the image.
 node_modules
 .tailwindcache
-src/qobuz_fetch/web/static/dist
+src/qobuz_librarian/web/static/dist
 
 # Tests and CI: not needed at runtime.
 tests/
