@@ -638,19 +638,27 @@ def run_artist_missing_albums(artist_name, owned_bare_titles, args, token,
 
     pairs_partial = []
     pairs_missing = []
+    n_owned_elsewhere = 0
     for album, n_versions in pairs:
         found = _partial_check(album)
-        if found:
-            n_total = album.get("tracks_count") or "?"
-            n_have = len(found)
-            if isinstance(n_total, int):
-                n_have = min(n_have, n_total)
-            pairs_partial.append((album, n_versions, n_have, n_total))
-        else:
+        if not found:
             pairs_missing.append((album, n_versions))
+            continue
+        n_total = album.get("tracks_count") or "?"
+        n_have = len(found)
+        if isinstance(n_total, int):
+            n_have = min(n_have, n_total)
+            if n_have >= n_total:
+                # Every track is already on disk, just under a different
+                # folder (a collaboration filed under both artists), so it's
+                # fully owned — don't offer it for download.
+                n_owned_elsewhere += 1
+                continue
+        pairs_partial.append((album, n_versions, n_have, n_total))
 
     n_partial = len(pairs_partial)
-    vlog(f"  Partial-ownership check: {n_partial} partial, {len(pairs_missing)} fully missing")
+    vlog(f"  Partial-ownership check: {n_partial} partial, {len(pairs_missing)} fully missing, "
+         f"{n_owned_elsewhere} fully owned elsewhere")
 
     pairs = [(a, nv) for a, nv, _, _ in pairs_partial] + pairs_missing
 
