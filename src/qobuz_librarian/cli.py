@@ -530,9 +530,41 @@ def _check_staging_occupied():
         pass
 
 
+def _maybe_drop_privileges():
+    """Re-exec under gosu to PUID/PGID when started as root.
+
+    The entrypoint drops PID 1 to PUID/PGID, but `docker exec ... qobuz-librarian`
+    bypasses the entrypoint and runs as root, so files the CLI downloads land
+    root-owned while web-created ones match PUID — and the web process (running
+    as PUID) then can't repair/upgrade a CLI-fetched album. Dropping here keeps
+    both writers consistent. No-op when not root, when PUID/PGID are unset or
+    non-numeric, or when gosu isn't on PATH.
+    """
+    import os
+    import shutil
+    import sys
+    if not hasattr(os, "geteuid") or os.geteuid() != 0:
+        return
+    puid = (os.environ.get("PUID") or "").strip()
+    pgid = (os.environ.get("PGID") or "").strip()
+    if not puid and not pgid:
+        return
+    puid = puid or "1000"
+    pgid = pgid or "1000"
+    if not (puid.isdigit() and pgid.isdigit()):
+        return
+    gosu = shutil.which("gosu")
+    if not gosu:
+        return
+    home = os.environ.get("APP_HOME", "/tmp")
+    os.execvp(gosu, [gosu, f"{puid}:{pgid}", "env", f"HOME={home}",
+                     sys.argv[0], *sys.argv[1:]])
+
+
 def _entry():
     """Console-script entry point. Centralizes interrupt and AuthLost
     handling so every mode dispatch in main() can let them propagate."""
+    _maybe_drop_privileges()
     try:
         try:
             main()

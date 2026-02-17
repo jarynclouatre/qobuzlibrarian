@@ -1103,3 +1103,28 @@ class TestAlbumModeFriendlyError:
         messages = " ".join(r.getMessage() for r in caplog.records)
         assert "No album with that id." in messages
         assert '{"status":"error"' not in messages
+
+
+def test_cli_drops_to_puid_when_exec_as_root(monkeypatch):
+    """`docker exec ... qobuz-librarian` runs as root, bypassing the
+    entrypoint's gosu drop, so CLI downloads would land root-owned and the
+    web process (running as PUID) couldn't repair or upgrade them. Re-exec
+    under PUID/PGID when root; leave an already-unprivileged run alone."""
+    import qobuz_librarian.cli as cli
+
+    monkeypatch.setenv("PUID", "1000")
+    monkeypatch.setenv("PGID", "1000")
+    monkeypatch.setattr("shutil.which", lambda _name: "/usr/sbin/gosu")
+    calls = []
+    monkeypatch.setattr("os.execvp", lambda path, argv: calls.append((path, argv)))
+
+    monkeypatch.setattr("os.geteuid", lambda: 1000, raising=False)
+    cli._maybe_drop_privileges()
+    assert calls == []
+
+    monkeypatch.setattr("os.geteuid", lambda: 0, raising=False)
+    cli._maybe_drop_privileges()
+    assert len(calls) == 1
+    path, argv = calls[0]
+    assert path.endswith("gosu")
+    assert argv[1] == "1000:1000"
