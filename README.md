@@ -170,7 +170,7 @@ On Windows, run those commands in WSL or Git Bash — Windows PowerShell's
 `cp`/`mkdir` chained with `&&` won't work the same way.
 
 `compose.yaml` pulls the prebuilt image from Docker Hub. `latest` tracks
-`main`; pin a tag like `0.1.0` in `compose.yaml` if you want a stable
+`main`; pin a tag like `0.2.0` in `compose.yaml` if you want a stable
 build. See [Building from source](#building-from-source) below if you'd
 rather build it yourself.
 
