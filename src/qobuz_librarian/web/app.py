@@ -924,10 +924,8 @@ def _diagnostics():
     return checks
 
 
-@app.get("/settings", response_class=HTMLResponse)
-async def settings_page(request: Request, saved: bool = False,
-                        queued: bool = False, auth: str = "",
-                        error: str = "", mode: str = ""):
+def _settings_response(request, *, saved=False, queued=False, auth="",
+                       error="", mode="", user_id=None, auth_token_prefill=""):
     from qobuz_librarian.web import settings_store
     creds = _read_creds()
     values = settings_store.current()
@@ -938,8 +936,9 @@ async def settings_page(request: Request, saved: bool = False,
     cli_only_env = os.environ.get("QL_CLI_ONLY", "").strip().lower() in (
         "1", "true", "yes", "on")
     return _tr(request, "settings.html", {
-        "user_id": creds.get("user_id", ""),
+        "user_id": creds.get("user_id", "") if user_id is None else user_id,
         "auth_token_set": bool(creds.get("auth_token")),
+        "auth_token_prefill": auth_token_prefill,
         "creds_from_env": creds_from_env,
         "cli_only_env": cli_only_env,
         "mode_changed": (mode or "").strip().lower(),
@@ -958,6 +957,14 @@ async def settings_page(request: Request, saved: bool = False,
         "behavior": values,
         "diagnostics": _diagnostics(),
     })
+
+
+@app.get("/settings", response_class=HTMLResponse)
+async def settings_page(request: Request, saved: bool = False,
+                        queued: bool = False, auth: str = "",
+                        error: str = "", mode: str = ""):
+    return _settings_response(request, saved=saved, queued=queued, auth=auth,
+                              error=error, mode=mode)
 
 
 @app.post("/settings", response_class=HTMLResponse)
@@ -984,10 +991,17 @@ async def save_settings(request: Request, user_id: str = Form(""), auth_token: s
     # user id, so a token-only save would look saved and test green yet fail
     # with "no credentials" on the first search, and downloads would raise
     # MissingCredentialsError. Refuse a half-config and name the missing field.
+    # Re-render rather than redirect on these two: the user typed something
+    # that didn't save, and a fresh GET can't pre-fill the password field —
+    # so a redirect would wipe the (long) token they just pasted.
     if new_token and not new_uid:
-        return RedirectResponse(url="/settings?error=needuser", status_code=303)
+        return _settings_response(request, error="needuser",
+                                  user_id=user_id.strip(),
+                                  auth_token_prefill=auth_token.strip())
     if new_uid and not new_token:
-        return RedirectResponse(url="/settings?error=empty", status_code=303)
+        return _settings_response(request, error="empty",
+                                  user_id=user_id.strip(),
+                                  auth_token_prefill=auth_token.strip())
     ok = _write_creds(new_uid, new_token)
     if not ok:
         return RedirectResponse(url="/settings?error=creds", status_code=303)
@@ -1083,11 +1097,21 @@ async def set_mode(request: Request, target: str = Form("")):
 
 @app.post("/api/test-auth", response_class=HTMLResponse)
 async def test_auth(request: Request):
+    from qobuz_librarian.api.auth import AuthLost, QobuzError
+    from qobuz_librarian.api.client import qobuz_get
     try:
         form = await request.form()
-        token = (form.get("auth_token") or "").strip() or _get_token()
-        from qobuz_librarian.api.auth import AuthLost, QobuzError
-        from qobuz_librarian.api.client import qobuz_get
+        token = (form.get("auth_token") or "").strip()
+        if not token:
+            # No token typed — fall back to a saved one so the button also
+            # checks stored creds. With neither, we're already on Settings,
+            # so point at the field above rather than back at this page.
+            try:
+                token = _get_token()
+            except (SystemExit, NoCredsError):
+                return HTMLResponse(
+                    '<div class="alert alert-warning py-2">Enter your token in '
+                    'the field above to test it.</div>')
         loop = asyncio.get_running_loop()
         await asyncio.wait_for(
             loop.run_in_executor(
@@ -1099,8 +1123,6 @@ async def test_auth(request: Request):
         return HTMLResponse('<div class="alert alert-success py-2">Connected — token is valid. <a href="/" class="link">Go to dashboard</a></div>')
     except asyncio.TimeoutError:
         return HTMLResponse('<div class="alert alert-error py-2">Timed out — Qobuz API unreachable.</div>')
-    except (SystemExit, NoCredsError):
-        return HTMLResponse('<div class="alert alert-error py-2">No Qobuz credentials set — visit Settings.</div>')
     except AuthLost:
         return HTMLResponse('<div class="alert alert-error py-2">Token is expired or invalid.</div>')
     except QobuzError as e:

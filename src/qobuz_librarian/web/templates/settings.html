@@ -97,6 +97,7 @@
           {% endif %}
         </label>
         <input type="password" name="auth_token"
+               value="{{ auth_token_prefill | default('') }}"
                aria-label="Qobuz auth token"
                autocomplete="off" autocorrect="off" spellcheck="false"
                placeholder="{% if auth_token_set %}•••••••• (paste a new token to replace){% else %}paste user_auth_token here{% endif %}"

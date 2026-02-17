@@ -999,6 +999,22 @@ def test_library_scan_cancel_during_walk_ends_canceled():
 
 
 
+def test_test_auth_empty_field_points_at_field_not_settings(client, monkeypatch):
+    """Empty token + no saved creds, while already on Settings: tell the user
+    to fill the field, not to 'visit Settings' (the page they're on)."""
+    import qobuz_librarian.web.app as webapp
+    from qobuz_librarian.api.auth import NoCredsError
+
+    def _no_creds():
+        raise NoCredsError("none")
+    monkeypatch.setattr(webapp, "_get_token", _no_creds)
+    r = client.post("/api/test-auth", data={"auth_token": ""},
+                    headers={"HX-Request": "true"})
+    assert r.status_code == 200
+    assert "field above" in r.text
+    assert "visit Settings" not in r.text
+
+
 def test_test_auth_unexpected_exception_renders_safe_message(client, monkeypatch):
     import qobuz_librarian.web.app as webapp
     monkeypatch.setattr(webapp, "_get_token", lambda: "tok")
@@ -1760,7 +1776,8 @@ def test_settings_save_requires_user_id_with_token(client, monkeypatch):
     """A token with no user id passes the API probe and the Test button, but
     streamrip's login() and load_qobuz_token() both require the user id — so
     the save must refuse instead of writing a config that tests green yet
-    fails with 'no credentials' on the first search."""
+    fails with 'no credentials' on the first search. The refusal re-renders
+    the form so the long token the user pasted survives."""
     import qobuz_librarian.web.app as app_mod
 
     monkeypatch.delenv("QOBUZ_USER_AUTH_TOKEN", raising=False)
@@ -1772,6 +1789,7 @@ def test_settings_save_requires_user_id_with_token(client, monkeypatch):
     r = client.post("/settings",
                     data={"user_id": "", "auth_token": "a-real-looking-token"},
                     follow_redirects=False)
-    assert r.status_code == 303
-    assert "error=needuser" in r.headers["location"]
+    assert r.status_code == 200
+    assert "Add your User ID" in r.text
+    assert "a-real-looking-token" in r.text
     assert wrote == []
