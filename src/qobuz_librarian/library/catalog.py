@@ -301,6 +301,7 @@ def find_album_dir_filesystem(qobuz_album):
                 _push(d)
 
     global_best, global_best_score = None, 0.0
+    norm_title = normalize(strip_album_decorations(title))
     for artist_dir in search_dirs:
         vlog(f"scanning artist dir: {artist_dir}")
         subdirs = _list_artist_subdirs_cached(artist_dir)
@@ -314,7 +315,20 @@ def find_album_dir_filesystem(qobuz_album):
             if score > best_score:
                 best, best_score = d, score
         if best and best_score >= config.FUZZY_DIR_THRESH:
-            if best_score > global_best_score:
+            # A score can clear the bar on a shared prefix alone: the studio
+            # 'The North Borders' folder scores 0.79 against the live 'The
+            # North Borders Tour — Live' and would gap-fill live tracks into
+            # it. Real edition variants normalize to the same string, so also
+            # require the titles to be close in length — that keeps an extra
+            # word ('Live', 'Tour') from resolving to the base album's folder.
+            norm_dir = normalize(strip_album_decorations(best.name))
+            coverage = (min(len(norm_dir), len(norm_title))
+                        / max(len(norm_dir), len(norm_title))
+                        if norm_dir and norm_title else 0.0)
+            if coverage < config.FUZZY_DIR_MIN_COVERAGE:
+                vlog(f"rejected {best.name}: score {best_score:.2f} but length "
+                     f"coverage {coverage:.2f} < {config.FUZZY_DIR_MIN_COVERAGE}")
+            elif best_score > global_best_score:
                 global_best, global_best_score = best, best_score
                 vlog(f"fuzzy match: {best}  (score {best_score:.2f})")
         elif best:

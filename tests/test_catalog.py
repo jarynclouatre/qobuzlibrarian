@@ -544,3 +544,30 @@ class TestDiacriticArtistLookup:
         found = find_album_dir_filesystem(album)
         clear_scan_caches()
         assert found is None
+
+
+class TestLiveReleaseDoesNotMatchStudioFolder:
+    """A live/tour release scores ~0.79 against the studio folder on the
+    shared title prefix; without a length gate it resolves there and gap-fills
+    live tracks into the studio album. The studio album must still resolve."""
+
+    def test_live_release_skips_studio_folder(self, tmp_path, monkeypatch):
+        from qobuz_librarian import config
+        from qobuz_librarian.library.catalog import find_album_dir_filesystem
+        from qobuz_librarian.library.scanner import clear_scan_caches
+        monkeypatch.setattr(config, "MUSIC_ROOT", tmp_path)
+        (tmp_path / "Bonobo" / "The North Borders (2013)").mkdir(parents=True)
+        clear_scan_caches()
+
+        live = {"id": "L", "artist": {"name": "Bonobo"},
+                "title": "The North Borders Tour. — Live.",
+                "release_date_original": "2014-01-01"}
+        assert find_album_dir_filesystem(live) is None
+        clear_scan_caches()
+
+        studio = {"id": "S", "artist": {"name": "Bonobo"},
+                  "title": "The North Borders",
+                  "release_date_original": "2013-01-01"}
+        found = find_album_dir_filesystem(studio)
+        clear_scan_caches()
+        assert found is not None and found.name == "The North Borders (2013)"

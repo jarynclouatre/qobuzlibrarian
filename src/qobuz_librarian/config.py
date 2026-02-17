@@ -231,6 +231,7 @@ SSE_HEARTBEAT_TICKS  = _env("SSE_HEARTBEAT_TICKS",  30)
 
 # ── Fuzzy-match thresholds ────────────────────────────────────────────────────
 FUZZY_DIR_THRESH           = _env("FUZZY_DIR_THRESH",           0.78)
+FUZZY_DIR_MIN_COVERAGE     = _env("FUZZY_DIR_MIN_COVERAGE",     0.75)
 DB_ALBUM_THRESH            = _env("DB_ALBUM_THRESH",            0.85)
 CONSOLIDATE_THRESH         = _env("CONSOLIDATE_THRESH",         0.70)
 ARTIST_NAME_THRESH         = _env("ARTIST_NAME_THRESH",         0.85)
