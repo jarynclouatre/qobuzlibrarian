@@ -19,7 +19,7 @@
             <p class="font-semibold truncate">{{ r.title }}</p>
             <p class="text-sm text-base-content/60 truncate">
               {{ r.artist }}
-              <span class="text-base-content/40">· {{ r.year }} · {{ r.tracks }} tracks</span>
+              <span class="text-base-content/40">· {{ r.year }} · {{ r.tracks }} track{{ 's' if r.tracks != 1 else '' }}</span>
             </p>
           </div>
         </div>
@@ -37,7 +37,7 @@
                 hx-target="#download-toast"
                 hx-swap="innerHTML"
                 hx-disabled-elt="find button[type=submit]"
-                hx-confirm='Download "{{ r.title }}" by {{ r.artist }} ({{ r.tracks }} tracks)?'
+                hx-confirm='Download "{{ r.title }}" by {{ r.artist }} ({{ r.tracks }} track{{ 's' if r.tracks != 1 else '' }})?'
                 data-queue-button>
             <input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}">
             <input type="hidden" name="album_id" value="{{ r.id }}">
