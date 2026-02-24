@@ -117,6 +117,8 @@
     <div class="shrink-0">
       {% if job.status.value == 'done' %}
         <span class="text-success text-lg">✓</span>
+      {% elif job.status.value == 'canceled' %}
+        <span class="text-base-content/40 text-lg" title="Canceled">⊘</span>
       {% else %}
         <span class="text-error text-lg">✗</span>
       {% endif %}
