@@ -13,7 +13,8 @@
   <h1 class="text-2xl font-bold">{% if job.artist %}{{ job.artist }} — {% endif %}{{ job.title }}</h1>
   <span class="badge
     {%- if job.status.value == 'done' %} badge-success
-    {%- elif job.status.value in ('failed','canceled') %} badge-error
+    {%- elif job.status.value == 'failed' %} badge-error
+    {%- elif job.status.value == 'canceled' %} badge-ghost
     {%- elif job.status.value == 'awaiting_review' %} badge-info
     {%- else %} badge-warning{% endif %}">{{ job.status.value.replace('_', ' ') }}</span>
 </div>
