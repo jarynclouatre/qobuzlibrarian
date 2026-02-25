@@ -41,9 +41,18 @@ BEHAVIOR_FIELDS = [
 ]
 BEHAVIOR_KEYS = [k for k, _, _ in BEHAVIOR_FIELDS]
 
+# Provider names lyric_fetch.py knows how to drive (mirrors the provider list
+# it wires up). Used to validate the Lyrics providers field: entries are
+# matched case-insensitively and normalised to these spellings; anything else
+# is dropped so a typo can't silently turn lyric fetching off.
+LYRICS_PROVIDER_CHOICES = [
+    "Lrclib", "NetEase", "Megalobiz", "Musixmatch", "Genius", "Deezer", "TextyL",
+]
+
 # (key, label, help, kind, choices, placeholder).
 # kind: "text" — free string; "enum" — choices is a list of allowed values;
-# "list" — comma-separated; stored as list on cfg.
+# "list" — comma-separated; stored as list on cfg. A list field with choices
+# is validated against them; choices=None means any entry is accepted.
 TEXT_FIELDS = [
     ("STREAMRIP_QUALITY", "Download quality",
      "A ceiling, not a guarantee: Qobuz delivers the highest quality it has for "
@@ -57,9 +66,10 @@ TEXT_FIELDS = [
      "the track tags with no leftover file (embed), or both.",
      "enum", ["sidecar", "embed", "both"], ""),
     ("LYRICS_PROVIDERS", "Lyrics providers",
-     "Comma-separated list of providers to try in order. "
-     "Available: Lrclib, NetEase, Musixmatch. Empty = built-in default (all three).",
-     "list", None, "e.g. Lrclib, NetEase"),
+     "Comma-separated list of providers to try in order. Available: Lrclib, "
+     "NetEase, Megalobiz, Musixmatch, Genius, Deezer, TextyL. Unknown names "
+     "are ignored. Empty = default (Lrclib, NetEase, Musixmatch).",
+     "list", LYRICS_PROVIDER_CHOICES, "e.g. Lrclib, NetEase"),
     ("BEETS_PATH_DEFAULT", "beets path: default",
      "Folder/file naming for normal albums (beets path syntax). "
      "Empty = use whatever is in beets/config.yaml "
@@ -100,6 +110,21 @@ def _list_to_str(v) -> str:
 
 def _str_to_list(s: str) -> list:
     return [p.strip() for p in (s or "").split(",") if p.strip()]
+
+
+def _normalize_list_choices(items, choices):
+    """Keep only entries naming a known choice, normalised to its canonical
+    spelling (case-insensitive). Drops unknowns and de-dupes, preserving order.
+    Returns (kept, dropped)."""
+    canon = {c.lower(): c for c in choices}
+    kept, dropped = [], []
+    for it in items:
+        c = canon.get(str(it).strip().lower())
+        if c is None:
+            dropped.append(it)
+        elif c not in kept:
+            kept.append(c)
+    return kept, dropped
 
 
 def current() -> dict:
@@ -159,8 +184,10 @@ def _apply(values: dict):
             continue
         raw = values[key]
         if kind == "list":
-            setattr(cfg, key, _str_to_list(raw) if isinstance(raw, str)
-                    else list(raw or []))
+            items = _str_to_list(raw) if isinstance(raw, str) else list(raw or [])
+            if choices:
+                items, _ = _normalize_list_choices(items, choices)
+            setattr(cfg, key, items)
         elif kind == "enum":
             v = str(raw or "").strip().lower()
             if choices and v not in choices:
@@ -256,13 +283,19 @@ def _save_locked(values: dict) -> bool:
     for key, _, _, kind, choices, _ in TEXT_FIELDS:
         if key not in values:
             continue
-        # Enum fields are validated here too (not just in _apply), so a
-        # forged POST can't persist an out-of-range value the loader would
-        # silently reject — the on-disk file stays consistent with cfg.
+        # Enum/list choices are validated here too (not just in _apply), so a
+        # forged POST can't persist a value the loader would reject — the
+        # on-disk file stays consistent with cfg.
         if kind == "enum" and choices:
             v = str(values[key] or "").strip().lower()
             if v not in choices:
                 continue
+        elif kind == "list" and choices:
+            raw = values[key]
+            items = _str_to_list(raw) if isinstance(raw, str) else list(raw or [])
+            items, _ = _normalize_list_choices(items, choices)
+            merged[key] = ",".join(items)
+            continue
         merged[key] = values[key]
 
     if _any_active_job():

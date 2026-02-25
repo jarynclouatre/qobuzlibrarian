@@ -680,6 +680,15 @@ def test_streamrip_quality_stays_int_after_settings_save(monkeypatch):
     assert isinstance(cfg.STREAMRIP_QUALITY, int)
 
 
+def test_lyrics_providers_normalized_and_unknowns_dropped(monkeypatch):
+    # A typo'd or unknown provider would otherwise reach syncedlyrics and
+    # silently fetch nothing; known names are kept (canonical casing) and
+    # the rest dropped.
+    from qobuz_librarian import config as cfg
+    from qobuz_librarian.web import settings_store
+    monkeypatch.setattr(cfg, "LYRICS_PROVIDERS", [], raising=False)
+    settings_store._apply({"LYRICS_PROVIDERS": "lrclib, notaprovider, MUSIXMATCH"})
+    assert cfg.LYRICS_PROVIDERS == ["Lrclib", "Musixmatch"]
 
 
 def test_settings_save_with_bad_token_redirects_with_auth_warning(client, monkeypatch):
