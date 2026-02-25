@@ -633,7 +633,7 @@ async def artist_scan(request: Request, artist: str = Form("")):
         return RedirectResponse(
             url="/artist?error=" + urllib.parse.quote(
                 "Artist name contains forbidden characters."),
-            status_code=400,
+            status_code=303,
         )
     try:
         _get_token()

@@ -890,9 +890,13 @@ def test_job_page_done_handler_does_not_auto_reload():
         __import__("pathlib").Path(__file__).parent.parent
         / "src/qobuz_librarian/web/templates/job.html"
     ).read_text()
-    # The only location.reload() left should be inside the banner button's onclick.
+    # The lone location.reload() must sit in the banner button's onclick, not
+    # in the SSE done handler (which would reload out from under the user).
     reloads = re.findall(r"location\.reload\(\)", tmpl)
     assert len(reloads) == 1, "expected exactly one location.reload() in banner onclick"
+    assert re.search(r'onclick="location\.reload\(\)"', tmpl)
+    done_body = re.search(r"addEventListener\('done',.*?\}\);", tmpl, re.S).group(0)
+    assert "location.reload()" not in done_body
 
 
 def test_job_status_api_returns_json_for_known_and_unknown_job(client):
@@ -1589,8 +1593,8 @@ def test_artist_with_angle_brackets_rejected(client):
     r = client.post("/artist",
                     data={"artist": "<script>alert(1)</script>"},
                     follow_redirects=False)
-    # 400 status with a redirect carrying the error.
-    assert r.status_code == 400
+    # 303 so the browser actually follows the Location to the error banner.
+    assert r.status_code == 303
     assert "error=" in r.headers["location"]
     assert before == len(jm.registry.all())
 
