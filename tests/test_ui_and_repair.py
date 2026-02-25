@@ -501,6 +501,12 @@ class TestParseArgsGuards:
         with pytest.raises(SystemExit):
             self._parse(["--artist", "Radiohead", "--upgrade-walk"])
 
+    def test_artist_with_positional_query_rejected(self):
+        # --artist dispatches before the positional query, which would be
+        # silently dropped; reject so the user picks one.
+        with pytest.raises(SystemExit):
+            self._parse(["--artist", "Four Tet", "some album"])
+
     def test_reset_walk_seen_with_mode_rejected(self):
         # --reset-walk-seen clears state and exits; pairing it with a mode or
         # query silently skips the requested work.

@@ -266,6 +266,11 @@ def parse_args():
     if args.upgrade_walk and args.query:
         p.error("--upgrade-walk scans the whole library — drop the query, "
                 "or use --artist NAME for one artist")
+    # --artist dispatches before the positional query, so extra words after the
+    # artist name would be silently dropped. Reject so the user picks one.
+    if args.artist and args.query:
+        p.error("--artist NAME scans that one artist — drop the extra words, "
+                "or search them as an album without --artist")
     # --include-comps controls compilation filtering in artist mode.
     if args.include_comps and (args.upgrade_walk
                                or (args.query and not args.artist)):
