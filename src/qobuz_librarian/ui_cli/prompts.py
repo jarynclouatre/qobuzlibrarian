@@ -239,6 +239,7 @@ def prompt_album_selection(albums, prefer_hires=False, can_load_more=False):
         title  = a.get("title") or "?"
         year   = album_year(a) or "?"
         tracks = a.get("tracks_count") or "?"
+        track_word = "track" if tracks == 1 else "tracks"
         qual   = album_quality_label(a)
         marker = fmt(C.YELLOW, " ⚠ lossy") if not is_lossless_album(a) else ""
 
@@ -246,7 +247,7 @@ def prompt_album_selection(albums, prefer_hires=False, can_load_more=False):
                  f"{fmt(C.WHITE, truncate(artist, title_max // 2))} "
                  f"{fmt(C.GRAY, '—')} "
                  f"{fmt(C.WHITE, truncate(title, title_max))}")
-        line2 = f"      {fmt(C.GRAY, f'{year} • {tracks} tracks • {qual}')}{marker}"
+        line2 = f"      {fmt(C.GRAY, f'{year} • {tracks} {track_word} • {qual}')}{marker}"
         print(line1)
         print(line2)
     if can_load_more:
@@ -376,10 +377,11 @@ def prompt_edition_pick(current_album, current_extras_count, candidates,
         f"({len(candidates)} alternate edition{'s' if len(candidates) != 1 else ''} found):"))
 
     def _row(idx, title_str, year_str, tc, qual_str, extras_note, marker=""):
+        track_word = "track" if tc == 1 else "tracks"
         line1 = (f"{label_prefix}  {fmt(C.BOLD, str(idx).rjust(2))}.  "
                  f"{fmt(C.WHITE, truncate(title_str, 60))}{marker}")
         line2 = (f"{label_prefix}      "
-                 f"{fmt(C.GRAY, f'{year_str} • {tc} tracks • {qual_str}')}"
+                 f"{fmt(C.GRAY, f'{year_str} • {tc} {track_word} • {qual_str}')}"
                  f"{extras_note}")
         log.info(line1)
         log.info(line2)
@@ -565,7 +567,8 @@ def print_album_summary(album, missing, present, album_dir, force, auto_upgrade=
     if n_present == 0:
         log.info(f"  {fmt(C.GREEN, 'in your library:')}  none — full album will be fetched")
     elif n_missing == 0:
-        log.info(f"  {fmt(C.GREEN, 'in your library:')}  ALL {n_total} tracks")
+        log.info(f"  {fmt(C.GREEN, 'in your library:')}  "
+                 f"ALL {n_total} track{'s' if n_total != 1 else ''}")
     else:
         log.info(f"  {fmt(C.GREEN, 'in your library:')}  {n_present}/{n_total}")
         log.info(f"  {fmt(C.YELLOW, 'missing:')}          {n_missing}")

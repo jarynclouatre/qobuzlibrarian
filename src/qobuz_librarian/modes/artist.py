@@ -676,12 +676,13 @@ def run_artist_missing_albums(artist_name, owned_bare_titles, args, token,
         title  = a.get("title") or "?"
         year   = album_year(a) or "?"
         tracks = a.get("tracks_count") or "?"
+        track_word = "track" if tracks == 1 else "tracks"
         qual   = album_quality_label(a)
         suffix = f" ({n_versions} editions)" if n_versions > 1 else ""
 
         line1 = (f"  {fmt(C.BOLD, str(i).rjust(3))}.  "
                  f"{fmt(C.WHITE, truncate(title, 55))}")
-        line2 = f"        {fmt(C.GRAY, f'{year} • {tracks} tracks • {qual}')}{fmt(C.GRAY, suffix)}"
+        line2 = f"        {fmt(C.GRAY, f'{year} • {tracks} {track_word} • {qual}')}{fmt(C.GRAY, suffix)}"
         if i - 1 < n_partial:
             _, _, n_have, n_tot = pairs_partial[i - 1]
             line2 += fmt(C.YELLOW, f"  ← {n_have}/{n_tot} tracks already present")

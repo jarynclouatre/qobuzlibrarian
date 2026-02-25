@@ -129,8 +129,9 @@ def _add_album_candidate(job, album, artist_name):
                   f"gap-fill: {partial_n} missing of "
                   f"{album.get('tracks_count') or '?'}")
     else:
+        tc = album.get('tracks_count') or '?'
         detail = (f"{album_year(album) or '?'} · {album_quality_label(album)} · "
-                  f"{album.get('tracks_count') or '?'} tracks")
+                  f"{tc} track{'s' if tc != 1 else ''}")
     job.add_candidate(
         kind="album",
         title=album.get("title") or "?",

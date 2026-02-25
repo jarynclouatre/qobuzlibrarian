@@ -696,7 +696,8 @@ def _execute_download_queue(queue, args, token):
     n_total_fail = sum(r.get("n_fail", 0) for r in results)
     log.info(fmt(C.GREEN if n_total_fail == 0 else C.YELLOW,
         f"  ✓ Queue done: {n_success}/{len(queue)} albums OK · "
-        f"{n_total_ok} tracks downloaded · {n_total_fail} failed"))
+        f"{n_total_ok} track{'s' if n_total_ok != 1 else ''} downloaded · "
+        f"{n_total_fail} failed"))
 
     # Re-raise AuthLost (backups resolved in Phase C above) so
     # the outer caller surfaces the standard AUTH RECOVERY exit message.
