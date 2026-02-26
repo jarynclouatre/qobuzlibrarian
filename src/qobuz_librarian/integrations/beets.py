@@ -30,6 +30,12 @@ from qobuz_librarian.ui_cli.colors import C, fmt
 from qobuz_librarian.ui_cli.errors import EXIT_GENERAL, die
 from qobuz_librarian.ui_cli.logging import log, vlog
 
+try:
+    from mutagen.flac import FLAC as _MutagenFLAC  # noqa: F401
+    HAVE_MUTAGEN = True
+except Exception:
+    HAVE_MUTAGEN = False
+
 
 def _yaml_sq(value):
     """Emit *value* as a safe YAML single-quoted scalar.
@@ -154,6 +160,11 @@ def _quarantine_untagged_staging():
     DATA_DIR so it stays recoverable (and can be retagged by hand, e.g. with
     beets' chroma/acoustid). Returns the list of original paths moved."""
     moved = []
+    # Without mutagen every read returns None and we'd quarantine the entire
+    # download as "untagged". Can't tell tagged from untagged, so leave the
+    # files for beets to handle rather than emptying staging.
+    if not HAVE_MUTAGEN:
+        return moved
     try:
         flacs = list(cfg.STAGING_DIR.rglob("*.flac"))
     except OSError:
@@ -553,9 +564,17 @@ def _consolidate_duplicate_albums():
             "into duplicate library entries…"))
     for d in dup_dirs:
         try:
-            subprocess.run(base + ["remove", "-f", "path:" + d],
-                           capture_output=True, text=True, env=beet_env,
-                           timeout=120)
+            rm = subprocess.run(base + ["remove", "-f", "path:" + d],
+                                capture_output=True, text=True, env=beet_env,
+                                timeout=120)
+            # If the remove failed the rows are still there; re-importing on top
+            # would add a third row and make the split worse, so skip this one.
+            if rm.returncode != 0:
+                log.info(fmt(C.YELLOW,
+                    f"  ⚠  Couldn't clear the old entries for {d} (beet remove "
+                    f"exited {rm.returncode}); leaving it as-is. Run "
+                    f"`beet remove` then `beet import` on that folder by hand."))
+                continue
             # The remove just cleared every row for this folder; if the
             # re-import fails the album is left untracked, which is worse than
             # the duplicate. Surface that loudly so it can be re-imported.
@@ -656,8 +675,17 @@ def staging_preflight(args):
             log.info(fmt(C.YELLOW,
                 f"  ⚠  Quarantining {len(leftover)} unimportable file(s) → {orphan_dir}."))
             for f in leftover:
+                # Keep each file's staging subpath so two albums with a
+                # same-named file (cover.jpg, "01 - Track.flac") don't collide
+                # and silently overwrite each other in the flat orphan dir.
                 try:
-                    shutil.move(str(f), str(orphan_dir / f.name))
+                    rel = f.relative_to(cfg.STAGING_DIR)
+                except ValueError:
+                    rel = Path(f.name)
+                dest = orphan_dir / rel
+                try:
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.move(str(f), str(dest))
                 except OSError:
                     pass
     elif r == "3":

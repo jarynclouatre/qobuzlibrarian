@@ -303,6 +303,41 @@ def test_consolidation_targets_repeats_of_one_album_not_distinct_albums():
     assert _duplicate_album_dirs(listing) == ["/music/Aphex Twin/Windowlicker (1999)"]
 
 
+def test_consolidation_skips_reimport_when_remove_fails(tmp_path, monkeypatch):
+    # A failed `beet remove` leaves the rows in place; importing on top would
+    # add a third row and make the split worse, so the re-import is skipped.
+    from qobuz_librarian.integrations import beets
+    sep = _ALBUM_FIELD_SEP
+    listing = "\n".join([
+        f"/music/A/Dup (2001){sep}A{sep}Dup",
+        f"/music/A/Dup (2001){sep}A{sep}Dup",
+    ])
+    monkeypatch.setattr("qobuz_librarian.config.BEETS_DB_PATH", tmp_path / "lib.db")
+    monkeypatch.setattr("qobuz_librarian.config.BEETS_CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(beets, "_build_import_override_yaml", lambda: "")
+    monkeypatch.setattr(beets.shutil, "which", lambda _b: "/usr/bin/beet")
+
+    calls = []
+
+    def fake_run(cmd, *a, **k):
+        calls.append(cmd)
+        r = MagicMock()
+        if "ls" in cmd:
+            r.returncode, r.stdout = 0, listing
+        elif "remove" in cmd:
+            r.returncode, r.stdout = 1, ""   # remove fails
+        else:
+            r.returncode, r.stdout = 0, ""
+        return r
+
+    monkeypatch.setattr(beets.subprocess, "run", fake_run)
+
+    beets._consolidate_duplicate_albums()
+
+    assert any("remove" in c for c in calls)
+    assert not any("import" in c for c in calls)
+
+
 class TestKillProcessGroup:
     def test_group_killed_when_child_in_own_session(self):
         from qobuz_librarian.integrations import rip
@@ -497,6 +532,53 @@ class TestQuarantineUntaggedStaging:
         assert not broken.exists() and broken in moved      # unreadable → moved
         survivors = list((data / ".untagged_staging").rglob("*.flac"))
         assert len(survivors) == 2                          # both recoverable
+
+
+def test_quarantine_skips_everything_when_mutagen_absent(tmp_path, monkeypatch):
+    # With no mutagen every tag read fails; treating that as "untagged" would
+    # quarantine the whole download and hand beets an empty staging dir.
+    from qobuz_librarian.integrations import beets
+    staging = tmp_path / "staging"
+    (staging / "Album").mkdir(parents=True)
+    f = staging / "Album" / "01.flac"
+    f.write_bytes(b"flac-ish bytes")
+    monkeypatch.setattr("qobuz_librarian.config.STAGING_DIR", staging)
+    monkeypatch.setattr("qobuz_librarian.config.DATA_DIR", tmp_path / "data")
+    monkeypatch.setattr(beets, "HAVE_MUTAGEN", False)
+
+    moved = beets._quarantine_untagged_staging()
+
+    assert moved == []
+    assert f.exists()
+
+
+def test_staging_orphan_move_preserves_same_named_files(tmp_path, monkeypatch):
+    # Two albums with an identically-named leftover must both survive in the
+    # orphan dir — a flat basename move would overwrite one.
+    import types
+
+    from qobuz_librarian.integrations import beets
+    staging = tmp_path / "staging"
+    (staging / "AlbumA").mkdir(parents=True)
+    (staging / "AlbumB").mkdir(parents=True)
+    (staging / "AlbumA" / "cover.jpg").write_bytes(b"A")
+    (staging / "AlbumB" / "cover.jpg").write_bytes(b"B")
+    monkeypatch.setattr("qobuz_librarian.config.STAGING_DIR", staging)
+
+    monkeypatch.setattr("qobuz_librarian.integrations.rip.cleanup_staging_residue",
+                        lambda: 0)
+    monkeypatch.setattr("qobuz_librarian.integrations.lyrics._run_lyric_hook",
+                        lambda *_a, **_k: ({}, []))
+    # beets "succeeds" but leaves the unimportable files in staging.
+    monkeypatch.setattr(beets, "beets_import_paths", lambda *a, **k: True)
+    monkeypatch.setattr("builtins.input", lambda *_a, **_k: "1")
+
+    args = types.SimpleNamespace(yes=False, no_downsample=True, no_compress=True)
+    beets.staging_preflight(args)
+
+    orphans = list((staging.parent / ".staging.orphans").rglob("cover.jpg"))
+    assert len(orphans) == 2
+    assert {p.read_bytes() for p in orphans} == {b"A", b"B"}
 
 
 class TestNormalizeStagingTags:

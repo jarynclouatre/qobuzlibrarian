@@ -196,12 +196,15 @@ def backup_gap_fill_files(file_paths, album_dir: Path):
                 # source intact.
                 src_size = src.stat().st_size
                 shutil.copy2(str(src), str(dst))
-                if dst.stat().st_size != src_size:
+                # Read the size before unlinking — re-stat'ing dst after the
+                # unlink would raise FileNotFoundError and mask the real reason.
+                dst_size = dst.stat().st_size
+                if dst_size != src_size:
                     try:
                         dst.unlink()
                     except OSError:
                         pass
-                    raise OSError(f"copy size mismatch ({dst.stat().st_size} != {src_size})")
+                    raise OSError(f"copy size mismatch ({dst_size} != {src_size})")
                 src.unlink()
         except (OSError, shutil.Error) as e:
             log.info(fmt(C.YELLOW,
