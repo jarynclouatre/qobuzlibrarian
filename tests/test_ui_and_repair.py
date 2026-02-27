@@ -526,45 +526,6 @@ class TestParseArgsGuards:
         assert exc.value.code == 1
 
 
-class TestVerboseComposeDiagnostic:
-    def _run_verbose_block(self, monkeypatch, *, in_container):
-        """Replay the --verbose diagnostic print block from cli.main in
-        isolation. Patches `_in_container` to the given value and captures
-        what the function would log."""
-        from qobuz_librarian import cli
-
-        captured = []
-        monkeypatch.setattr(cli, "_in_container", lambda: in_container)
-        # Reuse a tiny shim around log.info — same call shape as the real
-        # logger, no formatter / level filtering to fight.
-        monkeypatch.setattr(cli.log, "info", lambda msg: captured.append(msg))
-
-        # Pretend cfg.COMPOSE_FILE doesn't exist (worst-case: host-side
-        # file not visible from container).
-        class _Compose:
-            def exists(self):
-                return False
-            def __str__(self):
-                return "compose.yaml"
-        monkeypatch.setattr(cli.cfg, "COMPOSE_FILE", _Compose())
-        monkeypatch.setattr(cli.cfg, "STAGING_DIR", "/staging")
-        monkeypatch.setattr(cli.cfg, "FETCH_LOG_FILE", "/data/log.json")
-        monkeypatch.setattr(cli.cfg, "LOCK_FILE", "/data/lock")
-
-        # Inline the exact verbose block from cli.main so we don't need to
-        # set up the rest of main(). If the block in main() drifts, this
-        # test should be updated alongside.
-        if cli._in_container():
-            cli.log.info(cli.fmt(cli.C.GRAY,
-                f"  compose:    {cli.cfg.COMPOSE_FILE}  "
-                "(host-side; not visible from container)"))
-        else:
-            cli.log.info(cli.fmt(cli.C.GRAY,
-                f"  compose:    {cli.cfg.COMPOSE_FILE}  "
-                f"({'present' if cli.cfg.COMPOSE_FILE.exists() else 'MISSING'})"))
-        return "\n".join(captured)
-
-
 class TestCLISettingsLoad:
     def test_main_loads_persisted_settings_before_parse(self, monkeypatch):
         import sys
@@ -878,13 +839,9 @@ class TestAlbumWalkFilterIsSubstring:
         with patch("builtins.input", side_effect=["a"]):
             walk.run_album_walk_mode(args, "tok")
 
-        # Filter 'a' (case-insensitive substring) should match every
-        # artist whose name contains the letter — Beatles, David Bowie,
-        # Albert Collins, Radiohead. The prior special case treated
-        # single-letter filters as a "first letter >= flt" jump, so a
-        # filter 'n' would have skipped every artist starting with a
-        # letter < 'n', surprising the user the prompt promised substring
-        # matching.
+        # Filter 'a' is a case-insensitive substring match, so it should hit
+        # every artist whose name contains an 'a' — not just those starting
+        # with it.
         assert sorted(captured["seen"]) == [
             "Albert Collins", "Beatles", "David Bowie", "Radiohead",
         ]

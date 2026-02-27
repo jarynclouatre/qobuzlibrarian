@@ -1,8 +1,7 @@
 """String normalization, path sanitization, and title-stripping helpers.
 
-All regex constants, cache sizes, and
-iteration limits are preserved exactly — these are load-bearing values that
-affect fuzzy matching throughout the codebase.
+The regex constants, cache sizes, and iteration limits here are load-bearing:
+changing them shifts fuzzy-matching results across the codebase.
 
 normalize() and similarity() are used in:
   - find_album_dir_filesystem (fuzzy folder matching)

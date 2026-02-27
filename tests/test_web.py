@@ -483,10 +483,8 @@ def test_lyric_retry_submits_job_and_redirects(client, monkeypatch):
 # ── _missing_albums surfaces partial-album fill ─────────
 
 class TestMissingAlbumsSurfacesPartialAlbums:
-    # CLI artist mode flags albums with track gaps for gap-fill. The web
-    # /artist scan used to ignore any album that had a folder on disk,
-    # so a half-downloaded album never appeared as a fill candidate. The
-    # fix surfaces partial albums alongside entirely-missing ones.
+    # A partly-downloaded album (a folder on disk with track gaps) must show
+    # up as a gap-fill candidate, alongside albums missing entirely.
 
     def _qobuz_tracks(self, isrc_prefix, n):
         return {"items": [{"isrc": f"{isrc_prefix}{i}", "track_number": i + 1}

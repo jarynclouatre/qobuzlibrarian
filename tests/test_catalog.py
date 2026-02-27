@@ -216,8 +216,8 @@ class TestFilterOwnedAlbums:
         assert len(filter_owned_albums(pairs, {"revolver": [None]})) == 0
 
     def test_sequel_not_hidden_by_owned_base(self):
-        # Owning 'Load' must not hide the distinct 'Reload' from the missing
-        # list (the fuzzy fallback used to drop it on title similarity alone).
+        # Owning 'Load' must not hide the distinct 'Reload' — title similarity
+        # alone is not identity.
         pairs = [self._pair("Reload", year=1997)]
         result = filter_owned_albums(pairs, {"load": [1996]})
         assert [a["title"] for a, _ in result] == ["Reload"]

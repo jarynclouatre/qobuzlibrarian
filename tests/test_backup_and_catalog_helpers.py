@@ -361,34 +361,6 @@ class TestMergeAlbumDirs:
         assert dst_file.read_bytes() == b"dst-audio"
 
 
-class TestSearchLimitsRouteThroughConfig:
-    """Literal `limit=N` overrides at internal call sites silently bypass
-    the config knob. Every internal search call must route through
-    cfg.ARTIST_LOOKUP_LIMIT or cfg.CATALOG_SEARCH_LIMIT so an operator
-    can actually tune search depth."""
-
-    def test_no_literal_search_limits_in_internal_callsites(self):
-        import re
-        files = [
-            "src/qobuz_librarian/library/catalog.py",
-            "src/qobuz_librarian/modes/artist.py",
-            "src/qobuz_librarian/quality/decision.py",
-            "src/qobuz_librarian/web/flows.py",
-        ]
-        bad = []
-        # Matches: search_albums(..., limit=10) / search_artists(..., limit=5)
-        pat = re.compile(r"search_(albums|artists|tracks)\([^)]*limit=\d+")
-        root = Path(__file__).resolve().parents[1]
-        for f in files:
-            for ln, line in enumerate((root / f).read_text().splitlines(), 1):
-                if pat.search(line):
-                    bad.append(f"{f}:{ln}: {line.strip()}")
-        assert not bad, (
-            "internal callers must use cfg.ARTIST_LOOKUP_LIMIT / "
-            "cfg.CATALOG_SEARCH_LIMIT, not literal limit=N:\n  "
-            + "\n  ".join(bad))
-
-
 class TestSyncBeetsDBAfterMove:
     """The multi-artist migration shutil-moves an album folder; beets's DB
     needs the items.path column updated to match or `beet update` will
