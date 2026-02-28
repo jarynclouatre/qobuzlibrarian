@@ -1,6 +1,7 @@
 """Walk modes — library walk, walk+queue, and album fill walk."""
 import os
 import re
+import sys
 
 from qobuz_librarian import config as cfg
 from qobuz_librarian.api.auth import AuthLost
@@ -594,7 +595,14 @@ def run_walk_queued_mode(args, token):
             i += 1
     finally:
         args.consolidate = saved_consolidate
-        if shared_queue:
+        if shared_queue and isinstance(sys.exc_info()[1], AuthLost):
+            # Unwinding on a lost token: a flush would only re-raise over the
+            # original auth error, so keep the queue for next launch instead.
+            save_pending_queue(shared_queue, mode="walk_queue")
+            log.info(fmt(C.GRAY,
+                f"  Queue retained — persisted to "
+                f"{cfg.PENDING_QUEUE_FILE.name} for next launch."))
+        elif shared_queue:
             print()
             log.info(fmt(C.YELLOW,
                 f"  {len(shared_queue)} album(s) still queued."))
