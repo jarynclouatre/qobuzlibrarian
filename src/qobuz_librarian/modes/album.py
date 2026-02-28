@@ -116,10 +116,11 @@ def _interactive_album_action(album, args, token, album_queue, flush_queue):
             log.info(fmt(C.GRAY,
                 f"  ({len(album_queue)} album(s) already in queue — "
                 "enter 'f' to download all)"))
+        flush_opt = "  [f]lush queue" if album_queue else ""
         try:
             r = input(fmt(C.CYAN,
-                "  [d]ownload now  [q]ueue for later  "
-                "[f]lush queue  [s]kip: ")).strip().lower()
+                f"  [d]ownload now (default)  [q]ueue for later"
+                f"{flush_opt}  [s]kip: ")).strip().lower()
         except EOFError:
             r = "s"
 

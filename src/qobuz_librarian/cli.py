@@ -347,7 +347,7 @@ def main():
             log.info(fmt(C.GRAY, "  No walk-seen state to clear."))
         return
 
-    banner("Qobuz Librarian  —  album · artist · walk · upgrade · queue")
+    banner("Qobuz Librarian  —  search · artist · library · repair · upgrade")
 
     # Single-instance lock first — fail fast before doing any other work.
     # Hold the file handle for the lifetime of main() so the lock persists.
