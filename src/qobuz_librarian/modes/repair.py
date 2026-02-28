@@ -438,11 +438,11 @@ def _scan_report_repair(album_dir, artist_name, args, token):
         try:
             r = input(fmt(C.CYAN,
                 f"\n  Re-download {len(verified_truncated)} "
-                "ISRC-verified track(s)? [Y/n]: ")
+                "ISRC-verified track(s)? [y/N]: ")
             ).strip().lower()
         except EOFError:
             r = ""
-        if r in ("n", "no"):
+        if r not in ("y", "yes"):
             log.info(fmt(C.GRAY, "  Skipped."))
             return "skipped"
 

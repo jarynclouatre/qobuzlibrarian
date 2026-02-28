@@ -171,7 +171,7 @@ def run_upgrade_walk_mode(args, token):
             else:
                 _flush_stdin()
                 if not confirm(f"  Upgrade {plural(n_albums, 'album')}?",
-                               default_yes=True,
+                               default_yes=False,
                                auto_yes=args.yes or auto_accept_all):
                     log.info(fmt(C.GRAY, "  Skipped."))
                     print()
