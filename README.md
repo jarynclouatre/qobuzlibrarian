@@ -96,7 +96,7 @@ changed until you do.
 | **Settings**| Qobuz credentials and behaviour toggles (applied without a restart) |
 
 The CLI runs the same engine. Launch with no arguments for an
-interactive menu (Album · Artist · three Library-walk variants ·
+interactive menu (Search · Artist · three library-walk variants ·
 Repair · Upgrade), or pass flags for unattended runs — `--help` lists
 them all.
 
@@ -445,7 +445,7 @@ lock): `docker compose stop qobuz-librarian`, run the CLI, then
 For an interactive menu:
 
 ```bash
-docker compose run --rm qobuz-librarian cli
+docker compose run --rm -it qobuz-librarian cli
 ```
 
 A few common unattended forms:
@@ -582,5 +582,3 @@ Notably **streamrip (GPL-3.0)** and **mutagen (GPL-2.0-or-later)** are
 copyleft — if you redistribute the image or a derivative, review their
 terms. Qobuz Librarian invokes streamrip as a separate program (subprocess),
 not as a linked library; see each project for authoritative license text.
-</content>
-</invoke>
