@@ -70,7 +70,7 @@ check /queue                  200
 check /settings               200
 check /static/icon.png        200
 check /static/logo.png        200
-check /api/jobs/nope/status   200   # returns JSON {"error":"not found"}
+check /api/jobs/nope/status   404   # unknown job id
 
 echo "==> Checking bundled tools in the image"
 for bin in rip beet ffprobe; do
