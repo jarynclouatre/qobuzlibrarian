@@ -242,7 +242,7 @@ try:
     from importlib.metadata import version as _pkg_version
     _APP_VERSION = _pkg_version("qobuz-librarian")
 except Exception:
-    _APP_VERSION = "0.2.0"
+    _APP_VERSION = "0.2.1"
 templates.env.globals["app_version"] = _APP_VERSION
 templates.env.globals["repo_url"] = "https://github.com/jarynclouatre/qobuz-librarian"
 
