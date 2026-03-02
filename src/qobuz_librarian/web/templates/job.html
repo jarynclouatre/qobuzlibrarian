@@ -16,7 +16,7 @@
     {%- elif job.status.value == 'failed' %} badge-error
     {%- elif job.status.value == 'canceled' %} badge-ghost
     {%- elif job.status.value == 'awaiting_review' %} badge-info
-    {%- else %} badge-warning{% endif %}">{{ job.status.value.replace('_', ' ') }}</span>
+    {%- else %} badge-warning{% endif %}">{{ job.status.value.replace('_', ' ').replace('canceled', 'cancelled') }}</span>
 </div>
 <p class="text-xs text-base-content/40 mb-6">Job {{ job.id }}</p>
 
@@ -105,7 +105,7 @@
   </form>
   {% else %}
   <div class="flex items-center justify-between flex-wrap gap-3">
-    <p class="text-base-content/60">Nothing found.</p>
+    <p class="text-base-content/60">Nothing to download — this scan didn't turn up anything missing.</p>
     <form action="/jobs/{{ job.id }}/cancel" method="post">
       <input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}">
       <button type="submit" class="btn btn-sm btn-ghost">Dismiss</button>
@@ -122,7 +122,7 @@
 {# ── Finished ─────────────────────────────────────────────────────────── #}
 {% else %}
   {% if job.error %}
-  <div class="alert alert-error mb-4"><span class="break-words whitespace-pre-wrap">{{ job.error }} — check the queue or run logs.</span></div>
+  <div class="alert alert-error mb-4"><span class="break-words whitespace-pre-wrap">{{ job.error }}{% if 'log' not in job.error %} — check the queue or run logs.{% endif %}</span></div>
   {% endif %}
   <div class="log-console">
     {%- for line in job.log_lines %}{{ line }}

@@ -27,7 +27,8 @@
           {% if r.hires %}
           <span class="badge badge-sm quality-hires border border-current">Hi-Res</span>
           {% elif r.lossy %}
-          <span class="badge badge-sm quality-lossy border border-current">Lossy</span>
+          <span class="badge badge-sm quality-lossy border border-current"
+                title="Only a lossy version is available on Qobuz for this release">Lossy</span>
           {% else %}
           <span class="badge badge-sm quality-cd border border-current">CD</span>
           {% endif %}
@@ -54,7 +55,7 @@
     </div>
   </div>
 </div>
-<div id="download-toast" class="mt-4"></div>
+<div id="download-toast" class="mt-4" aria-live="polite"></div>
 
 {% elif q and not error %}
 <div class="text-center py-12 text-base-content/40">

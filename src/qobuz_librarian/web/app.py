@@ -553,7 +553,7 @@ async def queue_download(request: Request, album_id: str = Form(""),
                     if _is_htmx(request):
                         return HTMLResponse(
                             f'<div class="alert alert-warning">{html.escape(msg)} '
-                            f'<a href="/" class="link">Open library</a>.</div>')
+                            f'<a href="/" class="link">Back to dashboard</a>.</div>')
                     return RedirectResponse(
                         url="/queue?error=" + urllib.parse.quote(msg),
                         status_code=303)
@@ -872,7 +872,8 @@ def _diagnostics():
             return
         if want_writable and not os.access(p, os.W_OK):
             checks.append({"label": label, "ok": False,
-                           "detail": f"{p} is not writable by the container user"})
+                           "detail": f"{p} is not writable by the container user — "
+                           "on a NAS, set PUID/PGID in .env to your media-share owner"})
             return
         try:
             n = sum(1 for _ in p.iterdir())
@@ -903,7 +904,8 @@ def _diagnostics():
         found = _sh.which(binary)
         checks.append({"label": f"`{binary}` binary",
                        "ok": bool(found),
-                       "detail": found or f"{binary} not on PATH"})
+                       "detail": found or f"{binary} not on PATH — "
+                       "rebuild the image (docker compose build)"})
 
     stranded = []
     if cfg.UPGRADE_BACKUP_DIR.exists():

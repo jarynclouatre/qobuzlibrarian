@@ -64,10 +64,12 @@
   <div class="card-body">
     <h2 class="card-title mb-1">Qobuz authentication</h2>
     <p class="text-sm text-base-content/60 mb-4">
-      Your credentials are stored in the container's config volume and never leave your server.
-      To find your auth token: sign in at play.qobuz.com, open dev tools (F12) →
-      Application → Local Storage → play.qobuz.com, and copy the
-      <code>localuser</code> entry's <code>token</code>.
+      Qobuz has no public login, so the app reuses the token your own browser
+      already holds — you copy it once, and it's stored only on your server,
+      never sent anywhere but Qobuz. To find it (about 30 seconds): sign in at
+      play.qobuz.com, open dev tools (F12) → Application → Local Storage →
+      play.qobuz.com, and copy the <code>localuser</code> entry's
+      <code>token</code> — the <code>id</code> next to it is your user ID.
     </p>
 
     {% if creds_from_env %}
@@ -84,27 +86,35 @@
     <form action="/settings" method="post">
       <input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}">
       <div class="form-control mb-4">
-        <label class="label"><span class="label-text">User ID / Email</span></label>
-        <input type="text" name="user_id" value="{{ user_id or '' }}"
+        <label class="label" for="user_id">
+          <span class="label-text">User ID / Email <span class="text-error" aria-hidden="true">*</span></span>
+        </label>
+        <input type="text" name="user_id" id="user_id" value="{{ user_id or '' }}"
                placeholder="your@email.com or numeric user ID"
                class="input input-bordered w-full max-w-lg">
+        <label class="label">
+          <span class="label-text-alt text-base-content/40">
+            Required — your account email or numeric user ID. The token can search
+            on its own, but downloads need this too.
+          </span>
+        </label>
       </div>
       <div class="form-control mb-4">
-        <label class="label flex-wrap gap-2">
-          <span class="label-text">Auth Token</span>
+        <label class="label flex-wrap gap-2" for="auth_token">
+          <span class="label-text">Auth Token <span class="text-error" aria-hidden="true">*</span></span>
           {% if auth_token_set %}
           <span class="label-text-alt text-success whitespace-nowrap">Token is set — leave blank to keep</span>
           {% endif %}
         </label>
-        <input type="password" name="auth_token"
+        <input type="password" name="auth_token" id="auth_token"
                value="{{ auth_token_prefill | default('') }}"
                aria-label="Qobuz auth token"
                autocomplete="off" autocorrect="off" spellcheck="false"
-               placeholder="{% if auth_token_set %}•••••••• (paste a new token to replace){% else %}paste user_auth_token here{% endif %}"
+               placeholder="{% if auth_token_set %}•••••••• (paste a new token to replace){% else %}paste the long token string here{% endif %}"
                class="input input-bordered w-full max-w-lg font-mono text-base sm:text-sm">
         <label class="label">
           <span class="label-text-alt text-base-content/40">
-            This is the <code>password_or_token</code> field in streamrip's config — a long string, not your password.
+            The long token string — not your Qobuz password.
           </span>
         </label>
       </div>
@@ -120,7 +130,7 @@
         </button>
         <button type="submit" class="btn btn-primary">Save credentials</button>
       </div>
-      <div id="auth-status" class="mt-3"></div>
+      <div id="auth-status" class="mt-3" aria-live="polite"></div>
     </form>
   </div>
 </div>
@@ -179,11 +189,11 @@
       <div class="space-y-4 mb-5">
         {% for key, label, help in behavior_fields %}
         <div class="flex items-start gap-3">
-          <input type="checkbox" name="{{ key }}"
+          <input type="checkbox" name="{{ key }}" id="cb-{{ key }}"
                  class="toggle toggle-primary mt-1"
                  {% if behavior[key] %}checked{% endif %}>
           <div>
-            <div class="font-medium">{{ label }}</div>
+            <label for="cb-{{ key }}" class="font-medium cursor-pointer">{{ label }}</label>
             <div class="text-sm text-base-content/50">{{ help }}</div>
           </div>
         </div>
@@ -195,15 +205,15 @@
       <div class="space-y-4 mb-5">
         {% for key, label, help, kind, choices, placeholder in text_fields %}
         <div class="form-control">
-          <label class="label py-1"><span class="label-text font-medium">{{ label }}</span></label>
+          <label class="label py-1" for="f-{{ key }}"><span class="label-text font-medium">{{ label }}</span></label>
           {% if kind == 'enum' %}
-          <select name="{{ key }}" class="select select-bordered max-w-xs text-base sm:select-sm sm:text-xs">
+          <select name="{{ key }}" id="f-{{ key }}" class="select select-bordered max-w-xs text-base sm:select-sm sm:text-xs">
             {% for c in choices %}
             <option value="{{ c }}" {% if behavior[key] == c %}selected{% endif %}>{{ (option_labels|default({})).get(key, {}).get(c, c) }}</option>
             {% endfor %}
           </select>
           {% else %}
-          <input type="text" name="{{ key }}" value="{{ behavior[key] }}"
+          <input type="text" name="{{ key }}" id="f-{{ key }}" value="{{ behavior[key] }}"
                  placeholder="{{ placeholder }}"
                  class="input input-bordered w-full max-w-lg font-mono text-base sm:input-sm sm:text-xs">
           {% endif %}

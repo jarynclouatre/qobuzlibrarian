@@ -9,7 +9,7 @@
     <form action="/queue/cancel-pending" method="post">
       <input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}">
       <button type="submit" class="btn btn-sm btn-ghost"
-              onclick="return confirm('Cancel all pending and running jobs?')">Cancel pending</button>
+              onclick="return confirm('Stop the running download and cancel everything queued?')">Cancel all jobs</button>
     </form>
     {% endif %}
     {% if finished %}
@@ -118,7 +118,7 @@
       {% if job.status.value == 'done' %}
         <span class="text-success text-lg">✓</span>
       {% elif job.status.value == 'canceled' %}
-        <span class="text-base-content/40 text-lg" title="Canceled">⊘</span>
+        <span class="text-base-content/40 text-lg" title="Cancelled">⊘</span>
       {% else %}
         <span class="text-error text-lg">✗</span>
       {% endif %}
@@ -138,8 +138,9 @@
       <button type="submit" class="btn btn-xs btn-ghost" title="Retry download">Retry</button>
     </form>
     {% endif %}
-    <button class="btn btn-xs btn-ghost"
-            onclick="document.getElementById('hist-{{ job.id }}').classList.toggle('hidden')">
+    <button class="btn btn-xs btn-ghost" aria-expanded="false"
+            aria-controls="hist-{{ job.id }}"
+            onclick="const e=document.getElementById('hist-{{ job.id }}');e.classList.toggle('hidden');this.setAttribute('aria-expanded',!e.classList.contains('hidden'))">
       Log
     </button>
   </div>
