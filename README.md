@@ -22,9 +22,8 @@ or the CLI.
   <img src="assets/screenshot-dashboard.png" alt="Web UI dashboard" width="800">
 </p>
 
-By default it pulls the **highest quality your subscription serves** — 24-bit hi-res
-up to 192 kHz where Qobuz has it, CD-quality lossless where it doesn't. Want smaller files
-instead? Drop the quality to CD lossless or 320 kbps with one setting (see
+By default it pulls the **highest quality your subscription serves**. Want
+smaller files instead? Drop to CD lossless or 320 kbps with one setting (see
 [Download quality](#download-quality)).
 
 ## Features
@@ -65,18 +64,11 @@ lyrics are fetched automatically (when `LYRICS_ENABLED` is on; default).
 
 ## How it ships
 
-**Web UI, with a CLI for power users.** The web UI is the primary way to use
-it (see below). The CLI runs the exact same engine and is handy for scripting
-and unattended runs.
-
-**The bundled tools stay yours.** streamrip and beets are seeded with sensible
-defaults and then left alone — their full config files live in a persistent
-volume and you can change anything they support. Qobuz Librarian wires them
-together; it doesn't wall off what they can do.
-
-**Single-container deploy.** streamrip, beets, and ffmpeg are bundled into one
-image. Paths and ports come from environment variables; behaviour is set on
-the Settings page (or via env defaults).
+A single Docker image bundles streamrip, beets, and ffmpeg — no extra
+containers. The web UI is the primary interface; the CLI runs the same engine
+for scripting and unattended runs. Paths and ports come from environment
+variables, behaviour from the Settings page. The bundled tools' full config
+files live in a persistent volume, so you can change anything they support.
 
 ## How you use it
 
@@ -128,17 +120,14 @@ downsample on import.
 
 ### Quality upgrades
 
-Upgrading existing files is its own **deliberate mode**. A plain gap-fill only fetches the
-tracks you're missing — it never wipes and re-downloads an album you have.
+A plain gap-fill never wipes an album you have — it only fetches missing
+tracks. Replacing files for higher quality is a separate **Upgrade** mode
+(CLI and web): it backs up the originals first (with retention cleanup) and
+won't replace an album if that would drop bonus tracks you have.
 
-- **Upgrade walk** is its own mode (CLI and web). Running it *is* the opt-in:
-  it scans for albums Qobuz can serve at higher quality, backs up the
-  originals first (with retention cleanup), and won't replace an album if
-  that would drop bonus or extra tracks you have.
-- `AUTO_UPGRADE_ENABLED` (default off) only controls whether **ordinary
-  gap-fill walks** also offer upgrades along the way. Off, walks just fill
-  gaps; on, upgrades are surfaced during normal runs too. Either is fine —
-  it's a workflow preference, not a safety setting.
+`AUTO_UPGRADE_ENABLED` (default off) controls only whether ordinary gap-fill
+walks also surface upgrades along the way; the explicit Upgrade scan works
+either way.
 
 ### Optional power features
 
@@ -152,16 +141,12 @@ Off by default because they change your files:
 
 ## Quick start (Docker)
 
-streamrip and beets are bundled into the image, so there are no extra
-containers to run.
-
 ```bash
 mkdir qobuz-librarian && cd qobuz-librarian
 curl -O https://raw.githubusercontent.com/jarynclouatre/qobuz-librarian/main/compose.yaml
 curl -O https://raw.githubusercontent.com/jarynclouatre/qobuz-librarian/main/.env.example
 cp .env.example .env
 # edit .env — at minimum point QL_MUSIC_DIR at your music folder
-# (see Configuration below for the full list of variables)
 docker compose up -d
 ```
 
@@ -169,15 +154,9 @@ On Windows, run those commands in WSL or Git Bash — Windows PowerShell's
 `curl` is an alias for `Invoke-WebRequest` with different flags, and
 `cp`/`mkdir` chained with `&&` won't work the same way.
 
-`compose.yaml` pulls the prebuilt image from Docker Hub. `latest` tracks
-`main`; pin a tag like `0.2.0` in `compose.yaml` if you want a stable
-build. See [Building from source](#building-from-source) below if you'd
-rather build it yourself.
-
-**Docker Desktop (Windows / macOS):** volume paths in `compose.yaml` are
-relative to the file's location on the host. On Windows the host-side path
-uses backslash notation, but the container path (e.g. `/music`) stays
-Linux-style — Docker Desktop translates between them automatically.
+`compose.yaml` pulls the prebuilt `latest` image from Docker Hub. See
+[Building from source](#building-from-source) below if you'd rather build
+it yourself.
 
 Open <http://localhost:8666>. On first run the dashboard prompts you to add
 your Qobuz credentials — do that on the **Settings** page (or set them in
@@ -214,8 +193,6 @@ cd qobuz-librarian
 cp .env.example .env
 docker compose -f compose.yaml -f compose.dev.yaml up -d --build
 ```
-
-On Windows, run those commands in WSL or Git Bash.
 
 ### Configuration
 
@@ -372,9 +349,7 @@ on first import:
 | `incremental` | `no` | Always rescans staging so a retry sees the same files. | Turn on to skip already-seen staging dirs. |
 
 Edit `/config/beets/config.yaml` and the changes apply on the next import
-— no restart needed. beets path templates (folder/file naming) can also
-be set via `BEETS_PATH_DEFAULT` / `_SINGLETON` / `_COMP` in `compose.yaml`
-without editing YAML.
+— no restart needed.
 
 ## First scan on a big library
 
@@ -417,8 +392,7 @@ PGID: "${PGID:-1000}"
 ```
 
 Then set `PUID=1000` / `PGID=1000` in your `.env` (or whatever values
-your host uses). Find them with `id -u` / `id -g` — 1000 is typical for
-desktop Linux but Synology/TrueNAS/QNAP differ.
+your host uses). Find them with `id -u` / `id -g`.
 
 The app drops to that user at startup and warns in the logs if a mounted
 path isn't writable by it. Only the small `config`/`data` volumes are
@@ -484,30 +458,21 @@ The CLI honours the same `.env` and `compose.yaml` settings as the web UI.
 
 ## Security & deployment shape
 
-The bundled `compose.yaml` ships with sane hardening enabled — what you
-get on a fresh `docker compose up -d`:
+The bundled `compose.yaml` ships hardened — on a fresh `docker compose up -d`:
 
 - `mem_limit: 1g`, `pids_limit: 256` — a runaway streamrip child can't
   exhaust host resources.
-- `security_opt: ["no-new-privileges:true"]` — kernel blocks setuid
-  escalation paths.
-- `cap_drop: [ALL]` plus only `CHOWN, DAC_OVERRIDE, FOWNER, SETUID,
-  SETGID` added back — exactly what gosu + the PUID/PGID handover need.
-- Multi-arch image (`linux/amd64`, `linux/arm64`) — NAS users on
-  Synology/QNAP arm64 get native builds.
-- Persisted token files at `/config/streamrip/config.toml` and
-  `/data/.qobuz_settings.json` land 0600.
-- CSRF (double-submit cookie + constant-time compare), a CSP with
-  `frame-ancestors 'none'` and no `unsafe-eval`, HSTS on HTTPS only.
-- `--no-server-header` plus a middleware strip — uvicorn isn't
-  advertised in responses.
-- `QL_CHECK_VOLUMES=1` at startup blocks write endpoints with 503 if
-  `/staging` or `/music` aren't writable, so the container fails
-  loudly on a wrong PUID/PGID instead of silently mis-owned files.
+- `no-new-privileges` and `cap_drop: [ALL]`, adding back only the few caps
+  gosu needs for the PUID/PGID handover.
+- Multi-arch image (`linux/amd64`, `linux/arm64`) — native arm64 NAS builds.
+- Token files land `0600`; `QL_CHECK_VOLUMES=1` fails loudly with a 503 on a
+  wrong PUID/PGID rather than silently writing mis-owned files.
 
-`--read-only` rootfs deployments work as long as you include
-`--tmpfs /tmp` (default APP_HOME) or set `APP_HOME=/var/tmp` with
-`--tmpfs /var/tmp`.
+`--read-only` rootfs deployments work as long as you include `--tmpfs /tmp`
+(or set `APP_HOME=/var/tmp` with `--tmpfs /var/tmp`).
+
+The web UI has no built-in authentication — run it on a trusted network or
+behind an authenticating reverse proxy. See [SECURITY.md](SECURITY.md).
 
 ## Limitations
 
@@ -526,9 +491,6 @@ get on a fresh `docker compose up -d`:
   the thresholds were tuned on Latin scripts. Edition-variant stripping
   and lyric-title normalisation use English keyword lists — non-Latin
   editions (e.g. "豪华版") are kept verbatim rather than stripped.
-- **A library-wide scan is a one-Qobuz-call-per-artist sweep.** Several
-  thousand artists takes minutes, not seconds — it's a review tool, not a
-  real-time index.
 - **PWA install / offline mode need HTTPS.** The service-worker API only
   activates on HTTPS or `localhost` — front the container with a
   TLS-terminating reverse proxy if you want to install it as an app.
