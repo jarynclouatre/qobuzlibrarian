@@ -175,9 +175,12 @@ streamrip uses). You need a paid Qobuz account; this only downloads what your
 subscription already entitles you to. To get the token:
 
 - **Qobuz web player** — sign in at [play.qobuz.com](https://play.qobuz.com), open
-  your browser's dev tools (F12), then **Application → Local Storage →
-  play.qobuz.com**, click the `localuser` entry, and copy its `token` (the
-  `id` beside it is your user id), or
+  your browser's dev tools (F12), then:
+  - **Chrome / Edge**: Application → Local Storage → play.qobuz.com
+  - **Firefox**: Storage → Local Storage → play.qobuz.com
+
+  Click the `localuser` entry and copy its `token` value (the `id` field in the
+  same entry is your user id), or
 - if you already use streamrip outside Docker, copy `password_or_token`
   from `~/.config/streamrip/config.toml` on your host.
 
@@ -449,7 +452,7 @@ The CLI honours the same `.env` and `compose.yaml` settings as the web UI.
 | Container exits immediately on `docker compose up` | `.env` missing from the compose dir, or a required `QL_*` var is unset. `docker compose logs qobuz-librarian` shows which. |
 | `Volume not writable` (Settings → Diagnostics shows FAIL) | `PUID`/`PGID` don't match the host owner of the bind mount — `chown -R $(id -u):$(id -g) ./music ./staging` or set `PUID`/`PGID` in `.env`. |
 | Web UI loads but Library scan says "no artist folders found" | `/music` is mounted at an empty directory or one level off — make sure `QL_MUSIC_DIR` points at the artist-level folder, not the parent. |
-| Token rejected (Settings → Test) | Token expired, copied with surrounding quotes, or pasted with trailing whitespace — re-grab it from play.qobuz.com (dev tools → Application → Local Storage → `localuser` → `token`), paste clean. |
+| Token rejected (Settings → Test) | Token expired, copied with surrounding quotes, or pasted with trailing whitespace — re-grab it from play.qobuz.com (dev tools → Local Storage → `localuser` → `token`; Chrome/Edge: Application tab, Firefox: Storage tab), paste clean. |
 | Download stalls in "Importing into beets…" | A beets plugin is loaded without its required config block (e.g. lastgenre API key, replaygain backend). Disable it via `BEETS_PLUGINS` or add the block to `/config/beets/config.yaml`. |
 | `docker compose pull` 404 | Image hasn't been published under that tag yet — build from source (see [Building from source](#building-from-source)). |
 | Healthcheck failing but port reachable | Container couldn't reach its own `/healthz` — check container resource limits and `docker logs qobuz-librarian`. |

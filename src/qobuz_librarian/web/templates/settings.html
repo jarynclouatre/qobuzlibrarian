@@ -66,10 +66,12 @@
     <p class="text-sm text-base-content/60 mb-4">
       Qobuz has no public login, so the app reuses the token your own browser
       already holds — you copy it once, and it's stored only on your server,
-      never sent anywhere but Qobuz. To find it (about 30 seconds): sign in at
-      play.qobuz.com, open dev tools (F12) → Application → Local Storage →
-      play.qobuz.com, and copy the <code>localuser</code> entry's
-      <code>token</code> — the <code>id</code> next to it is your user ID.
+      never sent anywhere but Qobuz. To find it: sign in at play.qobuz.com,
+      open dev tools (F12), then go to Local Storage →
+      play.qobuz.com (<strong>Chrome/Edge:</strong> Application tab;
+      <strong>Firefox:</strong> Storage tab). Click the <code>localuser</code>
+      entry and copy its <code>token</code> value — the <code>id</code> in the
+      same entry is your user ID.
     </p>
 
     {% if creds_from_env %}
