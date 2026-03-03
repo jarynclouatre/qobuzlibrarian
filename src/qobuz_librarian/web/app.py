@@ -196,6 +196,29 @@ async def _lifespan(_app: FastAPI):
         _RUN_LOCK_HANDLE = None
 
 
+def _classify_token(token):
+    """Ask Qobuz whether a token works.
+
+    Returns "ok", "rejected" (Qobuz refused the token), or "unreachable"
+    (couldn't tell — network down, timeout, or a Qobuz-side hiccup). A 401
+    or a 400 means Qobuz parsed the request and turned the token away;
+    everything else is treated as inconclusive so a transient blip doesn't
+    look like a bad token.
+    """
+    from qobuz_librarian.api.auth import AuthLost, QobuzError, friendly_qobuz_error
+    from qobuz_librarian.api.client import qobuz_get
+    try:
+        qobuz_get("album/search", {"query": "ok", "limit": 1}, token)
+        return "ok"
+    except AuthLost:
+        return "rejected"
+    except QobuzError as e:
+        return "rejected" if friendly_qobuz_error(e).startswith("HTTP 400") \
+            else "unreachable"
+    except Exception:
+        return "unreachable"
+
+
 async def _probe_token():
     """One-shot startup check that the saved token still authenticates.
 
@@ -207,25 +230,19 @@ async def _probe_token():
     creds = _read_creds()
     if not creds.get("auth_token"):
         return
-    from qobuz_librarian.api.auth import AuthLost
-    from qobuz_librarian.api.client import qobuz_get
     token = creds["auth_token"]
     try:
-        await asyncio.wait_for(
+        verdict = await asyncio.wait_for(
             asyncio.get_running_loop().run_in_executor(
-                None,
-                lambda: qobuz_get(
-                    "album/search", {"query": "ok", "limit": 1}, token),
-            ),
+                None, lambda: _classify_token(token)),
             timeout=cfg.WEB_TEST_AUTH_TIMEOUT,
         )
+    except asyncio.TimeoutError:
+        verdict = "unreachable"
+    if verdict == "ok":
         _TOKEN_VALID = True
-    except AuthLost:
+    elif verdict == "rejected":
         _TOKEN_VALID = False
-    except Exception:
-        # Network blip or Qobuz hiccup — leave the state unverified rather
-        # than flip the banner on transient failures.
-        pass
 
 
 app = FastAPI(title="Qobuz Librarian", docs_url=None, redoc_url=None,
@@ -926,8 +943,9 @@ def _diagnostics():
     return checks
 
 
-def _settings_response(request, *, saved=False, queued=False, auth="",
-                       error="", mode="", user_id=None, auth_token_prefill=""):
+def _settings_response(request, *, saved=False, queued=False, connected=False,
+                       unverified=False, error="", mode="", user_id=None,
+                       auth_token_prefill=""):
     from qobuz_librarian.web import settings_store
     creds = _read_creds()
     values = settings_store.current()
@@ -946,7 +964,8 @@ def _settings_response(request, *, saved=False, queued=False, auth="",
         "mode_changed": (mode or "").strip().lower(),
         "saved": saved,
         "queued": queued,
-        "auth_check": auth,
+        "connected": connected,
+        "unverified": unverified,
         "error": error,
         "page": "settings",
         "music_root": cfg.MUSIC_ROOT,
@@ -963,15 +982,18 @@ def _settings_response(request, *, saved=False, queued=False, auth="",
 
 @app.get("/settings", response_class=HTMLResponse)
 async def settings_page(request: Request, saved: bool = False,
-                        queued: bool = False, auth: str = "",
-                        error: str = "", mode: str = ""):
-    return _settings_response(request, saved=saved, queued=queued, auth=auth,
+                        queued: bool = False, connected: bool = False,
+                        unverified: bool = False, error: str = "",
+                        mode: str = ""):
+    return _settings_response(request, saved=saved, queued=queued,
+                              connected=connected, unverified=unverified,
                               error=error, mode=mode)
 
 
 @app.post("/settings", response_class=HTMLResponse)
 async def save_settings(request: Request, user_id: str = Form(""), auth_token: str = Form("")):
     import os
+    global _TOKEN_VALID
     existing = _read_creds()
     # First-run with empty inputs: nothing to save and no creds to keep —
     # bounce back with a banner rather than writing blanks and flashing green.
@@ -984,18 +1006,18 @@ async def save_settings(request: Request, user_id: str = Form(""), auth_token: s
     if not auth_token.strip() and not user_id.strip() and os.environ.get("QOBUZ_USER_AUTH_TOKEN"):
         # Nothing changed and env creds are already synced at startup — skip
         # the write so a read-only config volume doesn't surface a false error.
-        return RedirectResponse(url="/settings?saved=1", status_code=303)
+        return RedirectResponse(url="/settings?connected=1", status_code=303)
     new_token = auth_token.strip() or existing.get("auth_token", "")
     new_uid = user_id.strip() or existing.get("user_id", "")
     # Both fields are mandatory. The token authenticates our API calls on its
-    # own, so the save-time probe below (and the Test button) pass with just a
-    # token — but load_qobuz_token() and streamrip's login() both require the
-    # user id, so a token-only save would look saved and test green yet fail
-    # with "no credentials" on the first search, and downloads would raise
-    # MissingCredentialsError. Refuse a half-config and name the missing field.
-    # Re-render rather than redirect on these two: the user typed something
-    # that didn't save, and a fresh GET can't pre-fill the password field —
-    # so a redirect would wipe the (long) token they just pasted.
+    # own, so the check below passes with just a token — but load_qobuz_token()
+    # and streamrip's login() both require the user id, so a token-only save
+    # would look connected yet fail with "no credentials" on the first search,
+    # and downloads would raise MissingCredentialsError. Refuse a half-config
+    # and name the missing field. Re-render rather than redirect on these two:
+    # the user typed something that didn't save, and a fresh GET can't pre-fill
+    # the password field — so a redirect would wipe the (long) token they just
+    # pasted.
     if new_token and not new_uid:
         return _settings_response(request, error="needuser",
                                   user_id=user_id.strip(),
@@ -1004,31 +1026,36 @@ async def save_settings(request: Request, user_id: str = Form(""), auth_token: s
         return _settings_response(request, error="empty",
                                   user_id=user_id.strip(),
                                   auth_token_prefill=auth_token.strip())
-    ok = _write_creds(new_uid, new_token)
-    if not ok:
-        return RedirectResponse(url="/settings?error=creds", status_code=303)
-    # Probe the new token so the user finds out at save time, not on their
-    # first search. Network/timeout failures stay silent — only an outright
-    # AuthLost from Qobuz flips the banner.
-    auth_flag = ""
+    # Check the token with Qobuz *before* writing it. A token Qobuz outright
+    # rejects never lands in the config — we re-render with it still in the box
+    # so the user can fix a paste slip without losing it. A network/timeout
+    # failure can't tell us either way, so we save and flag it unverified.
+    verdict = "unreachable"
     if new_token:
-        from qobuz_librarian.api.auth import AuthLost
-        from qobuz_librarian.api.client import qobuz_get
         try:
-            await asyncio.wait_for(
+            verdict = await asyncio.wait_for(
                 asyncio.get_running_loop().run_in_executor(
-                    None,
-                    lambda: qobuz_get("album/search",
-                                      {"query": "test", "limit": 1}, new_token),
-                ),
+                    None, lambda: _classify_token(new_token)),
                 timeout=cfg.WEB_TEST_AUTH_TIMEOUT,
             )
-        except AuthLost:
-            auth_flag = "&auth=bad"
-        except Exception:
-            pass
-    return RedirectResponse(url=f"/settings?saved=1{auth_flag}",
-                            status_code=303)
+        except asyncio.TimeoutError:
+            verdict = "unreachable"
+    if verdict == "rejected":
+        return _settings_response(request, error="rejected",
+                                  user_id=user_id.strip(),
+                                  auth_token_prefill=auth_token.strip())
+    ok = _write_creds(new_uid, new_token)
+    if not ok:
+        return _settings_response(request, error="creds",
+                                  user_id=user_id.strip(),
+                                  auth_token_prefill=auth_token.strip())
+    # Keep the dashboard's "token isn't authenticating" banner in step with
+    # what we just verified — a freshly-fixed token shouldn't keep nagging
+    # until the next restart. An unverified save drops back to inconclusive
+    # rather than leaving a stale False from an earlier probe.
+    _TOKEN_VALID = True if verdict == "ok" else None
+    suffix = "&unverified=1" if verdict == "unreachable" else ""
+    return RedirectResponse(url=f"/settings?connected=1{suffix}", status_code=303)
 
 
 @app.post("/settings/behavior", response_class=HTMLResponse)
@@ -1097,60 +1124,13 @@ async def set_mode(request: Request, target: str = Form("")):
     return RedirectResponse(url="/settings", status_code=303)
 
 
-@app.post("/api/test-auth", response_class=HTMLResponse)
-async def test_auth(request: Request):
-    from qobuz_librarian.api.auth import AuthLost, QobuzError
-    from qobuz_librarian.api.client import qobuz_get
-    try:
-        form = await request.form()
-        token = (form.get("auth_token") or "").strip()
-        if not token:
-            # No token typed — fall back to a saved one so the button also
-            # checks stored creds. With neither, we're already on Settings,
-            # so point at the field above rather than back at this page.
-            try:
-                token = _get_token()
-            except (SystemExit, NoCredsError):
-                return HTMLResponse(
-                    '<div class="alert alert-warning py-2">Enter your token in '
-                    'the field above to test it.</div>')
-        loop = asyncio.get_running_loop()
-        await asyncio.wait_for(
-            loop.run_in_executor(
-                None,
-                lambda: qobuz_get("album/search", {"query": "test", "limit": 1}, token),
-            ),
-            timeout=cfg.WEB_FETCH_TIMEOUT,
-        )
-        return HTMLResponse('<div class="alert alert-success py-2">Connected — token is valid. <a href="/" class="link">Go to dashboard</a></div>')
-    except asyncio.TimeoutError:
-        return HTMLResponse('<div class="alert alert-error py-2">Timed out — Qobuz API unreachable.</div>')
-    except AuthLost:
-        return HTMLResponse('<div class="alert alert-error py-2">Token is expired or invalid.</div>')
-    except QobuzError as e:
-        from qobuz_librarian.api.auth import friendly_qobuz_error
-        cleaned = friendly_qobuz_error(e)
-        if cleaned.startswith("HTTP 401") or cleaned.startswith("HTTP 400"):
-            return HTMLResponse(
-                '<div class="alert alert-error py-2">Token rejected by Qobuz — '
-                're-grab it from play.qobuz.com (dev tools &rarr; Application '
-                '&rarr; Local Storage &rarr; localuser &rarr; token).</div>')
-        return HTMLResponse('<div class="alert alert-error py-2">Couldn\'t reach the Qobuz API — check the container\'s network.</div>')
-    except Exception:
-        import logging as _logging
-        _logging.getLogger("qobuz_librarian").exception("test-auth crashed")
-        return HTMLResponse(
-            '<div class="alert alert-error py-2">Test failed — check the container log.</div>')
-
-
 # Empty 500ms ticks before we emit a `: ping` heartbeat to keep
 # reverse proxies from dropping the EventSource on a quiet scan.
 # Defaults from cfg.SSE_HEARTBEAT_TICKS / cfg.SSE_MAX_WORKERS (env-tunable).
 _SSE_HEARTBEAT_TICKS = cfg.SSE_HEARTBEAT_TICKS
 
 # Dedicated thread pool for SSE waits so a long-running scan with many
-# tabs open doesn't starve /search / /download / /api/test-auth on the
-# default executor.
+# tabs open doesn't starve /search and /download on the default executor.
 _SSE_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
     max_workers=cfg.SSE_MAX_WORKERS, thread_name_prefix="sse")
 

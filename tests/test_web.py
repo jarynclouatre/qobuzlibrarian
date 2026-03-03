@@ -689,21 +689,68 @@ def test_lyrics_providers_normalized_and_unknowns_dropped(monkeypatch):
     assert cfg.LYRICS_PROVIDERS == ["Lrclib", "Musixmatch"]
 
 
-def test_settings_save_with_bad_token_redirects_with_auth_warning(client, monkeypatch):
+def test_rejected_token_is_not_saved(client, monkeypatch):
     import qobuz_librarian.api.client as client_mod
     import qobuz_librarian.web.app as _app
     from qobuz_librarian.api.auth import AuthLost
     monkeypatch.delenv("QOBUZ_USER_AUTH_TOKEN", raising=False)
-    monkeypatch.setattr(_app, "_write_creds", lambda *_: True)
+    wrote = []
+    monkeypatch.setattr(_app, "_write_creds", lambda *a: wrote.append(a) or True)
 
     def reject(*a, **k):
         raise AuthLost("invalid token")
     monkeypatch.setattr(client_mod, "qobuz_get", reject)
     r = client.post("/settings", data={"user_id": "u", "auth_token": "tok"},
                     follow_redirects=False)
+    assert r.status_code == 200
+    assert "wasn't saved" in r.text
+    assert wrote == []
+
+
+def test_accepted_token_saves_and_lands_on_connected(client, monkeypatch):
+    import qobuz_librarian.api.client as client_mod
+    import qobuz_librarian.web.app as _app
+    monkeypatch.delenv("QOBUZ_USER_AUTH_TOKEN", raising=False)
+    wrote = []
+    monkeypatch.setattr(_app, "_write_creds", lambda *a: wrote.append(a) or True)
+    monkeypatch.setattr(client_mod, "qobuz_get", lambda *a, **k: {"albums": {}})
+    r = client.post("/settings", data={"user_id": "u", "auth_token": "tok"},
+                    follow_redirects=False)
     assert r.status_code == 303
     loc = r.headers["location"]
-    assert "saved=1" in loc and "auth=bad" in loc
+    assert "connected=1" in loc and "unverified" not in loc
+    assert wrote == [("u", "tok")]
+
+
+def test_unreachable_qobuz_saves_token_but_flags_unverified(client, monkeypatch):
+    import qobuz_librarian.api.client as client_mod
+    import qobuz_librarian.web.app as _app
+    from qobuz_librarian.api.auth import QobuzError
+    monkeypatch.delenv("QOBUZ_USER_AUTH_TOKEN", raising=False)
+    wrote = []
+    monkeypatch.setattr(_app, "_write_creds", lambda *a: wrote.append(a) or True)
+
+    def unreachable(*a, **k):
+        raise QobuzError("could not reach Qobuz: connection refused")
+    monkeypatch.setattr(client_mod, "qobuz_get", unreachable)
+    r = client.post("/settings", data={"user_id": "u", "auth_token": "tok"},
+                    follow_redirects=False)
+    assert r.status_code == 303
+    loc = r.headers["location"]
+    assert "connected=1" in loc and "unverified=1" in loc
+    assert wrote == [("u", "tok")]
+
+
+def test_saving_a_working_token_clears_stale_invalid_banner(client, monkeypatch):
+    import qobuz_librarian.api.client as client_mod
+    import qobuz_librarian.web.app as _app
+    monkeypatch.delenv("QOBUZ_USER_AUTH_TOKEN", raising=False)
+    monkeypatch.setattr(_app, "_write_creds", lambda *a: True)
+    monkeypatch.setattr(client_mod, "qobuz_get", lambda *a, **k: {"albums": {}})
+    monkeypatch.setattr(_app, "_TOKEN_VALID", False)
+    client.post("/settings", data={"user_id": "u", "auth_token": "good"},
+                follow_redirects=False)
+    assert _app._TOKEN_VALID is True
 
 
 def test_settings_behavior_persist_failure_redirects_with_error(client, monkeypatch):
@@ -1003,43 +1050,6 @@ def test_library_scan_cancel_during_walk_ends_canceled():
     assert job.status == jm.JobStatus.CANCELED
 
 
-# ── /api/test-auth coverage ────────────────────────────────────────
-
-
-
-
-
-
-def test_test_auth_empty_field_points_at_field_not_settings(client, monkeypatch):
-    """Empty token + no saved creds, while already on Settings: tell the user
-    to fill the field, not to 'visit Settings' (the page they're on)."""
-    import qobuz_librarian.web.app as webapp
-    from qobuz_librarian.api.auth import NoCredsError
-
-    def _no_creds():
-        raise NoCredsError("none")
-    monkeypatch.setattr(webapp, "_get_token", _no_creds)
-    r = client.post("/api/test-auth", data={"auth_token": ""},
-                    headers={"HX-Request": "true"})
-    assert r.status_code == 200
-    assert "field above" in r.text
-    assert "visit Settings" not in r.text
-
-
-def test_test_auth_unexpected_exception_renders_safe_message(client, monkeypatch):
-    import qobuz_librarian.web.app as webapp
-    monkeypatch.setattr(webapp, "_get_token", lambda: "tok")
-    import asyncio
-
-    async def _boom(*a, **k):
-        raise RuntimeError("internal sentinel xyz123")
-    monkeypatch.setattr(asyncio, "wait_for", _boom)
-    r = client.post("/api/test-auth", headers={"HX-Request": "true"})
-    assert r.status_code == 200
-    assert "internal sentinel" not in r.text
-    assert "alert-error" in r.text
-
-
 # ── /download duplicate-job rejection ───────────────────────────────
 
 def _inject_album_job(album_id, status=jm.JobStatus.PENDING):
@@ -1206,29 +1216,6 @@ def test_sse_stream_closes_cleanly_when_subscriber_raises(client, monkeypatch):
         for chunk in r.iter_bytes():
             body += chunk
     assert b"Internal Server Error" not in body
-
-
-def test_test_auth_prefers_form_token_over_disk(client, monkeypatch):
-    import qobuz_librarian.web.app as webapp
-    seen = {}
-    def _get_token_disk():
-        seen["disk"] = True
-        return "DISK_TOK"
-    monkeypatch.setattr(webapp, "_get_token", _get_token_disk)
-    def _probe(endpoint, params, token):
-        seen["probed_with"] = token
-        return {}
-    monkeypatch.setattr("qobuz_librarian.api.client.qobuz_get", _probe)
-    r = client.post(
-        "/api/test-auth",
-        data={"auth_token": "TYPED_TOK"},
-        headers={"HX-Request": "true"},
-    )
-    assert r.status_code == 200
-    assert seen.get("probed_with") == "TYPED_TOK"
-    assert "disk" not in seen
-
-
 
 
 def test_scan_routes_redirect_to_settings_when_no_creds(client, monkeypatch):
@@ -1550,28 +1537,6 @@ def test_settings_behavior_partial_post_preserves_other_booleans(
     finally:
         with ss._pending_lock:
             ss._pending_apply = None
-
-
-# ── test-auth bad token maps to "Token rejected" not "network" ──
-
-
-def test_test_auth_bad_token_maps_to_token_rejected(client, monkeypatch):
-    import qobuz_librarian.web.app as webapp
-    from qobuz_librarian.api.auth import QobuzError
-    monkeypatch.setattr(webapp, "_get_token", lambda: "tok")
-
-    def _reject(*a, **k):
-        raise QobuzError(
-            "HTTP 401 from user/login: "
-            "{'status':'error','code':401,'message':'invalid token'}"
-        )
-    monkeypatch.setattr("qobuz_librarian.api.client.qobuz_get", _reject)
-    r = client.post("/api/test-auth",
-                    data={"auth_token": "DEFINITELY_NOT_REAL"},
-                    headers={"HX-Request": "true"})
-    assert r.status_code == 200
-    assert "Token rejected" in r.text
-    assert "network" not in r.text.lower()
 
 
 # ── invalid status filter on /api/jobs returns 400 ──────────

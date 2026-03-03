@@ -2,18 +2,6 @@
 // but htmx evaluates those via `new Function(...)`, which the page CSP
 // (script-src 'self' 'unsafe-inline', no 'unsafe-eval') rejects.
 
-// Scroll an arbitrary target into view after the swap finishes. Used on
-// the Settings page's "Test token" button — the auth-status result is
-// often below the fold on mobile.
-document.addEventListener("htmx:afterOnLoad", function (evt) {
-  var trigger = evt.target;
-  if (!trigger || !trigger.hasAttribute) return;
-  var sel = trigger.getAttribute("data-scroll-target");
-  if (!sel) return;
-  var t = document.querySelector(sel);
-  if (t) t.scrollIntoView({ block: "center", behavior: "smooth" });
-});
-
 // Mark the submit button "Queued" and disable it so a double-click can't
 // queue the same album twice. The download endpoint answers 200 even when
 // it declines (album already owned, already queued) or errors, so key off
