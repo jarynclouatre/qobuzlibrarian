@@ -39,3 +39,18 @@ def test_fully_owned_album_is_hidden_but_partial_still_listed(monkeypatch, capsy
     assert "The Keeper" not in out
     assert "Black Sands" in out
     assert "3/11" in out
+
+
+def test_resolve_artist_prefers_canonical_over_bare_name_twin(monkeypatch):
+    """Qobuz lists a bare 'Beatles' (covers/interviews/bootlegs) beside the
+    real 'The Beatles'; a raw string match grabs the twin because 'The ' costs
+    it similarity. Resolve must ignore the leading article and, on a tie, take
+    the deeper catalog — the canonical artist."""
+    from qobuz_librarian.web import flows
+    candidates = [
+        {"name": "The Beatles", "id": 26390, "albums_count": 529},
+        {"name": "Beatles", "id": 28257527, "albums_count": 273},
+        {"name": "The Beatles Revival Band", "id": 972325, "albums_count": 10},
+    ]
+    monkeypatch.setattr(flows, "search_artists", lambda *a, **k: candidates)
+    assert flows.resolve_artist("beatles", "tok") == (26390, "The Beatles")

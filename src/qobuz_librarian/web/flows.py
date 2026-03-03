@@ -5,6 +5,7 @@ process_album) but without any terminal prompts — a scan attaches review
 candidates to the job, and execution runs over the candidates the user kept.
 """
 import argparse
+import re
 import time
 from pathlib import Path
 
@@ -59,8 +60,24 @@ def build_args():
     )
 
 
+_LEADING_ARTICLE_RE = re.compile(r"^(?:the|a|an)\s+", re.IGNORECASE)
+
+
+def _strip_leading_article(name):
+    """Drop a leading 'the/a/an ' so 'The Beatles' compares equal to a bare
+    'Beatles'. Left unchanged if stripping would empty it."""
+    return _LEADING_ARTICLE_RE.sub("", name or "", count=1) or name
+
+
 def resolve_artist(query, token):
-    """Return (artist_id, artist_name) for the best match, or (None, None)."""
+    """Return (artist_id, artist_name) for the best match, or (None, None).
+
+    Qobuz lists the canonical artist ('The Beatles') next to bare-name twins
+    ('Beatles') that aggregate covers, interviews and bootlegs. A raw string
+    match favours the twin — it has no 'The ' to cost it similarity — so
+    compare with the leading article stripped and, among equally close names,
+    take the one with the deepest catalog: the real artist's, not the twin's.
+    """
     try:
         results = search_artists(query, token, limit=cfg.ARTIST_LOOKUP_LIMIT)
     except AuthLost:
@@ -68,11 +85,16 @@ def resolve_artist(query, token):
     except Exception as e:
         log.info(f"  artist search failed for '{query}': {e}")
         return None, None
-    if not results:
+    q = _strip_leading_article(query)
+
+    def match_score(a):
+        return similarity(_strip_leading_article(a.get("name", "")), q)
+
+    qualifying = [a for a in results if match_score(a) >= cfg.ARTIST_NAME_THRESH]
+    if not qualifying:
         return None, None
-    best = max(results, key=lambda a: similarity(a.get("name", ""), query))
-    if similarity(best.get("name", ""), query) < cfg.ARTIST_NAME_THRESH:
-        return None, None
+    best = max(qualifying,
+               key=lambda a: (match_score(a), a.get("albums_count") or 0))
     return best.get("id"), best.get("name")
 
 
