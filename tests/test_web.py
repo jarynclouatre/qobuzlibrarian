@@ -1247,6 +1247,38 @@ def test_scan_library_propagates_authlost_so_job_fails(monkeypatch, tmp_path):
         flows.scan_library(job, "tok")
 
 
+def test_scan_upgrades_collects_every_artist(monkeypatch, tmp_path):
+    """The upgrade scan fans artists out across worker threads; every artist's
+    candidate must still land on the single-writer candidate list."""
+    from qobuz_librarian.web import flows
+
+    artists = []
+    for i in range(12):
+        d = tmp_path / f"Artist {i}"
+        d.mkdir()
+        artists.append(d)
+
+    monkeypatch.setattr(flows, "clear_scan_caches", lambda: None)
+    monkeypatch.setattr(flows, "list_library_artists", lambda: artists)
+    monkeypatch.setattr("qobuz_librarian.config.ARTIST_SCAN_WORKERS", 8)
+    monkeypatch.setattr("qobuz_librarian.quality.decision.load_capped",
+                        lambda: set())
+
+    def _one_upgrade(name, artist_dir, token, args, capped=None):
+        return [{"qobuz_album": {"title": f"{name} Album"},
+                 "n_present": 0, "n_total": 0,
+                 "existing_quality_label": "CD",
+                 "target_quality_label": "Hi-Res"}]
+    monkeypatch.setattr("qobuz_librarian.quality.decision.scan_artist_for_upgrades",
+                        _one_upgrade)
+
+    job = jm.Job(title="upgrade scan")
+    flows.scan_upgrades(job, "tok")
+
+    titles = sorted(c["title"] for c in job.candidates)
+    assert titles == sorted(f"Artist {i} Album" for i in range(12))
+
+
 def test_dashboard_does_not_double_surface_awaiting_review(client, monkeypatch):
     import qobuz_librarian.web.app as webapp
     monkeypatch.setattr(webapp.job_mgr, "registry", jm.JobRegistry())

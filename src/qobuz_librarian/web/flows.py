@@ -355,9 +355,20 @@ def execute_albums(job, chosen, token):
 
 # ── Upgrade flow ──────────────────────────────────────────────────────────────
 
+def _scan_artist_upgrades(artist_dir, token, args, capped):
+    """Worker: collect upgrade candidates for one artist. Runs in a pool
+    thread (its own HTTP session); returns plain data so the caller adds
+    candidates serially — keeping job.candidates single-writer."""
+    from qobuz_librarian.quality.decision import scan_artist_for_upgrades
+    name = artist_dir.name
+    cands = scan_artist_for_upgrades(name, artist_dir, token, args,
+                                     capped=capped)
+    return name, cands
+
+
 def scan_upgrades(job, token):
     """Scan the library for albums Qobuz can serve at higher quality."""
-    from qobuz_librarian.quality.decision import load_capped, scan_artist_for_upgrades
+    from qobuz_librarian.quality.decision import load_capped
 
     clear_scan_caches()
     artists = [d for d in list_library_artists()
@@ -370,36 +381,50 @@ def scan_upgrades(job, token):
     capped = load_capped()
     log.info(f"Scanning {plural(len(artists), 'artist')} for quality upgrades")
     total = 0
-    for i, artist_dir in enumerate(artists, 1):
-        if job.cancel_requested:
-            log.info("Cancelled — stopping scan.")
-            return
-        name = artist_dir.name
-        job.push_progress("Scanning for upgrades", i, len(artists), name)
-        try:
-            cands = scan_artist_for_upgrades(name, artist_dir, token, args,
-                                             capped=capped)
-        except AuthLost:
-            raise
-        except Exception as e:
-            log.info(f"    skipped {name}: {e}")
-            continue
-        if cands:
-            log.info(f"  {name} — {plural(len(cands), 'album to upgrade')}")
-        for c in cands:
-            album = c["qobuz_album"]
-            np_, nt = c.get("n_present", 0), c.get("n_total", 0)
-            part = f" · {np_}/{nt} tracks" if nt and np_ < nt else ""
-            job.add_candidate(
-                kind="upgrade",
-                title=album.get("title") or "?",
-                artist=name,
-                detail=f"{c.get('existing_quality_label','?')} → "
-                       f"{c.get('target_quality_label','?')}{part}",
-                payload={"candidate": c},
-            )
-            total += 1
-        time.sleep(cfg.ARTIST_API_DELAY)
+    done = 0
+    n = len(artists)
+    workers = max(1, int(cfg.ARTIST_SCAN_WORKERS))
+    # Same parallel shape as scan_library: each artist needs 2–3 Qobuz calls,
+    # so a serial loop makes the user wait through hundreds of round-trips
+    # before the first result. Workers fan out; candidates are added on this
+    # thread so the list stays single-writer.
+    with ThreadPoolExecutor(max_workers=workers,
+                            thread_name_prefix="upgradescan") as ex:
+        futures = {ex.submit(_scan_artist_upgrades, ad, token, args, capped): ad
+                   for ad in artists}
+        for fut in as_completed(futures):
+            if job.cancel_requested:
+                for f in futures:
+                    f.cancel()
+                log.info("Cancelled — stopping scan.")
+                break
+            done += 1
+            name = futures[fut].name
+            job.push_progress("Scanning for upgrades", done, n, name)
+            try:
+                name, cands = fut.result()
+            except AuthLost:
+                for f in futures:
+                    f.cancel()
+                raise
+            except Exception as e:
+                log.info(f"    skipped {name}: {e}")
+                continue
+            if cands:
+                log.info(f"  {name} — {plural(len(cands), 'album to upgrade')}")
+            for c in cands:
+                album = c["qobuz_album"]
+                np_, nt = c.get("n_present", 0), c.get("n_total", 0)
+                part = f" · {np_}/{nt} tracks" if nt and np_ < nt else ""
+                job.add_candidate(
+                    kind="upgrade",
+                    title=album.get("title") or "?",
+                    artist=name,
+                    detail=f"{c.get('existing_quality_label','?')} → "
+                           f"{c.get('target_quality_label','?')}{part}",
+                    payload={"candidate": c},
+                )
+                total += 1
     log.info(f"Done. {plural(total, 'upgradeable album')} found.")
 
 
