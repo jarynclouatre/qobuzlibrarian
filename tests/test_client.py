@@ -18,21 +18,21 @@ class TestQobuzGet:
 
     def test_returns_json_on_200(self):
         mock_r = self._make_response(200, {"albums": {"items": []}})
-        with patch("qobuz_librarian.api.client._session") as mock_session:
-            mock_session.get.return_value = mock_r
+        with patch("qobuz_librarian.api.client._get_session") as mock_session:
+            mock_session.return_value.get.return_value = mock_r
             result = qobuz_get("album/search", {"query": "test"}, "tok")
         assert result == {"albums": {"items": []}}
 
     def test_raises_authlost_on_401(self):
         mock_r = self._make_response(401)
-        with patch("qobuz_librarian.api.client._session") as mock_session:
-            mock_session.get.return_value = mock_r
+        with patch("qobuz_librarian.api.client._get_session") as mock_session:
+            mock_session.return_value.get.return_value = mock_r
             with pytest.raises(AuthLost):
                 qobuz_get("album/search", {}, "bad_token")
 
     def test_raises_qobuzerror_on_network_failure(self):
-        with patch("qobuz_librarian.api.client._session") as mock_session:
-            mock_session.get.side_effect = requests.RequestException("timeout")
+        with patch("qobuz_librarian.api.client._get_session") as mock_session:
+            mock_session.return_value.get.side_effect = requests.RequestException("timeout")
             with pytest.raises(QobuzError):
                 qobuz_get("album/search", {}, "tok")
 
@@ -41,19 +41,19 @@ class TestQobuzGet:
         rate_limited = self._make_response(429)
         rate_limited.headers = {}
         ok = self._make_response(200, {"ok": True})
-        with patch("qobuz_librarian.api.client._session") as mock_session:
-            mock_session.get.side_effect = [rate_limited, rate_limited, ok]
+        with patch("qobuz_librarian.api.client._get_session") as mock_session:
+            mock_session.return_value.get.side_effect = [rate_limited, rate_limited, ok]
             result = _client.qobuz_get("album/search", {}, "tok")
         assert result == {"ok": True}
 
     def test_does_not_retry_on_404(self):
         from qobuz_librarian.api import client as _client
         bad = self._make_response(404, text="missing")
-        with patch("qobuz_librarian.api.client._session") as mock_session:
-            mock_session.get.return_value = bad
+        with patch("qobuz_librarian.api.client._get_session") as mock_session:
+            mock_session.return_value.get.return_value = bad
             with pytest.raises(QobuzError):
                 _client.qobuz_get("album/get", {"album_id": "nope"}, "tok")
-        assert mock_session.get.call_count == 1
+        assert mock_session.return_value.get.call_count == 1
 
 
 class TestValidateToken:
@@ -71,42 +71,9 @@ class TestUserAgent:
     def test_user_agent_carries_installed_package_version(self):
         from importlib.metadata import version
 
-        from qobuz_librarian.api.client import _session
+        from qobuz_librarian.api.client import _get_session
 
-        ua = _session.headers["User-Agent"]
+        ua = _get_session().headers["User-Agent"]
         installed = version("qobuz-librarian")
         assert installed in ua, f"UA {ua!r} doesn't mention installed version {installed!r}"
         assert "qobuz-librarian" in ua
-
-
-class TestConcurrentAccess:
-    def test_concurrent_calls_serialize_through_lock(self):
-        import threading
-        from concurrent.futures import ThreadPoolExecutor
-
-        mock_r = MagicMock()
-        mock_r.status_code = 200
-        mock_r.json.return_value = {"ok": True}
-
-        in_flight = []
-        max_in_flight = [0]
-        observed_lock = threading.Lock()
-
-        def _tracking_get(*args, **kwargs):
-            with observed_lock:
-                in_flight.append(1)
-                max_in_flight[0] = max(max_in_flight[0], sum(in_flight))
-            try:
-                return mock_r
-            finally:
-                with observed_lock:
-                    in_flight.pop()
-
-        with patch("qobuz_librarian.api.client._session") as mock_session:
-            mock_session.get.side_effect = _tracking_get
-            with ThreadPoolExecutor(max_workers=8) as pool:
-                futures = [pool.submit(qobuz_get, "album/get", {"id": i}, "tok")
-                           for i in range(32)]
-                results = [f.result(timeout=5) for f in futures]
-        assert all(r == {"ok": True} for r in results)
-        assert max_in_flight[0] == 1

@@ -5,8 +5,10 @@ process_album) but without any terminal prompts — a scan attaches review
 candidates to the job, and execution runs over the candidates the user kept.
 """
 import argparse
+import json
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from qobuz_librarian import config as cfg
@@ -69,6 +71,52 @@ def _strip_leading_article(name):
     return _LEADING_ARTICLE_RE.sub("", name or "", count=1) or name
 
 
+# Persistent artist-resolution cache (folder name → matched Qobuz artist).
+# Resolution is deterministic and artist IDs are stable, so a re-scan skips the
+# artist-search call for every artist already matched — the slow half of a
+# library scan. Misses are NOT cached (re-tried each scan, in case the artist
+# later appears on Qobuz). Bump the version if resolve_artist's matching logic
+# changes so stale matches drop; delete the file to force a full re-resolve.
+_RESOLVE_CACHE_VERSION = 1
+_resolve_cache = None
+_resolve_cache_dirty = False
+
+
+def _load_resolve_cache() -> dict:
+    global _resolve_cache
+    if _resolve_cache is None:
+        _resolve_cache = {}
+        try:
+            raw = json.loads((cfg.DATA_DIR / ".artist_resolve_cache.json")
+                             .read_text(encoding="utf-8"))
+            if raw.get("version") == _RESOLVE_CACHE_VERSION:
+                _resolve_cache = raw.get("entries") or {}
+        except (OSError, ValueError):
+            pass
+    return _resolve_cache
+
+
+def flush_resolve_cache():
+    """Persist the resolution cache to disk, only if it gained entries."""
+    global _resolve_cache_dirty
+    if not _resolve_cache_dirty or _resolve_cache is None:
+        return
+    import os
+    import tempfile
+    path = cfg.DATA_DIR / ".artist_resolve_cache.json"
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = json.dumps({"version": _RESOLVE_CACHE_VERSION,
+                              "entries": _resolve_cache})
+        fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=".arcache.")
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(payload)
+        os.replace(tmp, path)
+        _resolve_cache_dirty = False
+    except OSError:
+        pass
+
+
 def resolve_artist(query, token):
     """Return (artist_id, artist_name) for the best match, or (None, None).
 
@@ -77,7 +125,15 @@ def resolve_artist(query, token):
     match favours the twin — it has no 'The ' to cost it similarity — so
     compare with the leading article stripped and, among equally close names,
     take the one with the deepest catalog: the real artist's, not the twin's.
+
+    Matched artists are cached to disk so a re-scan skips the search call;
+    flush_resolve_cache() persists new matches.
     """
+    global _resolve_cache_dirty
+    cache = _load_resolve_cache()
+    hit = cache.get(query)
+    if hit is not None:
+        return hit[0], hit[1]
     try:
         results = search_artists(query, token, limit=cfg.ARTIST_LOOKUP_LIMIT)
     except AuthLost:
@@ -95,7 +151,10 @@ def resolve_artist(query, token):
         return None, None
     best = max(qualifying,
                key=lambda a: (match_score(a), a.get("albums_count") or 0))
-    return best.get("id"), best.get("name")
+    aid, aname = best.get("id"), best.get("name")
+    cache[query] = [aid, aname]
+    _resolve_cache_dirty = True
+    return aid, aname
 
 
 def _missing_albums(artist_id, artist_name, token, partial_only=False):
@@ -178,6 +237,20 @@ def scan_artist(job, query, token):
         _add_album_candidate(job, album, artist_name)
         n += 1
     log.info(f"  {plural(n, 'missing album')} found for {artist_name}.")
+    flush_resolve_cache()
+
+
+def _scan_library_artist(artist_dir, token, partial_only):
+    """Worker: resolve one artist and collect its missing albums. Runs in a
+    pool thread (its own HTTP session); returns plain data so the caller adds
+    candidates serially — keeping job.candidates single-writer."""
+    name = artist_dir.name
+    artist_id, artist_name = resolve_artist(name, token)
+    if not artist_id:
+        return name, None, []
+    albums = list(_missing_albums(artist_id, artist_name, token,
+                                  partial_only=partial_only))
+    return name, artist_name, albums
 
 
 def scan_library(job, token, partial_only=False):
@@ -189,46 +262,47 @@ def scan_library(job, token, partial_only=False):
         log.info("  Check that QL_MUSIC_DIR in your .env points at the right place.")
         return
     target = "track gaps in owned albums" if partial_only else "missing albums"
-    log.info(f"Scanning {plural(len(artists), 'library artist')} for {target} ...")
+    log.info(f"Scanning {plural(len(artists), 'library artist')} for {target}")
     total = 0
-    started = time.monotonic()
-    for i, artist_dir in enumerate(artists, 1):
-        if job.cancel_requested:
-            log.info("Cancelled — stopping scan.")
-            return
-        name = artist_dir.name
-        eta = _fmt_eta(started, i - 1, len(artists))
-        log.info(f"  [{i}/{len(artists)}]{eta} {name}")
-        artist_id, artist_name = resolve_artist(name, token)
-        if not artist_id:
-            continue
-        try:
-            for album in _missing_albums(artist_id, artist_name, token,
-                                         partial_only=partial_only):
+    done = 0
+    n = len(artists)
+    workers = max(1, int(cfg.ARTIST_SCAN_WORKERS))
+    # Resolve/scan artists in parallel (each worker has its own HTTP session),
+    # but collect results and write candidates on this one thread so the
+    # candidate list and progress stay single-writer.
+    with ThreadPoolExecutor(max_workers=workers,
+                            thread_name_prefix="libscan") as ex:
+        futures = {ex.submit(_scan_library_artist, ad, token, partial_only): ad
+                   for ad in artists}
+        for fut in as_completed(futures):
+            if job.cancel_requested:
+                for f in futures:
+                    f.cancel()
+                log.info("Cancelled — stopping scan.")
+                break
+            done += 1
+            try:
+                name, artist_name, albums = fut.result()
+            except AuthLost:
+                for f in futures:
+                    f.cancel()
+                raise
+            except Exception as e:
+                log.info(f"    skipped {futures[fut].name}: {e}")
+                job.push_progress("Scanning library", done, n, futures[fut].name)
+                continue
+            job.push_progress("Scanning library", done, n, artist_name or name)
+            for album in albums:
                 _add_album_candidate(job, album, artist_name)
                 total += 1
-        except AuthLost:
-            raise
-        except Exception as e:
-            log.info(f"    skipped {name}: {e}")
-        time.sleep(cfg.ARTIST_API_DELAY)
+            if albums:
+                what = "album with gaps" if partial_only else "album to fill"
+                log.info(f"  {artist_name} — {plural(len(albums), what)}")
+    flush_resolve_cache()
     if partial_only:
         log.info(f"Done. {plural(total, 'album')} with track gaps across the library.")
     else:
         log.info(f"Done. {plural(total, 'missing album')} across the library.")
-
-
-def _fmt_eta(started: float, done: int, total: int) -> str:
-    """Return ' (eta: 1m 23s)' once we have at least one completed item;
-    empty string otherwise."""
-    if done < 1 or total <= done:
-        return ""
-    elapsed = time.monotonic() - started
-    per = elapsed / done
-    remaining_s = int(per * (total - done))
-    if remaining_s < 60:
-        return f" (eta: {remaining_s}s)"
-    return f" (eta: {remaining_s // 60}m {remaining_s % 60}s)"
 
 
 # ── Execute ───────────────────────────────────────────────────────────────────
@@ -294,16 +368,14 @@ def scan_upgrades(job, token):
         return
     args = build_args()
     capped = load_capped()
-    log.info(f"Scanning {plural(len(artists), 'artist')} for quality upgrades ...")
+    log.info(f"Scanning {plural(len(artists), 'artist')} for quality upgrades")
     total = 0
-    started = time.monotonic()
     for i, artist_dir in enumerate(artists, 1):
         if job.cancel_requested:
             log.info("Cancelled — stopping scan.")
             return
         name = artist_dir.name
-        eta = _fmt_eta(started, i - 1, len(artists))
-        log.info(f"  [{i}/{len(artists)}]{eta} {name}")
+        job.push_progress("Scanning for upgrades", i, len(artists), name)
         try:
             cands = scan_artist_for_upgrades(name, artist_dir, token, args,
                                              capped=capped)
@@ -312,6 +384,8 @@ def scan_upgrades(job, token):
         except Exception as e:
             log.info(f"    skipped {name}: {e}")
             continue
+        if cands:
+            log.info(f"  {name} — {plural(len(cands), 'album to upgrade')}")
         for c in cands:
             album = c["qobuz_album"]
             np_, nt = c.get("n_present", 0), c.get("n_total", 0)
@@ -390,23 +464,21 @@ def scan_repairs(job, token):
         log.info("No artist folders found under MUSIC_ROOT.")
         log.info("  Check that QL_MUSIC_DIR in your .env points at the right place.")
         return
-    log.info(f"Scanning {plural(len(artists), 'artist')} for truncated files ...")
+    log.info(f"Scanning {plural(len(artists), 'artist')} for truncated files")
     total = 0
-    started = time.monotonic()
     for i, artist_dir in enumerate(artists, 1):
         if job.cancel_requested:
             log.info("Cancelled — stopping scan.")
             return
         name = artist_dir.name
         album_dirs = list_artist_album_dirs(artist_dir)
-        eta = _fmt_eta(started, i - 1, len(artists))
-        log.info(f"  [{i}/{len(artists)}]{eta} {name} ({plural(len(album_dirs), 'album')})")
+        job.push_progress("Checking for damaged files", i, len(artists), name)
         for album_dir in album_dirs:
             if job.cancel_requested:
                 log.info("Cancelled — stopping scan.")
                 return
             try:
-                scan = scan_dir_for_isrc_repairs(album_dir, token)
+                scan = scan_dir_for_isrc_repairs(album_dir, token, deep=False)
             except AuthLost:
                 raise
             except Exception as e:

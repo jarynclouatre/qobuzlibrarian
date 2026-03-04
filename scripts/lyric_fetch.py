@@ -588,6 +588,7 @@ def fetch_for_paths(
     synced_only: bool = False,
     skip_existing_plain: bool = False,
     lyrics_format: str = "embed",
+    progress_cb: Optional[Callable[[int, int, str], None]] = None,
 ) -> Counter:
     """
     Run the lyrics pipeline over `paths`. Returns Counter of outcome → n.
@@ -658,6 +659,8 @@ def fetch_for_paths(
             completed += 1
             counts[outcome] += 1
             log.info("[%d/%d] %s — %s", completed, total, outcome, fp.name)
+            if progress_cb:
+                progress_cb(completed, total, fp.name)
             if completed % save_every == 0:
                 checkpoint()
     else:
@@ -678,6 +681,8 @@ def fetch_for_paths(
                         completed += 1
                         counts[outcome] += 1
                         log.info("[%d/%d] %s — %s", completed, total, outcome, fp.name)
+                        if progress_cb:
+                            progress_cb(completed, total, fp.name)
                         if completed % save_every == 0:
                             checkpoint()
                         if should_stop and should_stop():

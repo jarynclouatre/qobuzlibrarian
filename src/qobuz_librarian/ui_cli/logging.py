@@ -54,6 +54,26 @@ def attach_file_handler(path, level_name: str = "INFO"):
         # isn't writable.
         pass
 
+# Progress-reporting hook. Like rip.py's cancel-check, the web layer injects a
+# reporter that routes structured progress (phase + counts) to the running
+# job's live header. Outside the web (CLI) it stays a no-op, so download/scan
+# code can call report_progress() unconditionally without knowing about jobs.
+_progress_reporter = None
+
+
+def set_progress_reporter(fn):
+    global _progress_reporter
+    _progress_reporter = fn
+
+
+def report_progress(phase, current=0, total=0, item=""):
+    if _progress_reporter is not None:
+        try:
+            _progress_reporter(phase, current, total, item)
+        except Exception:
+            pass
+
+
 _VERBOSE = False
 
 

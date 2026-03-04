@@ -1164,6 +1164,10 @@ async def job_stream(job_id: str):
                     if line == "__DONE__":
                         yield "event: done\ndata: done\n\n"
                         break
+                    if line.startswith(job_mgr.PROGRESS_PREFIX):
+                        yield ("event: progress\ndata: "
+                               + line[len(job_mgr.PROGRESS_PREFIX):] + "\n\n")
+                        continue
                     escaped = line.replace("\n", " ").replace("\r", "")
                     yield f"data: {escaped}\n\n"
                 except _queue.Empty:

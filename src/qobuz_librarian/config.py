@@ -205,6 +205,11 @@ RATE_LIMIT_COOLDOWN = _env("RATE_LIMIT_COOLDOWN", 30.0)
 # single web job worker from freezing forever. 0 disables the guard.
 BEETS_TIMEOUT    = _env("BEETS_TIMEOUT",    3600)
 ARTIST_API_DELAY = _env("ARTIST_API_DELAY", 0.4)
+# Concurrent artists during a library gap scan. Each worker has its own HTTP
+# session, so this is real parallelism; kept modest so the request rate stays
+# polite (the 429 retry/back-off in api/client is the backstop). 1 restores
+# the old sequential behaviour.
+ARTIST_SCAN_WORKERS = _env("ARTIST_SCAN_WORKERS", 4)
 
 # Per-request budgets for the web UI's Qobuz API calls (album/search/track
 # fetches and the Settings token check). A slow Qobuz response shouldn't

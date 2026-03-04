@@ -232,6 +232,42 @@ class TestScanDirForIsrcRepairs:
         assert len(result["verified_truncated"]) == 1
         assert result["verified_truncated"][0]["reason"] == "byte_size_short"
 
+    def test_sweep_mode_skips_qobuz_for_healthy_files(self, tmp_path):
+        # deep=False (library sweep): a file whose size is consistent with its
+        # own header duration passes with no Qobuz call — that's the speed win.
+        flac_file = tmp_path / "ok.flac"
+        flac_file.write_bytes(b"\x00" * 2_000_000)
+        track = {
+            "isrc": "GB1234567890", "length": 10.0, "title": "Fine",
+            "path": str(flac_file), "sample_rate": 44100, "bits": 16,
+            "channels": 2, "tracknumber": 1,
+        }
+        calls = []
+        with patch("qobuz_librarian.repair_log.read_album_dir", return_value=[track]), \
+             patch("qobuz_librarian.repair_log.find_qobuz_track_by_isrc",
+                   side_effect=lambda *a, **k: calls.append(a)):
+            result = scan_dir_for_isrc_repairs(tmp_path, "token", deep=False)
+        assert result["verified_ok"] == 1
+        assert result["verified_truncated"] == []
+        assert calls == []
+
+    def test_sweep_mode_still_flags_byte_short_file(self, tmp_path):
+        # deep=False still catches a tail-truncated file: its size is far too
+        # small for the duration its own header claims, so it gets confirmed
+        # and flagged without looking up every healthy track.
+        flac_file = tmp_path / "short.flac"
+        flac_file.write_bytes(b"\x00" * 5_000)
+        track = {
+            "isrc": "GB1234567890", "length": 200.0, "title": "Truncated",
+            "path": str(flac_file), "sample_rate": 44100, "bits": 16,
+            "channels": 2, "tracknumber": 1,
+        }
+        qt = {"duration": 200.0, "title": "T", "track_number": 1}
+        with patch("qobuz_librarian.repair_log.read_album_dir", return_value=[track]), \
+             patch("qobuz_librarian.repair_log.find_qobuz_track_by_isrc", return_value=qt):
+            result = scan_dir_for_isrc_repairs(tmp_path, "token", deep=False)
+        assert len(result["verified_truncated"]) == 1
+
 
 class TestScanDirRealFlacRoundTrip:
 
@@ -545,21 +581,6 @@ class TestCLISettingsLoad:
         with pytest.raises(SystemExit):
             cli.main()
         assert load_count[0] == 1, "settings_store.load() not invoked from CLI main()"
-
-
-class TestScanETA:
-    def test_eta_empty_before_first_item(self):
-        from qobuz_librarian.web.flows import _fmt_eta
-        assert _fmt_eta(0.0, 0, 10) == ""
-
-    def test_eta_minutes_format(self, monkeypatch):
-        import time as _t
-
-        from qobuz_librarian.web import flows
-        # 5 done at t=60s, 95 to go → ETA 1140s = 19m 0s
-        monkeypatch.setattr(_t, "monotonic", lambda: 60.0)
-        eta = flows._fmt_eta(0.0, 5, 100)
-        assert eta == " (eta: 19m 0s)"
 
 
 class TestFileLogging:

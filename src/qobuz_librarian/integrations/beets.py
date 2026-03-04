@@ -28,7 +28,7 @@ from qobuz_librarian import config as cfg
 from qobuz_librarian.library.scanner import clear_scan_caches
 from qobuz_librarian.ui_cli.colors import C, fmt
 from qobuz_librarian.ui_cli.errors import EXIT_GENERAL, die
-from qobuz_librarian.ui_cli.logging import log, vlog
+from qobuz_librarian.ui_cli.logging import log, report_progress, vlog
 
 try:
     from mutagen.flac import FLAC as _MutagenFLAC  # noqa: F401
@@ -370,6 +370,7 @@ def _beets_direct(override_path, cleanup_fn):
         cmd += ["-c", str(override_path)]
     cmd += ["import", str(cfg.STAGING_DIR)]
 
+    report_progress("Importing into your library", 0, 0, "")
     log.info(fmt(C.CYAN, "  ⟳  Running beets import ..."))
     out_lines = []
     last_output = [time.monotonic()]

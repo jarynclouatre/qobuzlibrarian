@@ -356,20 +356,22 @@ _REPAIR_AUTH_LOST = ("\n✗  Auth lost. Set QOBUZ_USER_AUTH_TOKEN, or open the "
                      "Settings page in the web UI to update your token.\n")
 
 
-def _scan_report_repair(album_dir, artist_name, args, token):
+def _scan_report_repair(album_dir, artist_name, args, token, deep=True):
     """Scan one album dir by ISRC, report, confirm, and repair.
 
     Returns "repaired" | "clean" | "skipped". Raises AuthLost to the
     caller (it decides whether to abort the whole run/sweep). Shared by
     the single-album picker path and the whole-library sweep so both
-    behave identically per album.
+    behave identically per album. A whole-library sweep passes deep=False
+    so healthy tracks skip the per-track Qobuz lookup (fast); a single
+    album stays deep so every track is verified.
     """
     section(f"Repair scan — {truncate(album_dir.name, 60)}")
     log.info(fmt(C.GRAY,
         "  Resolving every FLAC by ISRC against Qobuz "
         "(no album-edition guessing) …"))
 
-    scan = scan_dir_for_isrc_repairs(album_dir, token)
+    scan = scan_dir_for_isrc_repairs(album_dir, token, deep=deep)
     verified_truncated = scan["verified_truncated"]
     verified_ok        = scan["verified_ok"]
     isrc_no_match      = scan["isrc_no_match"]
@@ -498,7 +500,7 @@ def run_album_repair_mode(args, token, *, query_args=None, loop=False):
                             f"{truncate(aldir.name, 50)}"))
                         try:
                             status = _scan_report_repair(
-                                aldir, adir.name, args, token)
+                                aldir, adir.name, args, token, deep=False)
                         except AuthLost:
                             die(fmt(C.RED, _REPAIR_AUTH_LOST), EXIT_AUTH)
                         tally[status] = tally.get(status, 0) + 1

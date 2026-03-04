@@ -318,3 +318,20 @@ def test_executor_gap_fill_backup_restored_when_track_returns_lossy(monkeypatch,
 
     assert owned.exists()
     assert owned.read_bytes() == b"the-owned-original"
+
+
+def test_push_progress_streams_separately_and_stays_out_of_the_log():
+    from qobuz_librarian.web import jobs as jm
+    job = jm.Job(kind="scan")
+    sub = job.subscribe()
+    job.push_progress("Scanning library", 5, 10, "Beyoncé")
+    line = sub.get_nowait()
+    assert line.startswith(jm.PROGRESS_PREFIX)
+    assert json.loads(line[len(jm.PROGRESS_PREFIX):]) == {
+        "phase": "Scanning library", "current": 5, "total": 10, "item": "Beyoncé"}
+    # progress is a header update, not a log line
+    assert job.log_lines == []
+    # a late subscriber gets the current snapshot once, so a reconnect shows
+    # the live header instead of a blank bar
+    snap = job.subscribe().get_nowait()
+    assert snap.startswith(jm.PROGRESS_PREFIX)

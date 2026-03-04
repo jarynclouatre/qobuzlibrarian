@@ -47,6 +47,7 @@ def test_resolve_artist_prefers_canonical_over_bare_name_twin(monkeypatch):
     it similarity. Resolve must ignore the leading article and, on a tie, take
     the deeper catalog — the canonical artist."""
     from qobuz_librarian.web import flows
+    monkeypatch.setattr(flows, "_resolve_cache", {})
     candidates = [
         {"name": "The Beatles", "id": 26390, "albums_count": 529},
         {"name": "Beatles", "id": 28257527, "albums_count": 273},
@@ -54,3 +55,14 @@ def test_resolve_artist_prefers_canonical_over_bare_name_twin(monkeypatch):
     ]
     monkeypatch.setattr(flows, "search_artists", lambda *a, **k: candidates)
     assert flows.resolve_artist("beatles", "tok") == (26390, "The Beatles")
+
+
+def test_resolve_artist_uses_cache_and_skips_the_search(monkeypatch):
+    """A cached artist resolves without hitting the search API — the re-scan
+    speed win. (Misses aren't cached, so they re-try each scan.)"""
+    from qobuz_librarian.web import flows
+    monkeypatch.setattr(flows, "_resolve_cache", {"the who": [45964, "The Who"]})
+    def _boom(*a, **k):
+        raise AssertionError("search_artists must not run on a cache hit")
+    monkeypatch.setattr(flows, "search_artists", _boom)
+    assert flows.resolve_artist("the who", "tok") == (45964, "The Who")

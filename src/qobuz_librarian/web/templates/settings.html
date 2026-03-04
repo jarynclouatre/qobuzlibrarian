@@ -109,12 +109,10 @@
         <input type="text" name="user_id" id="user_id" value="{{ user_id or '' }}"
                placeholder="your@email.com or numeric user ID"
                class="input input-bordered w-full max-w-lg">
-        <label class="label">
-          <span class="label-text-alt text-base-content/40">
-            Required — your account email or numeric user ID. The token can search
-            on its own, but downloads need this too.
-          </span>
-        </label>
+        <p class="text-xs text-base-content/40 mt-1">
+          Required — your account email or numeric user ID. The token can search
+          on its own, but downloads need this too.
+        </p>
       </div>
       <div class="form-control mb-4">
         <label class="label flex-wrap gap-2" for="auth_token">
@@ -129,11 +127,9 @@
                autocomplete="off" autocorrect="off" spellcheck="false"
                placeholder="{% if auth_token_set %}•••••••• (paste a new token to replace){% else %}paste the long token string here{% endif %}"
                class="input input-bordered w-full max-w-lg font-mono text-base sm:text-sm">
-        <label class="label">
-          <span class="label-text-alt text-base-content/40">
-            The long token string — not your Qobuz password.
-          </span>
-        </label>
+        <p class="text-xs text-base-content/40 mt-1">
+          The long token string — not your Qobuz password.
+        </p>
       </div>
 
       <div class="flex gap-3 flex-wrap">
@@ -225,7 +221,7 @@
                  placeholder="{{ placeholder }}"
                  class="input input-bordered w-full max-w-lg font-mono text-base sm:input-sm sm:text-xs">
           {% endif %}
-          <label class="label py-0"><span class="label-text-alt text-base-content/50">{{ help }}</span></label>
+          <p class="text-xs text-base-content/50 mt-1">{{ help }}</p>
         </div>
         {% endfor %}
       </div>

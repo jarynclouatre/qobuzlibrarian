@@ -15,6 +15,7 @@ Two job shapes share one worker and one log-streaming mechanism:
 Progress is captured from the shared ``qobuz_librarian`` logger and streamed
 to connected SSE clients.
 """
+import json
 import logging
 import queue
 import re
@@ -26,6 +27,7 @@ from enum import Enum
 from typing import Callable, Optional
 
 from qobuz_librarian.integrations import rip as rip_module
+from qobuz_librarian.ui_cli.logging import set_progress_reporter
 
 # Thread-local pointer to the job currently being run on this worker.
 # Lets rip_url's cancel-check hook (installed below) find the running
@@ -39,6 +41,15 @@ def _current_job_cancel_requested() -> bool:
 
 
 rip_module.set_cancel_check(_current_job_cancel_requested)
+
+
+def _report_progress_to_current_job(phase, current, total, item):
+    j = getattr(_TLS, "current_job", None)
+    if j is not None:
+        j.push_progress(phase, current, total, item)
+
+
+set_progress_reporter(_report_progress_to_current_job)
 
 
 class JobStatus(str, Enum):
@@ -61,6 +72,12 @@ ACTIVE = (JobStatus.PENDING, JobStatus.SCANNING,
 # end-marker that would close the new phase's stream prematurely.
 STREAM_END = "__DONE__"
 
+# Sentinel prefix marking a fanned-out line as a structured progress update
+# (phase + counts) rather than log output. push_line() strips NUL bytes, so a
+# leading NUL can only come from push_progress — the SSE layer splits on it and
+# emits a separate `event: progress` the page renders as a live header.
+PROGRESS_PREFIX = "\x00PROGRESS\x00"
+
 
 def _new_id() -> str:
     return uuid.uuid4().hex[:8]
@@ -75,6 +92,11 @@ class Job:
     kind: str         = "download"          # download | scan
     status: JobStatus = JobStatus.PENDING
     phase: str        = ""                  # "", scan, execute
+    # Live progress header (separate from the log): "Scanning 430/1882 · Beyoncé"
+    progress_phase: str   = ""
+    progress_current: int = 0
+    progress_total: int   = 0
+    progress_item: str    = ""
     log_lines: list   = field(default_factory=list)
     # Review candidates: each is a dict
     #   {cid, kind, title, artist, detail, payload, selected}
@@ -135,6 +157,22 @@ class Job:
         """Close the current phase's live stream without storing a marker."""
         self._fan_out(STREAM_END)
 
+    def push_progress(self, phase, current=0, total=0, item=""):
+        """Update the live progress header (phase + counts) and stream it as a
+        distinct event. Kept out of log_lines so it never clutters the log or
+        gets replayed line-by-line on reconnect; the latest snapshot is re-sent
+        once when a new subscriber attaches."""
+        self.progress_phase = phase
+        self.progress_current = current
+        self.progress_total = total
+        self.progress_item = item
+        self._fan_out(self._progress_snapshot())
+
+    def _progress_snapshot(self) -> str:
+        return PROGRESS_PREFIX + json.dumps({
+            "phase": self.progress_phase, "current": self.progress_current,
+            "total": self.progress_total, "item": self.progress_item})
+
     # Cap replay so a late subscriber doesn't get thousands of historical
     # lines blasted at them (and so the bounded queue isn't filled by
     # history alone — that would silently drop live lines). Default from
@@ -160,6 +198,13 @@ class Job:
                     q.put_nowait(line)
                 except queue.Full:
                     break
+            # Re-send the current progress once so a reconnect/new tab shows the
+            # live header immediately instead of a blank bar until the next tick.
+            if self.progress_phase:
+                try:
+                    q.put_nowait(self._progress_snapshot())
+                except queue.Full:
+                    pass
             self._subscribers.append(q)
         return q
 

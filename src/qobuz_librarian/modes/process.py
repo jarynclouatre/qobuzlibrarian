@@ -53,7 +53,7 @@ from qobuz_librarian.quality.decision import (
 from qobuz_librarian.queue.executor import _pre_import_staging_hooks
 from qobuz_librarian.ui_cli.colors import C, fmt, format_size, section, truncate
 from qobuz_librarian.ui_cli.errors import plural
-from qobuz_librarian.ui_cli.logging import log, vlog
+from qobuz_librarian.ui_cli.logging import log, report_progress, vlog
 from qobuz_librarian.ui_cli.prompts import (
     confirm,
     log_fetch,
@@ -680,6 +680,8 @@ def process_album(album, args, *, allow_force=True, label=None,
         if download_full_album:
             url = f"https://play.qobuz.com/album/{album_id}"
             section("Downloading full album")
+            report_progress("Downloading album", 0, 0,
+                            f"{album.get('title') or '?'} · {n_tracks_total} tracks")
             vlog(f"  ⟳  {url}")
             # Remove already-present tracks before ripping so beets
             # doesn't create 'Foo.1.flac' duplicates during import.
@@ -736,6 +738,7 @@ def process_album(album, args, *, allow_force=True, label=None,
                 _tnum_prefix = f"#{tnum:>2} · " if tnum else ""
                 log.info(fmt(C.BLUE, f"\n  [{i}/{len(missing)}]") +
                          f"  {fmt(C.WHITE, truncate(_tnum_prefix + ttl, 60))}")
+                report_progress("Downloading", i, len(missing), ttl)
                 url = f"https://play.qobuz.com/track/{tid}"
                 rc, out = rip_url(url, timeout=cfg.RIP_TIMEOUT, quality=quality)
                 if detect_auth_lost(out):

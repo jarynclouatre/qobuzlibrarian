@@ -69,7 +69,8 @@ def _flac_decode_ok(path):
 
 
 def scan_dir_for_isrc_repairs(album_dir, token,
-                              *, min_short_seconds=30, max_ratio=0.85):
+                              *, min_short_seconds=30, max_ratio=0.85,
+                              deep=True):
     """Pair each FLAC in album_dir to its Qobuz recording via ISRC, then flag
     truncation by duration comparison (both gates: >30 s short AND <85% ratio).
 
@@ -82,7 +83,12 @@ def scan_dir_for_isrc_repairs(album_dir, token,
     Only verified_truncated files are ever deleted and refilled; everything
     else is surfaced to the user without modification. ISRC identity is
     mandatory: album-edition guessing (find_qobuz_album_for_dir) can silently
-    swap a 1992 master for its 2011 remaster, which is wrong for surgical repair."""
+    swap a 1992 master for its 2011 remaster, which is wrong for surgical repair.
+
+    deep=True (single-album repair) verifies every track against Qobuz. A
+    whole-library sweep passes deep=False: a track is only looked up on Qobuz
+    when it already looks truncated from the file size + STREAMINFO alone, so a
+    healthy library finishes in minutes instead of one API call per track."""
     report = {
         "verified_truncated": [],
         "verified_ok": 0,
@@ -121,6 +127,29 @@ def scan_dir_for_isrc_repairs(album_dir, token,
             report["no_isrc_tag"].append(entry)
             continue
 
+        # Local-first truncation gate. A cut-off download leaves a FLAC whose
+        # STREAMINFO still claims the full duration while the file on disk is
+        # far too small — provable from the header and size alone, no network.
+        # In a library sweep (deep=False) only files that trip this cheap check
+        # are looked up on Qobuz to confirm and find the refill source, so a
+        # healthy library finishes in minutes. deep=True verifies every track,
+        # which also catches a file that decodes fine but is genuinely shorter
+        # than the real recording.
+        sample_rate = int(et.get("sample_rate") or 0)
+        bits = int(et.get("bits") or 0)
+        channels = int(et.get("channels") or 2)
+        try:
+            actual_size = os.path.getsize(path) if path else 0
+        except OSError:
+            actual_size = 0
+        looks_byte_short = (
+            sample_rate > 0 and bits > 0 and flen > 0 and actual_size > 0
+            and actual_size < flen * sample_rate * channels * (bits / 8)
+            * _BYTE_SIZE_TRUNCATED_RATIO)
+        if not deep and not looks_byte_short:
+            report["verified_ok"] += 1
+            continue
+
         qt = find_qobuz_track_by_isrc(isrc, token)
         if qt is None:
             report["isrc_no_match"].append({
@@ -152,27 +181,11 @@ def scan_dir_for_isrc_repairs(album_dir, token,
                 report["verified_ok"] += 1
             continue
 
-        # Byte-size sanity gate. flen comes from the FLAC STREAMINFO
-        # block, which survives tail-truncation and middle-zero damage
-        # — the duration check below can't see those. If the actual
-        # file is impossibly small for the duration STREAMINFO claims,
-        # flag here so the truncation surfaces.
-        sample_rate = int(et.get("sample_rate") or 0)
-        bits = int(et.get("bits") or 0)
-        channels = int(et.get("channels") or 2)
-        try:
-            actual_size = os.path.getsize(path) if path else 0
-        except OSError:
-            actual_size = 0
+        # Byte-size sanity gate against Qobuz's authoritative duration. Quiet /
+        # ambient material legitimately compresses this small and decodes fine,
+        # so a decode probe vetoes the flag when ffmpeg is present.
         if sample_rate > 0 and bits > 0 and actual_size > 0:
             expected_uncompressed = qdur * sample_rate * channels * (bits / 8)
-            # Impossibly small for the claimed duration usually means a tail
-            # truncation — but silent / very-quiet material (ambient, classical
-            # passages, hidden tracks) legitimately compresses this far and
-            # decodes fine. When ffmpeg is present, confirm with a decode before
-            # flagging so a healthy quiet track isn't re-downloaded. Without
-            # ffmpeg we can't tell quiet from truncated, so keep the byte flag.
-            # (Short-circuit keeps the decode probe off non-byte-short files.)
             if (actual_size < expected_uncompressed * _BYTE_SIZE_TRUNCATED_RATIO
                     and not (shutil.which("ffmpeg") is not None
                              and path and _flac_decode_ok(path))):

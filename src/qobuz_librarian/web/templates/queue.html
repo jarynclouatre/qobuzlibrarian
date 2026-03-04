@@ -51,7 +51,13 @@
             <a href="/jobs/{{ job.id }}" class="link link-hover">
               {% if job.artist %}{{ job.artist }} — {% endif %}{{ job.title }}</a>
           </p>
-          <p class="text-xs text-base-content/40">Job {{ job.id }}</p>
+          {% if job.status.value == 'awaiting_review' and job.candidates %}
+          <p class="text-sm text-base-content/70">{{ job.candidates | length }} found — review to choose what to download.</p>
+          {% elif job.status.value == 'scanning' %}
+          <p class="text-sm text-base-content/60">Scanning your library…</p>
+          {% elif job.status.value == 'running' %}
+          <p class="text-sm text-base-content/60">Downloading…</p>
+          {% endif %}
         </div>
         {% if job.status.value == 'awaiting_review' %}
         <div class="flex gap-2">
@@ -71,29 +77,16 @@
         {% endif %}
       </div>
 
-      {% if job.status.value == 'running' %}
-      <div class="mt-3">
-        <div class="log-console" id="log-{{ job.id }}"></div>
-      </div>
+      {% if job.status.value in ('running', 'scanning') %}
+      {# Quietly refresh the card when the job finishes. The blow-by-blow log
+         lives on the job page and in the Completed section — the queue stays a
+         clean overview, not a terminal. #}
       <script>
       (function() {
-        const logEl = document.getElementById('log-{{ job.id }}');
         const src = new EventSource('/api/jobs/{{ job.id }}/stream');
-        src.onmessage = e => {
-          logEl.appendChild(document.createTextNode(e.data + '\n'));
-          logEl.scrollTop = logEl.scrollHeight;
-        };
-        src.addEventListener('done', () => {
-          src.close();
-          setTimeout(() => location.reload(), 2000);
-        });
+        src.addEventListener('done', () => { src.close(); setTimeout(() => location.reload(), 1500); });
       })();
       </script>
-      {% elif job.log_lines %}
-      <div class="mt-3 log-console" style="max-height:120px">
-        {%- for line in job.log_lines[-10:] %}{{ line }}
-{% endfor -%}
-      </div>
       {% endif %}
     </div>
   </div>

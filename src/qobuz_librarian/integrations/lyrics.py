@@ -9,7 +9,7 @@ from pathlib import Path
 
 from qobuz_librarian import config as cfg
 from qobuz_librarian.ui_cli.colors import C, fmt
-from qobuz_librarian.ui_cli.logging import log, vlog
+from qobuz_librarian.ui_cli.logging import log, report_progress, vlog
 
 # lyric_fetch.py is a bundled script. In Docker it lives at /app/lyric_fetch.py
 # (entrypoint runs uvicorn with /app as the working dir, so it's importable);
@@ -78,6 +78,8 @@ def _run_lyric_hook(album_dir):
             providers=cfg.LYRICS_PROVIDERS or None,
             lyrics_format="embed",
             state_path=cfg.LYRIC_FETCH_STATE_FILE,
+            progress_cb=lambda c, t, name: report_progress(
+                "Fetching lyrics", c, t, name),
         )
     except Exception as e:
         log.info(fmt(C.YELLOW, f"  ⚠  Lyric hook failed: {e}."))

@@ -28,13 +28,22 @@ def _ua_string() -> str:
         return "qobuz-librarian (+streamrip-companion)"
 
 
-_session = requests.Session()
-_session.headers.update({"User-Agent": _ua_string()})
-# requests.Session shares state (urllib3 pool, cookie jar, adapter caches)
-# across threads. The web app fans calls out via run_in_executor + sync route
-# handlers, so concurrent gets are real. Serialize the call to keep that
-# shared state consistent; per-call QPS is low enough that this isn't felt.
-_session_lock = threading.Lock()
+# One requests.Session per thread. The session only pools connections and
+# carries the User-Agent — auth is passed per request (X-User-Auth-Token) — so
+# there's no shared mutable state to protect. Giving each worker its own
+# session lets the parallel artist scan make real concurrent calls instead of
+# queuing behind one global lock, while keeping single-threaded callers
+# unchanged. `_get_session` is the seam tests patch.
+_thread_local = threading.local()
+
+
+def _get_session() -> requests.Session:
+    s = getattr(_thread_local, "session", None)
+    if s is None:
+        s = requests.Session()
+        s.headers.update({"User-Agent": _ua_string()})
+        _thread_local.session = s
+    return s
 
 # Retry on transient failures (rate limit + 5xx). Three attempts, exponential
 # backoff capped at 8s — long enough to outwait a typical Qobuz hiccup, short
@@ -85,9 +94,8 @@ def qobuz_get(endpoint, params, token):
     url = f"{config.QOBUZ_API_BASE}/{endpoint}"
     for attempt in range(1, _MAX_ATTEMPTS + 1):
         try:
-            with _session_lock:
-                r = _session.get(url, params=params, headers=headers,
-                                 timeout=_REQUEST_TIMEOUT)
+            r = _get_session().get(url, params=params, headers=headers,
+                                   timeout=_REQUEST_TIMEOUT)
         except requests.RequestException as e:
             if attempt == _MAX_ATTEMPTS:
                 raise QobuzError(
