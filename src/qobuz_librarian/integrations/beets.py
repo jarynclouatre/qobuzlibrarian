@@ -587,6 +587,14 @@ def _consolidate_duplicate_albums():
                                  capture_output=True, text=True, env=beet_env,
                                  timeout=idle)
             if imp.returncode != 0:
+                # The remove already cleared every row for this folder, so a
+                # failed re-import strands the album (files on disk, absent
+                # from beets). A transient DB lock is the usual cause — retry
+                # once before falling back to the manual-recovery message.
+                imp = subprocess.run(base + ["import", "-A", d],
+                                     capture_output=True, text=True,
+                                     env=beet_env, timeout=idle)
+            if imp.returncode != 0:
                 log.info(fmt(C.YELLOW,
                     f"  ⚠  Re-import after de-duplicating {d} exited "
                     f"{imp.returncode}; the album may be untracked in beets. "
