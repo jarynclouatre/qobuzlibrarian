@@ -123,6 +123,11 @@
     {% block content %}{% endblock %}
   </main>
 
+  <!-- Download confirmation lands here. Kept outside the search-results swap
+       region so queuing an album and then searching again doesn't wipe the
+       "added to queue" message before it's read. -->
+  <div id="download-toast" class="toast toast-end z-50" aria-live="polite"></div>
+
   <!-- Footer -->
   <footer class="border-t border-base-300 mt-8">
     <div class="container mx-auto px-4 py-4 max-w-5xl flex items-center justify-between

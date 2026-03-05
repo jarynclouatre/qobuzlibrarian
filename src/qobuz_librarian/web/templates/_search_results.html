@@ -32,7 +32,7 @@
           {% else %}
           <span class="badge badge-sm quality-cd border border-current">CD</span>
           {% endif %}
-          <span class="text-xs text-base-content/40 hidden sm:block">{{ r.quality }}</span>
+          {% if r.quality %}<span class="text-xs text-base-content/40 hidden sm:block">{{ r.quality }}</span>{% endif %}
           <form method="post" action="/download"
                 hx-post="/download"
                 hx-target="#download-toast"
@@ -55,7 +55,6 @@
     </div>
   </div>
 </div>
-<div id="download-toast" class="mt-4" aria-live="polite"></div>
 
 {% elif q and not error %}
 <div class="text-center py-12 text-base-content/40">
