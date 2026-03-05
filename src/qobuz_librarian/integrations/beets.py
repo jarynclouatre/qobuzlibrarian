@@ -133,84 +133,59 @@ def _merge_split_folder(dest_dir, source_dir):
     return moved
 
 
-def _read_essential_tags(path):
-    """(albumartist, album) for a FLAC, falling back to artist for the first
-    (beets resolves albumartist→artist in the path template). Returns None if
-    the file can't be read at all — distinct from a readable file with empty
-    tags, so callers don't treat a transient read error as 'untagged'."""
-    try:
-        from mutagen.flac import FLAC
-        tags = FLAC(str(path))
-    except Exception:
-        return None
-    aa = (tags.get("albumartist") or tags.get("artist") or [""])[0].strip()
-    al = (tags.get("album") or [""])[0].strip()
-    return aa, al
+def _prepare_staging_tags():
+    """Quarantine untagged staged FLACs and clean the survivors' path tags in a
+    single pass, so each file is opened by mutagen once rather than twice.
 
+    A file that can't be read, or carries no album/artist tag, is moved to a
+    timestamped quarantine dir under DATA_DIR — never deleted. beets files an
+    untagged track under an empty-artist `/_/` folder, and a Qobuz download
+    always carries tags, so a tagless staging file is almost always a
+    cancelled/crashed-rip fragment; on the off chance it's a real file we just
+    couldn't read, it stays recoverable (and can be retagged by hand). The rest
+    get whitespace/quotes trimmed from the album/artist/title tags beets builds
+    the on-disk path from — streamrip writes those from its own Qobuz fetch, so
+    `Hunky Dory ` and `"Heroes"` would otherwise become the folder names.
+    Returns the list of quarantined paths.
 
-def _quarantine_untagged_staging():
-    """Move staged FLACs with no album/artist tags (or that can't be read) out
-    of the import set — never delete them.
-
-    beets files an untagged track under an empty-artist `/_/` folder, so these
-    can't just be imported. But a Qobuz download always carries tags, so a
-    tagless staging file is almost always a cancelled/crashed-rip fragment —
-    and on the rare chance it's a real file we merely couldn't read, destroying
-    it would be unacceptable. Move it to a timestamped quarantine dir under
-    DATA_DIR so it stays recoverable (and can be retagged by hand, e.g. with
-    beets' chroma/acoustid). Returns the list of original paths moved."""
+    Without mutagen every read fails; rather than quarantine the whole download
+    as "untagged" and hand beets an empty dir, leave the files untouched.
+    """
     moved = []
-    # Without mutagen every read returns None and we'd quarantine the entire
-    # download as "untagged". Can't tell tagged from untagged, so leave the
-    # files for beets to handle rather than emptying staging.
     if not HAVE_MUTAGEN:
         return moved
+    from mutagen.flac import FLAC
+
+    from qobuz_librarian.library.tags import clean_qobuz_string
     try:
         flacs = list(cfg.STAGING_DIR.rglob("*.flac"))
     except OSError:
         return moved
     quarantine = None
     for f in flacs:
-        tags = _read_essential_tags(f)
-        if tags is not None and tags[0] and tags[1]:
-            continue  # properly tagged — leave it for beets
-        if quarantine is None:
-            quarantine = (cfg.DATA_DIR / ".untagged_staging"
-                          / datetime.now().strftime("%Y%m%d_%H%M%S"))
         try:
-            rel = f.relative_to(cfg.STAGING_DIR)
-        except ValueError:
-            rel = Path(f.name)
-        dest = quarantine / rel
-        try:
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            shutil.move(str(f), str(dest))
-            moved.append(f)
-        except OSError as e:
-            vlog(f"couldn't quarantine {f.name}: {e}")
-    if moved:
-        log.info(fmt(C.YELLOW,
-            f"  ⚠  Set aside {len(moved)} untagged file(s) → {quarantine}\n"
-            "     (cancelled-rip leftovers, or files needing a manual retag — "
-            "not deleted)."))
-    return moved
-
-
-def _normalize_staging_tags():
-    """Trim whitespace/quotes from the tags beets builds the path from.
-    streamrip writes tags from its own Qobuz fetch, so the API-boundary
-    cleaning never reaches them — without this, `Hunky Dory ` and `"Heroes"`
-    become the on-disk folder names."""
-    from qobuz_librarian.library.tags import clean_qobuz_string
-    try:
-        flacs = list(cfg.STAGING_DIR.rglob("*.flac"))
-    except OSError:
-        return
-    for f in flacs:
-        try:
-            from mutagen.flac import FLAC
             tags = FLAC(str(f))
         except Exception:
+            tags = None
+        aa = al = ""
+        if tags is not None:
+            aa = (tags.get("albumartist") or tags.get("artist") or [""])[0].strip()
+            al = (tags.get("album") or [""])[0].strip()
+        if tags is None or not aa or not al:
+            if quarantine is None:
+                quarantine = (cfg.DATA_DIR / ".untagged_staging"
+                              / datetime.now().strftime("%Y%m%d_%H%M%S"))
+            try:
+                rel = f.relative_to(cfg.STAGING_DIR)
+            except ValueError:
+                rel = Path(f.name)
+            dest = quarantine / rel
+            try:
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(f), str(dest))
+                moved.append(f)
+            except OSError as e:
+                vlog(f"couldn't quarantine {f.name}: {e}")
             continue
         changed = False
         for key in ("album", "albumartist", "artist", "title"):
@@ -226,6 +201,12 @@ def _normalize_staging_tags():
                 tags.save()
             except Exception:
                 pass
+    if moved:
+        log.info(fmt(C.YELLOW,
+            f"  ⚠  Set aside {len(moved)} untagged file(s) → {quarantine}\n"
+            "     (cancelled-rip leftovers, or files needing a manual retag — "
+            "not deleted)."))
+    return moved
 
 
 def _build_import_override_yaml():
@@ -297,8 +278,7 @@ def beets_import_paths():
         log.info(fmt(C.GRAY, "     The bundled Docker image includes beets; bare-metal installs need it separately."))
         return False
 
-    _quarantine_untagged_staging()
-    _normalize_staging_tags()
+    _prepare_staging_tags()
 
     user_config = cfg.BEETS_CONFIG_DIR / "config.yaml"
     if not user_config.exists():

@@ -525,7 +525,7 @@ class TestQuarantineUntaggedStaging:
         broken.parent.mkdir(parents=True)
         broken.write_bytes(b"not a flac at all")
 
-        moved = beets._quarantine_untagged_staging()
+        moved = beets._prepare_staging_tags()
 
         assert tagged.exists()                              # tagged → kept
         assert not untagged.exists() and untagged in moved  # untagged → moved
@@ -546,7 +546,7 @@ def test_quarantine_skips_everything_when_mutagen_absent(tmp_path, monkeypatch):
     monkeypatch.setattr("qobuz_librarian.config.DATA_DIR", tmp_path / "data")
     monkeypatch.setattr(beets, "HAVE_MUTAGEN", False)
 
-    moved = beets._quarantine_untagged_staging()
+    moved = beets._prepare_staging_tags()
 
     assert moved == []
     assert f.exists()
@@ -616,7 +616,7 @@ class TestNormalizeStagingTags:
         f["title"] = ['"Heroes"']
         f.save()
 
-        beets._normalize_staging_tags()
+        beets._prepare_staging_tags()
 
         out = FLAC(str(flac))
         assert out["album"] == ["Hunky Dory"]
