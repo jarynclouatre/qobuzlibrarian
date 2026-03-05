@@ -345,6 +345,18 @@ def _active_job():
     return running[0]
 
 
+def _staging_album_count() -> int:
+    """Album folders left in staging by an interrupted import. The CLI warns
+    about these at startup (`_check_staging_occupied`); the web has no such
+    signal, so a crash mid-import leaves web-only users with no idea files are
+    stranded. Only meaningful when nothing is actively writing — the caller
+    suppresses the banner while a job is running."""
+    try:
+        return sum(1 for d in cfg.STAGING_DIR.iterdir() if d.is_dir())
+    except OSError:
+        return 0
+
+
 @app.head("/")
 async def dashboard_head():
     """Uptime monitors / curl -I hit HEAD before GET; serve a body-less 200
@@ -365,8 +377,9 @@ async def dashboard(request: Request):
     # instead. Filesystem-only check (no network) so it's cheap per load.
     creds_ok = bool(_read_creds().get("auth_token"))
     lyric_retry_count = len(load_lyric_retry()) if _cfg.LYRIC_RETRY_FILE.exists() else 0
+    active_job = _active_job()
     return _tr(request, "index.html", {
-        "active_job": _active_job(),
+        "active_job": active_job,
         "pending": job_mgr.registry.pending_and_running(),
         "review": job_mgr.registry.awaiting_review(),
         "recent": recent,
@@ -374,6 +387,7 @@ async def dashboard(request: Request):
         "creds_token_valid": _TOKEN_VALID,
         "lock_busy_pid": _LOCK_BUSY_PID,
         "lyric_retry_count": lyric_retry_count,
+        "staging_album_count": 0 if active_job else _staging_album_count(),
         "page": "dashboard",
     })
 
@@ -542,7 +556,11 @@ async def queue_download(request: Request, album_id: str = Form(""),
     try:
         token = _get_token()
         from qobuz_librarian.api.search import get_album
-        album = get_album(album_id, token)
+        loop = asyncio.get_running_loop()
+        album = await asyncio.wait_for(
+            loop.run_in_executor(None, lambda: get_album(album_id, token)),
+            timeout=cfg.WEB_FETCH_TIMEOUT,
+        )
         if not force_redownload:
             from qobuz_librarian.library.catalog import (
                 compute_missing,
@@ -609,7 +627,9 @@ async def queue_download(request: Request, album_id: str = Form(""),
         return RedirectResponse(url="/settings?error=creds", status_code=303)
     except Exception as e:
         from qobuz_librarian.api.auth import AuthLost, QobuzError, friendly_qobuz_error
-        if isinstance(e, AuthLost):
+        if isinstance(e, asyncio.TimeoutError):
+            user_msg = "Timed out reaching the Qobuz API — try again."
+        elif isinstance(e, AuthLost):
             user_msg = "Token is expired or invalid — update it in Settings."
         elif isinstance(e, QobuzError):
             cleaned = friendly_qobuz_error(e)
@@ -798,7 +818,11 @@ async def job_retry(request: Request, job_id: str):
     try:
         token = _get_token()
         from qobuz_librarian.api.search import get_album
-        album = get_album(album_id, token)
+        loop = asyncio.get_running_loop()
+        album = await asyncio.wait_for(
+            loop.run_in_executor(None, lambda: get_album(album_id, token)),
+            timeout=cfg.WEB_FETCH_TIMEOUT,
+        )
         title = album.get("title") or job.title or "?"
         artist = (album.get("artist") or {}).get("name") or job.artist or "?"
         new_job = job_mgr.Job(title=title, artist=artist, album_id=album_id)
