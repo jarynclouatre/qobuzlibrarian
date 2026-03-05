@@ -9,6 +9,12 @@
 </div>
 {% endif %}
 
+{% if approved %}
+<div class="alert alert-success mb-4">
+  <span>Downloads queued — they'll start shortly. Watch the progress below.</span>
+</div>
+{% endif %}
+
 <div class="flex items-center justify-between gap-3 mb-1">
   <h1 class="text-2xl font-bold">{% if job.artist %}{{ job.artist }} — {% endif %}{{ job.title }}</h1>
   <span class="badge
@@ -28,6 +34,7 @@
     <p class="text-base-content/60">
       {% if s == 'scanning' %}Scanning{% elif s == 'running' %}Downloading{% else %}Queued{% endif %}
       {% if job.cancel_requested %}<span class="badge badge-ghost badge-sm ml-2">stopping</span>{% endif %}
+      <span id="sse-reconnect" class="badge badge-warning badge-sm ml-2 hidden">connection lost — reconnecting…</span>
     </p>
     {% if not job.cancel_requested %}
     <form id="cancel-running" action="/jobs/{{ job.id }}/cancel" method="post">
@@ -67,11 +74,20 @@
     const item = document.getElementById('prog-item');
     const baseTitle = document.title;
     const src = new EventSource('/api/jobs/{{ job.id }}/stream');
+    const reconnect = document.getElementById('sse-reconnect');
     let titleSet = false;
     src.onmessage = e => {
       if (!titleSet) { document.title = '▶ ' + baseTitle; titleSet = true; }
       logEl.appendChild(document.createTextNode(e.data + '\n'));
       logEl.scrollTop = logEl.scrollHeight;
+    };
+    src.onopen = () => { if (reconnect) reconnect.classList.add('hidden'); };
+    src.onerror = () => {
+      // EventSource reconnects on its own (the server sends `retry:`), but a
+      // log that just freezes reads as a hang — say the connection dropped.
+      if (reconnect && src.readyState !== EventSource.CLOSED) {
+        reconnect.classList.remove('hidden');
+      }
     };
     src.addEventListener('progress', e => {
       let p; try { p = JSON.parse(e.data); } catch (_) { return; }

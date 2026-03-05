@@ -55,6 +55,23 @@
 </div>
 {% endif %}
 
+{% if staging_album_count %}
+<!-- Files left in staging by an interrupted import — the CLI warns about
+     these at startup; the web had no equivalent signal. Suppressed while a
+     job is running (those files are mid-import, not stranded). -->
+<div class="alert alert-warning mb-6">
+  <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 shrink-0" fill="none"
+       viewBox="0 0 24 24" stroke="currentColor">
+    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+          d="M12 9v2m0 4h.01M5 19h14a2 2 0 0 0 1.84-2.75L13.74 4a2 2 0 0 0-3.5 0L3.18 16.25A2 2 0 0 0 5 19z"/>
+  </svg>
+  <span>
+    <strong>{{ staging_album_count }} album folder{{ 's' if staging_album_count != 1 }} left in staging</strong>
+    from an interrupted import — they'll be imported with your next download.
+  </span>
+</div>
+{% endif %}
+
 <!-- Hero + search -->
 <section class="text-center pt-6 pb-8">
   <img src="/static/icon.png" alt="" class="h-16 w-16 rounded-2xl mx-auto mb-4 shadow-lg">
@@ -177,7 +194,7 @@
     <div class="flex items-center gap-3 mb-3">
       <span class="loading loading-spinner loading-sm text-warning"></span>
       <div>
-        <p class="font-semibold text-warning">{% if active_job.status.value == 'scanning' %}Scanning{% else %}Downloading{% endif %}</p>
+        <p class="font-semibold text-warning">{% if active_job.status.value == 'scanning' %}Scanning{% else %}Downloading{% endif %}<span id="active-reconnect" class="badge badge-warning badge-sm ml-2 hidden">connection lost — reconnecting…</span></p>
         <p class="text-sm text-base-content/70">{% if active_job.artist %}{{ active_job.artist }} — {% endif %}{{ active_job.title }}</p>
       </div>
     </div>
@@ -190,10 +207,17 @@
 <script>
 (function() {
   const logEl = document.getElementById('active-log-{{ active_job.id }}');
+  const reconnect = document.getElementById('active-reconnect');
   const src = new EventSource('/api/jobs/{{ active_job.id }}/stream');
   src.onmessage = e => {
     logEl.appendChild(document.createTextNode(e.data + '\n'));
     logEl.scrollTop = logEl.scrollHeight;
+  };
+  src.onopen = () => { if (reconnect) reconnect.classList.add('hidden'); };
+  src.onerror = () => {
+    if (reconnect && src.readyState !== EventSource.CLOSED) {
+      reconnect.classList.remove('hidden');
+    }
   };
   src.addEventListener('done', () => {
     src.close();
