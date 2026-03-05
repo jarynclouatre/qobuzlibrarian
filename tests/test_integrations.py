@@ -665,3 +665,30 @@ class TestImportOverrideArtwork:
         # custom plugin list must not drop it.
         y = self._build(monkeypatch, BEETS_PLUGINS=["lastgenre"])
         assert "inline" in y
+
+
+def test_consolidate_runs_only_when_requested(tmp_path, monkeypatch):
+    """A brand-new import passes consolidate=False, so the full-library de-dup
+    fold (a `beet ls -a` over everything) is skipped; an import that touched an
+    existing folder still runs it."""
+    from qobuz_librarian import config as cfg
+    from qobuz_librarian.integrations import beets
+
+    cfgdir = tmp_path / "beetsconf"
+    cfgdir.mkdir()
+    (cfgdir / "config.yaml").write_text("directory: /music\n")
+    monkeypatch.setattr(cfg, "BEETS_CONFIG_DIR", cfgdir)
+    monkeypatch.setattr(cfg, "BEETS_DB_PATH", tmp_path / "lib.db")
+    monkeypatch.setattr(cfg, "STAGING_DIR", tmp_path / "staging")
+    monkeypatch.setattr(beets.shutil, "which", lambda _n: "/usr/bin/beet")
+    monkeypatch.setattr(beets, "_prepare_staging_tags", lambda: [])
+    monkeypatch.setattr(beets, "_beets_direct", lambda *a, **k: True)
+
+    calls = []
+    monkeypatch.setattr(beets, "_consolidate_duplicate_albums",
+                        lambda: calls.append(1))
+
+    assert beets.beets_import_paths(consolidate=False) is True
+    assert calls == []
+    assert beets.beets_import_paths(consolidate=True) is True
+    assert calls == [1]

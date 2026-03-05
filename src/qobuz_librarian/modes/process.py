@@ -914,7 +914,10 @@ def process_album(album, args, *, allow_force=True, label=None,
             log.info(fmt(C.YELLOW, "\n  Skipping beets import — nothing succeeded."))
         else:
             log.info("")
-            imported = beets_import_paths()
+            # A brand-new album (no folder found on disk) lands in a fresh
+            # directory, so it can't split an existing beets album into
+            # duplicate rows — skip the full-library de-dup scan for it.
+            imported = beets_import_paths(consolidate=album_dir is not None)
 
         download_phase_completed = True
 

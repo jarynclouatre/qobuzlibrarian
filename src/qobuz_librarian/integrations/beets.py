@@ -267,10 +267,14 @@ def _build_import_override_yaml():
     return override_yaml
 
 
-def beets_import_paths():
+def beets_import_paths(consolidate=True):
     """Run beets import on the staging directory.
 
     Requires `beet` to be on PATH (the bundled Docker image guarantees this).
+    ``consolidate`` runs the duplicate-album fold afterwards. Callers importing
+    only brand-new albums (no pre-existing folder for beets to drop tracks
+    beside) pass False to skip its full-library ``beet ls -a`` — those imports
+    can't create the duplicate rows it looks for.
     """
     # ── Require beet on PATH ──────────────────────────────────────────────────
     if not shutil.which("beet"):
@@ -311,7 +315,7 @@ def beets_import_paths():
                 pass
 
     imported = _beets_direct(override_path, _clean)
-    if imported:
+    if imported and consolidate:
         _consolidate_duplicate_albums()
     return imported
 

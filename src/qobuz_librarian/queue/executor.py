@@ -626,8 +626,12 @@ def _execute_download_queue(queue, args, token):
         imported_globally = False
     else:
         section("Running beets on the queue")
+        # Only run the duplicate-album fold if some item targeted an existing
+        # folder (gap-fill / upgrade / repair) — an all-new batch can't have
+        # created the split rows it cleans up.
+        consolidate = any(it.get("album_dir") for it in queue)
         try:
-            imported_globally = beets_import_paths()
+            imported_globally = beets_import_paths(consolidate=consolidate)
         except KeyboardInterrupt:
             log.info(fmt(C.YELLOW,
                 "\n  beets interrupted. Resolving backups based on disk."))
