@@ -102,6 +102,9 @@ class Job:
     #   {cid, kind, title, artist, detail, payload, selected}
     candidates: list  = field(default_factory=list)
     error: Optional[str] = None
+    # Short, user-facing outcome shown as a callout on the finished job page —
+    # e.g. why a scan found nothing — so it isn't buried in the log.
+    summary: str = ""
     cancel_requested: bool = False
     created_at: float = field(default_factory=time.time)
     finished_at: Optional[float] = None

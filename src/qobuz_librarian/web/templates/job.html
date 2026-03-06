@@ -172,6 +172,8 @@
 {% else %}
   {% if job.error %}
   <div class="alert alert-error mb-4"><span class="break-words whitespace-pre-wrap">{{ job.error }}{% if 'log' not in job.error %} — check the queue or run logs.{% endif %}</span></div>
+  {% elif job.summary %}
+  <div class="alert alert-info mb-4"><span class="break-words">{{ job.summary }}</span></div>
   {% endif %}
   <div class="log-console">
     {%- for line in job.log_lines %}{{ line }}

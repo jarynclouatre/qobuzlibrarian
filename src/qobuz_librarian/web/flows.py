@@ -230,6 +230,8 @@ def scan_artist(job, query, token):
     artist_id, artist_name = resolve_artist(query, token)
     if not artist_id:
         log.info(f"  No confident Qobuz match for '{query}'.")
+        job.summary = (f"No Qobuz match for “{query}”. Check the spelling, or "
+                       "try the artist's exact name as Qobuz lists it.")
         return
     log.info(f"  Matched: {artist_name}. Scanning catalog for gaps…")
     n = 0
