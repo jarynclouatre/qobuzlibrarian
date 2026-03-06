@@ -8,7 +8,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from qobuz_librarian import config as cfg
-from qobuz_librarian.api.auth import AuthLost, detect_auth_lost, detect_disk_full
+from qobuz_librarian.api.auth import (
+    AuthLost,
+    detect_auth_lost,
+    detect_disk_full,
+    detect_rate_limited,
+)
 from qobuz_librarian.integrations.beets import (
     _merge_split_folder,
     beets_import_paths,
@@ -758,7 +763,19 @@ def process_album(album, args, *, allow_force=True, label=None,
                         log.info(fmt(C.RED, f"    ✗ rip exit {rc}"))
                         log.info(fmt(C.GRAY,
                             "      " + out[-200:].replace("\n", " ")))
-                time.sleep(cfg.DELAY_BETWEEN)
+                # Qobuz throttles sustained per-track pulls. When the last rip
+                # shows throttle signals, pause longer before the next track so
+                # we stop pounding the limit — same handling the queue executor
+                # applies between albums.
+                cooldown = cfg.RATE_LIMIT_COOLDOWN if detect_rate_limited(out) else 0
+                if cooldown and i < len(missing):
+                    log.info(fmt(C.YELLOW,
+                        f"    ⏳ Qobuz rate-limit detected — cooling down "
+                        f"{int(cooldown)}s before the next track "
+                        f"(set RATE_LIMIT_COOLDOWN=0 to disable)."))
+                    time.sleep(cooldown)
+                else:
+                    time.sleep(cfg.DELAY_BETWEEN)
 
         # ── Verify what landed: keep FLACs, delete lossy ─────────────────────────
         new_files = files_added_since(snapshot)
