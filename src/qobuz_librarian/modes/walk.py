@@ -15,7 +15,6 @@ from qobuz_librarian.modes.artist import (
     resolve_artist_dir,
     run_artist_gap_fill,
     run_artist_missing_albums,
-    run_artist_mode,
 )
 from qobuz_librarian.queue.executor import _execute_download_queue
 from qobuz_librarian.queue.persistence import clear_pending_queue, save_pending_queue
@@ -155,7 +154,7 @@ def record_album_walk_seen(artist_name, album_name):
 def run_album_walk_mode(args, token):
     """Album fill walk: scan every album under every artist and
     prompt only on incomplete ones."""
-    banner("Album fill walk — scan every album, fill the gaps")
+    banner("Album gaps — fill missing tracks in albums you already own")
 
     all_artists = list_library_artists()
     if not all_artists:
@@ -320,114 +319,9 @@ def run_album_walk_mode(args, token):
 
 # ── Library walk ──────────────────────────────────────────────────────
 
-def run_library_walk_mode(args, token):
-    """Iterate every artist directory under MUSIC_ROOT, prompting y/n."""
-    banner("Library walk — choose artists to scan")
-
-    all_artists = list_library_artists()
-    if not all_artists:
-        log.info(fmt(C.YELLOW, "  ⚠  No artist directories found in library."))
-        return
-
-    seen = load_walk_seen()
-    if seen:
-        n_before = len(all_artists)
-        all_artists = [a for a in all_artists if normalize(a.name) not in seen]
-        n_hidden = n_before - len(all_artists)
-        if n_hidden:
-            vlog(f"  Hiding {n_hidden} previously-decided artist(s). "
-                 f"Edit {cfg.WALK_SEEN_FILE.name} to reset.")
-    if not all_artists:
-        log.info(fmt(C.GREEN,
-            "  ✓  All artists already decided. Nothing left to walk."))
-        return
-
-    vlog(f"  {len(all_artists)} artist(s) to walk.")
-    try:
-        flt = input(fmt(C.CYAN,
-            "  Filter (substring, case-insensitive; blank = all): ")).strip().lower()
-    except EOFError:
-        flt = ""
-    artists = all_artists
-    if flt:
-        artists = [a for a in all_artists if flt in a.name.lower()]
-        log.info(fmt(C.GRAY, f"  {len(artists)} artist(s) match {flt!r}."))
-        if not artists:
-            return
-
-    log.info(fmt(C.GRAY,
-        "  Per artist: y=scan, enter/n=skip, s/q=stop, f <substring>=filter rest."))
-    print()
-
-    n_scanned = 0
-    n_skipped = 0
-    i = 0
-    while i < len(artists):
-        d = artists[i]
-        _flush_stdin()
-        try:
-            r = input(fmt(C.CYAN,
-                f"  [{i + 1}/{len(artists)}] {truncate(d.name, 55)} — scan? [y/N/s/f]: "
-            )).strip()
-        except EOFError:
-            log.info(fmt(C.GRAY, "\n  EOF — stopping walk."))
-            break
-        rl = r.lower()
-        if rl in ("s", "q", "quit"):
-            log.info(fmt(C.GRAY, "  Stopping library walk."))
-            break
-        if rl == "f":
-            log.info(fmt(C.GRAY,
-                "  Filter syntax: 'f <substring>' "
-                "(e.g. 'f mar' to match Marlena, Marlon, etc.)"))
-            continue
-        if rl.startswith("f "):
-            sub = r[2:].strip().lower()
-            if sub:
-                remaining = [a for a in artists[i:] if sub in a.name.lower()]
-                if remaining:
-                    artists = artists[:i] + remaining
-                    log.info(fmt(C.GRAY,
-                        f"  Filtered to {len(remaining)} artist(s) matching {sub!r}."))
-                else:
-                    log.info(fmt(C.YELLOW,
-                        f"  No remaining artists match {sub!r}. Continuing unfiltered."))
-            continue
-        decided = True
-        if rl in ("y", "yes"):
-            print()
-            artist_query = re.sub(r"\s+", " ",
-                                  d.name.replace("_", " ")).strip()
-            try:
-                run_artist_mode(artist_query, args, token)
-            except AuthLost:
-                raise
-            except KeyboardInterrupt:
-                log.info(fmt(C.GRAY,
-                    "\n  Artist scan interrupted — leaving in queue for next walk."))
-                decided = False
-            n_scanned += 1
-            print()
-        elif rl in ("", "n", "no"):
-            n_skipped += 1
-        else:
-            log.info(fmt(C.YELLOW,
-                f"  Unrecognized: {r!r}. Use y / N / s / f."))
-            continue
-        if decided:
-            record_walk_seen(d.name)
-        i += 1
-
-    print()
-    log.info(fmt(C.GREEN,
-        f"  ✓ Walk complete. Scanned {n_scanned} artist(s), skipped {n_skipped}."))
-
-
-# ── Walk + queue ──────────────────────────────────────────────────────
-
 def run_walk_queued_mode(args, token):
     """Walk artists, accumulate decisions across artists, flush on demand."""
-    banner("Walk + queue — choose when to process across artists")
+    banner("Library walk — scan artists, queue, download when you choose")
 
     all_artists = list_library_artists()
     if not all_artists:

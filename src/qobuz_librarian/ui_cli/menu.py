@@ -10,16 +10,14 @@ def interactive_session_mode():
     print()
     log.info(fmt(C.GRAY, "  Qobuz Librarian: download Qobuz albums and fill your library's gaps."))
     log.info(fmt(C.BOLD + C.CYAN, "  What would you like to do?"))
-    log.info(fmt(C.WHITE, "    1) Search    — fetch one album (search or paste Qobuz URL)"))
-    log.info(fmt(C.WHITE, "    2) Artist    — work through one artist's catalog"))
-    log.info("")
-    log.info(fmt(C.BOLD + C.GRAY, "  ── Library scans (sweep everything you own) ──"))
-    log.info(fmt(C.WHITE, "    3) by artist         — decide y/N per artist, download each immediately"))
-    log.info(fmt(C.WHITE, "    4) by artist (queue) — decide y/N per artist, download all at the end"))
-    log.info(fmt(C.WHITE, "    5) by album          — decide y/N per incomplete album across all artists"))
-    log.info("")
-    log.info(fmt(C.WHITE, "    6) Repair    — refill truncated/partial FLACs (ISRC-verified)"))
-    log.info(fmt(C.WHITE, "    7) Upgrade   — scan the whole library for better-quality versions"))
+    log.info(fmt(C.WHITE, "    1) Search       — find and download one album (name or Qobuz URL)"))
+    log.info(fmt(C.WHITE, "    2) Artist       — one artist: fill gaps, then offer albums you're missing"))
+    log.info(fmt(C.WHITE, "    3) Library walk — every artist, same as Artist; queue as you go and"))
+    log.info(fmt(C.GRAY,  "                      download after each artist or all at the end"))
+    log.info(fmt(C.WHITE, "    4) Album gaps   — every incomplete album you own: fill missing tracks"))
+    log.info(fmt(C.GRAY,  "                      only, never suggests albums you don't have"))
+    log.info(fmt(C.WHITE, "    5) Repair       — re-download corrupt/truncated tracks you own"))
+    log.info(fmt(C.WHITE, "    6) Upgrade      — better-quality versions of albums you own"))
     log.info(fmt(C.WHITE, "    q) Quit"))
     while True:
         try:
@@ -33,13 +31,11 @@ def interactive_session_mode():
         if r == "2":
             return Mode.ARTIST
         if r == "3":
-            return Mode.WALK
-        if r == "4":
             return Mode.WALK_QUEUE
-        if r == "5":
+        if r == "4":
             return Mode.ALBUM_WALK
-        if r == "6":
+        if r == "5":
             return Mode.ALBUM_REPAIR
-        if r == "7":
+        if r == "6":
             return Mode.UPGRADE
-        log.info(fmt(C.GRAY, "  Enter 1-7 (blank = 1) or q to quit."))
+        log.info(fmt(C.GRAY, "  Enter 1-6 (blank = 1) or q to quit."))

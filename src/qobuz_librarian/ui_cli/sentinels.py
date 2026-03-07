@@ -10,7 +10,6 @@ class Mode(str, Enum):
     QUIT          = "quit"
     ALBUM         = "album"
     ARTIST        = "artist"
-    WALK          = "walk"
     WALK_QUEUE    = "walk_queue"
     ALBUM_WALK    = "album_walk"
     ALBUM_REPAIR  = "album_repair"

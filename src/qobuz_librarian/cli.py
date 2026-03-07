@@ -494,9 +494,6 @@ def main():
                     log.info(fmt(C.GRAY, "  Cancelled."))
                     break
                 run_artist_mode(artist, args, token)
-        elif mode == Mode.WALK:
-            from qobuz_librarian.modes.walk import run_library_walk_mode
-            run_library_walk_mode(args, token)
         elif mode == Mode.WALK_QUEUE:
             from qobuz_librarian.modes.walk import run_walk_queued_mode
             run_walk_queued_mode(args, token)
