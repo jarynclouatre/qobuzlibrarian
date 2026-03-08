@@ -88,7 +88,7 @@ changed until you do.
 | **Settings**| Qobuz credentials and behaviour toggles (applied without a restart) |
 
 The CLI runs the same engine. Launch with no arguments for an
-interactive menu (Search · Artist · three library-walk variants ·
+interactive menu (Search · Artist · Library walk · Album gaps ·
 Repair · Upgrade), or pass flags for unattended runs — `--help` lists
 them all.
 
