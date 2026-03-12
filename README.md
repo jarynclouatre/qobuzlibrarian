@@ -26,6 +26,27 @@ By default it pulls the **highest quality your subscription serves**. Want
 smaller files instead? Drop to CD lossless or 320 kbps with one setting (see
 [Download quality](#download-quality)).
 
+## Contents
+
+- [Features](#features)
+- [How it ships](#how-it-ships)
+- [How you use it](#how-you-use-it)
+- [Quick start (Docker)](#quick-start-docker)
+- [Pointing it at an existing library](#pointing-it-at-an-existing-library)
+- [Bringing your existing beets database](#bringing-your-existing-beets-database)
+- [Tagging an untagged collection (AcoustID)](#tagging-an-untagged-collection-acoustid)
+- [Default beets config](#default-beets-config)
+- [First scan on a big library](#first-scan-on-a-big-library)
+- [What it will and won't touch](#what-it-will-and-wont-touch-on-its-own)
+- [Running on a NAS](#running-on-a-nas)
+- [Using the CLI](#using-the-cli)
+- [Troubleshooting](#troubleshooting)
+- [Security and deployment shape](#security-and-deployment-shape)
+- [Limitations](#limitations)
+- [Development](#development)
+- [Acknowledgements](#acknowledgements)
+- [License](#license)
+
 ## Features
 
 **Get music, without re-downloading what you own.** Point it at an album,
@@ -41,7 +62,7 @@ tracks you already have under slightly different names:
 **Best available quality by default.** New downloads come in at the highest
 quality Qobuz offers for that release. Already have an album in a lower quality? The
 **Upgrade** mode finds everything Qobuz can now serve better and re-rips just
-those — backing the originals up first.
+those.
 
 **Clean import.** beets handles tagging and cover art; files land in your
 library in one move so a scanner never sees a half-processed state. Synced
@@ -59,8 +80,6 @@ lyrics are fetched automatically (when `LYRICS_ENABLED` is on; default).
 
 - Crash-safe persistent download queue that resumes after a restart
 - Per-run lock so two instances can't fight over the same library
-- Gap-fill never deletes a track; the only mode that replaces files
-  (Upgrade) backs them up first
 
 ## How it ships
 
@@ -120,10 +139,9 @@ downsample on import.
 
 ### Quality upgrades
 
-A plain gap-fill never wipes an album you have — it only fetches missing
-tracks. Replacing files for higher quality is a separate **Upgrade** mode
-(CLI and web): it backs up the originals first (with retention cleanup) and
-won't replace an album if that would drop bonus tracks you have.
+Replacing files for higher quality is a separate **Upgrade** mode (CLI and
+web): it backs up the originals first (with retention cleanup) and won't
+replace an album if that would drop bonus tracks you have.
 
 `AUTO_UPGRADE_ENABLED` (default off) controls only whether ordinary gap-fill
 walks also surface upgrades along the way; the explicit Upgrade scan works
@@ -415,9 +433,10 @@ sudo chown -R 1000:1000 ./music ./staging ./upgrade_backups
 ## Using the CLI
 
 The CLI runs inside the same container as the web UI — no separate install.
-Stop the web container before running these (only one writer holds the
-lock): `docker compose stop qobuz-librarian`, run the CLI, then
-`docker compose start qobuz-librarian` afterward.
+Only one writer can hold the download lock, so free it first: either hand it
+over from the web UI (**Settings → Mode → Hand off to terminal**, then
+**Resume web app** when you're done — no restart), or stop the web container
+outright with `docker compose stop qobuz-librarian` and `start` it after.
 
 For an interactive menu:
 
@@ -459,7 +478,7 @@ The CLI honours the same `.env` and `compose.yaml` settings as the web UI.
 | Upgrade walk fails with `Permission denied` backing up an album | An earlier `docker exec qobuz-librarian beet …` (or similar) ran as root, leaving root-owned files the librarian (PUID 1000) can't move. Either rerun with `docker exec --user 1000:1000 …`, or fix on the host: `sudo chown -R 1000:1000 ./music`. |
 | Music files vanished from `/music` after a manual `beet` command | `beet -d /config/beets …` reads `-d` as the *destination* directory, so with `move: yes` it relocates the whole library into the config volume (`beet ls -p` still prints `/music/…` because paths are stored relative). The container already exports `BEETSDIR`; run `beet …` with no `-d`, or `BEETSDIR=/config/beets beet …`. |
 
-## Security & deployment shape
+## Security and deployment shape
 
 The bundled `compose.yaml` ships hardened — on a fresh `docker compose up -d`:
 
@@ -522,7 +541,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the rest.
 Qobuz Librarian is the glue around several excellent open-source projects,
 which are bundled into the Docker image:
 
-- **[streamrip](https://github.com/nathom/streamrip)** (Nathaniel Adams) —
+- **[streamrip](https://github.com/nathom/streamrip)** (Nathaniel Thomas) —
   the actual Qobuz downloader. GPL-3.0.
 - **[beets](https://beets.io/)** ([github](https://github.com/beetbox/beets)) —
   tagging, cover art, and library organisation. MIT.
