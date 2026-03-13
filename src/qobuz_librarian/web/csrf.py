@@ -60,7 +60,10 @@ class CSRFMiddleware(BaseHTTPMiddleware):
                 token,
                 max_age=60 * 60 * 24 * 30,
                 samesite="strict",
-                httponly=False,
+                # The page reads the token from its <meta> tag, never from
+                # this cookie, so HttpOnly costs nothing and keeps it out of
+                # reach of any injected script.
+                httponly=True,
                 secure=secure,
             )
         return response
