@@ -141,6 +141,10 @@ CAPPED_FILE          = DATA_DIR / ".qobuz_upgrade_capped.json"
 # so the state file can't be saved and "provider-unavailable" retries
 # silently never resume. Routing it into DATA_DIR fixes that.
 LYRIC_FETCH_STATE_FILE = DATA_DIR / ".lyric_fetch_state.json"
+# Web UI login: username + password hash + session secret, written 0600
+# (it holds a credential). Lives in DATA_DIR with the rest of the state so
+# one volume covers it. WEB_AUTH below is the on/off knob.
+WEB_AUTH_FILE = DATA_DIR / ".qobuz_web_auth.json"
 
 # Lock file lives in DATA_DIR so the web container and a `docker compose
 # run` CLI invocation share it via the /data volume (otherwise each
@@ -157,6 +161,13 @@ UPGRADE_BACKUP_DIR = _env_path(
 # ── Web UI ────────────────────────────────────────────────────────────────────
 WEB_HOST = os.environ.get("WEB_HOST", "0.0.0.0")
 WEB_PORT = _env("WEB_PORT", 8666)
+
+# Built-in login. WEB_AUTH=none turns it off entirely (no setup screen, no
+# login prompt). Any other value — including blank or unset — leaves auth ON,
+# so it can only be disabled by a deliberate opt-out, never by an empty field.
+# The live check is web/auth.py:auth_disabled(); this constant just documents
+# the knob and is read fresh from the env there so it stays test-overridable.
+WEB_AUTH = os.environ.get("WEB_AUTH", "").strip().lower()
 
 # ── Versioned file schemas ────────────────────────────────────────────────────
 PENDING_QUEUE_VERSION = 1

@@ -176,9 +176,17 @@ On Windows, run those commands in WSL or Git Bash — Windows PowerShell's
 [Building from source](#building-from-source) below if you'd rather build
 it yourself.
 
-Open <http://localhost:8666>. On first run the dashboard prompts you to add
-your Qobuz credentials — do that on the **Settings** page (or set them in
-`.env` before starting).
+Open <http://localhost:8666>. On first visit the UI asks you to **set a
+username and password** for the web interface — pick those, sign in, and the
+dashboard then prompts you to add your Qobuz credentials on the **Settings**
+page (or set them in `.env` before starting).
+
+> **Login is on by default.** The web UI requires sign-in out of the box. To
+> run it without a login — only sensible on a trusted LAN or behind your own
+> authenticating reverse proxy — set `WEB_AUTH=none` in `.env`. The container
+> logs a warning on every boot while auth is off. There's no password reset:
+> to change the login, stop the container and delete `.qobuz_web_auth.json`
+> from the data volume, then set it again on next visit.
 
 From there:
 
@@ -493,8 +501,15 @@ The bundled `compose.yaml` ships hardened — on a fresh `docker compose up -d`:
 `--read-only` rootfs deployments work as long as you include `--tmpfs /tmp`
 (or set `APP_HOME=/var/tmp` with `--tmpfs /var/tmp`).
 
-The web UI has no built-in authentication — run it on a trusted network or
-behind an authenticating reverse proxy. See [SECURITY.md](SECURITY.md).
+The web UI has a built-in login, on by default: the first visit prompts you
+to set a username and password, and every page and endpoint requires sign-in
+after that. The password is stored as a salted PBKDF2 hash (`0600`, never
+plaintext) and the session is an `HttpOnly` cookie. Set `WEB_AUTH=none` to
+turn the login off — the container logs a warning every boot when you do, and
+you should only run that way on a trusted network. The built-in login is a
+single shared credential with no rate limiting, so for internet exposure put
+it behind an authenticating reverse proxy (or VPN / Tailscale) anyway. See
+[SECURITY.md](SECURITY.md).
 
 ## Limitations
 

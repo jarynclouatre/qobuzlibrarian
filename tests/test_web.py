@@ -1801,3 +1801,108 @@ def test_settings_save_requires_user_id_with_token(client, monkeypatch):
     assert "Add your User ID" in r.text
     assert "a-real-looking-token" in r.text
     assert wrote == []
+
+
+# ── web/auth.py: optional login ────────────────────────────────────────────────
+
+
+def _enable_auth(monkeypatch, tmp_path, *, configure=True):
+    """Turn auth on for one test against an isolated credential file. Returns
+    a TestClient bound to the app. The session-wide conftest default of
+    WEB_AUTH=none is restored on teardown by monkeypatch."""
+    from fastapi.testclient import TestClient
+
+    from qobuz_librarian import config as cfg
+    from qobuz_librarian.web import auth as web_auth
+    from qobuz_librarian.web.app import app
+
+    monkeypatch.setenv("WEB_AUTH", "")
+    monkeypatch.setattr(cfg, "WEB_AUTH_FILE", tmp_path / "web_auth.json")
+    if configure:
+        assert web_auth.set_credentials("admin", "hunter2hunter")
+    return TestClient(app)
+
+
+def test_verify_login_matches_only_the_right_pair(monkeypatch, tmp_path):
+    from qobuz_librarian import config as cfg
+    from qobuz_librarian.web import auth as web_auth
+
+    monkeypatch.setattr(cfg, "WEB_AUTH_FILE", tmp_path / "web_auth.json")
+    assert web_auth.set_credentials("admin", "hunter2hunter")
+    assert web_auth.verify_login("admin", "hunter2hunter")
+    assert not web_auth.verify_login("admin", "wrong")
+    assert not web_auth.verify_login("someoneelse", "hunter2hunter")
+    # The stored hash is a salted PBKDF2 digest, never the plaintext.
+    assert "hunter2hunter" not in (tmp_path / "web_auth.json").read_text()
+
+
+def test_logged_out_request_redirects_to_login(monkeypatch, tmp_path):
+    with _enable_auth(monkeypatch, tmp_path) as c:
+        r = c.get("/", follow_redirects=False)
+        assert r.status_code == 303
+        assert r.headers["location"] == "/login"
+
+
+def test_login_rejects_wrong_password(monkeypatch, tmp_path):
+    with _enable_auth(monkeypatch, tmp_path) as c:
+        c.get("/login")
+        tok = c.cookies.get("qf_csrf")
+        r = c.post("/login",
+                   data={"username": "admin", "password": "nope",
+                         "_csrf_token": tok},
+                   headers={"X-CSRF-Token": tok}, follow_redirects=False)
+        assert r.status_code == 401
+        assert "qf_session" not in r.cookies
+        # Still locked out afterwards.
+        assert c.get("/", follow_redirects=False).status_code == 303
+
+
+def test_login_accepts_correct_password(monkeypatch, tmp_path):
+    with _enable_auth(monkeypatch, tmp_path) as c:
+        c.get("/login")
+        tok = c.cookies.get("qf_csrf")
+        r = c.post("/login",
+                   data={"username": "admin", "password": "hunter2hunter",
+                         "_csrf_token": tok},
+                   headers={"X-CSRF-Token": tok}, follow_redirects=False)
+        assert r.status_code == 303
+        assert r.headers["location"] == "/"
+        # The session cookie now opens a protected route.
+        assert c.get("/", follow_redirects=False).status_code == 200
+
+
+def test_web_auth_none_bypasses_login(monkeypatch, tmp_path):
+    # auth off and no credentials configured — every route stays open.
+    with _enable_auth(monkeypatch, tmp_path, configure=False) as c:
+        monkeypatch.setenv("WEB_AUTH", "none")
+        assert c.get("/", follow_redirects=False).status_code == 200
+
+
+def test_first_run_redirects_to_setup(monkeypatch, tmp_path):
+    with _enable_auth(monkeypatch, tmp_path, configure=False) as c:
+        r = c.get("/", follow_redirects=False)
+        assert r.status_code == 303
+        assert r.headers["location"] == "/setup"
+
+
+def test_api_endpoint_requires_auth(monkeypatch, tmp_path):
+    # The auth gate has to cover the JSON/SSE endpoints, not just page views.
+    with _enable_auth(monkeypatch, tmp_path) as c:
+        r = c.get("/api/jobs", follow_redirects=False)
+        assert r.status_code == 401
+
+
+def test_setup_creates_login_and_signs_in(monkeypatch, tmp_path):
+    from qobuz_librarian.web import auth as web_auth
+
+    with _enable_auth(monkeypatch, tmp_path, configure=False) as c:
+        c.get("/setup")
+        tok = c.cookies.get("qf_csrf")
+        r = c.post("/setup",
+                   data={"username": "admin", "password": "hunter2hunter",
+                         "confirm": "hunter2hunter", "_csrf_token": tok},
+                   headers={"X-CSRF-Token": tok}, follow_redirects=False)
+        assert r.status_code == 303
+        assert web_auth.credentials_configured()
+        # Setup signs the user straight in.
+        assert c.get("/", follow_redirects=False).status_code == 200

@@ -62,6 +62,11 @@ services:
       # ── Web UI ─────────────────────────────────────────────────────────────
       WEB_HOST: "0.0.0.0"
       WEB_PORT: "8666"
+      # Login. Unset (or any value other than "none") = the UI prompts you to
+      # set a username/password on first visit and requires sign-in after.
+      # "none" turns the login off entirely — only safe on a trusted network or
+      # behind your own authenticating reverse proxy.
+      WEB_AUTH: "${WEB_AUTH:-}"
       # Refuse downloads/scans at startup if /music or /staging aren't writable
       # by the container user (typical on a NAS with the wrong PUID/PGID).
       QL_CHECK_VOLUMES: "1"

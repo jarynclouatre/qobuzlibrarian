@@ -82,6 +82,9 @@
           {% if _qbadge > 0 %}<span class="badge badge-primary badge-sm">{% if _qbadge > 99 %}99+{% else %}{{ _qbadge }}{% endif %}</span>{% endif %}
         </a></li>
         <li><a href="/settings" class="{% if page=='settings' %}active{% endif %}">Settings</a></li>
+        {% if auth_active() %}
+        <li><button type="submit" form="logout-form">Log out</button></li>
+        {% endif %}
       </ul>
     </div>
     <div class="lg:hidden">
@@ -105,10 +108,19 @@
             {% if _qbadge > 0 %}<span class="badge badge-primary badge-sm">{% if _qbadge > 99 %}99+{% else %}{{ _qbadge }}{% endif %}</span>{% endif %}
           </a></li>
           <li><a href="/settings">Settings</a></li>
+          {% if auth_active() %}
+          <li><button type="submit" form="logout-form">Log out</button></li>
+          {% endif %}
         </ul>
       </div>
     </div>
   </nav>
+
+  {% if auth_active() %}
+  <form id="logout-form" action="/logout" method="post" class="hidden">
+    <input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}">
+  </form>
+  {% endif %}
 
   {% if cli_mode %}
   <div class="bg-warning text-warning-content px-4 py-2 text-sm text-center">

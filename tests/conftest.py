@@ -8,6 +8,7 @@ Individual tests still monkeypatch specific paths via ``tmp_path`` for
 finer-grained control; this fixture only covers the global side effects
 of importing the package and running the web lifespan in a TestClient.
 """
+import os
 import tempfile
 from pathlib import Path
 
@@ -17,7 +18,12 @@ import pytest
 @pytest.fixture(autouse=True, scope="session")
 def _isolate_data_dir():
     """Point cfg.DATA_DIR and the files derived from it at a temp dir for
-    the test session, so tests don't pollute the dev machine's HOME."""
+    the test session, so tests don't pollute the dev machine's HOME.
+
+    Also default WEB_AUTH=none for the session so the web tests exercise the
+    routes directly; the auth-specific tests flip it back on with monkeypatch,
+    which restores this default on teardown.
+    """
     from qobuz_librarian import config as cfg
 
     tmp_root = Path(tempfile.mkdtemp(prefix="qobuz-librarian-tests-"))
@@ -32,9 +38,18 @@ def _isolate_data_dir():
     cfg.REPAIR_LOG_PATH      = tmp_root / ".qobuz_replaced_tracks.log"
     cfg.CAPPED_FILE          = tmp_root / ".qobuz_upgrade_capped.json"
     cfg.LYRIC_FETCH_STATE_FILE = tmp_root / ".lyric_fetch_state.json"
+    cfg.WEB_AUTH_FILE        = tmp_root / ".qobuz_web_auth.json"
     cfg.LOCK_FILE            = tmp_root / "qobuz_librarian.lock"
 
+    prior_web_auth = os.environ.get("WEB_AUTH")
+    os.environ["WEB_AUTH"] = "none"
+
     yield
+
+    if prior_web_auth is None:
+        os.environ.pop("WEB_AUTH", None)
+    else:
+        os.environ["WEB_AUTH"] = prior_web_auth
     # Clean up the session tempdir, best-effort. The lock file may still
     # be held briefly by a TestClient lifespan that's tearing down;
     # ignore_errors=True keeps the test exit clean either way.

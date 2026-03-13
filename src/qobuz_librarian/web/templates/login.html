@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="night">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sign in — Qobuz Librarian</title>
+  <link rel="icon" type="image/png" href="/static/icon.png">
+  <link href="/static/dist/app.css?v={{ app_version }}" rel="stylesheet">
+</head>
+<body class="min-h-screen bg-base-100 flex items-center justify-center px-4 py-8">
+  <div class="card bg-base-200 shadow-lg w-full max-w-sm">
+    <div class="card-body">
+      <div class="flex items-center gap-2 mb-4">
+        <img src="/static/icon.png" alt="" class="h-8 w-8 rounded-lg shrink-0">
+        <h1 class="text-lg font-bold text-primary">Qobuz Librarian</h1>
+      </div>
+
+      {% if error %}
+      <div class="alert alert-error mb-4"><span>{{ error }}</span></div>
+      {% endif %}
+
+      <form action="/login" method="post">
+        <input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}">
+        <div class="form-control mb-3">
+          <label class="label" for="username"><span class="label-text">Username</span></label>
+          <input type="text" name="username" id="username" autocomplete="username"
+                 autofocus class="input input-bordered w-full">
+        </div>
+        <div class="form-control mb-4">
+          <label class="label" for="password"><span class="label-text">Password</span></label>
+          <input type="password" name="password" id="password"
+                 autocomplete="current-password" class="input input-bordered w-full">
+        </div>
+        <button type="submit" class="btn btn-primary w-full">Sign in</button>
+      </form>
+    </div>
+  </div>
+</body>
+</html>

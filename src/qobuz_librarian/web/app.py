@@ -20,6 +20,7 @@ from fastapi.templating import Jinja2Templates
 
 from qobuz_librarian import config as cfg
 from qobuz_librarian.api.auth import NoCredsError
+from qobuz_librarian.web import auth as web_auth
 from qobuz_librarian.web import jobs as job_mgr
 from qobuz_librarian.web.csrf import (
     CSRFMiddleware,
@@ -91,6 +92,9 @@ async def _lifespan(_app: FastAPI):
     _log = logging.getLogger("qobuz_librarian")
     from qobuz_librarian.ui_cli.logging import attach_file_handler
     attach_file_handler(cfg.APP_LOG_FILE, cfg.LOG_LEVEL)
+    if web_auth.auth_disabled():
+        _log.warning("[warn] WEB_AUTH=none — web UI is unauthenticated, do not "
+                     "expose to an untrusted network")
     from qobuz_librarian import run_lock
     from qobuz_librarian.api.auth import sync_streamrip_creds_from_env
     from qobuz_librarian.web import settings_store
@@ -248,6 +252,10 @@ async def _probe_token():
 app = FastAPI(title="Qobuz Librarian", docs_url=None, redoc_url=None,
               lifespan=_lifespan)
 
+# AuthMiddleware is added first so it ends up innermost — it runs after the
+# CSRF middleware, which keeps CSRF validation on the login/setup POSTs and
+# lets the redirects it returns pick up the CSRF cookie + security headers.
+app.add_middleware(web_auth.AuthMiddleware)
 app.add_middleware(CSRFMiddleware)
 app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(StripServerHeaderMiddleware)
@@ -262,6 +270,8 @@ except Exception:
     _APP_VERSION = "0.4.0"
 templates.env.globals["app_version"] = _APP_VERSION
 templates.env.globals["repo_url"] = "https://github.com/jarynclouatre/qobuz-librarian"
+# Whether to show a Log out control — true only when auth is on and set up.
+templates.env.globals["auth_active"] = web_auth.auth_active
 
 static_dir = _here / "static"
 static_dir.mkdir(exist_ok=True)
@@ -298,6 +308,85 @@ async def queue_head():
 @app.head("/settings")
 async def settings_head():
     return Response(status_code=200)
+
+
+@app.get("/login", response_class=HTMLResponse)
+async def login_page(request: Request):
+    if web_auth.auth_disabled():
+        return RedirectResponse(url="/", status_code=303)
+    if not web_auth.credentials_configured():
+        return RedirectResponse(url="/setup", status_code=303)
+    cookie = request.cookies.get(web_auth.SESSION_COOKIE)
+    if cookie and web_auth.verify_session(cookie):
+        return RedirectResponse(url="/", status_code=303)
+    return templates.TemplateResponse(request=request, name="login.html",
+                                      context={"error": ""})
+
+
+@app.post("/login", response_class=HTMLResponse)
+async def login_submit(request: Request, username: str = Form(""),
+                       password: str = Form("")):
+    if web_auth.auth_disabled():
+        return RedirectResponse(url="/", status_code=303)
+    if not web_auth.credentials_configured():
+        return RedirectResponse(url="/setup", status_code=303)
+    if not web_auth.verify_login(username.strip(), password):
+        return templates.TemplateResponse(
+            request=request, name="login.html",
+            context={"error": "Incorrect username or password."},
+            status_code=401)
+    resp = RedirectResponse(url="/", status_code=303)
+    web_auth.set_session_cookie(resp, request)
+    return resp
+
+
+@app.post("/logout")
+async def logout(request: Request):
+    resp = RedirectResponse(url="/login", status_code=303)
+    web_auth.clear_session_cookie(resp)
+    return resp
+
+
+@app.get("/setup", response_class=HTMLResponse)
+async def setup_page(request: Request):
+    if web_auth.auth_disabled():
+        return RedirectResponse(url="/", status_code=303)
+    if web_auth.credentials_configured():
+        return RedirectResponse(url="/", status_code=303)
+    return templates.TemplateResponse(request=request, name="setup.html",
+                                      context={"error": "", "username": ""})
+
+
+@app.post("/setup", response_class=HTMLResponse)
+async def setup_submit(request: Request, username: str = Form(""),
+                       password: str = Form(""), confirm: str = Form("")):
+    if web_auth.auth_disabled():
+        return RedirectResponse(url="/", status_code=303)
+    if web_auth.credentials_configured():
+        return RedirectResponse(url="/", status_code=303)
+    user = username.strip()
+    if not user:
+        err = "Pick a username."
+    elif len(password) < web_auth.MIN_PASSWORD_LEN:
+        err = f"Use a password of at least {web_auth.MIN_PASSWORD_LEN} characters."
+    elif password != confirm:
+        err = "The two passwords don't match."
+    else:
+        err = ""
+    if err:
+        return templates.TemplateResponse(
+            request=request, name="setup.html",
+            context={"error": err, "username": user}, status_code=400)
+    if not web_auth.set_credentials(user, password):
+        return templates.TemplateResponse(
+            request=request, name="setup.html",
+            context={"error": "Couldn't save the login — the data volume "
+                              "isn't writable. Check PUID/PGID and volume "
+                              "permissions.", "username": user},
+            status_code=500)
+    resp = RedirectResponse(url="/", status_code=303)
+    web_auth.set_session_cookie(resp, request)
+    return resp
 
 
 def _tr(request, name, context):

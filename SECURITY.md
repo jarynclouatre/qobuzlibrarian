@@ -9,15 +9,23 @@ I reasonably can.
 
 ## Scope and expectations
 
-Qobuz Librarian is a self-hosted tool with **no built-in authentication**.
-The web UI assumes it runs on a trusted network:
+Qobuz Librarian is a self-hosted, single-user tool.
 
-- By default it binds to `0.0.0.0` on the port set by `WEB_PORT`, so it is
-  reachable by anything on your LAN. Set `WEB_HOST=127.0.0.1` (or bind the
-  published port to `127.0.0.1` in `compose.yaml`) if you don't want that.
-- Do **not** expose it directly to the internet. Put it behind a reverse
-  proxy with authentication (or a VPN / Tailscale) if you need remote
-  access. A minimal Caddy example:
+- **Web UI login.** Auth is on by default. On first visit the UI asks you to
+  set one username and password; after that every route — pages, POSTs, and
+  the JSON/SSE endpoints — requires a session. The session is an `HttpOnly`,
+  `SameSite=Lax` cookie; the password is stored as a salted PBKDF2-SHA256
+  hash (never plaintext) in the data volume, written `0600`, and login does a
+  constant-time compare. Setting `WEB_AUTH=none` turns the login off
+  entirely — the UI logs a warning at every boot when it does. Disabling it is
+  an explicit opt-out; a blank value leaves auth on.
+- **Network binding.** By default the UI binds to `0.0.0.0` on `WEB_PORT`, so
+  it's reachable by anything on your LAN. Set `WEB_HOST=127.0.0.1` (or bind the
+  published port to `127.0.0.1` in `compose.yaml`) to keep it local.
+- **Internet exposure.** The built-in login is a single shared credential
+  with no lockout or rate limiting — fine for a home LAN, but if you expose
+  the UI to the internet, still front it with a reverse proxy (or VPN /
+  Tailscale). A minimal Caddy example:
 
   ```caddy
   qobuz.example.com {
@@ -27,11 +35,13 @@ The web UI assumes it runs on a trusted network:
   ```
 
   Generate the bcrypt hash with `caddy hash-password`. Tailscale Serve is
-  another low-friction option if you already run Tailscale.
-- Your Qobuz credentials are stored in the config volume in plaintext, as
-  streamrip requires them at download time. Protect that volume the same
-  way you'd protect any other service's config.
+  another low-friction option if you already run Tailscale. Note that PWA
+  install / offline mode need HTTPS, which a TLS-terminating proxy also gives
+  you.
+- **Qobuz credentials** are stored in the config volume in plaintext, as
+  streamrip requires them at download time. Protect that volume the same way
+  you'd protect any other service's config.
 
-Reports about the intentional lack of authentication, or about exposing
-the UI to a hostile network without a proxy, are out of scope — those are
+Reports about running with `WEB_AUTH=none` on a hostile network, or about
+exposing the UI to the internet without a proxy, are out of scope — those are
 documented deployment responsibilities, not vulnerabilities.

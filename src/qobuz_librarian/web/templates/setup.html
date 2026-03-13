@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="night">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Set up login — Qobuz Librarian</title>
+  <link rel="icon" type="image/png" href="/static/icon.png">
+  <link href="/static/dist/app.css?v={{ app_version }}" rel="stylesheet">
+</head>
+<body class="min-h-screen bg-base-100 flex items-center justify-center px-4 py-8">
+  <div class="card bg-base-200 shadow-lg w-full max-w-md">
+    <div class="card-body">
+      <div class="flex items-center gap-2 mb-2">
+        <img src="/static/icon.png" alt="" class="h-8 w-8 rounded-lg shrink-0">
+        <h1 class="text-lg font-bold text-primary">Qobuz Librarian</h1>
+      </div>
+      <h2 class="text-base font-semibold mb-1">Protect the web UI</h2>
+      <p class="text-sm text-base-content/60 mb-4">
+        Set a username and password — you'll sign in with these from now on.
+        Prefer no login? Stop the container, set <code>WEB_AUTH=none</code>,
+        and start it again.
+      </p>
+
+      {% if error %}
+      <div class="alert alert-error mb-4"><span>{{ error }}</span></div>
+      {% endif %}
+
+      <form action="/setup" method="post">
+        <input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}">
+        <div class="form-control mb-3">
+          <label class="label" for="username"><span class="label-text">Username</span></label>
+          <input type="text" name="username" id="username" value="{{ username | default('') }}"
+                 autocomplete="username" autofocus class="input input-bordered w-full">
+        </div>
+        <div class="form-control mb-3">
+          <label class="label" for="password"><span class="label-text">Password</span></label>
+          <input type="password" name="password" id="password"
+                 autocomplete="new-password" class="input input-bordered w-full">
+          <p class="text-xs text-base-content/40 mt-1">At least 8 characters.</p>
+        </div>
+        <div class="form-control mb-4">
+          <label class="label" for="confirm"><span class="label-text">Confirm password</span></label>
+          <input type="password" name="confirm" id="confirm"
+                 autocomplete="new-password" class="input input-bordered w-full">
+        </div>
+        <button type="submit" class="btn btn-primary w-full">Create login</button>
+      </form>
+    </div>
+  </div>
+</body>
+</html>
