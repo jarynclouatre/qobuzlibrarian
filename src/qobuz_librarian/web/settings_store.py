@@ -35,7 +35,8 @@ BEHAVIOR_FIELDS = [
      "Let ordinary gap-fill walks also surface quality upgrades. The "
      "explicit Upgrade scan always works regardless of this."),
     ("DOWNSAMPLE_HIRES_ENABLED", "Downsample hi-res before import",
-     "Resample 88.2/96 kHz+ FLACs to 44.1/48 kHz to save space."),
+     "Resample hi-res FLACs down to 44.1 or 48 kHz (whichever fits the "
+     "source) to save space."),
     ("LYRICS_ENABLED", "Fetch lyrics",
      "Look up synced/plain lyrics on import."),
 ]
