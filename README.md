@@ -168,6 +168,10 @@ cp .env.example .env
 docker compose up -d
 ```
 
+> **Point `QL_MUSIC_DIR` at a dedicated music library** — not your home folder or a
+> drive with non-music files mixed in. Qobuz Librarian moves and merges files within
+> that tree, and Upgrade mode replaces files in place.
+
 On Windows, run those commands in WSL or Git Bash — Windows PowerShell's
 `curl` is an alias for `Invoke-WebRequest` with different flags, and
 `cp`/`mkdir` chained with `&&` won't work the same way.
@@ -234,6 +238,10 @@ Host paths and the web port are read from a gitignored `.env` file. Copy
 | `QL_STAGING_DIR`     | `./staging`         | Scratch space for in-progress downloads|
 | `QL_UPGRADE_BACKUPS` | `./upgrade_backups` | Backups taken before a quality upgrade  |
 | `WEB_PORT`           | `8666`              | Host port for the web UI               |
+
+Point `QL_MUSIC_DIR` at a folder used **only** for music — not your home directory
+or a drive with other files alongside it. The app moves and merges files inside that
+tree, and Upgrade mode replaces files in place.
 
 These four variables are read by Docker Compose on the **host** — they set
 the mount sources. `compose.yaml` maps them to the container-side names
