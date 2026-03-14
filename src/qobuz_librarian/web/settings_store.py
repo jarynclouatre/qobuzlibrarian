@@ -46,7 +46,7 @@ BEHAVIOR_KEYS = [k for k, _, _ in BEHAVIOR_FIELDS]
 # matched case-insensitively and normalised to these spellings; anything else
 # is dropped so a typo can't silently turn lyric fetching off.
 LYRICS_PROVIDER_CHOICES = [
-    "Lrclib", "NetEase", "Megalobiz", "Musixmatch", "Genius", "Deezer", "TextyL",
+    "Lrclib", "NetEase", "Megalobiz", "Musixmatch", "Genius",
 ]
 
 # (key, label, help, kind, choices, placeholder).
@@ -67,8 +67,8 @@ TEXT_FIELDS = [
      "enum", ["sidecar", "embed", "both"], ""),
     ("LYRICS_PROVIDERS", "Lyrics providers",
      "Comma-separated list of providers to try in order. Available: Lrclib, "
-     "NetEase, Megalobiz, Musixmatch, Genius, Deezer, TextyL. Unknown names "
-     "are ignored. Empty = default (Lrclib, NetEase, Musixmatch).",
+     "NetEase, Megalobiz, Musixmatch, Genius. Unknown names are ignored. "
+     "Empty = default (Lrclib, NetEase, Musixmatch).",
      "list", LYRICS_PROVIDER_CHOICES, "e.g. Lrclib, NetEase"),
     ("BEETS_PATH_DEFAULT", "beets path: default",
      "Folder/file naming for normal albums (beets path syntax). "

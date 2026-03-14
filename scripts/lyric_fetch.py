@@ -163,7 +163,7 @@ if AVAILABLE:
     # Route the syncedlyrics + per-provider loggers through our thread-local
     # capture handler. Disable propagation so they don't escape to root.
     for _name in ("syncedlyrics", "Lrclib", "NetEase", "Megalobiz",
-                  "Musixmatch", "Genius", "Deezer", "TextyL"):
+                  "Musixmatch", "Genius"):
         _lg = logging.getLogger(_name)
         for _h in list(_lg.handlers):
             if isinstance(_h, logging.StreamHandler) and not isinstance(_h, logging.FileHandler):
