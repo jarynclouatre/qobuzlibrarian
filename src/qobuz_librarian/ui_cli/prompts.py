@@ -214,14 +214,13 @@ def prompt_album_selection(albums, prefer_hires=False, can_load_more=False):
     if not albums:
         return None
     if prefer_hires:
-        # Sort by: bit depth desc, sample rate desc, track count desc, year asc.
-        # Tiebreaking by track count ensures a full album beats a short EP at the
-        # same quality, and year puts the original pressing before later editions.
+        # Sort by bit depth desc, sample rate desc, then year asc so the
+        # original pressing leads. Track count is deliberately not a factor —
+        # a bigger edition shouldn't float above the standard album.
         albums = sorted(
             albums,
             key=lambda a: (-(a.get("maximum_bit_depth") or 0),
                            -(a.get("maximum_sampling_rate") or 0),
-                           -(a.get("tracks_count") or 0),
                            album_year_int(a)),
         )
 

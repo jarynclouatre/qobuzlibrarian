@@ -23,8 +23,10 @@ _pending_lock = threading.Lock()
 # (key, label, help) — display order on the Settings page.
 BEHAVIOR_FIELDS = [
     ("PREFER_HIRES", "Prefer Hi-Res",
-     "When an album has several versions, pick the highest-quality one. "
-     "Off picks the earliest release instead."),
+     "When an album comes in several editions, ON picks the standard album at "
+     "the best available quality (may be remastered). OFF picks the original "
+     "release (may already be Hi-Res). Mainly affects which version the "
+     "library and artist scans suggest."),
     ("CONSOLIDATE", "Consolidate duplicate folders (CLI only)",
      "After import, merge sibling/duplicate album folders into one. "
      "Consolidation needs interactive per-folder confirmation and only "

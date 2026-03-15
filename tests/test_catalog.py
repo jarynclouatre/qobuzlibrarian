@@ -267,6 +267,19 @@ class TestDedupAlbumVersions:
         albums = [self._album("American Football", 1999), self._album("American Football", 2016)]
         assert len(dedup_album_versions(albums)) == 2
 
+    def test_prefers_standard_edition_over_bloated_deluxe(self):
+        # A same-year deluxe padded with demos/alternates must not win just for
+        # having more tracks. Both modes target the standard track count: ON
+        # still skips the higher-res 60-track box, OFF keeps the original.
+        albums = [
+            self._album("Album", 2020, bd=16, sr=44.1, tc=12),
+            self._album("Album (Deluxe Edition)", 2020, bd=24, sr=96, tc=60),
+        ]
+        on = dedup_album_versions(albums, prefer_hires=True)
+        off = dedup_album_versions(albums, prefer_hires=False)
+        assert on[0][0]["tracks_count"] == 12
+        assert off[0][0]["tracks_count"] == 12
+
 
 class TestHasSeparatorMatch:
     def test_comma_space_matches(self):

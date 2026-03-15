@@ -548,14 +548,69 @@ def album_quality_label(album):
 
 
 # ── Catalog filtering ─────────────────────────────────────────────────────────
+_MIN_ALBUM_TRACKS = 4  # below this an edition is a stray single/EP, not the
+                       # album — ignored when sizing the standard edition.
+
+
+def _standard_track_count(group):
+    """Track count of the real album among a group of editions.
+
+    Deluxe/anniversary/expanded editions only ADD tracks and remasters keep
+    the original count, so the smallest real edition is the album. None when
+    no edition reports a usable count.
+    """
+    counts = [tc for a in group if (tc := a.get("tracks_count") or 0) > 0]
+    if not counts:
+        return None
+    full = [c for c in counts if c >= _MIN_ALBUM_TRACKS]
+    return min(full) if full else min(counts)
+
+
+def _is_decorated_edition(album):
+    """True if the title carries an edition tag (remaster, deluxe, anniversary,
+    a year, ...) rather than being the plain original release."""
+    title = album.get("title") or ""
+    return (strip_album_decorations(title).casefold().strip()
+            != title.casefold().strip())
+
+
+def _best_edition(group, prefer_hires):
+    """Representative edition for a group of same-album editions.
+
+    Both modes target the standard track count so a padded deluxe/anniversary
+    edition never wins on track count alone. prefer_hires then takes the best
+    resolution at that count; otherwise it takes the original (untagged)
+    edition without chasing a remaster's higher resolution.
+    """
+    standard = _standard_track_count(group)
+
+    def off_standard(a):
+        if standard is None:
+            return 0
+        return abs((a.get("tracks_count") or 0) - standard)
+
+    if prefer_hires:
+        return min(group, key=lambda a: (
+            off_standard(a),
+            -(a.get("maximum_bit_depth") or 0),
+            -(a.get("maximum_sampling_rate") or 0),
+            album_year_int(a),
+            str(a.get("id") or ""),
+        ))
+    return min(group, key=lambda a: (
+        off_standard(a),
+        _is_decorated_edition(a),
+        album_year_int(a),
+        str(a.get("id") or ""),
+    ))
+
+
 def dedup_albums(albums, prefer_hires=False):
     """Group albums by (normalized-bare-title, year), pick one per group.
 
     Key includes year so genuinely distinct self-titled albums
-    (LP1 1999 vs LP4 2019) don't collapse into one group.
-
-    prefer_hires=True: pick highest bit-depth / sample-rate, then earliest year.
-    prefer_hires=False: pick earliest year, then highest quality.
+    (LP1 1999 vs LP4 2019) don't collapse into one group. Within a group the
+    standard edition wins (see _best_edition), never the largest.
 
     Returns list of (canonical_album, n_versions_in_group) sorted by year.
     """
@@ -573,20 +628,7 @@ def dedup_albums(albums, prefer_hires=False):
 
     representatives = []
     for key, group in groups.items():
-        if prefer_hires:
-            best = max(group, key=lambda a: (
-                a.get("tracks_count") or 0,
-                a.get("maximum_bit_depth") or 0,
-                a.get("maximum_sampling_rate") or 0,
-                -album_year_int(a),
-            ))
-        else:
-            best = min(group, key=lambda a: (
-                album_year_int(a),
-                -(a.get("tracks_count") or 0),
-                -(a.get("maximum_bit_depth") or 0),
-                -(a.get("maximum_sampling_rate") or 0),
-            ))
+        best = _best_edition(group, prefer_hires)
         representatives.append((best, len(group)))
 
     representatives.sort(key=lambda pair: (
@@ -696,9 +738,11 @@ def dedup_album_versions(albums, prefer_hires=False):
     """Collapse multiple editions of the same album into one canonical entry.
 
     Two albums dedup if their stripped-decoration titles normalize identically.
-    Within a group, picks:
-      - prefer_hires=True:  highest (bit_depth, sample_rate), tie-break earliest year
-      - prefer_hires=False: earliest year, tie-break highest quality
+    Within a group, picks (see _best_edition):
+      - prefer_hires=True:  best resolution at the standard track count
+      - prefer_hires=False: the original (untagged) edition
+    The standard track count is the smallest real edition, so a padded
+    deluxe/anniversary release never wins on track count alone.
 
     Returns list of (canonical_album, n_versions_in_group) tuples, sorted by
     canonical's release year ascending.
@@ -723,23 +767,7 @@ def dedup_album_versions(albums, prefer_hires=False):
 
     representatives = []
     for key, group in groups.items():
-        if prefer_hires:
-            # Track count FIRST so a 6-track hi-res companion EP doesn't beat
-            # a 10-track standard LP that happened to dedup with it. Then
-            # bit depth, sample rate, then earliest year as tie-break.
-            best = max(group, key=lambda a: (
-                a.get("tracks_count") or 0,
-                a.get("maximum_bit_depth") or 0,
-                a.get("maximum_sampling_rate") or 0,
-                -album_year_int(a),  # negate so earlier year wins on tie
-            ))
-        else:
-            best = min(group, key=lambda a: (
-                album_year_int(a),
-                -(a.get("tracks_count") or 0),
-                -(a.get("maximum_bit_depth") or 0),
-                -(a.get("maximum_sampling_rate") or 0),
-            ))
+        best = _best_edition(group, prefer_hires)
         representatives.append((best, len(group)))
 
     representatives.sort(key=lambda pair: (
