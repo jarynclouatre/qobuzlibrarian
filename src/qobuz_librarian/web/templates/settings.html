@@ -258,12 +258,13 @@
   <div class="card-body">
     <h2 class="card-title mb-1">Diagnostics</h2>
     <p class="text-sm text-base-content/60 mb-3">
-      Read-only checks from the container's point of view. Run these
-      before your first scan to catch an unmounted or unwritable volume.
+      These run automatically and report from the container's point of
+      view — they catch an unmounted or unwritable volume before your
+      first scan.
     </p>
     <div class="space-y-2">
       {% for d in diagnostics %}
-      <div class="flex items-start gap-3 flex-wrap sm:flex-nowrap">
+      <div class="flex items-start gap-3">
         <span class="shrink-0 mt-0.5">
           {% if d.ok %}
           <span class="badge badge-sm badge-success">✓</span>
@@ -271,8 +272,12 @@
           <span class="badge badge-sm badge-error">✗</span>
           {% endif %}
         </span>
-        <span class="text-sm shrink-0">{{ d.label }}</span>
-        <span class="font-mono text-xs text-base-content/60 break-all min-w-0 sm:ml-auto">{{ d.detail }}</span>
+        <div class="min-w-0">
+          <div class="text-sm">{{ d.label }}</div>
+          {% if d.detail %}
+          <div class="font-mono text-xs text-base-content/60 break-all">{{ d.detail }}</div>
+          {% endif %}
+        </div>
       </div>
       {% endfor %}
     </div>
