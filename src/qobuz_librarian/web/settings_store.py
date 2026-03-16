@@ -32,7 +32,9 @@ BEHAVIOR_FIELDS = [
      "Consolidation needs interactive per-folder confirmation and only "
      "runs from the CLI; this toggle has no effect on web downloads."),
     ("MIGRATE_MULTI_ARTIST", "Migrate multi-artist folders",
-     "Move 'Primary, Other/<album>' into 'Primary/<album>' after import."),
+     "When an album folder is named after several artists "
+     "('Louis Prima, Sam Butera/'), file it under just the main artist "
+     "('Louis Prima/') after import."),
     ("AUTO_UPGRADE_ENABLED", "Offer upgrades during walks",
      "Let ordinary gap-fill walks also surface quality upgrades. The "
      "explicit Upgrade scan always works regardless of this."),
@@ -40,7 +42,7 @@ BEHAVIOR_FIELDS = [
      "Resample hi-res FLACs down to 44.1 or 48 kHz (whichever fits the "
      "source) to save space."),
     ("LYRICS_ENABLED", "Fetch lyrics",
-     "Look up synced/plain lyrics on import."),
+     "Fetch and save synced/plain lyrics on import."),
 ]
 BEHAVIOR_KEYS = [k for k, _, _ in BEHAVIOR_FIELDS]
 
@@ -58,8 +60,8 @@ LYRICS_PROVIDER_CHOICES = [
 # is validated against them; choices=None means any entry is accepted.
 TEXT_FIELDS = [
     ("STREAMRIP_QUALITY", "Download quality",
-     "A ceiling, not a guarantee: Qobuz delivers the highest quality it has for "
-     "each release, up to this. Hi-res isn't available for every album.",
+     "Sets the maximum quality to request. Qobuz serves the best it has for "
+     "each album up to this — hi-res isn't available for everything.",
      "enum", ["4", "3", "2", "1"], ""),
     ("LYRICS_FORMAT", "Lyrics format",
      "How lyrics are written when fetched.",
@@ -97,10 +99,10 @@ TEXT_KEYS = [k for k, *_ in TEXT_FIELDS]
 # falls back to the raw value for anything not listed.
 ENUM_OPTION_LABELS = {
     "STREAMRIP_QUALITY": {
-        "4": "4 — 24-bit ≤192 kHz",
-        "3": "3 — 24-bit ≤96 kHz",
-        "2": "2 — 16-bit / 44.1 kHz",
-        "1": "1 — 320 kbps MP3",
+        "4": "24-bit ≤192 kHz",
+        "3": "24-bit ≤96 kHz",
+        "2": "16-bit / 44.1 kHz",
+        "1": "320 kbps MP3",
     },
 }
 
