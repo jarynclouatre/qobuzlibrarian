@@ -141,7 +141,7 @@ def parse_args():
         from importlib.metadata import version as _pkg_version
         _version = _pkg_version("qobuz-librarian")
     except Exception:
-        _version = "0.5.1"
+        _version = "0.5.2"
     p = _ExitOneArgParser(
         description="Qobuz Librarian — download albums/artists from Qobuz and "
                     "keep a library complete, only fetching what's missing. "
