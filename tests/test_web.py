@@ -873,6 +873,33 @@ def test_queue_awaiting_review_job_shows_review_and_cancel(client):
         _remove_job(job)
 
 
+def test_review_list_groups_candidates_by_artist(client):
+    """The review list renders one collapsed section per artist with its album
+    count, keeps a per-group select-all, and drops no candidate id."""
+    import re
+    job = _inject_job(jm.JobStatus.AWAITING_REVIEW)
+    for art, alb in [("Beatles", "Abbey Road"), ("ABBA", "Arrival"),
+                     ("Beatles", "Revolver")]:
+        job.add_candidate(kind="album", title=alb, artist=art, detail="2020")
+    try:
+        r = client.get(f"/jobs/{job.id}")
+        assert r.status_code == 200
+        t = r.text
+        flat = re.sub(r"\s+", " ", t)
+        # One section per artist, none auto-expanded.
+        assert t.count("<details") == 2
+        assert "<details open" not in t
+        assert "3 albums across 2 artists" in flat
+        assert "2 albums" in flat          # the Beatles group's count
+        # Every candidate is still its own submittable checkbox.
+        for cid in ("c0", "c1", "c2"):
+            assert f'value="{cid}"' in t
+        # Per-artist select-all scoped to the group.
+        assert "this.closest('details')" in t
+    finally:
+        _remove_job(job)
+
+
 def test_cancel_check_predicate_reads_current_job_flag():
     # The installed hook returns True only when the worker thread's
     # current job has cancel_requested set.
