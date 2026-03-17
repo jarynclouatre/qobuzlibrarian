@@ -1135,6 +1135,27 @@ def test_sse_stream_done_for_finished_job(client):
             pytest.fail("SSE stream never sent 'event: done' for a finished job")
 
 
+def test_sse_done_event_carries_final_status(client):
+    """The done event reports the job's real terminal status so the page can
+    flip the badge to failed/canceled instead of assuming success."""
+    job = jm.Job(title="failed-job")
+    job.status = jm.JobStatus.FAILED
+    jm.registry.add(job)
+    try:
+        with client.stream("GET", f"/api/jobs/{job.id}/stream") as r:
+            assert r.status_code == 200
+            seen = ""
+            for chunk in r.iter_text():
+                seen += chunk
+                if "event: done" in seen:
+                    break
+            else:
+                pytest.fail("SSE stream never sent 'event: done'")
+        assert "data: failed" in seen
+    finally:
+        _remove_job(job)
+
+
 def test_sse_terminal_job_sends_done_without_blocking():
     import time as _time
 

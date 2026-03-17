@@ -1263,7 +1263,7 @@ async def job_stream(job_id: str):
             for line in job.log_lines[-job.REPLAY_TAIL:]:
                 escaped = line.replace("\n", " ").replace("\r", "")
                 yield f"data: {escaped}\n\n"
-            yield "event: done\ndata: done\n\n"
+            yield f"event: done\ndata: {job.status.value}\n\n"
             return
         sub = job.subscribe()
         loop = asyncio.get_running_loop()
@@ -1275,7 +1275,7 @@ async def job_stream(job_id: str):
                         _SSE_EXECUTOR, lambda: sub.get(timeout=0.5))
                     empty_ticks = 0
                     if line == "__DONE__":
-                        yield "event: done\ndata: done\n\n"
+                        yield f"event: done\ndata: {job.status.value}\n\n"
                         break
                     if line.startswith(job_mgr.PROGRESS_PREFIX):
                         yield ("event: progress\ndata: "
@@ -1286,7 +1286,7 @@ async def job_stream(job_id: str):
                 except _queue.Empty:
                     if (job.status in job_mgr.TERMINAL
                             or job.status == job_mgr.JobStatus.AWAITING_REVIEW):
-                        yield "event: done\ndata: done\n\n"
+                        yield f"event: done\ndata: {job.status.value}\n\n"
                         break
                     empty_ticks += 1
                     if empty_ticks >= _SSE_HEARTBEAT_TICKS:

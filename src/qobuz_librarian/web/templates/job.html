@@ -17,7 +17,7 @@
 
 <div class="flex items-center justify-between gap-3 mb-1">
   <h1 class="text-2xl font-bold">{% if job.artist %}{{ job.artist }} — {% endif %}{{ job.title }}</h1>
-  <span class="badge
+  <span id="job-status-badge" class="badge
     {%- if job.status.value == 'done' %} badge-success
     {%- elif job.status.value == 'failed' %} badge-error
     {%- elif job.status.value == 'canceled' %} badge-ghost
@@ -102,7 +102,7 @@
       }
       item.textContent = p.item || '';
     });
-    src.addEventListener('done', () => {
+    src.addEventListener('done', e => {
       src.close();
       // Job's finished — the Cancel button would now discard the result, so
       // drop it and surface a banner. Reload is left to the user.
@@ -110,6 +110,23 @@
       if (cancel) cancel.remove();
       const banner = document.getElementById('job-done-banner');
       if (banner) banner.classList.remove('hidden');
+      // The badge and bar were rendered for the running state and won't fix
+      // themselves until a reload — settle them to the final status now so the
+      // page doesn't keep claiming "running" while the user reads the result.
+      const status = (e.data || '').trim();
+      const badge = document.getElementById('job-status-badge');
+      if (badge) {
+        const cls = {done: 'badge-success', failed: 'badge-error',
+                     canceled: 'badge-ghost', awaiting_review: 'badge-info'}[status]
+                    || 'badge-warning';
+        badge.className = 'badge ' + cls;
+        badge.textContent = status.replace(/_/g, ' ').replace('canceled', 'cancelled');
+      }
+      if (status === 'done') {
+        bar.max = 100; bar.value = 100;
+      } else {
+        card.classList.add('hidden');
+      }
     });
   })();
   </script>
