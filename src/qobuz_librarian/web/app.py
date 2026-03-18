@@ -1257,7 +1257,9 @@ async def job_stream(job_id: str):
     async def _generator():
         import logging as _logging
         import queue as _queue
-        yield "retry: 2000\n\n"
+        # Reconnect quickly so a backgrounded tab's progress bar catches up to
+        # the live count soon after it's brought back to the foreground.
+        yield "retry: 750\n\n"
         if (job.status in job_mgr.TERMINAL
                 or job.status == job_mgr.JobStatus.AWAITING_REVIEW):
             for line in job.log_lines[-job.REPLAY_TAIL:]:
