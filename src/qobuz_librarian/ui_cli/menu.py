@@ -18,6 +18,8 @@ def interactive_session_mode():
     log.info(fmt(C.GRAY,  "                      only, never suggests albums you don't have"))
     log.info(fmt(C.WHITE, "    5) Repair       — re-download corrupt/truncated tracks you own"))
     log.info(fmt(C.WHITE, "    6) Upgrade      — better-quality versions of albums you own"))
+    log.info(fmt(C.WHITE, "    7) Migrate      — one-time setup: reorganize an existing library into the"))
+    log.info(fmt(C.GRAY,  "                      Artist/Album layout (copies by default, never touches originals)"))
     log.info(fmt(C.WHITE, "    q) Quit"))
     while True:
         try:
@@ -38,4 +40,6 @@ def interactive_session_mode():
             return Mode.ALBUM_REPAIR
         if r == "6":
             return Mode.UPGRADE
-        log.info(fmt(C.GRAY, "  Enter 1-6 (blank = 1) or q to quit."))
+        if r == "7":
+            return Mode.MIGRATE
+        log.info(fmt(C.GRAY, "  Enter 1-7 (blank = 1) or q to quit."))

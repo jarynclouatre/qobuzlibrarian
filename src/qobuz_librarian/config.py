@@ -67,6 +67,14 @@ def _sibling_of_music(name: str) -> Path:
 
 STAGING_DIR = _env_path("STAGING_DIR", _sibling_of_music(".staging"))
 
+# Library migration (the one-time "organize an existing collection" tool).
+# Source = the messy library to read; destination = where the organized copy
+# is built. Read from the environment so both can be mounted into the
+# container; the CLI's --migrate-src / --migrate-dest override them. Empty
+# means "unset" — the tool then prompts (or errors with how to set them).
+MIGRATE_SRC  = os.environ.get("QL_MIGRATE_SRC", "").strip()
+MIGRATE_DEST = os.environ.get("QL_MIGRATE_DEST", "").strip()
+
 # Beets — bundled inside the container (compose.yaml sets these to
 # /config/beets). The fallback is beets' own standard config location, so
 # a bare-metal / `pip install` run finds an existing beets setup.

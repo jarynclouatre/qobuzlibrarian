@@ -227,6 +227,20 @@ def parse_args():
                    action=argparse.BooleanOptionalAction,
                    default=cfg.MIGRATE_MULTI_ARTIST,
                    help="after import, merge 'Primary, Other' folders into 'Primary'")
+    p.add_argument("--migrate", action="store_true",
+                   help="one-time setup: reorganize an existing library into the "
+                        "Artist/Album layout (local-only; no Qobuz login needed)")
+    p.add_argument("--migrate-src", dest="migrate_src", metavar="PATH", default="",
+                   help="migration source library to read (overrides QL_MIGRATE_SRC)")
+    p.add_argument("--migrate-dest", dest="migrate_dest", metavar="PATH", default="",
+                   help="where migration builds the organized copy "
+                        "(overrides QL_MIGRATE_DEST)")
+    p.add_argument("--in-place", dest="in_place", action="store_true",
+                   help="migration: MOVE files into place instead of copying "
+                        "(default copies, leaving originals untouched)")
+    p.add_argument("--acoustid", dest="acoustid", action="store_true",
+                   help="migration: fingerprint files whose tags can't place them "
+                        "(slower, needs network; no key required)")
     args = p.parse_args()
     # Mirror the downsample-skip flag so either spelling resolves to both
     # attributes. Callers may read whichever name they're used to; the
@@ -250,6 +264,15 @@ def parse_args():
     if args.force and (args.artist or args.upgrade_walk):
         p.error("--force only applies to album mode (a query or Qobuz "
                 "URL), not --artist or --upgrade-walk")
+    # Migration is a self-contained local mode; it can't share a run with a
+    # download/scan mode, and its options are meaningless without it.
+    if args.migrate and (args.artist or args.upgrade_walk or args.query):
+        p.error("--migrate runs on its own — drop --artist, --upgrade-walk, "
+                "and the query")
+    if (args.in_place or args.acoustid or args.migrate_src or args.migrate_dest) \
+            and not args.migrate:
+        p.error("--in-place / --acoustid / --migrate-src / --migrate-dest only "
+                "apply with --migrate")
     # --include-singles only affects artist mode's missing-albums step.
     # Wrong with --upgrade-walk, or in album mode (a query without
     # --artist). Allowed with --artist or the interactive menu.
@@ -352,6 +375,14 @@ def main():
     # Single-instance lock first — fail fast before doing any other work.
     # Hold the file handle for the lifetime of main() so the lock persists.
     _lockfile = acquire_run_lock()  # noqa: F841
+
+    # Library migration is local-only: it reorganizes files on disk and never
+    # touches Qobuz. Handle it here, before the credential check and the
+    # download-oriented setup below, so it runs on a fresh box with no token.
+    if args.migrate:
+        from qobuz_librarian.modes.migrate import run_migrate_mode
+        run_migrate_mode(args)
+        return
 
     check_rip()
     check_ffprobe()
@@ -515,6 +546,9 @@ def main():
                 run_upgrade_walk_mode(args, token)
             finally:
                 args.auto_upgrade = saved
+        elif mode == Mode.MIGRATE:
+            from qobuz_librarian.modes.migrate import run_migrate_mode
+            run_migrate_mode(args)
 
 
 def _check_staging_occupied():
