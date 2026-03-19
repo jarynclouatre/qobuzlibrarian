@@ -33,6 +33,7 @@ smaller files instead? Drop to CD lossless or 320 kbps with one setting (see
 - [How you use it](#how-you-use-it)
 - [Quick start (Docker)](#quick-start-docker)
 - [Pointing it at an existing library](#pointing-it-at-an-existing-library)
+- [Migrating an existing library into the layout](#migrating-an-existing-library-into-the-layout)
 - [Bringing your existing beets database](#bringing-your-existing-beets-database)
 - [Tagging an untagged collection (AcoustID)](#tagging-an-untagged-collection-acoustid)
 - [Default beets config](#default-beets-config)
@@ -75,6 +76,9 @@ lyrics are fetched automatically (when `LYRICS_ENABLED` is on; default).
 - Edition- and decoration-aware album-name matching and version dedup
 - ISRC-anchored repair: finds truncated or short FLACs and refills the exact
   missing tracks, leaving good files untouched
+- One-time migration of a messy or untagged collection into the
+  `Artist/Album (Year)/` layout — tags first, optional AcoustID, copies by
+  default so the originals are never touched
 
 **Queue and safety.**
 
@@ -103,13 +107,14 @@ changed until you do.
 | **Library** | Scan every artist for missing albums across your whole library      |
 | **Upgrade** | Find albums Qobuz can serve at higher quality, choose what to re-rip |
 | **Repair**  | Find truncated/partial FLACs (ISRC-verified), choose what to refill |
+| **Migrate** | One-time: reorganise an existing library into the layout (copies, never touches originals) |
 | **Queue**   | Live progress, jobs awaiting review, and download history           |
 | **Settings**| Qobuz credentials and behaviour toggles (applied without a restart) |
 
 The CLI runs the same engine. Launch with no arguments for an
 interactive menu (Search · Artist · Library walk · Album gaps ·
-Repair · Upgrade), or pass flags for unattended runs — `--help` lists
-them all.
+Repair · Upgrade · Migrate), or pass flags for unattended runs — `--help`
+lists them all.
 
 **Web app and CLI take turns.** They share one download lock, so only one
 can run at a time. To use the CLI without stopping the container, open
@@ -325,6 +330,85 @@ that isn't exactly artist directory, then album directory. Set
 `QL_MUSIC_DIR` in your `.env` to point at the artist-level directory on
 the host.
 
+## Migrating an existing library into the layout
+
+Already have a collection that *isn't* in the `Artist/Album (Year)/` shape
+above — flat folders, inconsistent names, half-tagged files? The **Migrate**
+tool builds a tidy copy of it in the layout this tool expects, working from
+what your files already say. It's a one-time setup step, separate from
+downloading, and **it never needs a Qobuz login**.
+
+How it decides where each file goes, in order of trust:
+
+1. **Your tags first.** It reads each file's existing tags (album artist,
+   album, title, track, disc) and places the file from those. Most libraries
+   are mostly-tagged, so this pass is fast and works entirely offline.
+2. **Audio fingerprint, only if you ask.** For files whose tags can't place
+   them, an optional second pass identifies them by sound via AcoustID. **No
+   API key is needed** — looking a fingerprint up is free; a personal key only
+   matters for *submitting* fingerprints back, which this never does. It's
+   slower and needs network access, so it's off by default; turn it on for a
+   messier, less-tagged collection.
+
+It is safe by design:
+
+- **It copies — your originals are never touched.** The organised library is
+  built at a *separate* destination; your source files are only read. (A "move
+  instead of copy" option exists, but copying is the default and the safe
+  choice.)
+- **You preview before anything is written.** It shows exactly what would go
+  where and what it couldn't place, and waits for you to confirm.
+- **It never deletes anything.** Files it can't confidently identify are left
+  where they are and listed in a report (`migration-manifest.csv`, written to
+  the destination) — never moved into a wrong guess, never removed.
+
+### Running it
+
+Point it at two folders — the messy library to read and an empty one to build
+into — and set them in your `.env` / `compose.yaml`:
+
+```yaml
+services:
+  qobuz-librarian:
+    environment:
+      QL_MIGRATE_SRC: /old-library
+      QL_MIGRATE_DEST: /organised
+    volumes:
+      - /path/to/your/messy/library:/old-library:ro   # :ro = read-only, belt-and-braces
+      - /path/to/new/empty/folder:/organised
+```
+
+Then either:
+
+- **Web:** open the **Migrate** page, optionally tick *fingerprint unidentified
+  files*, and click **Preview migration**. Review the per-artist list (and the
+  count of anything that couldn't be placed), then **Copy selected**.
+- **CLI:** `docker compose run --rm qobuz-librarian cli --migrate` — add
+  `--acoustid` for the fingerprint pass, or `--dry-run` to preview only. Source
+  and destination come from the env vars above, or pass `--migrate-src` /
+  `--migrate-dest`.
+
+When it finishes, point `QL_MUSIC_DIR` at the new destination and run a normal
+Library scan to pick it up.
+
+### Caveats — read before you trust it
+
+- **AcoustID isn't always right.** Fingerprint matches are a best guess; review
+  the result, don't assume it nailed every track.
+- **Tag-less files may not be identifiable at all.** A file with no usable tags
+  and no confident fingerprint match is left in place and flagged — never
+  silently dropped, but you'll have to sort it by hand.
+- **Compilations, "Various Artists", and multi-disc albums are the tricky
+  cases.** They're handled when the tags say so (a compilation flag, an album
+  artist of "Various Artists", disc numbers); a compilation that *looks* like
+  one without those signals is reported rather than split across artists.
+- **The year comes from tags only.** A file tagged without a year lands in
+  `Artist/Album/` rather than `Artist/Album (Year)/`, even if the original
+  folder name had a year — both forms scan fine, but they won't all match.
+- **Spot-check before you adopt it.** Open the destination and the manifest and
+  look it over before pointing the tool at the result as your main library.
+  It's a copy, so the worst case costs only disk space — delete it and re-run.
+
 ## Bringing your existing beets database
 
 The container creates `/config/beets/musiclibrary.db` fresh on first start
@@ -350,6 +434,11 @@ Qobuz downloads always arrive fully tagged, so the normal import leaves the
 autotagger off. But for older, untagged files you already have, beets' built-in
 `chroma` plugin can identify them by audio fingerprint (AcoustID) and tag them.
 The fingerprint tool (`fpcalc`) and its Python binding ship in the image.
+
+This tags files *where they sit*. If you also want them reorganised into the
+`Artist/Album (Year)/` layout, use the
+[Migrate tool](#migrating-an-existing-library-into-the-layout) instead — it
+does both, tags-first with the same AcoustID fallback, and copies by default.
 
 This is a separate, opt-in run — it does not change Qobuz downloads. A
 ready-made config is bundled so you don't have to touch your normal beets
