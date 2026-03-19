@@ -22,20 +22,11 @@ def _prompt_path(msg: str) -> str:
         return ""
 
 
-def _is_within(child: Path, parent: Path) -> bool:
-    try:
-        child.resolve().relative_to(parent.resolve())
-        return True
-    except (ValueError, OSError):
-        return False
-
-
 def _resolve_paths(args):
     """Source and destination from flags, then env, then an interactive prompt.
 
     Returns (src, dest) as validated Paths, or (None, None) after explaining
-    what's wrong — the destination must be a separate tree from the source so a
-    copy can't recurse into or overwrite itself."""
+    what's wrong."""
     src = (getattr(args, "migrate_src", "") or config.MIGRATE_SRC).strip()
     dest = (getattr(args, "migrate_dest", "") or config.MIGRATE_DEST).strip()
     if not src:
@@ -50,20 +41,9 @@ def _resolve_paths(args):
         return None, None
 
     src, dest = Path(src), Path(dest)
-    if not src.is_dir():
-        log.info(fmt(C.RED, f"  ✗  Source isn't a readable directory: {src}"))
-        return None, None
-    if src.resolve() == dest.resolve():
-        log.info(fmt(C.RED, "  ✗  Source and destination are the same folder."))
-        return None, None
-    if _is_within(dest, src):
-        log.info(fmt(C.RED,
-            "  ✗  Destination is inside the source — that would copy the new "
-            "library into itself. Choose a destination outside the source."))
-        return None, None
-    if _is_within(src, dest):
-        log.info(fmt(C.RED,
-            "  ✗  Source is inside the destination. Choose separate folders."))
+    err = engine.validate_paths(src, dest)
+    if err:
+        log.info(fmt(C.RED, f"  ✗  {err}"))
         return None, None
     return src, dest
 

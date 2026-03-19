@@ -81,6 +81,7 @@
           {% set _qbadge = pending_job_count or 0 %}
           {% if _qbadge > 0 %}<span class="badge badge-primary badge-sm">{% if _qbadge > 99 %}99+{% else %}{{ _qbadge }}{% endif %}</span>{% endif %}
         </a></li>
+        <li><a href="/migrate"  class="{% if page=='migrate' %}active{% endif %}">Migrate</a></li>
         <li><a href="/settings" class="{% if page=='settings' %}active{% endif %}">Settings</a></li>
         {% if auth_active() %}
         <li><button type="submit" form="logout-form">Log out</button></li>
@@ -107,6 +108,7 @@
             {% set _qbadge = pending_job_count or 0 %}
             {% if _qbadge > 0 %}<span class="badge badge-primary badge-sm">{% if _qbadge > 99 %}99+{% else %}{{ _qbadge }}{% endif %}</span>{% endif %}
           </a></li>
+          <li><a href="/migrate">Migrate</a></li>
           <li><a href="/settings">Settings</a></li>
           {% if auth_active() %}
           <li><button type="submit" form="logout-form">Log out</button></li>

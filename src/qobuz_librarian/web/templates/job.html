@@ -133,6 +133,9 @@
 
 {# ── Awaiting review: pick candidates ─────────────────────────────────── #}
 {% elif s == 'awaiting_review' %}
+  {% if job.summary %}
+  <div class="alert alert-info mb-4"><span class="break-words">{{ job.summary }}</span></div>
+  {% endif %}
   {% if job.candidates %}
   <form action="/jobs/{{ job.id }}/approve" method="post">
     <input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}">
@@ -180,7 +183,7 @@
     </div>
 
     <div class="flex gap-2">
-      <button type="submit" class="btn btn-primary">Download selected</button>
+      <button type="submit" class="btn btn-primary">{{ job.review_verb }} selected</button>
       <button type="submit" formaction="/jobs/{{ job.id }}/cancel"
               class="btn btn-ghost">Cancel</button>
     </div>

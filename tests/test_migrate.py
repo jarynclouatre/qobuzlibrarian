@@ -227,3 +227,54 @@ def test_manifest_lists_every_decision(tmp_path):
     assert "status,source_of_truth,source,destination,reason" in text
     assert "/src/ok.flac" in text and "/src/bad.flac" in text
     assert m.PLACE in text and m.UNPLACEABLE in text
+
+
+# ── web flow (scan → review candidates → execute copy) ─────────────────────────
+
+def test_scan_migration_groups_albums_into_candidates(tmp_path, monkeypatch):
+    from qobuz_librarian.library import migrate as eng
+    from qobuz_librarian.web import flows
+    from qobuz_librarian.web import jobs as jm
+
+    items = [
+        (Path("/s/a.flac"), _meta(albumartist="Bonobo", album="Black Sands",
+                                  title="Kong", track=1), "tags"),
+        (Path("/s/b.flac"), _meta(albumartist="Bonobo", album="Black Sands",
+                                  title="Kiara", track=2), "tags"),
+        (Path("/s/c.flac"), _meta(albumartist="Beatles", album="Revolver",
+                                  title="Taxman", track=1), "tags"),
+        (Path("/s/d.flac"), None, ""),     # tag-less → unplaceable
+    ]
+    monkeypatch.setattr(eng, "collect_items", lambda *a, **k: items)
+    job = jm.Job(title="mig")
+    flows.scan_migration(job, str(tmp_path / "src"), str(tmp_path / "dest"),
+                         use_acoustid=False)
+    artists = sorted(c["artist"] for c in job.candidates)
+    assert artists == ["Beatles", "Bonobo"]        # one candidate per album
+    bonobo = next(c for c in job.candidates if c["artist"] == "Bonobo")
+    assert "2 track" in bonobo["detail"]
+    assert "1 couldn't be identified" in job.summary
+    assert (tmp_path / "dest" / "migration-manifest.csv").exists()
+
+
+def test_execute_migration_copies_selected_and_keeps_originals(tmp_path):
+    from qobuz_librarian.web import flows
+    from qobuz_librarian.web import jobs as jm
+
+    src = tmp_path / "src"
+    src.mkdir()
+    f1, f2 = src / "x.flac", src / "y.flac"
+    f1.write_bytes(b"one")
+    f2.write_bytes(b"two")
+    dest = tmp_path / "dest"
+    chosen = [{"payload": {"entries": [
+        (str(f1), "Artist/Album (2017)/01 - A.flac"),
+        (str(f2), "Artist/Album (2017)/02 - B.flac"),
+    ]}}]
+    job = jm.Job(title="mig")
+    flows.execute_migration(job, chosen, str(dest), in_place=False)
+    assert (dest / "Artist/Album (2017)/01 - A.flac").read_bytes() == b"one"
+    assert (dest / "Artist/Album (2017)/02 - B.flac").read_bytes() == b"two"
+    assert f1.exists() and f2.exists()             # copy mode: originals intact
+    assert "2 files copied" in job.summary
+    assert (dest / "migration-manifest.csv").exists()

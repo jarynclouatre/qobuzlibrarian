@@ -853,6 +853,47 @@ async def repair_scan(request: Request):
     return RedirectResponse(url=f"/jobs/{job.id}", status_code=303)
 
 
+@app.get("/migrate", response_class=HTMLResponse)
+async def migrate_page(request: Request):
+    return _tr(request, "migrate.html", {
+        "page": "migrate",
+        "src": cfg.MIGRATE_SRC,
+        "dest": cfg.MIGRATE_DEST,
+        "configured": bool(cfg.MIGRATE_SRC and cfg.MIGRATE_DEST),
+    })
+
+
+@app.post("/migrate")
+async def migrate_scan(request: Request):
+    # No credential check: migration only reads and reorganizes local files.
+    busy = _lock_busy_response(request)
+    if busy is not None:
+        return busy
+    from qobuz_librarian.library import migrate as engine
+    src, dest = cfg.MIGRATE_SRC, cfg.MIGRATE_DEST
+    if not src or not dest:
+        err = ("Set QL_MIGRATE_SRC and QL_MIGRATE_DEST — the folder to read and "
+               "the folder to build the organized copy into — then try again.")
+    else:
+        err = engine.validate_paths(Path(src), Path(dest))
+    if err:
+        return _tr(request, "migrate.html", {
+            "page": "migrate", "src": src, "dest": dest,
+            "configured": bool(src and dest), "error": err})
+    form = await request.form()
+    use_acoustid = form.get("acoustid") == "on"
+    in_place = form.get("in_place") == "on"
+    from qobuz_librarian.web import flows
+    job = job_mgr.Job(title="Library migration")
+    job.review_verb = "Move" if in_place else "Copy"
+    job_mgr.submit_scan(
+        job,
+        lambda j: flows.scan_migration(j, src, dest, use_acoustid=use_acoustid),
+        lambda j, chosen: flows.execute_migration(j, chosen, dest, in_place=in_place),
+    )
+    return RedirectResponse(url=f"/jobs/{job.id}", status_code=303)
+
+
 # Backwards-compatible /audit redirects, in case anyone bookmarked the
 # old name during the early-access period. Safe to remove later.
 @app.get("/audit", response_class=HTMLResponse)

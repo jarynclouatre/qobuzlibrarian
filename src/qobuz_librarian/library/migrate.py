@@ -345,6 +345,33 @@ def fingerprint_identify(path: Path, min_score: float = ACOUSTID_MIN_SCORE,
     }
 
 
+# ── Path validation ───────────────────────────────────────────────────────────
+
+def _is_within(child: Path, parent: Path) -> bool:
+    try:
+        child.resolve().relative_to(parent.resolve())
+        return True
+    except (ValueError, OSError):
+        return False
+
+
+def validate_paths(src: Path, dest: Path) -> Optional[str]:
+    """Reason the source/destination pair is unusable, or None if it's fine.
+
+    The destination has to be a separate tree from the source so a copy can't
+    recurse into or overwrite itself."""
+    if not src.is_dir():
+        return f"Source isn't a readable directory: {src}"
+    if src.resolve() == dest.resolve():
+        return "Source and destination are the same folder."
+    if _is_within(dest, src):
+        return ("Destination is inside the source — that would copy the new "
+                "library into itself. Choose a destination outside the source.")
+    if _is_within(src, dest):
+        return "Source is inside the destination. Choose separate folders."
+    return None
+
+
 # ── Source collection ─────────────────────────────────────────────────────────
 
 def _audio_files(source_root: Path) -> list:

@@ -1,0 +1,71 @@
+{% extends "base.html" %}
+{% block title %}Migrate — Qobuz Librarian{% endblock %}
+{% block content %}
+
+<h1 class="text-2xl font-bold mb-2">Library migration</h1>
+<p class="text-base-content/60 mb-2">
+  A one-time setup step, separate from downloading. It reads an existing,
+  possibly messy music folder and builds a tidy copy in the
+  <code>Artist/Album (Year)</code> layout this tool expects. It identifies
+  files by their tags first; nothing here needs a Qobuz login.
+</p>
+<p class="text-base-content/40 text-sm mb-6">
+  Copying leaves your originals completely untouched. You review everything and
+  confirm before a single file is written.
+</p>
+
+{% if error %}
+<div class="alert alert-error mb-4"><span class="break-words">{{ error }}</span></div>
+{% endif %}
+
+{% if configured %}
+<div class="card bg-base-200 mb-4">
+  <div class="card-body py-4 text-sm">
+    <div><span class="text-base-content/50">Reading from:</span> <code class="break-all">{{ src }}</code></div>
+    <div><span class="text-base-content/50">Building into:</span> <code class="break-all">{{ dest }}</code></div>
+  </div>
+</div>
+
+<form action="/migrate" method="post">
+  <input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}">
+  <div class="space-y-3 mb-4">
+    <label class="flex items-start gap-3 cursor-pointer">
+      <input type="checkbox" name="acoustid" class="checkbox checkbox-primary mt-1">
+      <div>
+        <div class="font-medium">Fingerprint files my tags can't place</div>
+        <div class="text-sm text-base-content/50">
+          Identify untagged files by their audio fingerprint (AcoustID). No key
+          needed, but it's slower and uses the network — leave off for a fast,
+          tags-only first pass.
+        </div>
+      </div>
+    </label>
+    <label class="flex items-start gap-3 cursor-pointer">
+      <input type="checkbox" name="in_place" class="checkbox mt-1">
+      <div>
+        <div class="font-medium">Move instead of copy</div>
+        <div class="text-sm text-warning">
+          Relocates your original files instead of copying them. Leave this off
+          unless you're sure — copying is the safe default.
+        </div>
+      </div>
+    </label>
+  </div>
+  <button type="submit" class="btn btn-primary">Preview migration</button>
+  <p class="text-xs text-base-content/40 mt-2">
+    The next screen shows exactly what would move where — nothing is written
+    until you confirm.
+  </p>
+</form>
+{% else %}
+<div class="alert alert-warning">
+  <span>
+    Set <code>QL_MIGRATE_SRC</code> (the library to read) and
+    <code>QL_MIGRATE_DEST</code> (where to build the organized copy) — mount
+    both into the container and set them in your <code>.env</code> — then
+    reload this page.
+  </span>
+</div>
+{% endif %}
+
+{% endblock %}

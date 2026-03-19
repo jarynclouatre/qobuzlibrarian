@@ -691,3 +691,91 @@ def run_lyric_retry(job, token):
         log.info(f"{plural(len(remaining), 'track')} still unresolved — will retry next time.")
     else:
         log.info("All retried tracks resolved.")
+
+
+# ── Library migration ──────────────────────────────────────────────────────────
+
+def scan_migration(job, src, dest, *, use_acoustid):
+    """Analyze the source library and attach one candidate per placeable album.
+
+    Placeable albums become the review list (grouped by artist); files that
+    can't be identified or that would collide are reported in the summary and
+    left untouched. A preview manifest is written to the destination so the plan
+    is auditable before anything is copied.
+    """
+    from qobuz_librarian.library import migrate as engine
+
+    src, dest = Path(src), Path(dest)
+    items = engine.collect_items(
+        src, use_acoustid=use_acoustid,
+        cancel_check=lambda: job.cancel_requested,
+        progress=job.push_progress)
+    if job.cancel_requested:
+        return
+    plan = engine.build_plan(items, dest)
+
+    manifest = dest / "migration-manifest.csv"
+    try:
+        engine.write_manifest(plan, manifest)
+    except OSError as exc:
+        log.info(f"Couldn't write the preview manifest: {exc}")
+
+    groups: dict = {}
+    for entry in plan.placed:
+        # dest_rel is <artist>/<album (year)>/[Disc N/]<track>; group by album dir.
+        key = (entry.dest_rel.parts[0], entry.dest_rel.parts[1])
+        groups.setdefault(key, []).append(entry)
+    for (artist, album), entries in sorted(groups.items()):
+        job.add_candidate(
+            kind="migrate",
+            title=album,
+            artist=artist,
+            detail=f"{plural(len(entries), 'track')} → {artist}/{album}",
+            payload={"entries": [(str(e.source), str(e.dest_rel)) for e in entries]},
+        )
+
+    s = plan.summary()
+    parts = [f"{plural(s['place'], 'file')} ready to copy"]
+    if s["unplaceable"]:
+        parts.append(f"{s['unplaceable']} couldn't be identified")
+    if s["collision"]:
+        parts.append(f"{s['collision']} skipped to avoid name collisions")
+    job.summary = ("; ".join(parts) + ". Unidentified and skipped files stay "
+                   f"where they are. Full plan written to {manifest}.")
+    log.info(job.summary)
+
+
+def execute_migration(job, chosen, dest, *, in_place):
+    """Copy (or move) the files behind the approved albums into the layout."""
+    from qobuz_librarian.library import migrate as engine
+
+    dest = Path(dest)
+    entries = []
+    for c in chosen:
+        for src_s, dest_s in c.get("payload", {}).get("entries", []):
+            entries.append(engine.PlanEntry(
+                source=Path(src_s), status=engine.PLACE, dest_rel=Path(dest_s)))
+    if not entries:
+        job.push_line("Nothing selected — nothing to copy.")
+        return
+
+    plan = engine.MigrationPlan(dest_root=dest, entries=entries)
+    result = engine.execute_plan(
+        plan, in_place=in_place,
+        cancel_check=lambda: job.cancel_requested,
+        progress=job.push_progress)
+    try:
+        engine.write_manifest(plan, dest / "migration-manifest.csv")
+    except OSError:
+        pass
+
+    verb = "moved" if in_place else "copied"
+    parts = [f"{plural(result.copied, 'file')} {verb} into {dest}"]
+    if result.skipped:
+        parts.append(f"{result.skipped} skipped (already present)")
+    if result.failed:
+        parts.append(f"{result.failed} failed — see the log")
+    if result.cancelled:
+        parts.append("stopped early")
+    job.summary = "; ".join(parts) + "."
+    log.info(job.summary)

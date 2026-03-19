@@ -105,6 +105,9 @@ class Job:
     # Short, user-facing outcome shown as a callout on the finished job page —
     # e.g. why a scan found nothing — so it isn't buried in the log.
     summary: str = ""
+    # The verb the review screen's submit button uses. Most jobs download what
+    # you approve; the migration job copies (or moves), so it overrides this.
+    review_verb: str = "Download"
     cancel_requested: bool = False
     created_at: float = field(default_factory=time.time)
     finished_at: Optional[float] = None

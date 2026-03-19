@@ -1954,3 +1954,42 @@ def test_setup_creates_login_and_signs_in(monkeypatch, tmp_path):
         assert web_auth.credentials_configured()
         # Setup signs the user straight in.
         assert c.get("/", follow_redirects=False).status_code == 200
+
+
+def test_migrate_page_renders_unconfigured_and_configured(client, monkeypatch):
+    import qobuz_librarian.config as cfg
+    monkeypatch.setattr(cfg, "MIGRATE_SRC", "")
+    monkeypatch.setattr(cfg, "MIGRATE_DEST", "")
+    r = client.get("/migrate")
+    assert r.status_code == 200
+    assert "QL_MIGRATE_SRC" in r.text                 # the configure CTA
+    monkeypatch.setattr(cfg, "MIGRATE_SRC", "/some/src")
+    monkeypatch.setattr(cfg, "MIGRATE_DEST", "/some/dest")
+    r2 = client.get("/migrate")
+    assert r2.status_code == 200
+    assert "Preview migration" in r2.text             # the start form
+
+
+def test_migrate_post_without_paths_reports_error_not_500(client, monkeypatch):
+    import qobuz_librarian.config as cfg
+    monkeypatch.setattr(cfg, "MIGRATE_SRC", "")
+    monkeypatch.setattr(cfg, "MIGRATE_DEST", "")
+    r = client.post("/migrate", data={}, follow_redirects=False)
+    assert r.status_code == 200
+    assert "QL_MIGRATE_SRC" in r.text
+
+
+def test_migrate_post_submits_a_creds_free_job(client, monkeypatch, tmp_path):
+    import qobuz_librarian.config as cfg
+    src = tmp_path / "src"
+    src.mkdir()
+    monkeypatch.setattr(cfg, "MIGRATE_SRC", str(src))
+    monkeypatch.setattr(cfg, "MIGRATE_DEST", str(tmp_path / "dest"))
+    r = client.post("/migrate", data={"in_place": "on"}, follow_redirects=False)
+    assert r.status_code == 303
+    assert r.headers["location"].startswith("/jobs/")
+    job_id = r.headers["location"].split("/jobs/")[1].split("?")[0]
+    job = jm.registry.get(job_id)
+    assert job is not None
+    assert job.review_verb == "Move"                  # in-place toggle carried through
+    _remove_job(job)
