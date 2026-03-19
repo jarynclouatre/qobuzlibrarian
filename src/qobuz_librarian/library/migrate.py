@@ -34,7 +34,12 @@ from typing import Callable, Mapping, Optional
 
 from qobuz_librarian import config
 from qobuz_librarian.library.scanner import iter_tree_no_symlinks
-from qobuz_librarian.library.tags import VA_NORMALIZED, beets_sanitize, normalize
+from qobuz_librarian.library.tags import (
+    VA_NORMALIZED,
+    beets_sanitize,
+    normalize,
+    strip_year_decoration,
+)
 from qobuz_librarian.ui_cli.logging import vlog
 
 log = logging.getLogger("qobuz_librarian")
@@ -210,7 +215,12 @@ def album_components(meta: dict) -> tuple:
         artist = meta["albumartist"]
     year = meta.get("year") or 0
     album = meta["album"]
-    album_folder = f"{album} ({year})" if year else album
+    if year:
+        # Strip any year the album tag already carries (messy libraries bake it
+        # into the name) so we don't end up with "Album (2010) (2010)".
+        album_folder = f"{strip_year_decoration(album)} ({year})"
+    else:
+        album_folder = album
     return beets_sanitize(artist), beets_sanitize(album_folder)
 
 
@@ -307,42 +317,95 @@ def choose_acoustid_match(candidates, min_score: float = ACOUSTID_MIN_SCORE):
     return best
 
 
+def _first_name(artists) -> str:
+    if isinstance(artists, list) and artists:
+        return artists[0].get("name") or ""
+    return ""
+
+
+def _pick_album(recording: dict) -> tuple:
+    """(album, year, albumartist, compilation) from a matched recording's
+    release groups, or ("", 0, "", False) if it lists none.
+
+    Prefers a primary-type "Album" over singles/EPs, takes the earliest release
+    year, and flags it a compilation when the release group says so or the album
+    artist is a Various-Artists alias."""
+    groups = recording.get("releasegroups") or []
+    if not groups:
+        return "", 0, "", False
+    groups = sorted(groups, key=lambda g: 0 if (g.get("type") or "").lower() == "album" else 1)
+    rg = groups[0]
+    album = rg.get("title") or ""
+    albumartist = _first_name(rg.get("artists"))
+    secondary = [s.lower() for s in (rg.get("secondarytypes") or [])]
+    compilation = ((rg.get("type") or "").lower() == "compilation"
+                   or "compilation" in secondary
+                   or normalize(albumartist) in VA_NORMALIZED)
+    year = 0
+    for rel in (rg.get("releases") or []):
+        y = (rel.get("date") or {}).get("year") or 0
+        if y and (year == 0 or y < year):
+            year = y
+    return album, year, albumartist, compilation
+
+
+def identify_from_lookup(resp: dict, min_score: float, stem: str,
+                         ext: str) -> Optional[dict]:
+    """Turn a raw AcoustID lookup response into placement metadata, or None.
+
+    Pure (no network), so the confidence/ambiguity/album-selection logic is
+    testable without a fingerprinter. Returns None when no result clears
+    ``min_score`` or is ambiguous, and also when a confident recording lists no
+    album — identifying a recording without a release still gives no folder to
+    build, so the file stays unplaceable rather than guessed at."""
+    candidates = []
+    for r in (resp.get("results") or []):
+        recs = r.get("recordings") or []
+        rec = recs[0] if recs else {}
+        candidates.append({
+            "score": r.get("score") or 0,
+            "artist": _first_name(rec.get("artists")),
+            "_rec": rec,
+        })
+    best = choose_acoustid_match(candidates, min_score)
+    if not best:
+        return None
+    rec = best.get("_rec") or {}
+    album, year, albumartist, compilation = _pick_album(rec)
+    if not album:
+        return None
+    return {
+        "albumartist": albumartist or best.get("artist") or "",
+        "album": album,
+        "title": rec.get("title") or stem,
+        "track": 0, "disc": 1, "disctotal": 0, "year": year,
+        "compilation": compilation, "ext": ext.lower(),
+    }
+
+
 def fingerprint_identify(path: Path, min_score: float = ACOUSTID_MIN_SCORE,
                          ext: str = "") -> Optional[dict]:
-    """Identify one file by audio fingerprint via AcoustID. None if no
-    confident match (or the fingerprinter isn't available).
+    """Identify one file by audio fingerprint via AcoustID, resolving an album
+    so the file can actually be placed. None if no confident match (or the
+    fingerprinter isn't available).
 
     Lazily imports ``acoustid`` — it and ``fpcalc`` ship only in the container,
-    so this whole stage is a no-op on a host without them."""
+    so this whole stage is a no-op on a host without them. The lookup asks for
+    release groups + releases so a recording match yields an album and year, not
+    just a title."""
     try:
         import acoustid
     except ImportError:
         vlog("acoustid not installed; skipping fingerprint stage")
         return None
     try:
-        results = acoustid.match(ACOUSTID_API_KEY, str(path))
-        candidates = []
-        for score, _rid, title, artist in results:
-            candidates.append({
-                "score": score, "title": title or "", "artist": artist or "",
-            })
+        duration, fp = acoustid.fingerprint_file(str(path))
+        resp = acoustid.lookup(ACOUSTID_API_KEY, fp, duration,
+                               meta="recordings releasegroups releases")
     except Exception as e:
         vlog(f"fingerprint failed for {path.name}: {e}")
         return None
-
-    best = choose_acoustid_match(candidates, min_score)
-    if not best:
-        return None
-    # AcoustID's recording match gives a confident artist + title but no album
-    # context; without an album there's still no folder to build, so this is
-    # reported as identified-but-unplaceable rather than misfiled into a guess.
-    return {
-        "albumartist": best.get("artist") or best.get("albumartist") or "",
-        "album": best.get("album") or "",
-        "title": best.get("title") or path.stem,
-        "track": 0, "disc": 1, "disctotal": 0, "year": 0,
-        "compilation": False, "ext": (ext or path.suffix).lower(),
-    }
+    return identify_from_lookup(resp, min_score, path.stem, (ext or path.suffix).lower())
 
 
 # ── Path validation ───────────────────────────────────────────────────────────

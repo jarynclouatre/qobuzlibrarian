@@ -278,3 +278,47 @@ def test_execute_migration_copies_selected_and_keeps_originals(tmp_path):
     assert f1.exists() and f2.exists()             # copy mode: originals intact
     assert "2 files copied" in job.summary
     assert (dest / "migration-manifest.csv").exists()
+
+
+def test_album_tag_with_year_isnt_doubled():
+    plan = m.build_plan([(Path("/s/x.flac"),
+        _meta(album="Black Sands (2010)", year=2010, title="Kong", track=3), "tags")],
+        Path("/dest"))
+    assert plan.placed[0].dest_rel == Path("Artist/Black Sands (2010)/03 - Kong.flac")
+
+
+def test_bare_year_album_title_keeps_its_name_with_year():
+    plan = m.build_plan([(Path("/s/x.flac"),
+        _meta(album="1989", year=2014, title="T", track=1), "tags")], Path("/dest"))
+    assert plan.placed[0].dest_rel == Path("Artist/1989 (2014)/01 - T.flac")
+
+
+def test_fingerprint_lookup_resolves_album_year_and_is_placeable():
+    resp = {"results": [{"score": 0.98, "recordings": [{
+        "title": "Kong", "artists": [{"name": "Bonobo"}],
+        "releasegroups": [
+            {"type": "Single", "title": "Kong", "releases": [{"date": {"year": 2009}}]},
+            {"type": "Album", "title": "Black Sands", "artists": [{"name": "Bonobo"}],
+             "releases": [{"date": {"year": 2011}}, {"date": {"year": 2010}}]},
+        ]}]}]}
+    meta = m.identify_from_lookup(resp, 0.9, "stem", ".flac")
+    assert meta["album"] == "Black Sands"      # Album type preferred over Single
+    assert meta["year"] == 2010                # earliest release year
+    assert meta["albumartist"] == "Bonobo"
+    assert m.is_placeable(meta)                # the whole point of F1: now placeable
+
+
+def test_fingerprint_recording_without_album_stays_unplaceable():
+    resp = {"results": [{"score": 0.99, "recordings": [{
+        "title": "Mystery", "artists": [{"name": "X"}], "releasegroups": []}]}]}
+    assert m.identify_from_lookup(resp, 0.9, "stem", ".flac") is None
+
+
+def test_fingerprint_compilation_releasegroup_is_flagged():
+    resp = {"results": [{"score": 0.97, "recordings": [{
+        "title": "Hit", "artists": [{"name": "Some Artist"}],
+        "releasegroups": [{"type": "Album", "secondarytypes": ["Compilation"],
+                           "title": "Now 50", "artists": [{"name": "Various Artists"}],
+                           "releases": [{"date": {"year": 2001}}]}]}]}]}
+    meta = m.identify_from_lookup(resp, 0.9, "stem", ".flac")
+    assert meta["compilation"] is True

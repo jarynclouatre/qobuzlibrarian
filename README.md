@@ -399,9 +399,11 @@ Library scan to pick it up.
   and no confident fingerprint match is left in place and flagged — never
   silently dropped, but you'll have to sort it by hand.
 - **Compilations, "Various Artists", and multi-disc albums are the tricky
-  cases.** They're handled when the tags say so (a compilation flag, an album
-  artist of "Various Artists", disc numbers); a compilation that *looks* like
-  one without those signals is reported rather than split across artists.
+  cases.** They're handled when the tags say so — a compilation flag, an album
+  artist of "Various Artists", disc numbers. A compilation with *none* of those
+  signals has no way to be recognised as one: each track is placed under its own
+  track-artist, so it scatters across artist folders. Check the result for
+  compilations and re-file them by hand.
 - **The year comes from tags only.** A file tagged without a year lands in
   `Artist/Album/` rather than `Artist/Album (Year)/`, even if the original
   folder name had a year — both forms scan fine, but they won't all match.
