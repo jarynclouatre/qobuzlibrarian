@@ -2,6 +2,7 @@
 import asyncio
 import concurrent.futures
 import html
+import threading
 import urllib.parse
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -407,13 +408,21 @@ def _is_htmx(request):
     return request.headers.get("HX-Request") == "true"
 
 
+# Serialises the dedupe-check-then-submit in queue_download: the network
+# get_album() await between the early check and the submit leaves a window where
+# two requests for one album both pass the check and queue it twice.
+_DOWNLOAD_SUBMIT_LOCK = threading.Lock()
+
+
 def _find_job_touching_album(album_id: str):
     """Return a pending/running/awaiting-review job that already covers
     album_id, either as its direct subject or as one of its candidates."""
     for j in job_mgr.registry.pending_and_running():
         if j.album_id == album_id:
             return j
-        for cand in (j.candidates or []):
+        # Snapshot: a SCANNING job appends to candidates from the worker thread,
+        # and iterating it live can raise "list changed size during iteration".
+        for cand in list(j.candidates or []):
             payload = cand.get("payload") or {}
             if payload.get("album_id") == album_id:
                 return j
@@ -704,7 +713,17 @@ async def queue_download(request: Request, album_id: str = Form(""),
                 # the count so a green check isn't lying about completeness.
                 j.error = f"{plural(r['n_fail'], 'track')} failed — see job log"
 
-        job_mgr.submit(job, run)
+        # Re-check under the lock right before submitting: closes the race with
+        # a concurrent /download for the same album across the get_album await.
+        with _DOWNLOAD_SUBMIT_LOCK:
+            dup = _find_job_touching_album(album_id)
+            if dup:
+                if _is_htmx(request):
+                    return HTMLResponse(
+                        f'<div class="alert alert-warning">Already queued — '
+                        f'<a href="/jobs/{dup.id}" class="link">view job</a>.</div>')
+                return RedirectResponse(url=f"/jobs/{dup.id}", status_code=303)
+            job_mgr.submit(job, run)
         if _is_htmx(request):
             return _tr(request, "_job_queued.html", {"job": job})
         # Land on the new job's page so the user sees their download starting.

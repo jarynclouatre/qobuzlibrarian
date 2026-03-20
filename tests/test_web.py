@@ -1993,3 +1993,15 @@ def test_migrate_post_submits_a_creds_free_job(client, monkeypatch, tmp_path):
     assert job is not None
     assert job.review_verb == "Move"                  # in-place toggle carried through
     _remove_job(job)
+
+
+def test_prune_keeps_a_finished_job_that_is_still_being_streamed(monkeypatch):
+    reg = jm.JobRegistry()
+    monkeypatch.setattr(reg, "MAX_FINISHED", 2)
+    oldest = jm.Job(title="streamed", status=jm.JobStatus.DONE)
+    reg.add(oldest)
+    reg.add(jm.Job(title="old2", status=jm.JobStatus.DONE))
+    oldest.subscribe()                       # a client is watching the oldest job
+    for i in range(3):                       # push well past MAX_FINISHED
+        reg.add(jm.Job(title=f"new{i}", status=jm.JobStatus.DONE))
+    assert reg.get(oldest.id) is not None    # not yanked out from under the stream

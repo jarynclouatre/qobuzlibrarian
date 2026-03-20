@@ -153,10 +153,14 @@ class Job:
     def push_line(self, line: str):
         """Append a real log line and stream it to live subscribers."""
         line = self._CTRL_RE.sub("", line)
-        self.log_lines.append(line)
-        if len(self.log_lines) > self.LOG_CAP + self._LOG_SLACK:
-            del self.log_lines[:len(self.log_lines) - self.LOG_CAP]
-            self.log_lines[0] = self._TRUNCATION_MARKER
+        # Mutate log_lines under the lock: subscribe()/the status API read it
+        # under the same lock from request threads, and the truncation `del`
+        # below would otherwise tear a concurrent reader's slice.
+        with self._lock:
+            self.log_lines.append(line)
+            if len(self.log_lines) > self.LOG_CAP + self._LOG_SLACK:
+                del self.log_lines[:len(self.log_lines) - self.LOG_CAP]
+                self.log_lines[0] = self._TRUNCATION_MARKER
         self._fan_out(line)
 
     def end_stream(self):
@@ -274,6 +278,11 @@ class JobRegistry:
                         and self._jobs[jid].status in TERMINAL]
         while len(finished_ids) > self.MAX_FINISHED:
             old = finished_ids.pop(0)
+            # Don't evict a job a client is still streaming/viewing — that would
+            # 404 it out from under them. It'll be pruned once the stream closes.
+            job = self._jobs.get(old)
+            if job is not None and job._subscribers:
+                continue
             self._order.remove(old)
             self._jobs.pop(old, None)
 
@@ -526,6 +535,11 @@ def approve(job: Job, selected_ids) -> bool:
         chosen = job.selected_candidates()
 
     def _execute(j: Job):
+        # Cancelled between approve and the worker picking this up: don't start
+        # the work. _run_task sees the flag on a still-RUNNING job and marks it
+        # CANCELED.
+        if j.cancel_requested:
+            return
         j.phase = "execute"
         if not chosen:
             j.push_line("No candidates selected — nothing to do.")
