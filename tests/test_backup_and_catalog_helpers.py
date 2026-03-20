@@ -16,6 +16,7 @@ from qobuz_librarian.library.backup import (
 from qobuz_librarian.library.catalog import (
     _MERGE_MAX_DEPTH,
     _merge_album_dirs,
+    _sync_beets_db_after_merge,
     _sync_beets_db_after_move,
     cleanup_duplicate_art,
     maybe_remove_empty_dir,
@@ -429,6 +430,24 @@ class TestSyncBeetsDBAfterMove:
         new.mkdir()
         # Must not raise.
         _sync_beets_db_after_move(old, new)
+
+    def test_merge_drops_collided_row_and_repoints_the_rest(self, tmp_path, monkeypatch):
+        music_root, db = self._setup(tmp_path, monkeypatch, [
+            b"Primary, Other/Album (2020)/01 - a.flac",   # collides with dst row
+            b"Primary, Other/Album (2020)/02 - b.flac",   # unique -> repointed
+            b"Primary/Album (2020)/01 - a.flac",          # pre-existing dst row
+        ])
+        old = music_root / "Primary, Other" / "Album (2020)"
+        new = music_root / "Primary" / "Album (2020)"
+        old.mkdir(parents=True)
+        new.mkdir(parents=True)
+        _sync_beets_db_after_merge(old, new)
+        rows = self._read(db)
+        assert sorted(rows) == sorted([
+            b"Primary/Album (2020)/01 - a.flac",      # pre-existing, kept once
+            b"Primary/Album (2020)/02 - b.flac",      # repointed
+        ])
+        assert rows.count(b"Primary/Album (2020)/01 - a.flac") == 1   # no duplicate
 
 
 class TestMatchSiblingTrack:

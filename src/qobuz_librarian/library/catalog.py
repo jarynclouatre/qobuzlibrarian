@@ -1069,6 +1069,50 @@ def _sync_beets_db_after_move(old_dir: Path, new_dir: Path) -> None:
             "Run `beet update` to re-scan."))
 
 
+def _sync_beets_db_after_merge(old_dir: Path, new_dir: Path) -> None:
+    """Like _sync_beets_db_after_move, but for the merge path where new_dir
+    already holds rows. Repoint each source row to its new path — except where a
+    row already exists at that path (a file collision the merge resolved), where
+    the source row is dropped instead. A blind prefix rewrite would otherwise
+    leave two items rows pointing at one file and break the next `beet update`.
+    """
+    db_path = getattr(config, "BEETS_DB_PATH", None)
+    if not db_path:
+        return
+    db_path = Path(str(db_path))
+    if not db_path.exists():
+        return
+    music_root = Path(str(config.MUSIC_ROOT))
+    try:
+        old_rel = old_dir.resolve().relative_to(music_root.resolve())
+        new_rel = new_dir.resolve().relative_to(music_root.resolve())
+    except (ValueError, OSError):
+        return
+    old_prefix = str(old_rel).encode("utf-8") + b"/"
+    new_prefix = str(new_rel).encode("utf-8") + b"/"
+    import sqlite3
+    try:
+        with sqlite3.connect(str(db_path)) as conn:
+            # Drop source rows whose target path already has a row (collision).
+            conn.execute(
+                "DELETE FROM items WHERE SUBSTR(path, 1, ?) = ? AND EXISTS ("
+                " SELECT 1 FROM items b "
+                " WHERE b.path = CAST(? || SUBSTR(items.path, ?) AS BLOB))",
+                (len(old_prefix), old_prefix, new_prefix, len(old_prefix) + 1),
+            )
+            # Repoint the rest (no pre-existing row at the new path).
+            conn.execute(
+                "UPDATE items SET path = CAST(? || SUBSTR(path, ?) AS BLOB) "
+                "WHERE SUBSTR(path, 1, ?) = ?",
+                (new_prefix, len(old_prefix) + 1, len(old_prefix), old_prefix),
+            )
+            conn.commit()
+    except sqlite3.Error as e:
+        log.info(fmt(C.YELLOW,
+            f"  ⚠  beets DB merge sync failed ({e}). "
+            "Run `beet update` to re-scan."))
+
+
 def _sync_beets_db_after_file_move(old_file: Path, new_file: Path) -> None:
     """Update beets' items.path for one file moved outside beets' control.
 
@@ -1160,7 +1204,7 @@ def prompt_and_migrate_multi_artist_folder(album, args):
         # User chose to merge: handle file-by-file, prompting on collisions.
         ok = _merge_album_dirs(cur, new_dir)
         if ok:
-            _sync_beets_db_after_move(cur, new_dir)
+            _sync_beets_db_after_merge(cur, new_dir)
             maybe_remove_empty_dir(cur)
             maybe_remove_empty_dir(cur_parent)
             _clear_caches()
