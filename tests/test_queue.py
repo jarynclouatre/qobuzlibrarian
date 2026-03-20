@@ -189,6 +189,36 @@ def test_executor_uses_per_track_urls_with_force_flag(monkeypatch):
     assert not any("/album/" in u for u in seen)
 
 
+def test_executor_per_track_loop_stops_on_cancel_without_counting_failures(monkeypatch):
+    from qobuz_librarian.queue import executor
+
+    tracks = [{"id": i, "title": f"T{i}"} for i in range(1, 15)]
+    item = _build_queue_item(
+        album={"id": "A", "tracks": {"items": tracks}}, album_dir=None,
+        label="repair", missing=tracks[:11], present=[{} for _ in range(3)],
+        upgrade_only=False, auto_upgrade=False, force_track_by_track=True)
+    item["snapshot_before"] = set()
+
+    calls = {"n": 0}
+
+    def fake_cancel():
+        calls["n"] += 1
+        return calls["n"] > 1          # False on the first (top) check, True after
+
+    seen = []
+    monkeypatch.setattr(executor, "is_cancel_requested", fake_cancel)
+    monkeypatch.setattr(executor, "rip_url",
+                        lambda url, **kw: (seen.append(url), (130, ""))[1])
+    monkeypatch.setattr(executor, "files_added_since", lambda _s: [])
+    monkeypatch.setattr("qobuz_librarian.api.auth.detect_auth_lost", lambda _o: False)
+    monkeypatch.setattr(executor.time, "sleep", lambda _s: None)
+
+    executor._download_for_queue_item(item)
+
+    assert len(seen) == 1              # stopped after the first track, not all 11
+    assert item["n_fail"] == 0         # the cancel exit (130) isn't a failure
+
+
 # ── download_full_album heuristic boundary ─────────────────────────────
 
 @pytest.mark.parametrize("total,missing,expect_full", [

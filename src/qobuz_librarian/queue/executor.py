@@ -127,6 +127,8 @@ def _download_for_queue_item(item):
                 f"    ⚠  {n_errors} error(s) in rip output"))
     else:
         for i, t in enumerate(missing, 1):
+            if is_cancel_requested():
+                break
             tid = t.get("id")
             ttl = t.get("title") or "?"
             log.info(fmt(C.BLUE, f"      [{i}/{len(missing)}]") +
@@ -141,6 +143,9 @@ def _download_for_queue_item(item):
             rate_limited = rate_limited or detect_rate_limited(out)
             if rc == 0:
                 log.info(fmt(C.GREEN, "        ✓ ok"))
+            elif is_cancel_requested():
+                # rip exited because we asked it to stop — not a failure.
+                break
             else:
                 n_fail += 1
                 failed_tracks.append(ttl)
@@ -500,14 +505,17 @@ def _execute_download_queue(queue, args, token):
 
     staging_preflight(args)
     interrupted = False
+    cancelled = False
     auth_lost_exc = None  # track AuthLost so Phase C still runs
 
     # ── Phase A: per-item backup + download ──────────────────────────────
     for idx, item in enumerate(queue, 1):
-        if interrupted or auth_lost_exc is not None:
+        if interrupted or cancelled or auth_lost_exc is not None:
             # Also short-circuit on auth loss so we don't thrash
             # rip subprocesses guaranteed to fail with the same 401.
-            item["result"] = "interrupted" if interrupted else "auth_lost"
+            item["result"] = ("cancelled" if cancelled
+                              else "interrupted" if interrupted
+                              else "auth_lost")
             continue
         album = item["album"]
         album_dir = item["album_dir"]
@@ -545,6 +553,17 @@ def _execute_download_queue(queue, args, token):
                 "will restore upgrade backups and exit."))
             item["result"] = "auth_lost"
             auth_lost_exc = _e_auth
+            continue
+        # A web cancel makes rip stop mid-album (exit 130). Stop the batch and
+        # discard this item's partial output, so a later flush can't sweep half
+        # an album into the import.
+        if is_cancel_requested():
+            from qobuz_librarian.modes.process import _discard_staged_since
+            _discard_staged_since(item["snapshot_before"])
+            item["result"] = "cancelled"
+            cancelled = True
+            log.info(fmt(C.YELLOW,
+                "    Cancelled — discarded this album's partial download."))
             continue
         # Compact one-line result per album.
         summary_n_ok = item.get("n_ok", 0)
