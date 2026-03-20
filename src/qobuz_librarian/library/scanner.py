@@ -134,6 +134,9 @@ def read_album_dir(album_dir: Path):
         if tags is None:
             stem = f.stem
             m = re.match(r"^(\d+)\s*-\s*(.+)$", stem)
+            # Derive the disc from a "Disc N" / "CD N" parent so two same-titled
+            # tracks on different discs don't collapse to one (disc, title) key.
+            disc_m = re.match(r"(?:disc|cd)\s*0*(\d+)", f.parent.name, re.IGNORECASE)
             tags = {
                 "title":       m.group(2) if m else stem,
                 "tracknumber": int(m.group(1)) if m else 0,
@@ -141,7 +144,7 @@ def read_album_dir(album_dir: Path):
                 "mb_trackid":  "",
                 "album":       "",
                 "albumartist": "",
-                "discnumber":  1,
+                "discnumber":  int(disc_m.group(1)) if disc_m else 1,
                 "bits":        0,
                 "sample_rate": 0,
                 "length":      0.0,

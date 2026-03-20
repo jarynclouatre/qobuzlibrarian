@@ -131,8 +131,11 @@ _DECORATION_YEAR_RE = re.compile(
 
 
 def _decoration_year(name):
-    """The 4-digit year a folder name uses as a decoration ('' if none). A year
-    that IS the title ('1984', '2112 - song') is not a decoration here."""
+    """The 4-digit year a folder name uses as a decoration ('' if none).
+
+    A bare year that is itself the title ('1984', '2112') is not a decoration;
+    a year in a clear slot — trailing '(2010)'/'[2010]', or a leading '[2010] '
+    or '2010 - ' prefix — is. Mirrors tags.py's year-stripping rules."""
     m = _DECORATION_YEAR_RE.search(name or "")
     return next((g for g in m.groups() if g), "") if m else ""
 
@@ -410,6 +413,8 @@ def compute_missing(qobuz_tracks, existing_tracks):
         if layer == "isrc":
             return bool(k["isrc"]) and k["isrc"] == s["isrc"]
         if layer == "mbid":
+            # Reserved: the Qobuz API doesn't return a track MBID today, so the
+            # qobuz-side key is empty and this layer is a no-op until it's wired.
             return bool(k["mbid"]) and k["mbid"] == s["mbid"]
         if layer == "title":
             return k["title"] is not None and k["title"] == s["disc_title"]
@@ -480,6 +485,8 @@ def find_extras_in_existing(qobuz_tracks, existing_tracks):
         if layer == "isrc":
             return bool(k["isrc"]) and k["isrc"] == s["isrc"]
         if layer == "mbid":
+            # Reserved: the Qobuz API doesn't return a track MBID today, so the
+            # qobuz-side key is empty and this layer is a no-op until it's wired.
             return bool(k["mbid"]) and k["mbid"] == s["mbid"]
         if layer == "title":
             return k["title"] is not None and k["title"] == s["disc_title"]

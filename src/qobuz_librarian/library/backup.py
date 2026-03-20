@@ -216,11 +216,12 @@ def backup_gap_fill_files(file_paths, album_dir: Path):
                     dst.unlink()
             except OSError:
                 pass
-    # If the backup dir is now empty (every move failed), remove it so the
-    # caller can detect the no-op via "exists() and has files".
+    # If no files actually landed (every move failed, only empty per-disc dirs
+    # were created), drop the dir and return None — otherwise the caller reads a
+    # non-empty path as "backup succeeded" when it holds no tracks.
     try:
-        if not any(bp.iterdir()):
-            bp.rmdir()
+        if not any(p.is_file() for p in bp.rglob("*")):
+            shutil.rmtree(bp, ignore_errors=True)
             return None
     except OSError:
         pass
@@ -337,7 +338,7 @@ def restore_upgrade_backup(backup_path: Path, original_path: Path) -> bool:
             bk_files, bk_bytes = bk_stats
             orig_files, orig_bytes = orig_stats
 
-            if bk_bytes > orig_bytes:
+            if bk_bytes >= orig_bytes:
                 log.info(fmt(C.YELLOW,
                     f"  ⚠  Replacing partial dir ({orig_files} file(s), "
                     f"{orig_bytes / 1024 / 1024:.1f} MB) with backup "

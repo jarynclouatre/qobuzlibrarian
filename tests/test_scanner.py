@@ -149,3 +149,13 @@ class TestReadAlbumDir:
             result = read_album_dir(album)
         assert len(result) == 1
         assert result[0]["tracknumber"] == 1
+
+
+def test_non_flac_track_takes_its_disc_from_the_parent_folder(tmp_path):
+    from qobuz_librarian.library.scanner import read_album_dir
+    disc2 = tmp_path / "Album" / "Disc 2"
+    disc2.mkdir(parents=True)
+    (disc2 / "03 - Song.mp3").write_bytes(b"")     # non-flac -> filename fallback
+    tracks = read_album_dir(tmp_path / "Album")
+    assert tracks and tracks[0]["discnumber"] == 2
+    assert tracks[0]["tracknumber"] == 3
