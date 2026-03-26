@@ -455,7 +455,7 @@ class TestReportStagingRemnants:
         assert "1 track(s)" in text
 
 class TestLyricHookRetryManifest:
-    def test_hook_failure_records_staging_flacs(self, tmp_path, monkeypatch):
+    def test_hook_failure_captures_signatures_for_post_import_retry(self, tmp_path, monkeypatch):
         import types
 
         from qobuz_librarian.queue import executor
@@ -464,18 +464,17 @@ class TestLyricHookRetryManifest:
         staging.mkdir()
         (staging / "track.flac").write_bytes(b"\x00" * 100)
         monkeypatch.setattr("qobuz_librarian.config.STAGING_DIR", staging)
-        monkeypatch.setattr("qobuz_librarian.config.LYRIC_RETRY_FILE",
-                            tmp_path / "retry.json")
-        monkeypatch.setattr("qobuz_librarian.config.LYRIC_RETRY_VERSION", 1)
         monkeypatch.setattr(executor, "_run_lyric_hook",
                             lambda _d: (_ for _ in ()).throw(RuntimeError("hook crash")))
+        # Fake a signature so the crash path captures it (a real FLAC would too).
+        monkeypatch.setattr("qobuz_librarian.integrations.rip._flac_signature",
+                            lambda p: "SIG")
 
         args = types.SimpleNamespace(no_compress=True)
         sigs = executor._pre_import_staging_hooks(args)
-        assert sigs == []
-
-        from qobuz_librarian.integrations.lyrics import load_lyric_retry
-        assert any("track.flac" in p for p in load_lyric_retry())
+        # Crash path captures signatures — which survive the beets move — rather
+        # than recording staging paths that would go stale once beets relocates.
+        assert sigs == [("SIG", str(staging / "track.flac"))]
 
 
 class TestQuarantineUntaggedStaging:

@@ -579,10 +579,12 @@ def _consolidate_duplicate_albums():
                                      capture_output=True, text=True,
                                      env=beet_env, timeout=idle)
             if imp.returncode != 0:
-                log.info(fmt(C.YELLOW,
-                    f"  ⚠  Re-import after de-duplicating {d} exited "
-                    f"{imp.returncode}; the album may be untracked in beets. "
-                    f"Run `beet import` on that folder by hand."))
+                log.info(fmt(C.RED + C.BOLD,
+                    f"  ✗  Album left UNTRACKED in beets after de-duplicating: {d}\n"
+                    f"     (re-import exited {imp.returncode} twice — usually a "
+                    f"transient DB lock). The files are on disk but absent from "
+                    f"the library. Recover by hand with:\n"
+                    f"       beet import -A \"{d}\""))
         except (OSError, subprocess.SubprocessError) as e:
             log.info(fmt(C.YELLOW,
                 f"  ⚠  Couldn't tidy duplicate entries for {d} ({e}); "

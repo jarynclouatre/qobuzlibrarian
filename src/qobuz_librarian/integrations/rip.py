@@ -328,7 +328,9 @@ def rip_url(url, timeout=None, live_output=False, quality=None):
         # Kill the whole process group (covers rip's child downloaders too).
         _kill_process_group(proc)
         reader.join(timeout=5)
-        return 1, "".join(lines) + (
+        # 124 (the conventional timeout exit code) so a timeout is
+        # distinguishable from a generic rip failure (rc=1) in the logs.
+        return 124, "".join(lines) + (
             f"\n<<< rip timed out after {timeout}s — try a smaller batch "
             "or raise RIP_TIMEOUT in compose.yaml. >>>")
     except KeyboardInterrupt:

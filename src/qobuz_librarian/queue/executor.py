@@ -284,10 +284,17 @@ def _pre_import_staging_hooks(args):
     except Exception as _le:
         log.info(fmt(C.YELLOW, f"  ⚠  lyric hook failed: {_le}"))
         lh_result = None
+        # The hook crashed, so we don't know which tracks lacked lyrics. Capture
+        # signatures for every staged FLAC and let the post-import resolution (the
+        # same path the success case uses) turn them into library paths after
+        # beets moves them — recording staging paths here would go stale on the
+        # move and self-prune to nothing, losing the whole batch's retries.
         try:
-            fail_flacs = [str(p) for p in sorted(cfg.STAGING_DIR.rglob("*.flac"))]
-            if fail_flacs:
-                _record_post_import_lyric_retry(fail_flacs)
+            from qobuz_librarian.integrations.rip import _flac_signature
+            for p in sorted(cfg.STAGING_DIR.rglob("*.flac")):
+                sig = _flac_signature(p)
+                if sig is not None:
+                    sigs.append((sig, str(p)))
         except Exception:
             pass
     if isinstance(lh_result, tuple) and len(lh_result) == 2:
