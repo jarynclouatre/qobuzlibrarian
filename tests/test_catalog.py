@@ -584,3 +584,26 @@ class TestLiveReleaseDoesNotMatchStudioFolder:
         found = find_album_dir_filesystem(studio)
         clear_scan_caches()
         assert found is not None and found.name == "The North Borders (2013)"
+
+
+class TestFuzzyMatchConsidersAllCoveragePassingFolders:
+    """A high-scoring folder that fails the length-coverage gate must not mask a
+    lower-scored folder in the same artist dir that is the real match."""
+
+    def test_lower_scored_folder_wins_when_top_scorer_fails_coverage(self, tmp_path, monkeypatch):
+        from qobuz_librarian import config
+        from qobuz_librarian.library import catalog
+        from qobuz_librarian.library.catalog import find_album_dir_filesystem
+        from qobuz_librarian.library.scanner import clear_scan_caches
+        monkeypatch.setattr(config, "MUSIC_ROOT", tmp_path)
+        (tmp_path / "Band" / "Wide Awakening Sessions Bonus").mkdir(parents=True)  # top score, fails coverage
+        (tmp_path / "Band" / "Wide Awaknng").mkdir(parents=True)                   # typo, real match
+        clear_scan_caches()
+        # Top scorer is the long "Sessions" folder; it fails coverage. The real
+        # (lower-scored) folder must still be returned, not None.
+        monkeypatch.setattr(catalog, "similarity",
+                            lambda a, b: 0.95 if "Sessions" in a else 0.80)
+        album = {"id": "X", "artist": {"name": "Band"}, "title": "Wide Awakening"}
+        found = find_album_dir_filesystem(album)
+        clear_scan_caches()
+        assert found is not None and found.name == "Wide Awaknng"

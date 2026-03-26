@@ -311,32 +311,29 @@ def find_album_dir_filesystem(qobuz_album):
         if not subdirs:
             continue
 
-        best, best_score = None, 0.0
         stripped_title = strip_album_decorations(title)
+        # Evaluate every subdir that clears both gates, not just the single
+        # top scorer: a prefix-only high scorer that fails the coverage gate
+        # (studio 'The North Borders' scoring 0.79 against the live 'The North
+        # Borders Tour — Live') must not mask a lower-scored folder in the same
+        # artist dir that is the real match.
         for d in subdirs:
             score = similarity(strip_album_decorations(d.name), stripped_title)
-            if score > best_score:
-                best, best_score = d, score
-        if best and best_score >= config.FUZZY_DIR_THRESH:
-            # A score can clear the bar on a shared prefix alone: the studio
-            # 'The North Borders' folder scores 0.79 against the live 'The
-            # North Borders Tour — Live' and would gap-fill live tracks into
-            # it. Real edition variants normalize to the same string, so also
-            # require the titles to be close in length — that keeps an extra
-            # word ('Live', 'Tour') from resolving to the base album's folder.
-            norm_dir = normalize(strip_album_decorations(best.name))
+            if score < config.FUZZY_DIR_THRESH or score <= global_best_score:
+                continue
+            # Real edition variants normalize to the same string, so require the
+            # titles to be close in length — that keeps an extra word ('Live',
+            # 'Tour') from resolving to the base album's folder on prefix alone.
+            norm_dir = normalize(strip_album_decorations(d.name))
             coverage = (min(len(norm_dir), len(norm_title))
                         / max(len(norm_dir), len(norm_title))
                         if norm_dir and norm_title else 0.0)
             if coverage < config.FUZZY_DIR_MIN_COVERAGE:
-                vlog(f"rejected {best.name}: score {best_score:.2f} but length "
+                vlog(f"rejected {d.name}: score {score:.2f} but length "
                      f"coverage {coverage:.2f} < {config.FUZZY_DIR_MIN_COVERAGE}")
-            elif best_score > global_best_score:
-                global_best, global_best_score = best, best_score
-                vlog(f"fuzzy match: {best}  (score {best_score:.2f})")
-        elif best:
-            vlog(f"best fuzzy candidate {best.name} scored "
-                 f"{best_score:.2f} — under threshold")
+                continue
+            global_best, global_best_score = d, score
+            vlog(f"fuzzy match: {d}  (score {score:.2f})")
     return global_best
 
 
