@@ -111,9 +111,11 @@ def _read_fetch_log(limit_tail=None):
                 if not line:
                     continue
                 try:
-                    entries.append(json.loads(line))
+                    obj = json.loads(line)
                 except json.JSONDecodeError:
                     continue
+                if isinstance(obj, dict):     # a non-dict line would break entry.get(...)
+                    entries.append(obj)
             return entries
         # legacy array format — fall through to full read (we never tail-
         # optimised this path; once log_fetch migrates the file, it's a
@@ -130,7 +132,8 @@ def _read_fetch_log(limit_tail=None):
         try:
             data = json.loads(content)
             if isinstance(data, list):
-                return data[-limit_tail:] if limit_tail else data
+                rows = [d for d in data if isinstance(d, dict)]
+                return rows[-limit_tail:] if limit_tail else rows
             return []
         except json.JSONDecodeError:
             return []
@@ -140,11 +143,13 @@ def _read_fetch_log(limit_tail=None):
         if not line:
             continue
         try:
-            entries.append(json.loads(line))
+            obj = json.loads(line)
         except json.JSONDecodeError:
             # Skip the partial/malformed line, keep going. JSONL's whole
             # appeal is that one bad line doesn't kill the rest.
             continue
+        if isinstance(obj, dict):
+            entries.append(obj)
     return entries
 
 

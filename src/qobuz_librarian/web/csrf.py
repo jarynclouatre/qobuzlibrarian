@@ -42,6 +42,12 @@ class CSRFMiddleware(BaseHTTPMiddleware):
                         from urllib.parse import parse_qs
                         parsed = parse_qs(body.decode("latin-1"))
                         submitted = (parsed.get(CSRF_FORM_FIELD) or [None])[0]
+                    # multipart/form-data isn't parsed here (doing so would
+                    # consume the stream before downstream Form() handlers): a
+                    # multipart POST must carry the token in the CSRF header. The
+                    # htmx config adds it to every AJAX request; there are no
+                    # hand-built multipart forms today, so this is just a guard
+                    # for anyone adding a file-upload form later.
                 except Exception:
                     submitted = None
             if not cookie_token or not submitted or not secrets.compare_digest(
@@ -69,11 +75,10 @@ class CSRFMiddleware(BaseHTTPMiddleware):
         return response
 
 
-# 'unsafe-inline' is necessary because base.html ships inline <script>
-# blocks (SW register, keyboard shortcuts) and templates use hx-on::
-# attributes; a stricter CSP would need every inline block lifted into a
-# hashed external file. Defense-in-depth — autoescape is the primary XSS
-# guard.
+# 'unsafe-inline' is necessary because base.html ships inline <script> blocks
+# (SW register, keyboard shortcuts); a stricter CSP would need every inline
+# block lifted into a hashed external file. Defense-in-depth — autoescape is
+# the primary XSS guard.
 _CSP = (
     "default-src 'self'; "
     "script-src 'self' 'unsafe-inline'; "

@@ -100,6 +100,14 @@ class TestFetchLog:
         monkeypatch.setattr("qobuz_librarian.config.FETCH_LOG_FILE", f)
         assert len(_read_fetch_log()) == 2
 
+    def test_skips_valid_json_that_is_not_a_dict(self, tmp_path, monkeypatch):
+        f = tmp_path / "log.json"
+        f.write_text('{"artist":"A"}\n42\n"oops"\n[1,2]\n{"artist":"B"}\n')
+        monkeypatch.setattr("qobuz_librarian.config.FETCH_LOG_FILE", f)
+        # Non-dict lines would crash entry.get('artist') on the dashboard.
+        assert _read_fetch_log() == [{"artist": "A"}, {"artist": "B"}]
+        assert _read_fetch_log(limit_tail=10) == [{"artist": "A"}, {"artist": "B"}]
+
     def test_failed_migration_does_not_corrupt_legacy_array(self, tmp_path, monkeypatch):
         from qobuz_librarian.ui_cli import prompts
         f = tmp_path / "log.json"
