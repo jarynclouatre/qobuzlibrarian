@@ -52,12 +52,14 @@ def streamrip_quality_cap():
     if _streamrip_cap_cache is not None:
         return _streamrip_cap_cache
     cap = (24, 192000)  # safe permissive default
+    resolved = False
     try:
         q = int(cfg.STREAMRIP_QUALITY)
     except (TypeError, ValueError):
         q = None
     if q in _STREAMRIP_QUALITY_CAPS:
         cap = _STREAMRIP_QUALITY_CAPS[q]
+        resolved = True
     else:
         try:
             with open(cfg.STREAMRIP_CONFIG, "rb") as f:
@@ -65,8 +67,18 @@ def streamrip_quality_cap():
             cq = (config.get("qobuz") or {}).get("quality")
             if isinstance(cq, int) and cq in _STREAMRIP_QUALITY_CAPS:
                 cap = _STREAMRIP_QUALITY_CAPS[cq]
+                resolved = True
         except Exception:
             pass
+    if not resolved:
+        # Falling back to the permissive default silently makes the upgrade
+        # scanner reason at 24/192 even if downloads deliver less, so it
+        # re-flags the same albums as upgradeable every scan. Say so once.
+        from qobuz_librarian.ui_cli.logging import log
+        log.warning(
+            f"STREAMRIP_QUALITY={cfg.STREAMRIP_QUALITY!r} isn't a recognised "
+            "tier (1-4); assuming the most permissive quality cap, which can "
+            "keep re-flagging albums as upgradeable. Set it to 1-4.")
     _streamrip_cap_cache = cap
     return cap
 

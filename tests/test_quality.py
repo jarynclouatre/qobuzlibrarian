@@ -70,6 +70,15 @@ class TestStreamripQualityCap:
             second = streamrip_quality_cap()
         assert first == second == (24, 96000)
 
+    def test_unrecognised_quality_warns_and_stays_permissive(self, caplog):
+        import logging
+        with patch("qobuz_librarian.config.STREAMRIP_QUALITY", "99"), \
+             patch("qobuz_librarian.config.STREAMRIP_CONFIG", "/nonexistent.toml"), \
+             caplog.at_level(logging.WARNING, logger="qobuz_librarian"):
+            cap = streamrip_quality_cap()
+        assert cap == (24, 192000)
+        assert any("isn't a recognised tier" in r.message for r in caplog.records)
+
 
 @pytest.mark.usefixtures("primed_quality_cap_24_192")
 class TestAlbumMaxQuality:

@@ -64,6 +64,9 @@ def acquire() -> Optional[TextIO]:
         # seconds of acquiring the lock can leave the file empty or with a
         # stale PID — the next launch then reports "(pid ?)" in LockBusy.
         os.fsync(fp.fileno())
-    except OSError:
-        pass
+    except OSError as e:
+        # The lock itself is held (flock succeeded above); only the PID write
+        # failed, so a concurrent LockBusy may show "(pid ?)". Leave a trace.
+        from qobuz_librarian.ui_cli.logging import vlog
+        vlog(f"run-lock: couldn't record PID ({e}); lock is held regardless")
     return fp

@@ -108,7 +108,10 @@ def qobuz_get(endpoint, params, token):
             raise AuthLost(f"401 from Qobuz {endpoint}")
         if r.status_code in _RETRY_STATUSES:
             if attempt < _MAX_ATTEMPTS:
-                wait = _retry_after(r) or min(2 ** (attempt - 1), 8)
+                # `is not None`, not truthiness: a server "Retry-After: 0"
+                # (retry immediately) is valid and must not fall back to backoff.
+                _ra = _retry_after(r)
+                wait = _ra if _ra is not None else min(2 ** (attempt - 1), 8)
                 if r.status_code == 429:
                     # Surface rate-limit waits in the shared logger so the web
                     # SSE stream shows "rate-limited, waiting Ns" instead of a
