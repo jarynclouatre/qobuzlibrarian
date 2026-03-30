@@ -1759,7 +1759,7 @@ def test_download_force_param_overrides_library_check(client, monkeypatch):
     monkeypatch.setattr(cat, "find_album_dir_filesystem",
                         lambda album: Path("/tmp/album-dir"))
     monkeypatch.setattr(cat, "find_existing_tracks",
-                        lambda album: ([{"isrc": "X1"}], Path("/tmp/album-dir")))
+                        lambda album, **_kw: ([{"isrc": "X1"}], Path("/tmp/album-dir")))
     monkeypatch.setattr(proc_mod, "process_album",
                         lambda *a, **k: {"result": "downloaded", "n_ok": 1,
                                          "n_fail": 0, "n_lossy": 0,
@@ -1853,7 +1853,7 @@ def test_download_partial_album_proceeds_to_gap_fill(client, monkeypatch):
     monkeypatch.setattr(cat_mod, "find_album_dir_filesystem",
                         lambda _a: Path("/music/A/Gappy"))
     monkeypatch.setattr(cat_mod, "find_existing_tracks",
-                        lambda _a: ([{"id": 1}], None))
+                        lambda _a, **_kw: ([{"id": 1}], None))
     monkeypatch.setattr(cat_mod, "compute_missing",
                         lambda q, e: ([{"id": 2}, {"id": 3}], [{"id": 1}]))
     monkeypatch.setattr(proc_mod, "process_album",
@@ -1890,7 +1890,7 @@ def test_download_complete_album_is_blocked(client, monkeypatch):
     monkeypatch.setattr(cat_mod, "find_album_dir_filesystem",
                         lambda _a: Path("/music/A/Whole"))
     monkeypatch.setattr(cat_mod, "find_existing_tracks",
-                        lambda _a: ([{"id": 1}, {"id": 2}], None))
+                        lambda _a, **_kw: ([{"id": 1}, {"id": 2}], None))
     monkeypatch.setattr(cat_mod, "compute_missing",
                         lambda q, e: ([], [{"id": 1}, {"id": 2}]))
 

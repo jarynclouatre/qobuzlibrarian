@@ -395,7 +395,9 @@ def run_artist_gap_fill(artist_name, artist_dir, args, token, *,
             continue
 
         # Quick check: complete AND at-or-above Qobuz quality → short-circuit.
-        existing, _ = find_existing_tracks(album)
+        # `predicted` was just resolved above; reuse it so find_existing_tracks
+        # doesn't repeat the cached-subdir scan + fuzzy fallback on this album.
+        existing, _ = find_existing_tracks(album, album_dir=predicted)
         missing, present = compute_missing(qobuz_tracks, existing)
         n_total = len(qobuz_tracks)
 

@@ -737,7 +737,9 @@ async def queue_download(request: Request, album_id: str = Form(""),
                 album_dir = None
             if album_dir is not None:
                 try:
-                    existing_tracks, _ = find_existing_tracks(album)
+                    # Already resolved above; pass it through so we don't repeat
+                    # the cached-subdir scan + fuzzy fallback for the same album.
+                    existing_tracks, _ = find_existing_tracks(album, album_dir=album_dir)
                 except Exception:
                     existing_tracks = []
                 qobuz_tracks = (album.get("tracks") or {}).get("items") or []

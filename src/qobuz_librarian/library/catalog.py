@@ -337,13 +337,19 @@ def find_album_dir_filesystem(qobuz_album):
     return global_best
 
 
-def find_existing_tracks(qobuz_album):
+def find_existing_tracks(qobuz_album, *, album_dir=None):
     """Return (track_list, album_dir_or_None) by reading the filesystem.
 
     track_list is empty when no album dir is found — surfaces as
     '0 of N present' so the user can spot a folder-naming mismatch.
+
+    Pass ``album_dir`` when the caller already resolved it — the artist
+    walk and the single-album download path both resolve once via
+    ``find_album_dir_filesystem`` for a guardrail and would otherwise
+    re-resolve here, doubling the cached-subdir-listing work per album.
     """
-    album_dir = find_album_dir_filesystem(qobuz_album)
+    if album_dir is None:
+        album_dir = find_album_dir_filesystem(qobuz_album)
     if album_dir is None:
         return [], None
     return read_album_dir(album_dir), album_dir

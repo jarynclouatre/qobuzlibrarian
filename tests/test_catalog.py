@@ -607,3 +607,25 @@ class TestFuzzyMatchConsidersAllCoveragePassingFolders:
         found = find_album_dir_filesystem(album)
         clear_scan_caches()
         assert found is not None and found.name == "Wide Awaknng"
+
+
+def test_find_existing_tracks_skips_resolve_when_dir_passed(monkeypatch):
+    """The artist walk and the web download path already resolve the album
+    folder for a guardrail check; passing it in here must short-circuit the
+    second cached-subdir scan instead of repeating it."""
+    from pathlib import Path
+
+    from qobuz_librarian.library import catalog as cat_mod
+
+    def _trip(*_a, **_kw):
+        raise AssertionError("find_album_dir_filesystem was called despite "
+                             "album_dir being passed explicitly")
+
+    monkeypatch.setattr(cat_mod, "find_album_dir_filesystem", _trip)
+    monkeypatch.setattr(cat_mod, "read_album_dir",
+                        lambda _d: [{"isrc": "Z", "title": "x"}])
+    out, ad = cat_mod.find_existing_tracks(
+        {"id": "1", "title": "x"},
+        album_dir=Path("/music/Foo/Bar"))
+    assert out == [{"isrc": "Z", "title": "x"}]
+    assert ad == Path("/music/Foo/Bar")
