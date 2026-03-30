@@ -84,6 +84,42 @@ def _lock_busy_response(request):
 _UNWRITABLE_VOLUMES: list[str] = []
 
 
+def _resume_album_download(job, _args):
+    from qobuz_librarian.web import flows
+    return lambda j, chosen: flows.execute_albums(j, chosen, _get_token())
+
+
+def _resume_upgrade(job, _args):
+    from qobuz_librarian.web import flows
+    return lambda j, chosen: flows.execute_upgrades(j, chosen, _get_token())
+
+
+def _resume_repair(job, _args):
+    from qobuz_librarian.web import flows
+    return lambda j, chosen: flows.execute_repairs(j, chosen, _get_token())
+
+
+def _resume_migration(job, args):
+    from qobuz_librarian.web import flows
+    dest = args.get("dest", "")
+    in_place = bool(args.get("in_place"))
+    return lambda j, chosen: flows.execute_migration(
+        j, chosen, dest, in_place=in_place)
+
+
+# Names the persisted ``execute_kind`` strings so jobs survive a restart
+# even though their original execute closure is gone. Each factory is
+# called lazily, when the user actually approves the reloaded job, so
+# the rebound function reads the current token rather than baking in the
+# (possibly-rotated) one from the prior session.
+_RESUME_EXECUTE: dict = {
+    "album":     _resume_album_download,
+    "upgrade":   _resume_upgrade,
+    "repair":    _resume_repair,
+    "migration": _resume_migration,
+}
+
+
 @asynccontextmanager
 async def _lifespan(_app: FastAPI):
     import logging
@@ -185,6 +221,14 @@ async def _lifespan(_app: FastAPI):
         _log.warning("`beet` (beets) not found in PATH — imports will fail")
     if not shutil.which("ffprobe"):
         _log.warning("`ffprobe` not found — FLAC validation disabled")
+    # Reload jobs from the prior session so an AWAITING_REVIEW scan's
+    # candidates survive a container restart and queued/running downloads
+    # don't silently vanish (they're rebadged FAILED with a retry hint).
+    # Done before start_worker() so the worker doesn't race with restore.
+    try:
+        job_mgr.restore_jobs(_RESUME_EXECUTE)
+    except Exception as e:
+        _log.warning("couldn't restore prior jobs: %s — starting fresh.", e)
     # Probe the saved token against Qobuz so a stale slot — non-empty but
     # not actually authenticated — surfaces in the dashboard banner rather
     # than failing the user's first search.
@@ -809,6 +853,7 @@ async def artist_scan(request: Request, artist: str = Form("")):
         return _no_creds_response(request)
     from qobuz_librarian.web import flows
     job = job_mgr.Job(title="Artist scan", artist=name)
+    job.execute_kind = "album"
     job_mgr.submit_scan(
         job,
         lambda j: flows.scan_artist(j, name, _get_token()),
@@ -837,6 +882,7 @@ async def library_scan(request: Request, mode: str = Form("missing_albums")):
     partial_only = mode_norm == "partial_fill"
     title = "Library album-fill scan" if partial_only else "Library gap scan"
     job = job_mgr.Job(title=title)
+    job.execute_kind = "album"
     job_mgr.submit_scan(
         job,
         lambda j: flows.scan_library(j, _get_token(), partial_only=partial_only),
@@ -862,6 +908,7 @@ async def upgrade_scan(request: Request):
         return _no_creds_response(request)
     from qobuz_librarian.web import flows
     job = job_mgr.Job(title="Quality upgrade scan")
+    job.execute_kind = "upgrade"
     job_mgr.submit_scan(
         job,
         lambda j: flows.scan_upgrades(j, _get_token()),
@@ -887,6 +934,7 @@ async def repair_scan(request: Request):
         return _no_creds_response(request)
     from qobuz_librarian.web import flows
     job = job_mgr.Job(title="Repair scan")
+    job.execute_kind = "repair"
     job_mgr.submit_scan(
         job,
         lambda j: flows.scan_repairs(j, _get_token()),
@@ -928,6 +976,8 @@ async def migrate_scan(request: Request):
     from qobuz_librarian.web import flows
     job = job_mgr.Job(title="Library migration")
     job.review_verb = "Move" if in_place else "Copy"
+    job.execute_kind = "migration"
+    job.execute_args = {"dest": str(dest), "in_place": bool(in_place)}
     job_mgr.submit_scan(
         job,
         lambda j: flows.scan_migration(j, src, dest, use_acoustid=use_acoustid),

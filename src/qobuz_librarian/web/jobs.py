@@ -28,6 +28,7 @@ from typing import Callable, Optional
 
 from qobuz_librarian.integrations import rip as rip_module
 from qobuz_librarian.ui_cli.logging import set_progress_reporter
+from qobuz_librarian.web import job_persistence
 
 # Thread-local pointer to the job currently being run on this worker.
 # Lets rip_url's cancel-check hook (installed below) find the running
@@ -108,6 +109,13 @@ class Job:
     # The verb the review screen's submit button uses. Most jobs download what
     # you approve; the migration job copies (or moves), so it overrides this.
     review_verb: str = "Download"
+    # How to rebind execute_fn after a container restart. The closure passed
+    # into submit_scan can't be serialised; the kind names a flow in the
+    # resume registry (see web/app.py _RESUME_EXECUTE) and execute_args holds
+    # any extra inputs that flow needs (migration's dest path, in_place flag).
+    # Left as "" / {} for jobs that don't need to resume.
+    execute_kind: str = ""
+    execute_args: dict = field(default_factory=dict)
     cancel_requested: bool = False
     created_at: float = field(default_factory=time.time)
     finished_at: Optional[float] = None
@@ -254,6 +262,7 @@ class JobRegistry:
             self._jobs[job.id] = job
             self._order.append(job.id)
             self._prune()
+        job_persistence.persist(job)
 
     def get(self, job_id: str) -> Optional[Job]:
         return self._jobs.get(job_id)
@@ -285,16 +294,19 @@ class JobRegistry:
                 continue
             self._order.remove(old)
             self._jobs.pop(old, None)
+            job_persistence.delete(old)
 
     def clear_finished(self):
         """Drop every job in a terminal state. Active jobs are kept."""
         with self._lock:
             keep = [jid for jid in self._order
                     if self._jobs.get(jid) and self._jobs[jid].status not in TERMINAL]
-            for jid in list(self._jobs.keys()):
-                if jid not in keep:
-                    self._jobs.pop(jid, None)
+            dropped = [jid for jid in self._jobs.keys() if jid not in keep]
+            for jid in dropped:
+                self._jobs.pop(jid, None)
             self._order = keep
+        for jid in dropped:
+            job_persistence.delete(jid)
 
 
 # ── Logging capture ───────────────────────────────────────────────────────────
@@ -409,6 +421,10 @@ def _run_task(job: Job, fn):
         if job.status in TERMINAL:
             job.finished_at = time.time()
             _fire_post_job_hook(job)
+        # Persist outside the post-job hook (and after AWAITING_REVIEW
+        # transitions inside scan_fn) so the saved row matches what the user
+        # would see on /queue, including candidate lists for review jobs.
+        job_persistence.persist(job)
         job.end_stream()
 
 
@@ -472,6 +488,7 @@ def _worker_loop(work_queue: "queue.Queue"):
         # crashed job can't take down the whole queue.
         try:
             job.status = JobStatus.RUNNING
+            job_persistence.persist(job)
             _run_task(job, fn)
         except BaseException as e:  # noqa: BLE001 - must not die
             try:
@@ -563,6 +580,7 @@ def approve(job: Job, selected_ids) -> bool:
         for c in job.candidates:
             c["selected"] = c["cid"] in keep
         chosen = job.selected_candidates()
+    job_persistence.persist(job)
 
     def _execute(j: Job):
         # Cancelled between approve and the worker picking this up: don't start
@@ -593,8 +611,92 @@ def cancel_review(job: Job) -> bool:
             return False
         job.status = JobStatus.CANCELED
         job.finished_at = time.time()
+    job_persistence.persist(job)
     job.end_stream()
     return True
+
+
+def restore_jobs(execute_registry: dict) -> None:
+    """Rehydrate the registry from the on-disk job table at app startup.
+
+    ``execute_registry`` maps an ``execute_kind`` string to a factory
+    ``factory(job, execute_args)`` that returns the bound execute_fn to use
+    when the user later approves a reloaded AWAITING_REVIEW job. The
+    factory is invoked lazily, on approve — so it can re-read a fresh
+    Qobuz token (the one captured at original-submit time is gone).
+
+    Three behaviours by saved status:
+      * DONE / FAILED / CANCELED — loaded as-is so /queue still shows them.
+      * AWAITING_REVIEW — loaded with candidates intact, execute_fn rebound
+        from ``execute_registry`` if the kind is known. If the kind is
+        unknown (registry change between releases), the job is rebadged
+        FAILED with a hint to re-run the original scan.
+      * PENDING / RUNNING / SCANNING — the closures that drove them are
+        gone, so they're rebadged FAILED("interrupted on restart — submit
+        again") and saved back. The user sees them rather than them
+        silently vanishing.
+    """
+    job_persistence.init()
+    rows = job_persistence.load_all()
+    if not rows:
+        return
+    interrupted = 0
+    review = 0
+    historical = 0
+    for row in rows:
+        try:
+            status = JobStatus(row["status"])
+        except ValueError:
+            # Unknown status in the file — drop the row rather than letting
+            # one bad entry block startup.
+            job_persistence.delete(row["id"])
+            continue
+        job = Job(
+            id=row["id"],
+            title=row.get("title") or "",
+            artist=row.get("artist") or "",
+            album_id=row.get("album_id") or "",
+            kind=row.get("kind") or "download",
+            status=status,
+            phase=row.get("phase") or "",
+            candidates=row.get("candidates") or [],
+            error=row.get("error"),
+            summary=row.get("summary") or "",
+            review_verb=row.get("review_verb") or "Download",
+            execute_kind=row.get("execute_kind") or "",
+            execute_args=row.get("execute_args") or {},
+            created_at=row.get("created_at") or time.time(),
+            finished_at=row.get("finished_at"),
+        )
+        if status in (JobStatus.PENDING, JobStatus.RUNNING,
+                      JobStatus.SCANNING):
+            job.status = JobStatus.FAILED
+            job.error = ("Interrupted by a container restart — submit this "
+                         "job again to retry.")
+            job.finished_at = time.time()
+            interrupted += 1
+            job_persistence.persist(job)
+        elif status == JobStatus.AWAITING_REVIEW:
+            factory = execute_registry.get(job.execute_kind)
+            if factory is None:
+                job.status = JobStatus.FAILED
+                job.error = ("Couldn't restore this job's executor across "
+                             "the restart — re-run the original scan.")
+                job.finished_at = time.time()
+                interrupted += 1
+                job_persistence.persist(job)
+            else:
+                job._execute_fn = factory(job, job.execute_args)
+                review += 1
+        else:
+            historical += 1
+        with registry._lock:
+            registry._jobs[job.id] = job
+            registry._order.append(job.id)
+    if interrupted or review:
+        logging.getLogger("qobuz_librarian").info(
+            "Restored %d historical / %d review / %d interrupted job(s) "
+            "from the previous run.", historical, review, interrupted)
 
 
 def request_cancel(job: Job) -> bool:

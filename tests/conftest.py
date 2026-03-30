@@ -45,6 +45,11 @@ def _isolate_data_dir():
     # cache's own test re-enables it.
     cfg.ALBUM_CACHE_ENABLED  = False
     cfg.FLAC_CACHE_ENABLED   = False
+    # Suppress write-through job persistence for the deterministic suite — a
+    # shared jobs.db would otherwise leak historical rows between tests. The
+    # persistence-specific tests flip this off with monkeypatch and a reset.
+    from qobuz_librarian.web import job_persistence
+    job_persistence._disabled = True
 
     prior_web_auth = os.environ.get("WEB_AUTH")
     os.environ["WEB_AUTH"] = "none"

@@ -1561,6 +1561,96 @@ def test_search_query_too_long_is_rejected_or_truncated(client):
 
 
 
+def test_persistence_restores_awaiting_review_with_candidates(monkeypatch):
+    """The headline reliability win: a completed scan's candidates survive a
+    container restart — the user can still approve them instead of re-scanning
+    from artist 1."""
+    from qobuz_librarian.web import job_persistence
+
+    job_persistence._reset_for_tests()
+    monkeypatch.setattr(job_persistence, "_disabled", False)
+    job_persistence.init()
+
+    # Simulate a scan that parked AWAITING_REVIEW before the container died.
+    saved = jm.Job(title="Artist scan", artist="Foo")
+    saved.kind = "scan"
+    saved.execute_kind = "album"
+    saved.status = jm.JobStatus.AWAITING_REVIEW
+    saved.add_candidate("album", "Bar", "Foo", payload={"album_id": "abc"})
+    job_persistence.persist(saved)
+
+    # Drop the in-memory state to mimic the new process.
+    monkeypatch.setattr(jm, "registry", jm.JobRegistry())
+
+    executed = {}
+
+    def _factory(job, _args):
+        return lambda j, chosen: executed.setdefault("ids", [
+            c["payload"]["album_id"] for c in chosen])
+
+    jm.restore_jobs({"album": _factory})
+
+    restored = jm.registry.get(saved.id)
+    assert restored is not None
+    assert restored.status == jm.JobStatus.AWAITING_REVIEW
+    assert len(restored.candidates) == 1
+    assert restored.candidates[0]["payload"] == {"album_id": "abc"}
+
+    # And the user can still approve — the execute_fn was rebound from the
+    # kind registry rather than vanishing with the dead closure.
+    jm.start_worker()
+    assert jm.approve(restored, ["c0"]) is True
+    assert _wait_for(lambda: restored.status == jm.JobStatus.DONE)
+    assert executed.get("ids") == ["abc"]
+
+
+def test_persistence_marks_inflight_jobs_failed_on_restore(monkeypatch):
+    """A RUNNING / SCANNING / PENDING job from before the restart comes back
+    as FAILED with a retry hint, not silently dropped."""
+    from qobuz_librarian.web import job_persistence
+
+    job_persistence._reset_for_tests()
+    monkeypatch.setattr(job_persistence, "_disabled", False)
+    job_persistence.init()
+
+    for status in (jm.JobStatus.RUNNING, jm.JobStatus.SCANNING,
+                   jm.JobStatus.PENDING):
+        j = jm.Job(title=f"in-flight {status.value}")
+        j.status = status
+        job_persistence.persist(j)
+
+    monkeypatch.setattr(jm, "registry", jm.JobRegistry())
+    jm.restore_jobs({})
+
+    for job in jm.registry.all():
+        assert job.status == jm.JobStatus.FAILED
+        assert "Interrupted" in (job.error or "")
+
+
+def test_persistence_unknown_execute_kind_fails_clean(monkeypatch):
+    """A registry mismatch across releases (kind that no longer exists)
+    rebadges the job as FAILED rather than silently leaving it un-resumable."""
+    from qobuz_librarian.web import job_persistence
+
+    job_persistence._reset_for_tests()
+    monkeypatch.setattr(job_persistence, "_disabled", False)
+    job_persistence.init()
+
+    j = jm.Job(title="weird scan")
+    j.kind = "scan"
+    j.execute_kind = "made-up-kind"
+    j.status = jm.JobStatus.AWAITING_REVIEW
+    j.add_candidate("album", "x", "Artist", payload={"album_id": "1"})
+    job_persistence.persist(j)
+
+    monkeypatch.setattr(jm, "registry", jm.JobRegistry())
+    jm.restore_jobs({"album": lambda *a: (lambda j, c: None)})
+
+    restored = jm.registry.get(j.id)
+    assert restored.status == jm.JobStatus.FAILED
+    assert "re-run" in (restored.error or "").lower()
+
+
 def test_dashboard_token_invalid_shows_banner(client, monkeypatch):
     """The stale-token banner fires only when _TOKEN_VALID is explicitly False."""
     import qobuz_librarian.web.app as webapp
