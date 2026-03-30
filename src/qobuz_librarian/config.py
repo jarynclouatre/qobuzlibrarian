@@ -240,6 +240,13 @@ ALBUM_CACHE_ENABLED = _env_bool("ALBUM_CACHE_ENABLED", True)
 # key self-invalidates when a file is edited/replaced. Off disables it.
 FLAC_CACHE_ENABLED = _env_bool("FLAC_CACHE_ENABLED", True)
 
+# How long (seconds) a cached artist catalog (get_artist_albums) is reused before
+# re-fetching. Catalogs change only when an artist puts out something new, so a
+# few days keeps frequent re-scans free while still surfacing new releases. 0
+# disables catalog caching (album caching, being immutable, stays on). Gated by
+# ALBUM_CACHE_ENABLED.
+ARTIST_CATALOG_CACHE_TTL = _env("ARTIST_CATALOG_CACHE_TTL", 7 * 86400)
+
 # Per-request budgets for the web UI's Qobuz API calls (album/search/track
 # fetches and the Settings token check). A slow Qobuz response shouldn't
 # park a worker thread for minutes — the user gets a clear timeout instead.

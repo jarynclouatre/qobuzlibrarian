@@ -50,6 +50,11 @@ def _ensure() -> bool:
                 conn.execute(
                     "CREATE TABLE IF NOT EXISTS albums "
                     "(id TEXT PRIMARY KEY, payload TEXT NOT NULL, fetched_at REAL)")
+                # Artist catalogs change when new releases drop, so unlike album
+                # track lists they're served with a TTL (see get_catalog).
+                conn.execute(
+                    "CREATE TABLE IF NOT EXISTS catalogs "
+                    "(key TEXT PRIMARY KEY, payload TEXT NOT NULL, fetched_at REAL)")
                 conn.commit()
             _initialized = True
             return True
@@ -92,6 +97,46 @@ def put(album_id, payload) -> None:
             conn.commit()
     except sqlite3.Error as e:
         vlog(f"album cache write failed: {e}")
+
+
+def get_catalog(key, ttl_seconds) -> dict | None:
+    """Cached artist-catalog payload for ``key`` if newer than ``ttl_seconds``.
+
+    A non-positive TTL always misses, which disables catalog caching while
+    leaving the (immutable) album cache on."""
+    if not key or ttl_seconds <= 0 or not _ensure():
+        return None
+    try:
+        with _connect() as conn:
+            row = conn.execute(
+                "SELECT payload, fetched_at FROM catalogs WHERE key = ?",
+                (str(key),)).fetchone()
+    except sqlite3.Error as e:
+        vlog(f"catalog cache read failed: {e}")
+        return None
+    if not row or (time.time() - (row[1] or 0)) > ttl_seconds:
+        return None
+    try:
+        return json.loads(row[0])
+    except (ValueError, TypeError):
+        return None
+
+
+def put_catalog(key, payload) -> None:
+    if not key or not isinstance(payload, dict) or not _ensure():
+        return
+    try:
+        data = json.dumps(payload)
+    except (TypeError, ValueError):
+        return
+    try:
+        with _connect() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO catalogs (key, payload, fetched_at) "
+                "VALUES (?, ?, ?)", (str(key), data, time.time()))
+            conn.commit()
+    except sqlite3.Error as e:
+        vlog(f"catalog cache write failed: {e}")
 
 
 def _reset_for_tests() -> None:

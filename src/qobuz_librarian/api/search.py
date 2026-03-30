@@ -140,6 +140,11 @@ def get_artist_albums(artist_id, token, limit=None):
     """Return (items, qobuz_total) for an artist's full discography.
     Items are search-shaped (no tracks); call get_album() for those."""
     limit = limit if limit is not None else config.ARTIST_CATALOG_LIMIT
+    from qobuz_librarian.api import album_cache
+    cache_key = f"{artist_id}:{limit}"
+    cached = album_cache.get_catalog(cache_key, config.ARTIST_CATALOG_CACHE_TTL)
+    if cached is not None:
+        return cached.get("items") or [], cached.get("total")
     items = []
     offset = 0
     qobuz_total = None
@@ -169,4 +174,5 @@ def get_artist_albums(artist_id, token, limit=None):
             break
         if qobuz_total is not None and len(items) >= qobuz_total:
             break
+    album_cache.put_catalog(cache_key, {"items": items, "total": qobuz_total})
     return items, qobuz_total

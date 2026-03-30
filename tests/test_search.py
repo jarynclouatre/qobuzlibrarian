@@ -135,3 +135,28 @@ def test_get_album_caches_by_id_across_calls(tmp_path, monkeypatch):
         assert a1 == a2 and a1["id"] == "ALB1"
     finally:
         album_cache._reset_for_tests()
+
+
+def test_get_artist_albums_caches_within_ttl(tmp_path, monkeypatch):
+    import qobuz_librarian.config as cfg
+    from qobuz_librarian.api import album_cache, search
+
+    monkeypatch.setattr(cfg, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(cfg, "ALBUM_CACHE_ENABLED", True)
+    monkeypatch.setattr(cfg, "ARTIST_CATALOG_CACHE_TTL", 3600)
+    album_cache._reset_for_tests()
+    try:
+        calls = {"n": 0}
+
+        def fake_get(endpoint, params, token):
+            calls["n"] += 1
+            return {"albums": {"items": [{"id": "A1", "title": "X"}], "total": 1}}
+
+        monkeypatch.setattr(search, "qobuz_get", fake_get)
+        items1, total1 = search.get_artist_albums("ART1", "tok", limit=10)
+        items2, total2 = search.get_artist_albums("ART1", "tok", limit=10)
+        assert calls["n"] == 1                       # second served from cache
+        assert total1 == total2 == 1
+        assert [a["id"] for a in items1] == [a["id"] for a in items2] == ["A1"]
+    finally:
+        album_cache._reset_for_tests()
