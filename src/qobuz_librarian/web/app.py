@@ -465,28 +465,37 @@ async def dashboard_head():
 @app.get("/", response_class=HTMLResponse)
 async def dashboard(request: Request):
     from qobuz_librarian import config as _cfg
-    from qobuz_librarian.integrations.lyrics import load_lyric_retry
-    from qobuz_librarian.ui_cli.prompts import _read_fetch_log
-    # tail-only read so a long-running install with a multi-MB fetch log
-    # doesn't slurp the whole file on every dashboard load.
-    recent = list(reversed(_read_fetch_log(limit_tail=8)))
-    # First-run nudge: a fresh install has no Qobuz credentials, so every
-    # search/scan would fail with a cryptic error. Surface it up front
-    # instead. Filesystem-only check (no network) so it's cheap per load.
-    creds_ok = bool(_read_creds().get("auth_token"))
-    lyric_retry_count = len(load_lyric_retry()) if _cfg.LYRIC_RETRY_FILE.exists() else 0
     active_job = _active_job()
+
+    # These all read the (often NAS / network-mounted) data + music volumes —
+    # the fetch log, the creds file, the lyric-retry file, and a staging
+    # iterdir(). Run them off the event loop so a sleepy/flaky mount can't stall
+    # every other request (health checks, SSE setup, search) while it blocks.
+    def _gather_disk_state():
+        from qobuz_librarian.integrations.lyrics import load_lyric_retry
+        from qobuz_librarian.ui_cli.prompts import _read_fetch_log
+        return {
+            # tail-only read so a long-running install with a multi-MB fetch log
+            # doesn't slurp the whole file on every dashboard load.
+            "recent": list(reversed(_read_fetch_log(limit_tail=8))),
+            # First-run nudge: a fresh install has no creds, so every search/scan
+            # would fail cryptically — surface it up front. Filesystem-only.
+            "creds_ok": bool(_read_creds().get("auth_token")),
+            "lyric_retry_count":
+                len(load_lyric_retry()) if _cfg.LYRIC_RETRY_FILE.exists() else 0,
+            "staging_album_count": 0 if active_job else _staging_album_count(),
+        }
+
+    loop = asyncio.get_running_loop()
+    disk = await loop.run_in_executor(None, _gather_disk_state)
     return _tr(request, "index.html", {
         "active_job": active_job,
         "pending": job_mgr.registry.pending_and_running(),
         "review": job_mgr.registry.awaiting_review(),
-        "recent": recent,
-        "creds_ok": creds_ok,
         "creds_token_valid": _TOKEN_VALID,
         "lock_busy_pid": _LOCK_BUSY_PID,
-        "lyric_retry_count": lyric_retry_count,
-        "staging_album_count": 0 if active_job else _staging_album_count(),
         "page": "dashboard",
+        **disk,
     })
 
 
