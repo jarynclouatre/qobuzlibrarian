@@ -318,9 +318,34 @@ class JobLogHandler(logging.Handler):
 # ── Global singletons ─────────────────────────────────────────────────────────
 
 registry = JobRegistry()
-_worker_thread: Optional[threading.Thread] = None
-_work_queue: "queue.Queue" = queue.Queue()
+# Two worker lanes so a quick single-album download isn't stuck behind a scan
+# whose execute phase is downloading 30 albums. Each lane keeps its own work
+# queue and worker thread; the shared `staging_lock` below serialises the
+# parts that actually touch /staging (rip + beets), so the two lanes safely
+# interleave per-album rather than per-job. Scans themselves don't take the
+# lock, so a download can run while a scan is mid-walk.
+_download_worker_thread: Optional[threading.Thread] = None
+_scan_worker_thread: Optional[threading.Thread] = None
+_download_queue: "queue.Queue" = queue.Queue()
+_scan_queue: "queue.Queue" = queue.Queue()
 _stop_event = threading.Event()
+# Mutual exclusion around the actual rip+import work. Acquired per album in
+# the execute loops (and once around each single-album download), released
+# between albums so the other lane gets a turn. Streamrip writes per-album
+# subfolders into /staging and beets has a process-wide SQLite lock — running
+# both lanes in parallel without this would race on both.
+_staging_lock = threading.Lock()
+
+
+def staging_lock():
+    """Return the staging-mutex object so callers can ``with staging_lock():``.
+
+    Held while a single album is being downloaded and imported. Release
+    between albums (or between a download and an import phase) lets the
+    other worker lane interleave its own album-level work instead of
+    waiting for an entire batch.
+    """
+    return _staging_lock
 
 
 def _friendly_job_error(exc, fallback: str) -> str:
@@ -419,10 +444,10 @@ def _fire_post_job_hook(job):
         vlog(f"post-job hook failed: {e}")
 
 
-def _worker_loop():
+def _worker_loop(work_queue: "queue.Queue"):
     while not _stop_event.is_set():
         try:
-            job, fn = _work_queue.get(timeout=1)
+            job, fn = work_queue.get(timeout=1)
         except queue.Empty:
             # Idle tick: apply any deferred settings change so `current()`
             # on the Settings page reflects reality even when no new job
@@ -461,25 +486,30 @@ def _worker_loop():
                 pass
         finally:
             try:
-                _work_queue.task_done()
+                work_queue.task_done()
             except ValueError:
                 pass
 
 
 def start_worker():
-    global _worker_thread
-    if _worker_thread and _worker_thread.is_alive():
-        return
+    global _download_worker_thread, _scan_worker_thread
     _stop_event.clear()
-    _worker_thread = threading.Thread(target=_worker_loop, daemon=True,
-                                      name="job-worker")
-    _worker_thread.start()
+    if not (_download_worker_thread and _download_worker_thread.is_alive()):
+        _download_worker_thread = threading.Thread(
+            target=_worker_loop, args=(_download_queue,), daemon=True,
+            name="job-worker-download")
+        _download_worker_thread.start()
+    if not (_scan_worker_thread and _scan_worker_thread.is_alive()):
+        _scan_worker_thread = threading.Thread(
+            target=_worker_loop, args=(_scan_queue,), daemon=True,
+            name="job-worker-scan")
+        _scan_worker_thread.start()
 
 
 def submit(job: Job, fn):
-    """Queue a simple job. fn(job) runs to completion on the worker."""
+    """Queue a simple job. fn(job) runs to completion on the download worker."""
     registry.add(job)
-    _work_queue.put((job, fn))
+    _download_queue.put((job, fn))
     return job
 
 
@@ -509,7 +539,7 @@ def submit_scan(job: Job, scan_fn, execute_fn):
             j.push_line("Nothing to do — no candidates found.")
             j.status = JobStatus.DONE
 
-    _work_queue.put((job, _scan))
+    _scan_queue.put((job, _scan))
     return job
 
 
@@ -547,7 +577,7 @@ def approve(job: Job, selected_ids) -> bool:
             return
         j._execute_fn(j, chosen)
 
-    _work_queue.put((job, _execute))
+    _scan_queue.put((job, _execute))
     return True
 
 

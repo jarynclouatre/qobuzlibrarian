@@ -312,6 +312,7 @@ def scan_library(job, token, partial_only=False):
 def execute_albums(job, chosen, token):
     """Download each selected album via the normal process_album path."""
     from qobuz_librarian.modes.process import process_album
+    from qobuz_librarian.web.jobs import staging_lock
 
     # The web worker runs jobs back-to-back; a directory listing cached by
     # a previous job would otherwise be reused even though folders may
@@ -339,8 +340,9 @@ def execute_albums(job, chosen, token):
             failed += 1
             continue
         try:
-            result = process_album(full, args, allow_force=False,
-                                   already_confirmed=True, token=token)
+            with staging_lock():
+                result = process_album(full, args, allow_force=False,
+                                       already_confirmed=True, token=token)
         except Exception as e:
             log.info(f"  failed: {e}")
             failed += 1
@@ -433,6 +435,7 @@ def scan_upgrades(job, token):
 def execute_upgrades(job, chosen, token):
     """Re-rip the present tracks of each chosen album at higher quality."""
     from qobuz_librarian.modes.process import process_album
+    from qobuz_librarian.web.jobs import staging_lock
 
     clear_scan_caches()
     args = build_args()
@@ -460,9 +463,10 @@ def execute_upgrades(job, chosen, token):
         log.info(f"[{i}/{len(chosen)}] {cand.get('artist','')} — "
                  f"{album.get('title') or '?'}")
         try:
-            result = process_album(album, args, allow_force=False,
-                                   already_confirmed=True,
-                                   upgrade_only=True, token=token)
+            with staging_lock():
+                result = process_album(album, args, allow_force=False,
+                                       already_confirmed=True,
+                                       upgrade_only=True, token=token)
         except Exception as e:
             log.info(f"  failed: {e}")
             failed += 1
@@ -573,6 +577,7 @@ def _redownload_damaged_album(payload, token):
         restore_upgrade_backup,
     )
     from qobuz_librarian.modes.process import process_album
+    from qobuz_librarian.web.jobs import staging_lock
 
     log.info("  The damaged file can't be verified by its ID, so the whole "
              "album is being re-downloaded fresh from Qobuz.")
@@ -585,8 +590,9 @@ def _redownload_damaged_album(payload, token):
                  "See the log above.")
         return {"imported": False, "n_ok": 0, "result": "backup_failed"}
     try:
-        result = process_album(full, build_args(), allow_force=False,
-                               already_confirmed=True, token=token) or {}
+        with staging_lock():
+            result = process_album(full, build_args(), allow_force=False,
+                                   already_confirmed=True, token=token) or {}
     except Exception:
         if backup:
             restore_upgrade_backup(backup, album_dir)
@@ -608,6 +614,7 @@ def execute_repairs(job, chosen, token):
     from pathlib import Path
 
     from qobuz_librarian.modes.repair import repair_album_dir
+    from qobuz_librarian.web.jobs import staging_lock
 
     clear_scan_caches()
     args = build_args()
@@ -624,11 +631,13 @@ def execute_repairs(job, chosen, token):
         log.info(f"[{i}/{len(chosen)}] {p['artist_name']} — {cand['title']}")
         try:
             if cand.get("kind") == "redownload":
+                # _redownload_damaged_album takes the staging lock itself.
                 result = _redownload_damaged_album(p, token)
             else:
-                result = repair_album_dir(Path(p["album_dir"]),
-                                          p["verified_truncated"],
-                                          p["artist_name"], args, token)
+                with staging_lock():
+                    result = repair_album_dir(Path(p["album_dir"]),
+                                              p["verified_truncated"],
+                                              p["artist_name"], args, token)
         except Exception as e:
             log.info(f"  failed: {e}")
             failed += 1

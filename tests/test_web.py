@@ -62,6 +62,76 @@ def _wait_for(predicate, timeout=5.0):
 
 
 
+def test_download_lane_runs_while_scan_lane_busy():
+    """A single-album download must not wait behind a busy scan lane —
+    that's the whole point of the split worker lanes."""
+    import threading
+
+    jm.start_worker()
+    scan_running = threading.Event()
+    scan_release = threading.Event()
+    download_ran = threading.Event()
+
+    scan_job = jm.Job(title="busy scan")
+    scan_job.kind = "scan"
+
+    def _busy_scan(j):
+        scan_running.set()
+        scan_release.wait(timeout=5)
+
+    # Submit straight onto the scan lane (no candidates → submit_scan would
+    # short-circuit to DONE before _busy_scan got to wait).
+    jm.registry.add(scan_job)
+    jm._scan_queue.put((scan_job, _busy_scan))
+
+    assert scan_running.wait(timeout=5), "scan lane never started its job"
+
+    dl_job = jm.Job(title="single download")
+    jm.submit(dl_job, lambda j: download_ran.set())
+
+    assert download_ran.wait(timeout=5), \
+        "download lane stalled behind a busy scan lane"
+    scan_release.set()
+    assert _wait_for(lambda: scan_job.status in jm.TERMINAL)
+
+
+def test_staging_lock_serialises_lane_album_work():
+    """Both lanes interleave at the album level: only one rip+import at a
+    time, even with two workers running. Guards against /staging races and
+    beets' SQLite write lock."""
+    import threading
+
+    jm.start_worker()
+    inside = threading.Event()
+    release = threading.Event()
+    second_inside = threading.Event()
+
+    holder = jm.Job(title="lock holder")
+    holder.kind = "scan"
+
+    def _hold(j):
+        with jm.staging_lock():
+            inside.set()
+            release.wait(timeout=5)
+
+    jm.registry.add(holder)
+    jm._scan_queue.put((holder, _hold))
+    assert inside.wait(timeout=5)
+
+    contender = jm.Job(title="lock contender")
+
+    def _grab(j):
+        with jm.staging_lock():
+            second_inside.set()
+
+    jm.submit(contender, _grab)
+    # The download lane's worker has picked up the job (it isn't queue-blocked
+    # behind the holder), but staging_lock is held — so it must NOT enter yet.
+    assert not second_inside.wait(timeout=0.3)
+    release.set()
+    assert second_inside.wait(timeout=5)
+
+
 def test_scan_job_parks_for_review_then_executes():
     jm.start_worker()
     executed = {}
@@ -103,13 +173,13 @@ def test_approve_flips_status_before_enqueue(monkeypatch):
     job.add_candidate("album", "A", "Artist", payload={"id": 1})
 
     status_at_put = []
-    orig_put = jm._work_queue.put
+    orig_put = jm._scan_queue.put
 
     def _spy_put(item):
         status_at_put.append(item[0].status)
         orig_put(item)
 
-    monkeypatch.setattr(jm._work_queue, "put", _spy_put)
+    monkeypatch.setattr(jm._scan_queue, "put", _spy_put)
 
     assert jm.approve(job, ["c1"]) is True
     assert status_at_put == [jm.JobStatus.PENDING]
@@ -1059,8 +1129,8 @@ def test_library_scan_cancel_during_walk_ends_canceled():
     """A scan_fn that sets cancel_requested and returns early must end CANCELED."""
     captured = []
 
-    original_put = jm._work_queue.put
-    jm._work_queue.put = captured.append
+    original_put = jm._scan_queue.put
+    jm._scan_queue.put = captured.append
     try:
         job = jm.Job(title="Library gap scan")
 
@@ -1069,7 +1139,7 @@ def test_library_scan_cancel_during_walk_ends_canceled():
 
         jm.submit_scan(job, cancel_mid_walk, lambda j, chosen: None)
     finally:
-        jm._work_queue.put = original_put
+        jm._scan_queue.put = original_put
 
     assert len(captured) == 1
     _, fn = captured[0]

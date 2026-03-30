@@ -720,8 +720,9 @@ async def queue_download(request: Request, album_id: str = Form(""),
             from qobuz_librarian.modes.process import process_album
             from qobuz_librarian.ui_cli.errors import plural
             from qobuz_librarian.web.flows import build_args
-            r = process_album(album, build_args(), allow_force=False,
-                              already_confirmed=True, token=token) or {}
+            with job_mgr.staging_lock():
+                r = process_album(album, build_args(), allow_force=False,
+                                  already_confirmed=True, token=token) or {}
             benign = {"already_complete", "skipped_already_higher_quality",
                       "dry_run", "user_skipped", "lossy_only", "no_tracks",
                       "cancelled"}
@@ -1002,8 +1003,9 @@ async def job_retry(request: Request, job_id: str):
             from qobuz_librarian.modes.process import process_album
             from qobuz_librarian.ui_cli.errors import plural
             from qobuz_librarian.web.flows import build_args
-            r = process_album(album, build_args(), allow_force=False,
-                              already_confirmed=True, token=token) or {}
+            with job_mgr.staging_lock():
+                r = process_album(album, build_args(), allow_force=False,
+                                  already_confirmed=True, token=token) or {}
             benign = {"already_complete", "skipped_already_higher_quality",
                       "dry_run", "user_skipped", "lossy_only", "no_tracks",
                       "cancelled"}
