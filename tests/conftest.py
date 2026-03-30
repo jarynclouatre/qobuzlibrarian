@@ -40,6 +40,10 @@ def _isolate_data_dir():
     cfg.LYRIC_FETCH_STATE_FILE = tmp_root / ".lyric_fetch_state.json"
     cfg.WEB_AUTH_FILE        = tmp_root / ".qobuz_web_auth.json"
     cfg.LOCK_FILE            = tmp_root / "qobuz_librarian.lock"
+    # Keep the persistent album cache out of the deterministic suite — tests
+    # that mock qobuz_get and call get_album expect a fetch each time. The
+    # cache's own test re-enables it.
+    cfg.ALBUM_CACHE_ENABLED  = False
 
     prior_web_auth = os.environ.get("WEB_AUTH")
     os.environ["WEB_AUTH"] = "none"

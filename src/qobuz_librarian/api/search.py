@@ -76,8 +76,14 @@ def search_artists(query, token, limit=10):
 
 
 def get_album(album_id, token):
+    from qobuz_librarian.api import album_cache
+    cached = album_cache.get(album_id)
+    if cached is not None:
+        return cached
     album = qobuz_get("album/get", {"album_id": album_id, "extra": "track_ids"}, token)
-    return _normalize_album_fields(album)
+    album = _normalize_album_fields(album)
+    album_cache.put(album_id, album)
+    return album
 
 
 def search_tracks(query, token, limit=10):

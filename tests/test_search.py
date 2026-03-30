@@ -111,3 +111,27 @@ class TestGetArtistAlbums:
         with patch("qobuz_librarian.api.search.qobuz_get", return_value=page1):
             items, _ = get_artist_albums("artist123", "tok", limit=500)
         assert len(items) == 50
+
+
+def test_get_album_caches_by_id_across_calls(tmp_path, monkeypatch):
+    import qobuz_librarian.config as cfg
+    from qobuz_librarian.api import album_cache, search
+
+    monkeypatch.setattr(cfg, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(cfg, "ALBUM_CACHE_ENABLED", True)
+    album_cache._reset_for_tests()
+    try:
+        calls = {"n": 0}
+
+        def fake_get(endpoint, params, token):
+            calls["n"] += 1
+            return {"id": params["album_id"], "title": "X",
+                    "tracks": {"items": [{"id": 1, "title": "T"}]}}
+
+        monkeypatch.setattr(search, "qobuz_get", fake_get)
+        a1 = search.get_album("ALB1", "tok")
+        a2 = search.get_album("ALB1", "tok")     # immutable → served from cache
+        assert calls["n"] == 1
+        assert a1 == a2 and a1["id"] == "ALB1"
+    finally:
+        album_cache._reset_for_tests()

@@ -230,6 +230,11 @@ ARTIST_API_DELAY = _env("ARTIST_API_DELAY", 0.4)
 # the old sequential behaviour.
 ARTIST_SCAN_WORKERS = _env("ARTIST_SCAN_WORKERS", 4)
 
+# Cache get_album() responses on disk (DATA_DIR/album_cache.db). An album's track
+# list is immutable, so this turns the per-owned-album fetch — the dominant cost
+# of a library scan — into a local lookup on re-scans. Off disables it.
+ALBUM_CACHE_ENABLED = _env_bool("ALBUM_CACHE_ENABLED", True)
+
 # Per-request budgets for the web UI's Qobuz API calls (album/search/track
 # fetches and the Settings token check). A slow Qobuz response shouldn't
 # park a worker thread for minutes — the user gets a clear timeout instead.
