@@ -159,3 +159,24 @@ def test_non_flac_track_takes_its_disc_from_the_parent_folder(tmp_path):
     tracks = read_album_dir(tmp_path / "Album")
     assert tracks and tracks[0]["discnumber"] == 2
     assert tracks[0]["tracknumber"] == 3
+
+
+def test_flac_cache_hits_when_unchanged_and_invalidates_on_change(tmp_path, monkeypatch):
+    import time
+
+    import qobuz_librarian.config as cfg
+    from qobuz_librarian.library import flac_cache
+    monkeypatch.setattr(cfg, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(cfg, "FLAC_CACHE_ENABLED", True)
+    flac_cache._reset_for_tests()
+    try:
+        f = tmp_path / "song.flac"
+        f.write_bytes(b"abc")
+        assert flac_cache.get(f) is None                       # cold miss
+        flac_cache.put(f, {"title": "T", "isrc": "X"})
+        assert flac_cache.get(f) == {"title": "T", "isrc": "X"}  # hit, unchanged
+        time.sleep(0.01)
+        f.write_bytes(b"abcd")                                  # mtime + size change
+        assert flac_cache.get(f) is None                       # self-invalidated
+    finally:
+        flac_cache._reset_for_tests()

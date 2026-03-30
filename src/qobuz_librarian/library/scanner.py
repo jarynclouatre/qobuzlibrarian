@@ -21,6 +21,7 @@ import re
 from pathlib import Path
 
 from qobuz_librarian import config
+from qobuz_librarian.library import flac_cache
 from qobuz_librarian.library.tags import normalize
 from qobuz_librarian.ui_cli.logging import vlog
 
@@ -72,6 +73,9 @@ def read_flac_meta(path: Path):
     """
     if not HAVE_MUTAGEN:
         return None
+    cached = flac_cache.get(path)
+    if cached is not None:
+        return cached
     try:
         f = MutagenFLAC(str(path))
     except Exception:
@@ -84,7 +88,7 @@ def read_flac_meta(path: Path):
         return ""
 
     info = f.info
-    return {
+    meta = {
         "title":       first("TITLE") or first("title"),
         "isrc":        (first("ISRC") or first("isrc") or "").strip().replace("-", "").upper(),
         "mb_trackid":  (first("MUSICBRAINZ_TRACKID") or first("musicbrainz_trackid") or "").strip().lower(),
@@ -98,6 +102,8 @@ def read_flac_meta(path: Path):
         "length":      getattr(info, "length", 0.0) if info else 0.0,
         "path":        str(path),
     }
+    flac_cache.put(path, meta)
+    return meta
 
 
 # ── Album directory scan ──────────────────────────────────────────────────────

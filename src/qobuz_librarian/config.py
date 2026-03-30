@@ -235,6 +235,11 @@ ARTIST_SCAN_WORKERS = _env("ARTIST_SCAN_WORKERS", 4)
 # of a library scan — into a local lookup on re-scans. Off disables it.
 ALBUM_CACHE_ENABLED = _env_bool("ALBUM_CACHE_ENABLED", True)
 
+# Cache parsed FLAC tags on disk (DATA_DIR/flac_cache.db), keyed on file
+# mtime+size, so unchanged files aren't re-parsed by mutagen on every scan. The
+# key self-invalidates when a file is edited/replaced. Off disables it.
+FLAC_CACHE_ENABLED = _env_bool("FLAC_CACHE_ENABLED", True)
+
 # Per-request budgets for the web UI's Qobuz API calls (album/search/track
 # fetches and the Settings token check). A slow Qobuz response shouldn't
 # park a worker thread for minutes — the user gets a clear timeout instead.
