@@ -1501,6 +1501,39 @@ def test_dashboard_token_invalid_shows_banner(client, monkeypatch):
     assert "saved token isn't authenticating" in r.text
 
 
+def test_api_401_flips_dashboard_token_state(monkeypatch):
+    """A mid-session 401 from the Qobuz API must flip _TOKEN_VALID via the
+    registered listener, so the dashboard doesn't keep showing 'connected'
+    after the saved token has stopped working."""
+    import qobuz_librarian.api.auth as auth_mod
+    import qobuz_librarian.api.client as client_mod
+    import qobuz_librarian.web.app as webapp
+
+    class _FakeResp:
+        status_code = 401
+        text = ""
+        headers: dict = {}
+
+    class _FakeSession:
+        def get(self, *_a, **_kw):
+            return _FakeResp()
+
+    monkeypatch.setattr(client_mod, "_get_session", lambda: _FakeSession())
+    monkeypatch.setattr(webapp, "_TOKEN_VALID", True)
+    # Register only for the duration of the test so the global hook list
+    # doesn't grow across the suite.
+    monkeypatch.setattr(auth_mod, "_auth_state_listeners",
+                        [webapp._on_auth_state])
+
+    try:
+        client_mod.qobuz_get("album/get", {"album_id": "x"}, "tok")
+    except auth_mod.AuthLost:
+        pass
+    else:
+        raise AssertionError("expected AuthLost from 401")
+    assert webapp._TOKEN_VALID is False
+
+
 # ── empty form values reach friendly branches, never 422 JSON ──────
 
 

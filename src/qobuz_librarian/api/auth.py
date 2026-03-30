@@ -24,6 +24,29 @@ class Aborted(Exception):     pass
 class QobuzError(Exception):  pass
 
 
+# A hook the web layer registers in its lifespan so the dashboard's
+# "saved token isn't authenticating" banner reflects the most recent API call,
+# not just the startup probe. Lives here (not in client.py) so callers can
+# register without pulling the whole client module — and so tests can swap it.
+_auth_state_listeners: list = []
+
+
+def register_auth_state_listener(cb) -> None:
+    """Register a callback ``cb(valid: bool)`` invoked when an API call
+    reveals token validity. A False notify fires whenever client.qobuz_get
+    raises AuthLost from a 401, so the web UI can drop its cached "green"
+    state without re-probing on every page load."""
+    _auth_state_listeners.append(cb)
+
+
+def notify_auth_state(valid: bool) -> None:
+    for cb in list(_auth_state_listeners):
+        try:
+            cb(valid)
+        except Exception:
+            pass
+
+
 _RAW_API_BODY_RE = re.compile(r"^(HTTP \d+ from [^:]+):\s+.+$", re.DOTALL)
 
 

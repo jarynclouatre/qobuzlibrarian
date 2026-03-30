@@ -189,6 +189,12 @@ async def _lifespan(_app: FastAPI):
     # not actually authenticated — surfaces in the dashboard banner rather
     # than failing the user's first search.
     asyncio.create_task(_probe_token())
+    # Keep the dashboard banner honest after startup: any in-session 401 from
+    # the API client flips _TOKEN_VALID to False here, so a token that expires
+    # mid-session shows "saved token isn't authenticating" immediately instead
+    # of leaving stale green until the user happens to retry the failed action.
+    from qobuz_librarian.api.auth import register_auth_state_listener
+    register_auth_state_listener(_on_auth_state)
     yield
     # Release the flock explicitly — assigning None alone relies on GC
     # closing the file, which may not happen if any caller still holds
@@ -222,6 +228,13 @@ def _classify_token(token):
             else "unreachable"
     except Exception:
         return "unreachable"
+
+
+def _on_auth_state(valid: bool) -> None:
+    """Listener registered with api.auth so a 401 mid-session flips the
+    dashboard banner without waiting for the next page-load probe."""
+    global _TOKEN_VALID
+    _TOKEN_VALID = bool(valid)
 
 
 async def _probe_token():

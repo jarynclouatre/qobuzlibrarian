@@ -14,7 +14,7 @@ import time
 import requests
 
 from qobuz_librarian import config
-from qobuz_librarian.api.auth import AuthLost, QobuzError
+from qobuz_librarian.api.auth import AuthLost, QobuzError, notify_auth_state
 from qobuz_librarian.ui_cli.colors import C, fmt
 from qobuz_librarian.ui_cli.logging import log, vlog
 
@@ -105,6 +105,7 @@ def qobuz_get(endpoint, params, token):
             _retry_sleep(wait)
             continue
         if r.status_code == 401:
+            notify_auth_state(False)
             raise AuthLost(f"401 from Qobuz {endpoint}")
         if r.status_code in _RETRY_STATUSES:
             if attempt < _MAX_ATTEMPTS:
