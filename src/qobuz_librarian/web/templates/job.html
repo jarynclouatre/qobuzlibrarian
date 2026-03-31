@@ -199,7 +199,7 @@
   {% endif %}
 
   <div class="divider text-base-content/30 text-xs">log</div>
-  <div class="log-console" style="max-height:200px">
+  <div class="log-console" style="max-height:min(40vh,600px)">
     {%- for line in job.log_lines %}{{ line }}
 {% endfor -%}
   </div>

@@ -8,8 +8,7 @@
     {% if pending %}
     <form action="/queue/cancel-pending" method="post">
       <input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}">
-      <button type="submit" class="btn btn-sm btn-ghost"
-              onclick="return confirm('Stop the running download and cancel everything queued?')">Cancel all jobs</button>
+      <button type="submit" class="btn btn-sm btn-ghost">Cancel all jobs</button>
     </form>
     {% endif %}
     {% if finished %}
@@ -117,7 +116,7 @@
       {% endif %}
     </div>
     <div class="min-w-0 flex-1">
-      <p class="font-medium truncate">{% if job.artist %}{{ job.artist }} — {% endif %}{{ job.title }}</p>
+      <p class="font-medium truncate"><a href="/jobs/{{ job.id }}" class="link link-hover">{% if job.artist %}{{ job.artist }} — {% endif %}{{ job.title }}</a></p>
       {% if job.error %}
       <p class="text-xs text-error/80 truncate">{{ job.error }}</p>
       {% endif %}

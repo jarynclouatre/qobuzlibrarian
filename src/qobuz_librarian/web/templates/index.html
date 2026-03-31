@@ -221,9 +221,14 @@
   };
   src.addEventListener('done', () => {
     src.close();
-    // Don't reload out from under a search the user just ran on the dashboard.
     const results = document.getElementById('search-results');
-    if (results && results.children.length) return;
+    if (results && results.children.length) {
+      // Search results are showing — don't reload over them. Just hide the
+      // now-stale active-job card so it doesn't keep saying "Downloading".
+      const card = document.getElementById('active-job-card');
+      if (card) card.classList.add('hidden');
+      return;
+    }
     setTimeout(() => window.location.reload(), 1500);
   });
 })();
@@ -245,8 +250,12 @@
 {% if creds_ok %}
 <div class="card bg-base-200 border border-base-300/60 shadow-sm">
   <div class="card-body">
-    <h2 class="text-xs font-semibold uppercase tracking-wider text-base-content/50 mb-3">
-      Recent downloads</h2>
+    <div class="flex items-baseline justify-between mb-3">
+      <h2 class="text-xs font-semibold uppercase tracking-wider text-base-content/50">Recent downloads</h2>
+      {% if last_library_scan %}
+      <span class="text-xs text-base-content/40">Scanned {{ last_library_scan }}</span>
+      {% endif %}
+    </div>
     {% if recent %}
     <div class="divide-y divide-base-300">
       {% for entry in recent %}
@@ -259,8 +268,12 @@
           {% set result = entry.get('result') or '' %}
           {% if result == 'already_complete' %}
             <span class="badge badge-ghost badge-sm">complete</span>
-          {% elif result in ('downloaded', 'partial') %}
+          {% elif result == 'downloaded' %}
             <span class="badge badge-success badge-sm">+{{ entry.get('tracks_downloaded') or 0 }}</span>
+          {% elif result == 'partial' %}
+            {% set td = entry.get('tracks_downloaded') or 0 %}
+            {% set tf = entry.get('tracks_failed') or 0 %}
+            <span class="badge badge-warning badge-sm" title="{{ tf }} track{{ 's' if tf != 1 }} failed">~{{ td }}</span>
           {% elif result == 'failed' %}
             <span class="badge badge-error badge-sm">failed</span>
           {% elif result == 'skipped_already_higher_quality' %}
