@@ -277,6 +277,28 @@ class TestScanDirForIsrcRepairs:
         assert len(result["verified_truncated"]) == 1
 
 
+def test_flac_metadata_size_walks_blocks_and_falls_back_on_unrecognized(tmp_path):
+    """The byte-size truncation gate trims metadata off before comparing
+    to ``actual_size``; the helper has to walk the block chain on a real
+    FLAC and bail on anything else, otherwise a multi-MB embedded
+    picture could mask an audio truncation (or, worse, a non-FLAC could
+    return a junk offset)."""
+    from qobuz_librarian.repair_log import _flac_metadata_size
+
+    real = tmp_path / "ok.flac"
+    real.write_bytes(
+        b"fLaC"
+        + b"\x00\x00\x00\x22" + b"\x00" * 34   # STREAMINFO, not last
+        + b"\x84\x00\x00\x0a" + b"\x00" * 10   # VORBIS_COMMENT, last-bit on
+        + b"frame data"
+    )
+    assert _flac_metadata_size(str(real)) == 4 + (4 + 34) + (4 + 10)
+
+    fake = tmp_path / "no.mp3"
+    fake.write_bytes(b"ID3\x04\x00" + b"\x00" * 50)
+    assert _flac_metadata_size(str(fake)) == 0
+
+
 class TestScanDirRealFlacRoundTrip:
 
     def _make_flac(self, path, seconds, isrc):
