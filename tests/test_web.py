@@ -2188,6 +2188,34 @@ def test_migrate_post_submits_a_creds_free_job(client, monkeypatch, tmp_path):
     _remove_job(job)
 
 
+def test_settings_path_resolver_maps_container_paths_to_host_bind_mounts(
+    monkeypatch, tmp_path
+):
+    from qobuz_librarian.web.app import _resolve_host_path
+
+    fake_mountinfo = (
+        "1 0 0:1 / / rw - overlay overlay rw\n"
+        "2 1 0:2 /home/me/music /music rw - ext4 /dev/sda1 rw\n"
+        "3 1 0:3 /home/me/stack/config /config rw - ext4 /dev/sda1 rw\n"
+    )
+    fake = tmp_path / "mountinfo"
+    fake.write_text(fake_mountinfo)
+    import builtins
+    real_open = builtins.open
+    def patched_open(path, *a, **kw):
+        if path == "/proc/self/mountinfo":
+            return real_open(fake, *a, **kw)
+        return real_open(path, *a, **kw)
+    monkeypatch.setattr(builtins, "open", patched_open)
+
+    assert _resolve_host_path("/music") == ("/home/me/music", True)
+    assert _resolve_host_path("/config/beets/musiclibrary.db") == (
+        "/home/me/stack/config/beets/musiclibrary.db", True)
+    assert _resolve_host_path("/anonymous-volume") == ("/anonymous-volume", False)
+    from pathlib import Path
+    assert _resolve_host_path(Path("/music")) == ("/home/me/music", True)
+
+
 def test_prune_keeps_a_finished_job_that_is_still_being_streamed(monkeypatch):
     reg = jm.JobRegistry()
     monkeypatch.setattr(reg, "MAX_FINISHED", 2)

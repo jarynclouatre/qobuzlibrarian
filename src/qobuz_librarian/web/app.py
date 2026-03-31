@@ -1192,6 +1192,41 @@ def _diagnostics():
     return checks
 
 
+def _resolve_host_path(container_path: str) -> tuple[str, bool]:
+    """Return (display_path, is_host_path) for a path inside the container.
+
+    Walks /proc/self/mountinfo to find the longest-prefix bind mount, then
+    appends the remaining suffix to the host source. Falls back to the
+    container path when no bind mount covers it (anonymous volume) or the
+    file isn't available (non-Linux).
+    """
+    container_path = str(container_path)
+    try:
+        with open("/proc/self/mountinfo") as f:
+            entries = []
+            for line in f:
+                parts = line.split()
+                if len(parts) < 5:
+                    continue
+                entries.append((parts[4], parts[3]))  # mount_point, host_root
+    except OSError:
+        return container_path, False
+    best = None
+    for mount_point, host_root in entries:
+        if mount_point == "/":  # container rootfs, not a user bind mount
+            continue
+        if (container_path == mount_point
+                or container_path.startswith(mount_point.rstrip("/") + "/")):
+            if best is None or len(mount_point) > len(best[0]):
+                best = (mount_point, host_root)
+    if best is None:
+        return container_path, False
+    mount_point, host_root = best
+    suffix = container_path[len(mount_point):]
+    host_path = host_root.rstrip("/") + suffix if suffix else host_root
+    return host_path, True
+
+
 def _settings_response(request, *, saved=False, queued=False, connected=False,
                        unverified=False, error="", mode="", user_id=None,
                        auth_token_prefill=""):
@@ -1217,10 +1252,17 @@ def _settings_response(request, *, saved=False, queued=False, connected=False,
         "unverified": unverified,
         "error": error,
         "page": "settings",
-        "music_root": cfg.MUSIC_ROOT,
-        "staging_dir": cfg.STAGING_DIR,
-        "beets_db": cfg.BEETS_DB_PATH,
-        "streamrip_config": cfg.STREAMRIP_CONFIG,
+        "library_paths": [
+            {"label": label, "container": cp,
+             "host": host, "resolved": resolved}
+            for label, cp in (
+                ("Music library", cfg.MUSIC_ROOT),
+                ("Staging area", cfg.STAGING_DIR),
+                ("Beets database", cfg.BEETS_DB_PATH),
+                ("Streamrip config", cfg.STREAMRIP_CONFIG),
+            )
+            for host, resolved in [_resolve_host_path(cp)]
+        ],
         "behavior_fields": settings_store.BEHAVIOR_FIELDS,
         "text_fields": settings_store.TEXT_FIELDS,
         "option_labels": settings_store.ENUM_OPTION_LABELS,

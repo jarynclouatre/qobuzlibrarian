@@ -234,22 +234,22 @@
 <!-- Paths (read-only info) -->
 <div class="card bg-base-200 shadow mb-6">
   <div class="card-body">
-    <h2 class="card-title mb-3">Container paths</h2>
+    <h2 class="card-title mb-3">Library paths</h2>
     <p class="text-sm text-base-content/60 mb-3">
-      Where the container reads and writes inside its own filesystem.
-      The defaults work for a normal Docker install. Shown here for
-      reference — to change them, edit the bind mounts in
-      <code>compose.yaml</code> and restart.
+      Where your data lives on the host. To move any of these, stop the
+      container, change the matching bind mount in <code>compose.yaml</code>,
+      and start it again.
     </p>
-    <dl class="grid grid-cols-1 sm:grid-cols-[max-content_1fr] gap-x-4 gap-y-2 text-xs font-mono">
-      <dt class="text-base-content/60">MUSIC_ROOT</dt>
-      <dd class="break-all">{{ music_root }}</dd>
-      <dt class="text-base-content/60">STAGING_DIR</dt>
-      <dd class="break-all">{{ staging_dir }}</dd>
-      <dt class="text-base-content/60">BEETS_DB_PATH</dt>
-      <dd class="break-all">{{ beets_db }}</dd>
-      <dt class="text-base-content/60">STREAMRIP_CONFIG</dt>
-      <dd class="break-all">{{ streamrip_config }}</dd>
+    <dl class="grid grid-cols-1 sm:grid-cols-[max-content_1fr] gap-x-4 gap-y-2 text-sm">
+      {% for p in library_paths %}
+        <dt class="text-base-content/60">{{ p.label }}</dt>
+        <dd class="break-all font-mono text-xs">
+          {{ p.host }}
+          {% if not p.resolved %}
+            <span class="text-base-content/40">(in-container path; host source not detectable)</span>
+          {% endif %}
+        </dd>
+      {% endfor %}
     </dl>
   </div>
 </div>
