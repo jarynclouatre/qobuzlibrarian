@@ -38,31 +38,32 @@ from qobuz_librarian import config as cfg
 _log = logging.getLogger("qobuz_librarian")
 _lock = threading.Lock()
 _disabled = False
-_db_path = None
+_conn: Optional[sqlite3.Connection] = None
 
 
 def _path():
     return cfg.DATA_DIR / "jobs.db"
 
 
-def _connect() -> Optional[sqlite3.Connection]:
-    """Open the jobs db, creating the parent dir if needed.
+def _get_conn() -> Optional[sqlite3.Connection]:
+    """Return the persistent WAL connection, opening it on first call.
 
     Returns None and disables further attempts when the volume isn't
     writable — the in-memory registry is still correct, the user just
     forgoes restart durability rather than seeing a stream of OSError
     on every status change.
     """
-    global _disabled, _db_path
+    global _disabled, _conn
     if _disabled:
         return None
+    if _conn is not None:
+        return _conn
     try:
         cfg.DATA_DIR.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(str(_path()), timeout=5.0,
-                               check_same_thread=False)
-        conn.execute("PRAGMA journal_mode=WAL")
-        _db_path = _path()
-        return conn
+        _conn = sqlite3.connect(str(_path()), timeout=5.0,
+                                check_same_thread=False)
+        _conn.execute("PRAGMA journal_mode=WAL")
+        return _conn
     except (OSError, sqlite3.Error) as e:
         _log.info("job persistence disabled (%s); jobs won't survive restart.", e)
         _disabled = True
@@ -93,20 +94,17 @@ CREATE TABLE IF NOT EXISTS jobs (
 def init() -> None:
     """Create the schema. Safe to call repeatedly."""
     with _lock:
-        conn = _connect()
+        conn = _get_conn()
         if conn is None:
             return
-        try:
-            conn.execute(_SCHEMA)
-            conn.commit()
-        finally:
-            conn.close()
+        conn.execute(_SCHEMA)
+        conn.commit()
 
 
 def persist(job) -> None:
     """Write the job's current state to disk. Idempotent (INSERT OR REPLACE)."""
     with _lock:
-        conn = _connect()
+        conn = _get_conn()
         if conn is None:
             return
         try:
@@ -134,14 +132,12 @@ def persist(job) -> None:
             conn.commit()
         except sqlite3.Error as e:
             _log.debug("job persist failed for %s: %s", job.id, e)
-        finally:
-            conn.close()
 
 
 def delete(job_id: str) -> None:
     """Drop the row for a job pruned from the registry."""
     with _lock:
-        conn = _connect()
+        conn = _get_conn()
         if conn is None:
             return
         try:
@@ -149,15 +145,13 @@ def delete(job_id: str) -> None:
             conn.commit()
         except sqlite3.Error:
             pass
-        finally:
-            conn.close()
 
 
 def load_all() -> list[dict]:
     """Return every persisted job as a plain dict — caller rehydrates into
     a Job. Returns [] when the db can't be opened."""
     with _lock:
-        conn = _connect()
+        conn = _get_conn()
         if conn is None:
             return []
         try:
@@ -170,8 +164,6 @@ def load_all() -> list[dict]:
         except sqlite3.Error as e:
             _log.info("couldn't read jobs.db on startup (%s); starting fresh.", e)
             return []
-        finally:
-            conn.close()
     out = []
     for r in rows:
         try:
@@ -191,7 +183,13 @@ def load_all() -> list[dict]:
 
 def _reset_for_tests() -> None:
     """Test-only hook: drop the on-disk db so a fresh test starts clean."""
-    global _disabled, _db_path
+    global _disabled, _conn
+    if _conn is not None:
+        try:
+            _conn.close()
+        except Exception:
+            pass
+        _conn = None
     _disabled = False
     p = _path()
     for q in (p, p.with_suffix(".db-wal"), p.with_suffix(".db-shm")):
@@ -201,4 +199,3 @@ def _reset_for_tests() -> None:
             pass
         except OSError:
             pass
-    _db_path = None

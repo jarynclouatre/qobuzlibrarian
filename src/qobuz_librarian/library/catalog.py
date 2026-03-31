@@ -1613,7 +1613,7 @@ def find_expanded_edition(album, album_dir, existing, token, args):
     found = []
     api_calls = 0
     for cand in candidates:
-        if api_calls >= 3:
+        if api_calls >= config.EDITION_SEARCH_API_BUDGET:
             break
         try:
             full = get_album(cand["id"], token)

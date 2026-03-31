@@ -44,6 +44,15 @@ from qobuz_librarian.ui_cli.logging import log, vlog
 from qobuz_librarian.ui_cli.prompts import log_fetch
 
 
+def _track_title_from_path(p):
+    """Strip track-number prefix and artist prefix from a path stem to get the bare title."""
+    s = p.stem if hasattr(p, "stem") else str(p)
+    m = re.match(r"^(?:\d+[-.])?\d+[\s\-–—.]+(.+)$", s)
+    title = m.group(1) if m else s
+    m = re.match(r"^.+?\s+-\s+(.+)$", title)
+    return m.group(1) if m else title
+
+
 def _download_for_queue_item(item):
     """Download phase for one queue item: rip + cleanup_lossy + reconcile.
     Mutates item with n_ok/n_fail/etc. AuthLost & KeyboardInterrupt
@@ -159,19 +168,12 @@ def _download_for_queue_item(item):
     n_lossy = len(deleted)
     lossy_tracks = deleted
 
-    def _stem_title(p):
-        s = p.stem if hasattr(p, "stem") else str(p)
-        m = re.match(r"^(?:\d+[-.])?\d+[\s\-–—.]+(.+)$", s)
-        title = m.group(1) if m else s
-        m = re.match(r"^.+?\s+-\s+(.+)$", title)
-        return m.group(1) if m else title
-
     # Single-track retry for lossy / 0-byte fallbacks, mirroring the direct
     # album path (modes/process.py). A transient glitch shouldn't strand a
     # track in the lossy bucket when a one-off per-track URL usually
     # succeeds. One retry per track — no recursion, no loop.
     if lossy_tracks and missing:
-        lossy_norms = {normalize(strip_edition_suffix(_stem_title(d)))
+        lossy_norms = {normalize(strip_edition_suffix(_track_title_from_path(d)))
                        for d in lossy_tracks}
         retry_targets = [
             t for t in missing
@@ -199,12 +201,12 @@ def _download_for_queue_item(item):
             retry_kept, _ = cleanup_lossy(retry_audio)
             if retry_kept:
                 recovered_norms = {
-                    normalize(strip_edition_suffix(_stem_title(p)))
+                    normalize(strip_edition_suffix(_track_title_from_path(p)))
                     for p in retry_kept
                 }
                 lossy_tracks = [
                     d for d in lossy_tracks
-                    if normalize(strip_edition_suffix(_stem_title(d)))
+                    if normalize(strip_edition_suffix(_track_title_from_path(d)))
                     not in recovered_norms
                 ]
                 kept = kept + retry_kept
@@ -218,9 +220,9 @@ def _download_for_queue_item(item):
         # math holds (``n_ok + n_lossy + n_fail == n_attempted``).
         n_fail = max(0, len(missing) - n_ok - n_lossy)
         if n_fail > 0:
-            surviving = {normalize(strip_edition_suffix(_stem_title(p))) for p in kept}
+            surviving = {normalize(strip_edition_suffix(_track_title_from_path(p))) for p in kept}
             lossy_norms = {
-                normalize(strip_edition_suffix(_stem_title(stem)))
+                normalize(strip_edition_suffix(_track_title_from_path(stem)))
                 for stem in lossy_tracks
             }
             failed_tracks = [
@@ -238,7 +240,7 @@ def _download_for_queue_item(item):
                 f"      · {n_ok} track(s) landed despite rip exit "
                 f"{full_album_rc} (streamrip post-processing error)"))
     elif failed_tracks and kept:
-        surviving = {normalize(strip_edition_suffix(_stem_title(p))) for p in kept}
+        surviving = {normalize(strip_edition_suffix(_track_title_from_path(p))) for p in kept}
         recovered = [t for t in failed_tracks
                      if normalize(strip_edition_suffix(t)) in surviving]
         if recovered:

@@ -14,6 +14,8 @@ import json
 import os
 import secrets
 import tempfile
+import threading
+import time
 
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse, RedirectResponse, Response
@@ -33,6 +35,19 @@ _OPEN_PREFIXES = ("/static/",)
 
 _PBKDF2_ROUNDS = 600_000
 _COOKIE_MAX_AGE = 60 * 60 * 24 * 30  # 30 days, matching the CSRF cookie
+
+# Credential file cache. Keyed to the file path so test fixtures that
+# redirect WEB_AUTH_FILE to a temp path don't serve stale data to the next
+# test. Invalidated explicitly in set_credentials() on any write.
+_cred_cache: dict | None = None
+_cred_cache_path: str | None = None
+
+# Login failure tracking: IP → list of failure timestamps.
+# After _LOGIN_MAX failures within _LOGIN_WINDOW seconds, return 429.
+_login_failures: dict[str, list[float]] = {}
+_login_lock = threading.Lock()
+_LOGIN_MAX = 5
+_LOGIN_WINDOW = 3600
 
 
 def auth_disabled() -> bool:
@@ -62,11 +77,17 @@ def _verify_hash(stored: str, password: str) -> bool:
 
 
 def _read() -> dict:
+    global _cred_cache, _cred_cache_path
+    current = str(cfg.WEB_AUTH_FILE)
+    if _cred_cache is not None and _cred_cache_path == current:
+        return _cred_cache
+    _cred_cache_path = current
     try:
         data = json.loads(cfg.WEB_AUTH_FILE.read_text(encoding="utf-8"))
-        return data if isinstance(data, dict) else {}
+        _cred_cache = data if isinstance(data, dict) else {}
     except (OSError, ValueError):
-        return {}
+        _cred_cache = {}
+    return _cred_cache
 
 
 def credentials_configured() -> bool:
@@ -80,6 +101,9 @@ def set_credentials(username: str, password: str) -> bool:
     and 0600. Returns False if the data volume isn't writable so callers can
     show a clear message instead of 500ing. The new session secret rotates on
     every call, so resetting the password logs out any existing browser."""
+    global _cred_cache, _cred_cache_path
+    _cred_cache = None
+    _cred_cache_path = None
     payload = {
         "username": username,
         "password_hash": hash_password(password),
@@ -151,6 +175,21 @@ def auth_active() -> bool:
     """Auth is both enabled and set up — the only state in which a Log out
     control makes sense. Exposed to templates as a global."""
     return not auth_disabled() and credentials_configured()
+
+
+def check_login_rate_limit(ip: str) -> bool:
+    """True if this IP may attempt a login, False if it's been blocked."""
+    now = time.monotonic()
+    with _login_lock:
+        times = [t for t in _login_failures.get(ip, []) if now - t < _LOGIN_WINDOW]
+        _login_failures[ip] = times
+        return len(times) < _LOGIN_MAX
+
+
+def record_login_failure(ip: str) -> None:
+    now = time.monotonic()
+    with _login_lock:
+        _login_failures.setdefault(ip, []).append(now)
 
 
 class AuthMiddleware(BaseHTTPMiddleware):
