@@ -497,14 +497,7 @@ def _find_job_touching_album(album_id: str):
 
 
 def _active_job():
-    active = (job_mgr.JobStatus.RUNNING, job_mgr.JobStatus.SCANNING)
-    running = [j for j in job_mgr.registry.all() if j.status in active]
-    if not running:
-        return None
-    # Prefer a download that's actually writing files over a scan, so the
-    # dashboard card mirrors what the user is most likely watching.
-    running.sort(key=lambda j: 0 if j.status == job_mgr.JobStatus.RUNNING else 1)
-    return running[0]
+    return job_mgr.registry.running_job()
 
 
 def _staging_album_count() -> int:

@@ -274,6 +274,25 @@ class JobRegistry:
     def pending_and_running(self) -> list[Job]:
         return [j for j in self.all() if j.status in ACTIVE]
 
+    def running_job(self) -> Optional[Job]:
+        """Return the active download/scan job for the dashboard card, or None.
+
+        Prefers a RUNNING download over a SCANNING job so the card shows what
+        the user is most likely watching. Iterates only under the lock without
+        building a full list copy.
+        """
+        running = scanning = None
+        with self._lock:
+            for jid in self._order:
+                j = self._jobs.get(jid)
+                if j is None:
+                    continue
+                if j.status == JobStatus.RUNNING and running is None:
+                    running = j
+                elif j.status == JobStatus.SCANNING and scanning is None:
+                    scanning = j
+        return running or scanning
+
     def awaiting_review(self) -> list[Job]:
         return [j for j in self.all()
                 if j.status == JobStatus.AWAITING_REVIEW]

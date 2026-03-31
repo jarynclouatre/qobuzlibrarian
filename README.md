@@ -569,6 +569,29 @@ docker compose run --rm qobuz-librarian cli --help
 
 The CLI honours the same `.env` and `compose.yaml` settings as the web UI.
 
+## JSON API
+
+The web server exposes a small read-only JSON API — useful for home-automation
+dashboards, external monitoring, or shell scripts that want job state without
+scraping HTML.
+
+| Endpoint | Description |
+|---|---|
+| `GET /api/jobs` | List all jobs, most recent first. Optional `?status=running` filter (`pending`, `running`, `scanning`, `awaiting_review`, `done`, `failed`, `canceled`). Optional `?limit=N` (max 500, default 50). Returns `{"jobs": [...], "count": N}`. |
+| `GET /api/jobs/{id}/status` | Single job as JSON — same shape as one element of the list above. 404 if not found. |
+| `GET /api/jobs/{id}/stream` | SSE stream for a live job. Events: `log` (one log line), `done` (job finished, close the stream). |
+
+All endpoints require the session cookie when login is enabled. A missing or
+invalid cookie returns `401 {"detail": "authentication required"}` rather than
+a redirect, so non-browser clients can detect the auth gate cleanly.
+
+Example — check whether anything is currently downloading:
+
+```bash
+curl -s -b 'qf_session=<your-cookie>' http://localhost:8080/api/jobs?status=running \
+  | jq '.count'
+```
+
 ## Troubleshooting
 
 | Symptom | Likely cause / next step |
@@ -605,10 +628,10 @@ to set a username and password, and every page and endpoint requires sign-in
 after that. The password is stored as a salted PBKDF2 hash (`0600`, never
 plaintext) and the session is an `HttpOnly` cookie. Set `WEB_AUTH=none` to
 turn the login off — the container logs a warning every boot when you do, and
-you should only run that way on a trusted network. The built-in login is a
-single shared credential with no rate limiting, so for internet exposure put
-it behind an authenticating reverse proxy (or VPN / Tailscale) anyway. See
-[SECURITY.md](SECURITY.md).
+you should only run that way on a trusted network. The built-in login is a single shared credential with per-IP brute-force
+limiting (5 failures per hour before a 429 response), but for internet
+exposure you should still put it behind an authenticating reverse proxy (or
+VPN / Tailscale). See [SECURITY.md](SECURITY.md).
 
 ## Limitations
 
