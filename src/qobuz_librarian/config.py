@@ -223,7 +223,14 @@ RATE_LIMIT_COOLDOWN = _env("RATE_LIMIT_COOLDOWN", 30.0)
 # long it runs. Only true silence this long means a genuinely hung
 # import (DB lock, prompt, deadlocked plugin) — killing it stops the
 # single web job worker from freezing forever. 0 disables the guard.
-BEETS_TIMEOUT    = _env("BEETS_TIMEOUT",    3600)
+BEETS_TIMEOUT    = _env("BEETS_TIMEOUT",    600)
+# Per-album import: retry on idle-timeout up to N times with a short
+# pause between, so a single transient stall doesn't strand the album.
+# After exhausting retries the album's staged folder is moved aside
+# (see BEETS_RETRY_DIR) so the rest of the queue keeps going.
+BEETS_MAX_ATTEMPTS = _env("BEETS_MAX_ATTEMPTS", 2)
+BEETS_RETRY_PAUSE  = _env("BEETS_RETRY_PAUSE",  30)
+BEETS_RETRY_DIR    = os.environ.get("BEETS_RETRY_DIR", ".beets_retry")
 # Per-album courtesy pause in the CLI walk. The 429 retry/backoff in
 # api/client is the real throttle backstop, so 0 is fine in practice.
 # Raise via env if Qobuz ever tightens its per-account rate limits.
