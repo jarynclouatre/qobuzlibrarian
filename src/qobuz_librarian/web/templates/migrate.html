@@ -20,9 +20,19 @@
 
 {% if configured %}
 <div class="card bg-base-200 mb-4">
-  <div class="card-body py-4 text-sm">
-    <div><span class="text-base-content/50">Reading from:</span> <code class="break-all">{{ src }}</code></div>
-    <div><span class="text-base-content/50">Building into:</span> <code class="break-all">{{ dest }}</code></div>
+  <div class="card-body py-4 text-sm space-y-2">
+    {% for c in migrate_checks %}
+    <div class="flex items-start gap-3">
+      <span class="shrink-0 mt-0.5">
+        {% if c.ok %}<span class="badge badge-sm badge-success">✓</span>
+        {% else %}<span class="badge badge-sm badge-error">✗</span>{% endif %}
+      </span>
+      <div class="min-w-0">
+        <div class="text-sm text-base-content/60">{{ c.label }}</div>
+        <div class="font-mono text-xs break-all">{{ c.detail }}</div>
+      </div>
+    </div>
+    {% endfor %}
   </div>
 </div>
 

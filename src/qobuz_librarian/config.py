@@ -135,6 +135,7 @@ DATA_DIR = _env_path(
 )
 
 FETCH_LOG_FILE       = DATA_DIR / ".qobuz_librarian_log.json"
+LAST_SCAN_FILE       = DATA_DIR / ".qobuz_last_scan"
 APP_LOG_FILE         = DATA_DIR / "qobuz-librarian.log"
 LOG_LEVEL            = os.environ.get("LOG_LEVEL", "INFO")
 WALK_SEEN_FILE       = DATA_DIR / ".qobuz_walk_seen.txt"
@@ -223,7 +224,10 @@ RATE_LIMIT_COOLDOWN = _env("RATE_LIMIT_COOLDOWN", 30.0)
 # import (DB lock, prompt, deadlocked plugin) — killing it stops the
 # single web job worker from freezing forever. 0 disables the guard.
 BEETS_TIMEOUT    = _env("BEETS_TIMEOUT",    3600)
-ARTIST_API_DELAY = _env("ARTIST_API_DELAY", 0.4)
+# Per-album courtesy pause in the CLI walk. The 429 retry/backoff in
+# api/client is the real throttle backstop, so 0 is fine in practice.
+# Raise via env if Qobuz ever tightens its per-account rate limits.
+ARTIST_API_DELAY = _env("ARTIST_API_DELAY", 0.0)
 # Concurrent artists during a library gap scan. Each worker has its own HTTP
 # session, so this is real parallelism; kept modest so the request rate stays
 # polite (the 429 retry/back-off in api/client is the backstop). 1 restores
@@ -280,6 +284,8 @@ ARTIST_DIR_MATCH_THRESH    = _env("ARTIST_DIR_MATCH_THRESH",    0.65)
 AUTO_SAFE_TITLE_SIM_THRESH = _env("AUTO_SAFE_TITLE_SIM_THRESH", 0.85)
 
 # ── Catalog / walk ────────────────────────────────────────────────────────────
+EDITION_SEARCH_API_BUDGET = _env("EDITION_SEARCH_API_BUDGET", 3)
+
 LEFTOVER_WARN_LIMIT    = _env("LEFTOVER_WARN_LIMIT",    50)
 ARTIST_CATALOG_LIMIT   = _env("ARTIST_CATALOG_LIMIT",   500)
 ARTIST_CATALOG_PAGE    = _env("ARTIST_CATALOG_PAGE",    100)

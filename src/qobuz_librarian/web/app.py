@@ -388,7 +388,14 @@ async def login_submit(request: Request, username: str = Form(""),
         return RedirectResponse(url="/", status_code=303)
     if not web_auth.credentials_configured():
         return RedirectResponse(url="/setup", status_code=303)
+    ip = (request.client.host if request.client else "") or "unknown"
+    if not web_auth.check_login_rate_limit(ip):
+        return templates.TemplateResponse(
+            request=request, name="login.html",
+            context={"error": "Too many failed attempts — wait an hour and try again."},
+            status_code=429)
     if not web_auth.verify_login(username.strip(), password):
+        web_auth.record_login_failure(ip)
         return templates.TemplateResponse(
             request=request, name="login.html",
             context={"error": "Incorrect username or password."},
@@ -541,6 +548,7 @@ async def dashboard(request: Request):
             "lyric_retry_count":
                 len(load_lyric_retry()) if _cfg.LYRIC_RETRY_FILE.exists() else 0,
             "staging_album_count": 0 if active_job else _staging_album_count(),
+            "last_library_scan": _last_scan_age(),
         }
 
     loop = asyncio.get_running_loop()
@@ -691,6 +699,27 @@ async def do_search(request: Request, q: str = Form("", max_length=500)):
     return _tr(request, "search.html", ctx)
 
 
+def _make_download_run(album, token):
+    """Return the run(j) callable used by both queue_download and job_retry."""
+    def run(j):
+        from qobuz_librarian.modes.process import process_album
+        from qobuz_librarian.ui_cli.errors import plural
+        from qobuz_librarian.web.flows import build_args
+        with job_mgr.staging_lock():
+            r = process_album(album, build_args(), allow_force=False,
+                              already_confirmed=True, token=token) or {}
+        benign = {"already_complete", "skipped_already_higher_quality",
+                  "dry_run", "user_skipped", "lossy_only", "no_tracks",
+                  "cancelled"}
+        if r.get("result") not in benign and not r.get("imported"):
+            j.status = job_mgr.JobStatus.FAILED
+            j.error = (f"{plural(r['n_fail'], 'track')} failed"
+                       if r.get("n_fail") else "download or import failed")
+        elif r.get("imported") and r.get("n_fail", 0) > 0:
+            j.error = f"{plural(r['n_fail'], 'track')} failed — see job log"
+    return run
+
+
 @app.post("/download", response_class=HTMLResponse)
 async def queue_download(request: Request, album_id: str = Form(""),
                          force: str = Form("")):
@@ -762,26 +791,6 @@ async def queue_download(request: Request, album_id: str = Form(""),
         artist = (album.get("artist") or {}).get("name") or "?"
         job = job_mgr.Job(title=title, artist=artist, album_id=album_id)
 
-        def run(j):
-            from qobuz_librarian.modes.process import process_album
-            from qobuz_librarian.ui_cli.errors import plural
-            from qobuz_librarian.web.flows import build_args
-            with job_mgr.staging_lock():
-                r = process_album(album, build_args(), allow_force=False,
-                                  already_confirmed=True, token=token) or {}
-            benign = {"already_complete", "skipped_already_higher_quality",
-                      "dry_run", "user_skipped", "lossy_only", "no_tracks",
-                      "cancelled"}
-            if r.get("result") not in benign and not r.get("imported"):
-                j.status = job_mgr.JobStatus.FAILED
-                j.error = (f"{plural(r['n_fail'], 'track')} failed"
-                           if r.get("n_fail") else "download or import failed")
-            elif r.get("imported") and r.get("n_fail", 0) > 0:
-                # Album imported but some tracks failed. Status stays
-                # DONE so the folder is reachable; the error surfaces
-                # the count so a green check isn't lying about completeness.
-                j.error = f"{plural(r['n_fail'], 'track')} failed — see job log"
-
         # Re-check under the lock right before submitting: closes the race with
         # a concurrent /download for the same album across the get_album await.
         with _DOWNLOAD_SUBMIT_LOCK:
@@ -792,7 +801,7 @@ async def queue_download(request: Request, album_id: str = Form(""),
                         f'<div class="alert alert-warning">Already queued — '
                         f'<a href="/jobs/{dup.id}" class="link">view job</a>.</div>')
                 return RedirectResponse(url=f"/jobs/{dup.id}", status_code=303)
-            job_mgr.submit(job, run)
+            job_mgr.submit(job, _make_download_run(album, token))
         if _is_htmx(request):
             return _tr(request, "_job_queued.html", {"job": job})
         # Land on the new job's page so the user sees their download starting.
@@ -947,11 +956,28 @@ async def repair_scan(request: Request):
 
 @app.get("/migrate", response_class=HTMLResponse)
 async def migrate_page(request: Request):
+    import os as _os
+    src, dest = cfg.MIGRATE_SRC, cfg.MIGRATE_DEST
+    migrate_checks = []
+    for label, path in (("Source (QL_MIGRATE_SRC)", src), ("Destination (QL_MIGRATE_DEST)", dest)):
+        if not path:
+            migrate_checks.append({"label": label, "ok": False, "detail": "not set"})
+        else:
+            p = Path(path)
+            if not p.exists():
+                migrate_checks.append({"label": label, "ok": False, "detail": f"{p} does not exist"})
+            elif not p.is_dir():
+                migrate_checks.append({"label": label, "ok": False, "detail": f"{p} is not a directory"})
+            elif not _os.access(str(p), _os.R_OK):
+                migrate_checks.append({"label": label, "ok": False, "detail": f"{p} is not readable"})
+            else:
+                migrate_checks.append({"label": label, "ok": True, "detail": str(p)})
     return _tr(request, "migrate.html", {
         "page": "migrate",
-        "src": cfg.MIGRATE_SRC,
-        "dest": cfg.MIGRATE_DEST,
-        "configured": bool(cfg.MIGRATE_SRC and cfg.MIGRATE_DEST),
+        "src": src,
+        "dest": dest,
+        "configured": bool(src and dest),
+        "migrate_checks": migrate_checks,
     })
 
 
@@ -1050,28 +1076,7 @@ async def job_retry(request: Request, job_id: str):
         title = album.get("title") or job.title or "?"
         artist = (album.get("artist") or {}).get("name") or job.artist or "?"
         new_job = job_mgr.Job(title=title, artist=artist, album_id=album_id)
-
-        def run(j):
-            from qobuz_librarian.modes.process import process_album
-            from qobuz_librarian.ui_cli.errors import plural
-            from qobuz_librarian.web.flows import build_args
-            with job_mgr.staging_lock():
-                r = process_album(album, build_args(), allow_force=False,
-                                  already_confirmed=True, token=token) or {}
-            benign = {"already_complete", "skipped_already_higher_quality",
-                      "dry_run", "user_skipped", "lossy_only", "no_tracks",
-                      "cancelled"}
-            if r.get("result") not in benign and not r.get("imported"):
-                j.status = job_mgr.JobStatus.FAILED
-                j.error = (f"{plural(r['n_fail'], 'track')} failed"
-                           if r.get("n_fail") else "download or import failed")
-            elif r.get("imported") and r.get("n_fail", 0) > 0:
-                # Album imported but some tracks failed. Status stays
-                # DONE so the folder is reachable; the error surfaces
-                # the count so a green check isn't lying about completeness.
-                j.error = f"{plural(r['n_fail'], 'track')} failed — see job log"
-
-        job_mgr.submit(new_job, run)
+        job_mgr.submit(new_job, _make_download_run(album, token))
         return RedirectResponse(url=f"/jobs/{new_job.id}", status_code=303)
     except (SystemExit, NoCredsError):
         return RedirectResponse(url="/settings?error=creds", status_code=303)
@@ -1229,7 +1234,7 @@ def _resolve_host_path(container_path: str) -> tuple[str, bool]:
 
 def _settings_response(request, *, saved=False, queued=False, connected=False,
                        unverified=False, error="", mode="", user_id=None,
-                       auth_token_prefill=""):
+                       auth_token_prefill="", diagnostics=None):
     from qobuz_librarian.web import settings_store
     creds = _read_creds()
     values = settings_store.current()
@@ -1267,7 +1272,7 @@ def _settings_response(request, *, saved=False, queued=False, connected=False,
         "text_fields": settings_store.TEXT_FIELDS,
         "option_labels": settings_store.ENUM_OPTION_LABELS,
         "behavior": values,
-        "diagnostics": _diagnostics(),
+        "diagnostics": diagnostics if diagnostics is not None else _diagnostics(),
     })
 
 
@@ -1276,15 +1281,19 @@ async def settings_page(request: Request, saved: bool = False,
                         queued: bool = False, connected: bool = False,
                         unverified: bool = False, error: str = "",
                         mode: str = ""):
+    loop = asyncio.get_running_loop()
+    diags = await loop.run_in_executor(None, _diagnostics)
     return _settings_response(request, saved=saved, queued=queued,
                               connected=connected, unverified=unverified,
-                              error=error, mode=mode)
+                              error=error, mode=mode, diagnostics=diags)
 
 
 @app.post("/settings", response_class=HTMLResponse)
 async def save_settings(request: Request, user_id: str = Form(""), auth_token: str = Form("")):
     import os
     global _TOKEN_VALID
+    loop = asyncio.get_running_loop()
+    diags = await loop.run_in_executor(None, _diagnostics)
     existing = _read_creds()
     # First-run with empty inputs: nothing to save and no creds to keep —
     # bounce back with a banner rather than writing blanks and flashing green.
@@ -1312,11 +1321,13 @@ async def save_settings(request: Request, user_id: str = Form(""), auth_token: s
     if new_token and not new_uid:
         return _settings_response(request, error="needuser",
                                   user_id=user_id.strip(),
-                                  auth_token_prefill=auth_token.strip())
+                                  auth_token_prefill=auth_token.strip(),
+                                  diagnostics=diags)
     if new_uid and not new_token:
         return _settings_response(request, error="empty",
                                   user_id=user_id.strip(),
-                                  auth_token_prefill=auth_token.strip())
+                                  auth_token_prefill=auth_token.strip(),
+                                  diagnostics=diags)
     # Check the token with Qobuz *before* writing it. A token Qobuz outright
     # rejects never lands in the config — we re-render with it still in the box
     # so the user can fix a paste slip without losing it. A network/timeout
@@ -1325,8 +1336,7 @@ async def save_settings(request: Request, user_id: str = Form(""), auth_token: s
     if new_token:
         try:
             verdict = await asyncio.wait_for(
-                asyncio.get_running_loop().run_in_executor(
-                    None, lambda: _classify_token(new_token)),
+                loop.run_in_executor(None, lambda: _classify_token(new_token)),
                 timeout=cfg.WEB_TEST_AUTH_TIMEOUT,
             )
         except asyncio.TimeoutError:
@@ -1334,12 +1344,14 @@ async def save_settings(request: Request, user_id: str = Form(""), auth_token: s
     if verdict == "rejected":
         return _settings_response(request, error="rejected",
                                   user_id=user_id.strip(),
-                                  auth_token_prefill=auth_token.strip())
+                                  auth_token_prefill=_mask_token(auth_token.strip()),
+                                  diagnostics=diags)
     ok = _write_creds(new_uid, new_token)
     if not ok:
         return _settings_response(request, error="creds",
                                   user_id=user_id.strip(),
-                                  auth_token_prefill=auth_token.strip())
+                                  auth_token_prefill=auth_token.strip(),
+                                  diagnostics=diags)
     # Keep the dashboard's "token isn't authenticating" banner in step with
     # what we just verified — a freshly-fixed token shouldn't keep nagging
     # until the next restart. An unverified save drops back to inconclusive
@@ -1424,6 +1436,25 @@ _SSE_HEARTBEAT_TICKS = cfg.SSE_HEARTBEAT_TICKS
 # tabs open doesn't starve /search and /download on the default executor.
 _SSE_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
     max_workers=cfg.SSE_MAX_WORKERS, thread_name_prefix="sse")
+
+
+@app.get("/api/diagnostics", response_class=HTMLResponse)
+async def api_diagnostics(request: Request):
+    """Htmx partial — returns just the diagnostics list items for the Recheck button."""
+    loop = asyncio.get_running_loop()
+    checks = await loop.run_in_executor(None, _diagnostics)
+    rows = []
+    for d in checks:
+        icon = "✓" if d["ok"] else "✗"
+        cls = "badge-success" if d["ok"] else "badge-error"
+        detail = f'<div class="font-mono text-xs text-base-content/60 break-all">{html.escape(d.get("detail") or "")}</div>' if d.get("detail") else ""
+        rows.append(
+            f'<div class="flex items-start gap-3">'
+            f'<span class="shrink-0 mt-0.5"><span class="badge badge-sm {cls}">{icon}</span></span>'
+            f'<div class="min-w-0"><div class="text-sm">{html.escape(d["label"])}</div>{detail}</div>'
+            f'</div>'
+        )
+    return HTMLResponse("\n".join(rows))
 
 
 @app.get("/api/jobs/{job_id}/stream")
@@ -1541,6 +1572,32 @@ def _get_token():
     return load_qobuz_token()[1]
 
 
+def _mask_token(token: str) -> str:
+    """Show only the first 8 and last 4 chars — enough to verify a paste
+    without exposing the full credential in the page source."""
+    if len(token) <= 12:
+        return token
+    return token[:8] + "•" * min(len(token) - 12, 20) + token[-4:]
+
+
+def _last_scan_age() -> str | None:
+    """Human-readable age of the last library/artist scan, or None."""
+    import time as _time
+    try:
+        ts = float(cfg.LAST_SCAN_FILE.read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        return None
+    age = _time.time() - ts
+    if age < 120:
+        return "just now"
+    if age < 3600:
+        return f"{int(age / 60)} min ago"
+    if age < 86400:
+        return f"{int(age / 3600)} hr ago"
+    days = int(age / 86400)
+    return f"{days} day{'s' if days != 1 else ''} ago"
+
+
 def _no_creds_response(request):
     """Return a 303 redirect (or htmx fragment) when no credentials are set."""
     if _is_htmx(request):
@@ -1551,12 +1608,18 @@ def _no_creds_response(request):
     return RedirectResponse(url="/settings", status_code=303)
 
 
+_creds_cache: dict | None = None
+
+
 def _read_creds():
+    global _creds_cache
     import os
     env_token = os.environ.get("QOBUZ_USER_AUTH_TOKEN", "")
     if env_token:
         env_uid = os.environ.get("QOBUZ_USER_ID", "")
         return {"user_id": env_uid, "auth_token": env_token}
+    if _creds_cache is not None:
+        return _creds_cache
     if not cfg.STREAMRIP_CONFIG.exists():
         return {}
     try:
@@ -1564,7 +1627,9 @@ def _read_creds():
         with open(cfg.STREAMRIP_CONFIG, "rb") as f:
             data = tomllib.load(f)
         qz = data.get("qobuz", {})
-        return {"user_id": qz.get("email_or_userid", ""), "auth_token": qz.get("password_or_token", "")}
+        _creds_cache = {"user_id": qz.get("email_or_userid", ""),
+                        "auth_token": qz.get("password_or_token", "")}
+        return _creds_cache
     except Exception:
         return {}
 
@@ -1576,6 +1641,8 @@ def _write_creds(user_id, auth_token) -> bool:
 
     Delegates to qobuz_librarian.api.auth.write_streamrip_creds so the web
     Settings path and the env-var sync share one credential writer."""
+    global _creds_cache
+    _creds_cache = None
     from qobuz_librarian.api.auth import write_streamrip_creds
     return write_streamrip_creds(user_id, auth_token)
 

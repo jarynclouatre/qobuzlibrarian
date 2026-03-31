@@ -10,6 +10,7 @@ import re
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
+import os
 
 from qobuz_librarian import config as cfg
 from qobuz_librarian.api.auth import AuthLost
@@ -222,6 +223,14 @@ def _add_album_candidate(job, album, artist_name):
     )
 
 
+
+def _record_last_scan():
+    try:
+        cfg.LAST_SCAN_FILE.write_text(str(time.time()), encoding="utf-8")
+    except OSError:
+        pass
+
+
 # ── Scans ─────────────────────────────────────────────────────────────────────
 
 def scan_artist(job, query, token):
@@ -240,6 +249,7 @@ def scan_artist(job, query, token):
         n += 1
     log.info(f"  {plural(n, 'missing album')} found for {artist_name}.")
     flush_resolve_cache()
+    _record_last_scan()
 
 
 def _scan_library_artist(artist_dir, token, partial_only):
@@ -301,6 +311,7 @@ def scan_library(job, token, partial_only=False):
                 what = "album with gaps" if partial_only else "album to fill"
                 log.info(f"  {artist_name} — {plural(len(albums), what)}")
     flush_resolve_cache()
+    _record_last_scan()
     if partial_only:
         log.info(f"Done. {plural(total, 'album')} with track gaps across the library.")
     else:
