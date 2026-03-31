@@ -10,7 +10,6 @@ import re
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-import os
 
 from qobuz_librarian import config as cfg
 from qobuz_librarian.api.auth import AuthLost
