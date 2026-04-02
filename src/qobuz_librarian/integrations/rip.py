@@ -422,8 +422,19 @@ def cleanup_staging_residue():
     if not cfg.STAGING_DIR.exists():
         return 0
     removed = 0
+    retry_dir_name = getattr(cfg, "BEETS_RETRY_DIR", None)
     # Walk dirs bottom-up so we can rmdir empty residue dirs after unlinking files.
     for p in sorted(cfg.STAGING_DIR.rglob("*"), key=lambda x: -len(x.parts)):
+        # Skip the parked-retry subtree so a stash of albums waiting on a
+        # manual retry doesn't get its cover art / .log files swept out from
+        # under it.
+        if retry_dir_name:
+            try:
+                rel = p.relative_to(cfg.STAGING_DIR)
+                if rel.parts and rel.parts[0] == retry_dir_name:
+                    continue
+            except ValueError:
+                pass
         try:
             if p.is_file() and p.suffix.lower() in _RESIDUE_EXTS:
                 p.unlink()
