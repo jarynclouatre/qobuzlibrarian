@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 {% block title %}Queue — Qobuz Librarian{% endblock %}
 {% block content %}
+<div id="queue-body">
 
 <div class="flex items-center justify-between mb-6 gap-2 flex-wrap">
   <h1 class="text-2xl font-bold">Download queue</h1>
@@ -8,7 +9,8 @@
     {% if pending %}
     <form action="/queue/cancel-pending" method="post">
       <input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}">
-      <button type="submit" class="btn btn-sm btn-ghost">Cancel all jobs</button>
+      <button type="submit" class="btn btn-sm btn-ghost"
+              onclick="return confirm('Cancel every pending and running job?')">Cancel all jobs</button>
     </form>
     {% endif %}
     {% if finished %}
@@ -53,9 +55,25 @@
           {% if job.status.value == 'awaiting_review' and job.candidates %}
           <p class="text-sm text-base-content/70">{{ job.candidates | length }} found — review to choose what to download.</p>
           {% elif job.status.value == 'scanning' %}
-          <p class="text-sm text-base-content/60">Scanning your library…</p>
+          <p id="card-prog-{{ job.id }}" class="text-sm text-base-content/60">
+            {%- if job.progress_total > 0 -%}
+            Scanning {{ job.progress_current }} / {{ job.progress_total }}{% if job.progress_item %} · {{ job.progress_item }}{% endif %}
+            {%- elif job.progress_phase -%}
+            {{ job.progress_phase }}
+            {%- else -%}
+            Scanning your library…
+            {%- endif -%}
+          </p>
           {% elif job.status.value == 'running' %}
-          <p class="text-sm text-base-content/60">Downloading…</p>
+          <p id="card-prog-{{ job.id }}" class="text-sm text-base-content/60">
+            {%- if job.progress_total > 0 -%}
+            {{ job.progress_phase or 'Downloading' }} {{ job.progress_current }} / {{ job.progress_total }}{% if job.progress_item %} · {{ job.progress_item }}{% endif %}
+            {%- elif job.progress_phase -%}
+            {{ job.progress_phase }}
+            {%- else -%}
+            Downloading…
+            {%- endif -%}
+          </p>
           {% endif %}
         </div>
         {% if job.status.value == 'awaiting_review' %}
@@ -77,13 +95,40 @@
       </div>
 
       {% if job.status.value in ('running', 'scanning') %}
-      {# Quietly refresh the card when the job finishes. The blow-by-blow log
-         lives on the job page and in the Completed section — the queue stays a
-         clean overview, not a terminal. #}
+      {# Live: progress updates the sub-text in place; when this job finishes,
+         we refresh the queue body so other cards reflect it too — without a
+         full reload that would yank scroll position. #}
       <script>
-      (function() {
+      (function () {
         const src = new EventSource('/api/jobs/{{ job.id }}/stream');
-        src.addEventListener('done', () => { src.close(); setTimeout(() => location.reload(), 1500); });
+        function shut() {
+          try { src.close(); } catch (_) {}
+          document.removeEventListener('htmx:beforeSwap', onSwap);
+        }
+        function onSwap(e) {
+          if (e.detail && e.detail.target && e.detail.target.id === 'queue-body') shut();
+        }
+        document.addEventListener('htmx:beforeSwap', onSwap);
+        src.addEventListener('progress', e => {
+          let p; try { p = JSON.parse(e.data); } catch (_) { return; }
+          const el = document.getElementById('card-prog-{{ job.id }}');
+          if (!el) return;
+          const verb = ('{{ job.status.value }}' === 'scanning') ? 'Scanning' : (p.phase || 'Downloading');
+          if (p.total > 0) {
+            el.textContent = verb + ' ' + p.current + ' / ' + p.total + (p.item ? ' · ' + p.item : '');
+          } else if (p.phase) {
+            el.textContent = p.phase + (p.item ? ' · ' + p.item : '');
+          }
+        });
+        src.addEventListener('done', () => {
+          shut();
+          if (window.htmx) {
+            window.htmx.ajax('GET', '/queue',
+              {target: '#queue-body', swap: 'outerHTML', select: '#queue-body'});
+          } else {
+            location.reload();
+          }
+        });
       })();
       </script>
       {% endif %}
@@ -137,13 +182,18 @@
     </button>
   </div>
   <div id="hist-{{ job.id }}" class="hidden px-2 pb-2">
+    {% if job.log_lines %}
     <div class="log-console" style="max-height:200px">
       {%- for line in job.log_lines %}{{ line }}
 {% endfor -%}
     </div>
+    {% else %}
+    <p class="text-sm text-base-content/40 px-2">No log output was retained for this job.</p>
+    {% endif %}
   </div>
   {% endfor %}
 </div>
 {% endif %}
 
+</div>
 {% endblock %}
