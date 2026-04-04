@@ -1,0 +1,206 @@
+<div id="job-content">
+  <div class="flex items-center justify-between gap-3 mb-1">
+    <h1 class="text-2xl font-bold">{% if job.artist %}{{ job.artist }} — {% endif %}{{ job.title }}</h1>
+    <span class="badge whitespace-nowrap shrink-0
+      {%- if job.status.value == 'done' %} badge-success
+      {%- elif job.status.value == 'failed' %} badge-error
+      {%- elif job.status.value == 'canceled' %} badge-ghost
+      {%- elif job.status.value == 'awaiting_review' %} badge-info
+      {%- else %} badge-warning{% endif %}">{{ job.status.value.replace('_', ' ').replace('canceled', 'cancelled') }}</span>
+  </div>
+  <p class="text-xs text-base-content/40 mb-6">Job {{ job.id }}</p>
+
+  {% set s = job.status.value %}
+
+  {# ── Scanning / running: live log ─────────────────────────────────────── #}
+  {% if s in ('pending', 'scanning', 'running') %}
+    <div class="flex items-center justify-between mb-3">
+      <p class="text-base-content/60">
+        {% if s == 'scanning' %}Scanning{% elif s == 'running' %}Downloading{% else %}Queued{% endif %}
+        {% if job.cancel_requested %}<span class="badge badge-ghost badge-sm ml-2">stopping</span>{% endif %}
+        <span id="sse-reconnect" class="badge badge-warning badge-sm ml-2 hidden">connection lost — reconnecting…</span>
+      </p>
+      {% if not job.cancel_requested %}
+      <form action="/jobs/{{ job.id }}/cancel" method="post">
+        <input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}">
+        <button type="submit" class="btn btn-sm btn-ghost">Cancel</button>
+      </form>
+      {% endif %}
+    </div>
+
+    {# Live progress header — updates in place from `event: progress`. #}
+    <div id="progress-card" class="card bg-base-200 mb-3 hidden">
+      <div class="card-body py-4">
+        <div class="flex items-baseline justify-between gap-3 mb-2">
+          <span id="prog-label" class="font-medium"></span>
+          <span id="prog-count" class="text-sm text-base-content/50 shrink-0"></span>
+        </div>
+        <progress id="prog-bar" class="progress progress-primary w-full"></progress>
+        <p id="prog-item" class="text-xs text-base-content/50 mt-2 truncate"></p>
+      </div>
+    </div>
+
+    <details class="mt-1">
+      <summary class="text-sm text-base-content/50 cursor-pointer select-none">Show details</summary>
+      <div class="log-console mt-2" id="log"></div>
+    </details>
+    <script>
+    (function () {
+      const logEl = document.getElementById('log');
+      const card = document.getElementById('progress-card');
+      const label = document.getElementById('prog-label');
+      const count = document.getElementById('prog-count');
+      const bar = document.getElementById('prog-bar');
+      const item = document.getElementById('prog-item');
+      const baseTitle = document.title;
+      const reconnect = document.getElementById('sse-reconnect');
+      const src = new EventSource('/api/jobs/{{ job.id }}/stream');
+      let titleSet = false;
+      src.onmessage = e => {
+        if (!titleSet) { document.title = '▶ ' + baseTitle; titleSet = true; }
+        logEl.appendChild(document.createTextNode(e.data + '\n'));
+        logEl.scrollTop = logEl.scrollHeight;
+      };
+      src.onopen = () => { if (reconnect) reconnect.classList.add('hidden'); };
+      src.onerror = () => {
+        // EventSource reconnects on its own (the server sends `retry:`), but a
+        // log that just freezes reads as a hang — say the connection dropped.
+        if (reconnect && src.readyState !== EventSource.CLOSED) {
+          reconnect.classList.remove('hidden');
+        }
+      };
+      src.addEventListener('progress', e => {
+        let p; try { p = JSON.parse(e.data); } catch (_) { return; }
+        // First real progress event means the job left the pending/queued
+        // state — clear the "Downloads queued" flash so the page isn't
+        // contradicting itself.
+        if (window.qlDismissAllFlashes) { window.qlDismissAllFlashes(); }
+        card.classList.remove('hidden');
+        label.textContent = p.phase || 'Working';
+        if (p.total > 0) {
+          count.textContent = p.current + ' / ' + p.total;
+          bar.max = 100; bar.value = Math.round(p.current / p.total * 100);
+        } else {
+          count.textContent = p.current ? String(p.current) : '';
+          bar.removeAttribute('value');   // indeterminate
+        }
+        item.textContent = p.item || '';
+      });
+      src.addEventListener('done', () => {
+        src.close();
+        document.title = baseTitle;
+        if (window.qlDismissAllFlashes) { window.qlDismissAllFlashes(); }
+        // Pull the finished/review view from the server and swap it in place.
+        // One render path for every terminal state — no faked progress bar to
+        // settle, and nothing for the user to click to see the result.
+        if (window.htmx) {
+          window.htmx.ajax('GET', '/jobs/{{ job.id }}/content',
+                           {target: '#job-content', swap: 'outerHTML'});
+        } else {
+          location.reload();
+        }
+      });
+    })();
+    </script>
+
+  {# ── Awaiting review: pick candidates ─────────────────────────────────── #}
+  {% elif s == 'awaiting_review' %}
+    {% if job.summary %}
+    <div class="alert alert-info mb-4"><span class="break-words">{{ job.summary }}</span></div>
+    {% endif %}
+    {% if job.candidates %}
+    <form action="/jobs/{{ job.id }}/approve" method="post">
+      <input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}">
+      {% set _groups = job.candidates | groupby('artist') %}
+      <div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between mb-3">
+        <p class="text-base-content/70">
+          {% set _n = job.candidates | length %}{{ _n }} album{% if _n != 1 %}s{% endif %}
+          across {{ _groups | length }} artist{% if _groups | length != 1 %}s{% endif %} —
+          expand an artist to choose. Everything's selected by default.
+        </p>
+        <div class="flex gap-2 shrink-0">
+          <button type="button" class="btn btn-xs"
+                  onclick="document.querySelectorAll('.cb').forEach(c=>c.checked=true)">All</button>
+          <button type="button" class="btn btn-xs"
+                  onclick="document.querySelectorAll('.cb').forEach(c=>c.checked=false)">None</button>
+        </div>
+      </div>
+
+      <div class="space-y-1 mb-4">
+        {% for artist, items in _groups %}
+        <details class="bg-base-200 rounded-lg"{% if _groups | length == 1 %} open{% endif %}>
+          <summary class="px-3 py-2 cursor-pointer select-none font-medium">
+            {{ artist or 'Unknown artist' }}<span class="text-base-content/50 font-normal"> — {{ items | length }} album{% if items | length != 1 %}s{% endif %}</span>
+          </summary>
+          <div class="px-3 pb-3 pt-1 space-y-1">
+            <div class="flex gap-2 mb-1">
+              <button type="button" class="btn btn-xs"
+                      onclick="this.closest('details').querySelectorAll('.cb').forEach(c=>c.checked=true)">All</button>
+              <button type="button" class="btn btn-xs"
+                      onclick="this.closest('details').querySelectorAll('.cb').forEach(c=>c.checked=false)">None</button>
+            </div>
+            {% for c in items %}
+            <label class="flex items-center gap-3 px-3 py-2 bg-base-100 rounded-lg cursor-pointer">
+              <input type="checkbox" class="checkbox checkbox-sm cb" name="cid"
+                     value="{{ c.cid }}" {% if c.selected %}checked{% endif %}>
+              <span class="flex-1 min-w-0">
+                <span class="font-medium">{{ c.title }}</span>
+                <span class="block text-xs text-base-content/40">{{ c.detail }}</span>
+              </span>
+            </label>
+            {% endfor %}
+          </div>
+        </details>
+        {% endfor %}
+      </div>
+
+      <div class="flex gap-2">
+        <button type="submit" class="btn btn-primary">{{ job.review_verb }} selected</button>
+        <button type="submit" formaction="/jobs/{{ job.id }}/cancel"
+                class="btn btn-ghost">Cancel</button>
+      </div>
+    </form>
+    {% else %}
+    <div class="flex items-center justify-between flex-wrap gap-3">
+      <p class="text-base-content/60">Nothing to download — this scan didn't turn up anything missing.</p>
+      <form action="/jobs/{{ job.id }}/cancel" method="post">
+        <input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}">
+        <button type="submit" class="btn btn-sm btn-ghost">Dismiss</button>
+      </form>
+    </div>
+    {% endif %}
+
+    {% if job.log_lines %}
+    <div class="divider text-base-content/30 text-xs">log</div>
+    <div class="log-console" style="max-height:min(40vh,600px)">
+      {%- for line in job.log_lines %}{{ line }}
+{% endfor -%}
+    </div>
+    {% endif %}
+
+  {# ── Finished ─────────────────────────────────────────────────────────── #}
+  {% else %}
+    {% if job.error %}
+    <div class="alert alert-error mb-4"><span class="break-words whitespace-pre-wrap">{{ job.error }}{% if 'log' not in job.error %} — check the queue or run logs.{% endif %}</span></div>
+    {% elif job.summary %}
+    <div class="alert alert-info mb-4"><span class="break-words">{{ job.summary }}</span></div>
+    {% endif %}
+    {% if job.log_lines %}
+    <div class="log-console">
+      {%- for line in job.log_lines %}{{ line }}
+{% endfor -%}
+    </div>
+    {% else %}
+    <p class="text-sm text-base-content/40">No log output was retained for this job.</p>
+    {% endif %}
+    <div class="mt-4 flex gap-2">
+      {% if s == 'failed' and job.album_id %}
+      <form action="/jobs/{{ job.id }}/retry" method="post">
+        <input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}">
+        <button type="submit" class="btn btn-primary btn-sm">Retry</button>
+      </form>
+      {% endif %}
+      <a href="/queue" class="btn btn-ghost btn-sm">Back to queue</a>
+    </div>
+  {% endif %}
+</div>

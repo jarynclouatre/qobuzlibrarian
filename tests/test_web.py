@@ -1088,25 +1088,6 @@ def test_rip_url_returns_canceled_when_check_fires(monkeypatch):
     assert FakeProc.killed is True
 
 
-# done-event shows a banner instead of auto-reloading (browser-only).
-# The JS change is verified by checking the template no longer contains
-# location.reload() in the live SSE handler path.
-def test_job_page_done_handler_does_not_auto_reload():
-    """job.html done handler must show a banner, not call location.reload()."""
-    import re
-    tmpl = (
-        __import__("pathlib").Path(__file__).parent.parent
-        / "src/qobuz_librarian/web/templates/job.html"
-    ).read_text()
-    # The lone location.reload() must sit in the banner button's onclick, not
-    # in the SSE done handler (which would reload out from under the user).
-    reloads = re.findall(r"location\.reload\(\)", tmpl)
-    assert len(reloads) == 1, "expected exactly one location.reload() in banner onclick"
-    assert re.search(r'onclick="location\.reload\(\)"', tmpl)
-    done_body = re.search(r"addEventListener\('done',.*?\}\);", tmpl, re.S).group(0)
-    assert "location.reload()" not in done_body
-
-
 def test_job_status_api_returns_json_for_known_and_unknown_job(client):
     job = _inject_job(jm.JobStatus.DONE, title="Test")
     try:

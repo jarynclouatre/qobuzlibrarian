@@ -1038,6 +1038,20 @@ async def job_page(request: Request, job_id: str, approved: bool = False,
                                      "JobStatus": job_mgr.JobStatus})
 
 
+@app.get("/jobs/{job_id}/content", response_class=HTMLResponse)
+async def job_content(request: Request, job_id: str):
+    """The job page's state-specific body, on its own. The live page swaps
+    this in when the SSE stream reports the job finished, so the terminal
+    view has one render path — the server's — instead of a faked-up bar."""
+    job = job_mgr.registry.get(job_id)
+    if not job:
+        job = job_mgr.load_historical_job(job_id)
+        if job is None:
+            return HTMLResponse("", status_code=404)
+    return _tr(request, "_job_body.html", {"job": job,
+                                           "JobStatus": job_mgr.JobStatus})
+
+
 @app.post("/jobs/{job_id}/approve")
 async def job_approve(request: Request, job_id: str):
     busy = _lock_busy_response(request)
