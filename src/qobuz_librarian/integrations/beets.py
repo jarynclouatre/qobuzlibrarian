@@ -133,7 +133,17 @@ def _merge_split_folder(dest_dir, source_dir):
     return moved
 
 
-def _prepare_staging_tags():
+def _under_retry_dir(p):
+    """True when p sits under STAGING_DIR/<BEETS_RETRY_DIR>/. Used to skip
+    the parked-album quarantine when sweeping or counting staging."""
+    try:
+        rel = p.relative_to(cfg.STAGING_DIR)
+    except ValueError:
+        return False
+    return rel.parts and rel.parts[0] == cfg.BEETS_RETRY_DIR
+
+
+def _prepare_staging_tags(roots=None):
     """Quarantine untagged staged FLACs and clean the survivors' path tags in a
     single pass, so each file is opened by mutagen once rather than twice.
 
@@ -150,6 +160,9 @@ def _prepare_staging_tags():
 
     Without mutagen every read fails; rather than quarantine the whole download
     as "untagged" and hand beets an empty dir, leave the files untouched.
+
+    ``roots`` scopes the scan to those directories; None means the whole
+    STAGING_DIR (back-compat for the preflight-driven full-batch import).
     """
     moved = []
     if not HAVE_MUTAGEN:
@@ -157,8 +170,14 @@ def _prepare_staging_tags():
     from mutagen.flac import FLAC
 
     from qobuz_librarian.library.tags import clean_qobuz_string
+    scan_roots = roots if roots else [cfg.STAGING_DIR]
     try:
-        flacs = list(cfg.STAGING_DIR.rglob("*.flac"))
+        flacs = []
+        for r in scan_roots:
+            flacs.extend(r.rglob("*.flac"))
+        # Parked albums waiting on a manual retry shouldn't be re-quarantined
+        # or re-tag-cleaned on every batch.
+        flacs = [f for f in flacs if not _under_retry_dir(f)]
     except OSError:
         return moved
     quarantine = None
@@ -267,40 +286,28 @@ def _build_import_override_yaml():
     return override_yaml
 
 
-def beets_import_paths(consolidate=True):
-    """Run beets import on the staging directory.
-
-    Requires `beet` to be on PATH (the bundled Docker image guarantees this).
-    ``consolidate`` runs the duplicate-album fold afterwards. Callers importing
-    only brand-new albums (no pre-existing folder for beets to drop tracks
-    beside) pass False to skip its full-library ``beet ls -a`` — those imports
-    can't create the duplicate rows it looks for.
-    """
-    # ── Require beet on PATH ──────────────────────────────────────────────────
+def _prepare_for_beets_run(roots=None):
+    """Common setup shared by the whole-staging and per-album entry points:
+    require ``beet`` on PATH, prep tags on the staged FLACs, and write the
+    one-shot override yaml. Returns ``(override_path, cleanup_fn)`` or
+    ``(None, None)`` if a precondition failed (caller treats as error)."""
     if not shutil.which("beet"):
         log.info(fmt(C.RED, "  ✗  `beet` not found on PATH — beets is not installed in this environment."))
         log.info(fmt(C.GRAY, "     The bundled Docker image includes beets; bare-metal installs need it separately."))
-        return False
+        return None, None
 
-    _prepare_staging_tags()
+    _prepare_staging_tags(roots=roots)
 
     user_config = cfg.BEETS_CONFIG_DIR / "config.yaml"
     if not user_config.exists():
         log.info(fmt(C.RED, f"  ✗  beets config not found at {user_config}."))
         log.info(fmt(C.GRAY, "     The container seeds a default on first start; check that the config volume is mounted writably."))
-        return False
+        return None, None
 
-    # ── Override config ───────────────────────────────────────────────────────
-    # We always write an override yaml so the import uses the right settings
-    # regardless of whatever the user has in their main beets config.
-    BEETS_OVERRIDE_NAME = ".beets_import_override.yaml"
-    override_path = cfg.BEETS_DB_PATH.parent / BEETS_OVERRIDE_NAME
-
-    override_yaml = _build_import_override_yaml()
-
+    override_path = cfg.BEETS_DB_PATH.parent / ".beets_import_override.yaml"
     try:
         override_path.parent.mkdir(parents=True, exist_ok=True)
-        override_path.write_text(override_yaml, encoding="utf-8")
+        override_path.write_text(_build_import_override_yaml(), encoding="utf-8")
     except OSError as e:
         from qobuz_librarian.ui_cli.errors import oserr_hint
         log.info(fmt(C.YELLOW,
@@ -314,10 +321,44 @@ def beets_import_paths(consolidate=True):
             except OSError:
                 pass
 
-    imported = _beets_direct(override_path, _clean)
-    if imported and consolidate:
+    return override_path, _clean
+
+
+def beets_import_paths(consolidate=True):
+    """Run beets import on the whole staging directory and return a bool.
+
+    Used by the preflight "import then quarantine leftovers" recovery path.
+    The queue executor calls ``beets_import_albums`` instead so per-album
+    failures don't take the whole batch down.
+    """
+    override_path, cleanup = _prepare_for_beets_run()
+    if cleanup is None:
+        return False
+    ok, _ = _beets_direct(override_path, cleanup, [str(cfg.STAGING_DIR)])
+    if ok and consolidate:
         _consolidate_duplicate_albums()
-    return imported
+    return ok
+
+
+def beets_import_albums(album_dirs):
+    """Run beets import scoped to ``album_dirs`` and return a tri-state code:
+
+    - ``"ok"`` — import succeeded.
+    - ``"timeout"`` — the idle-timeout guard fired; the executor decides
+      whether to retry based on ``cfg.BEETS_MAX_ATTEMPTS``.
+    - ``"error"`` — any other failure (config missing, non-zero exit,
+      silent skip). The executor won't retry these.
+
+    Consolidation is left to the caller (run once per batch instead of per
+    album, since the duplicate-album fold is a library-wide pass).
+    """
+    if not album_dirs:
+        return "ok"
+    override_path, cleanup = _prepare_for_beets_run(roots=album_dirs)
+    if cleanup is None:
+        return "error"
+    ok, kind = _beets_direct(override_path, cleanup, [str(d) for d in album_dirs])
+    return "ok" if ok else kind
 
 
 def _wait_or_idle_kill(proc, last_output):
@@ -347,12 +388,18 @@ def _wait_or_idle_kill(proc, last_output):
             # still running and recently active (or guard disabled) → wait
 
 
-def _beets_direct(override_path, cleanup_fn):
-    """Call `beet import` as a direct subprocess (bundled mode)."""
+def _beets_direct(override_path, cleanup_fn, paths=None):
+    """Call ``beet import`` as a direct subprocess (bundled mode), scoped to
+    the given paths (default: whole STAGING_DIR for back-compat). Returns
+    ``(ok: bool, kind: str)`` where kind is ``"ok"`` / ``"timeout"`` /
+    ``"error"`` so the caller can distinguish a retry-worthy idle-timeout
+    from a permanent failure."""
+    if not paths:
+        paths = [str(cfg.STAGING_DIR)]
     cmd = ["beet"]
     if override_path:
         cmd += ["-c", str(override_path)]
-    cmd += ["import", str(cfg.STAGING_DIR)]
+    cmd += ["import", *paths]
 
     report_progress("Importing into your library", 0, 0, "")
     log.info(fmt(C.CYAN, "  ⟳  Running beets import ..."))
@@ -374,7 +421,7 @@ def _beets_direct(override_path, cleanup_fn):
     except OSError:
         log.info(fmt(C.RED, "  ✗  `beet` not found. Is beets installed?"))
         cleanup_fn()
-        return False
+        return False, "error"
 
     def _reader():
         for line in proc.stdout:
@@ -409,7 +456,7 @@ def _beets_direct(override_path, cleanup_fn):
             f"— assuming hung, killed. Files remain in staging for a "
             f"manual retry. (Raise/disable with BEETS_TIMEOUT.)"))
         _report_staging_remnants()
-        return False
+        return False, "timeout"
     except KeyboardInterrupt:
         proc.kill()
         reader.join(timeout=5)
@@ -428,21 +475,22 @@ def _beets_direct(override_path, cleanup_fn):
 
     clear_scan_caches()
 
-    # Prune empty staging dirs after move
+    # Prune empty staging dirs after move. Skip the parked-retry subtree so a
+    # legitimate stash of failed albums isn't quietly demoted to nothing.
     for _d in sorted(cfg.STAGING_DIR.rglob("*"), key=lambda x: -len(x.parts)):
-        if _d.is_dir():
+        if _d.is_dir() and not _under_retry_dir(_d):
             try: _d.rmdir()
             except OSError: pass
 
     if proc.returncode == 0 and not skipped_silently:
         log.info(fmt(C.GREEN, "  ✓  beets import succeeded."))
-        return True
+        return True, "ok"
     if skipped_silently:
         log.info(fmt(C.RED, "  ✗  beets exited 0 but imported nothing (silent skip)."))
         log.info(fmt(C.GRAY, "     Files remain in staging. Try manually:"))
         log.info(fmt(C.GRAY, f"     {' '.join(cmd)}"))
         _report_staging_remnants()
-        return False
+        return False, "error"
     log.info(fmt(C.RED, f"  ✗  beets exited {proc.returncode}."))
     log.info(fmt(C.GRAY, f"     Config: {cfg.BEETS_CONFIG_DIR}/config.yaml"))
     if override_path:
@@ -450,7 +498,7 @@ def _beets_direct(override_path, cleanup_fn):
     for line in full_out.splitlines()[-20:]:
         log.info(fmt(C.GRAY, f"    {line}"))
     _report_staging_remnants()
-    return False
+    return False, "error"
 
 
 def _report_staging_remnants():
@@ -459,7 +507,8 @@ def _report_staging_remnants():
     "files remain in staging" line leaves them guessing across batches
     of 100+ albums."""
     try:
-        folders = sorted(p for p in cfg.STAGING_DIR.iterdir() if p.is_dir())
+        folders = sorted(p for p in cfg.STAGING_DIR.iterdir()
+                         if p.is_dir() and p.name != cfg.BEETS_RETRY_DIR)
     except OSError:
         return
     if not folders:
@@ -607,7 +656,8 @@ def staging_preflight(args):
     if n_swept:
         vlog(f"staging_preflight: swept {n_swept} non-audio residue item(s)")
 
-    files = [f for f in cfg.STAGING_DIR.rglob("*") if f.is_file()]
+    files = [f for f in cfg.STAGING_DIR.rglob("*")
+             if f.is_file() and not _under_retry_dir(f)]
     if not files:
         return
 
@@ -658,7 +708,8 @@ def staging_preflight(args):
             log.info(fmt(C.YELLOW, f"  ⚠  lyric hook failed during preflight: {_le}."))
         if not beets_import_paths():
             die(fmt(C.RED, "  beets import failed; aborting."), EXIT_GENERAL)
-        leftover = [f for f in cfg.STAGING_DIR.rglob("*") if f.is_file()]
+        leftover = [f for f in cfg.STAGING_DIR.rglob("*")
+                    if f.is_file() and not _under_retry_dir(f)]
         if leftover:
             orphan_dir = (cfg.STAGING_DIR.parent / ".staging.orphans"
                           / datetime.now().strftime("%Y%m%d_%H%M%S"))

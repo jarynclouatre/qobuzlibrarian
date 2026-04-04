@@ -8,7 +8,11 @@ from datetime import datetime, timezone
 
 from qobuz_librarian import config as cfg
 from qobuz_librarian.api.auth import AuthLost
-from qobuz_librarian.integrations.beets import beets_import_paths, staging_preflight
+from qobuz_librarian.integrations.beets import (
+    _consolidate_duplicate_albums,
+    beets_import_albums,
+    staging_preflight,
+)
 from qobuz_librarian.integrations.compress import HAVE_DOWNSAMPLE, downsample_dir
 from qobuz_librarian.integrations.lyrics import (
     _record_post_import_lyric_retry,
@@ -261,47 +265,133 @@ def _download_for_queue_item(item):
     item["elapsed"] = time.time() - t_start
 
 
-def _pre_import_staging_hooks(args):
-    """Run compress and lyric fetch on STAGING_DIR before beets import.
+_DISC_FOLDER_RE = re.compile(r"^(?:disc|cd)\s*\d+", re.IGNORECASE)
 
-    Raises KeyboardInterrupt (after logging) if either hook is interrupted.
-    Returns the transient lyric signatures list (empty on hook failure).
-    """
+
+def _staged_album_dirs(item):
+    """Top-level album dirs (under STAGING_DIR) that hold this item's freshly
+    downloaded audio. Disc-folder children roll up to the album dir so beets
+    sees a multi-disc release as one album, not one album per disc."""
+    snap = item.get("snapshot_before") or set()
+    audio = [p for p in files_added_since(snap)
+             if p.suffix.lower() in cfg.AUDIO_EXTS]
+    if not audio:
+        return []
+    album_dirs = set()
+    for p in audio:
+        parent = p.parent
+        if _DISC_FOLDER_RE.match(parent.name):
+            parent = parent.parent
+        album_dirs.add(parent)
+    return sorted(album_dirs)
+
+
+def _run_pre_import_hooks_for_dirs(album_dirs, args):
+    """Run compress + lyric hooks scoped to ``album_dirs``. Returns the
+    aggregated lyric-signature list so the post-import resolver can map them
+    to library paths once beets has moved the files. Raises KeyboardInterrupt
+    after logging if either hook is interrupted."""
     sigs = []
     if (cfg.DOWNSAMPLE_HIRES_ENABLED and HAVE_DOWNSAMPLE
             and not getattr(args, "no_downsample",
                             getattr(args, "no_compress", False))):
+        for d in album_dirs:
+            try:
+                downsample_dir(d, verbose=True, base_dir=d, log=log.info)
+            except KeyboardInterrupt:
+                log.info(fmt(C.YELLOW, "  ⚠  downsample hook interrupted"))
+                raise
+            except Exception as _ce:
+                log.info(fmt(C.YELLOW, f"  ⚠  downsample hook failed: {_ce}"))
+    for d in album_dirs:
         try:
-            downsample_dir(cfg.STAGING_DIR, verbose=True, base_dir=cfg.STAGING_DIR, log=log.info)
+            lh_result = _run_lyric_hook(d)
         except KeyboardInterrupt:
-            log.info(fmt(C.YELLOW, "  ⚠  downsample hook interrupted"))
+            log.info(fmt(C.YELLOW, "  ⚠  lyric hook interrupted"))
             raise
-        except Exception as _ce:
-            log.info(fmt(C.YELLOW, f"  ⚠  downsample hook failed: {_ce}"))
-    try:
-        lh_result = _run_lyric_hook(cfg.STAGING_DIR)
-    except KeyboardInterrupt:
-        log.info(fmt(C.YELLOW, "  ⚠  lyric hook interrupted"))
-        raise
-    except Exception as _le:
-        log.info(fmt(C.YELLOW, f"  ⚠  lyric hook failed: {_le}"))
-        lh_result = None
-        # The hook crashed, so we don't know which tracks lacked lyrics. Capture
-        # signatures for every staged FLAC and let the post-import resolution (the
-        # same path the success case uses) turn them into library paths after
-        # beets moves them — recording staging paths here would go stale on the
-        # move and self-prune to nothing, losing the whole batch's retries.
-        try:
-            from qobuz_librarian.integrations.rip import _flac_signature
-            for p in sorted(cfg.STAGING_DIR.rglob("*.flac")):
-                sig = _flac_signature(p)
-                if sig is not None:
-                    sigs.append((sig, str(p)))
-        except Exception:
-            pass
-    if isinstance(lh_result, tuple) and len(lh_result) == 2:
-        _, sigs = lh_result
+        except Exception as _le:
+            log.info(fmt(C.YELLOW, f"  ⚠  lyric hook failed: {_le}"))
+            lh_result = None
+            # Hook crashed; capture signatures of every staged FLAC under this
+            # album dir so the post-import resolution still has a shot. Recording
+            # staging paths here would go stale once beets moves the files.
+            try:
+                from qobuz_librarian.integrations.rip import _flac_signature
+                for p in sorted(d.rglob("*.flac")):
+                    sig = _flac_signature(p)
+                    if sig is not None:
+                        sigs.append((sig, str(p)))
+            except Exception:
+                pass
+        if isinstance(lh_result, tuple) and len(lh_result) == 2:
+            sigs.extend(lh_result[1])
     return sigs
+
+
+def _pre_import_staging_hooks(args):
+    """Whole-staging pre-import hooks (back-compat).
+
+    Used by the single-album process path (``modes/process.py``) where
+    staging holds exactly one album at hook time, so scoping to the whole
+    staging dir is equivalent to per-album. The queue executor calls
+    ``_run_pre_import_hooks_for_dirs`` directly with the per-item album dirs.
+    """
+    return _run_pre_import_hooks_for_dirs([cfg.STAGING_DIR], args)
+
+
+def _import_album_with_retry(album_dirs):
+    """Run beets import on ``album_dirs`` with up to ``BEETS_MAX_ATTEMPTS``
+    attempts, retrying only on idle-timeout (other failures aren't transient).
+    Returns True on import success, False on permanent failure."""
+    if not album_dirs:
+        return True
+    max_attempts = max(1, int(cfg.BEETS_MAX_ATTEMPTS))
+    for attempt in range(1, max_attempts + 1):
+        kind = beets_import_albums(album_dirs)
+        if kind == "ok":
+            return True
+        if kind == "timeout" and attempt < max_attempts:
+            log.info(fmt(C.YELLOW,
+                f"  ⏳ beets import timed out (attempt {attempt}/{max_attempts}); "
+                f"pausing {int(cfg.BEETS_RETRY_PAUSE)}s before retry."))
+            time.sleep(cfg.BEETS_RETRY_PAUSE)
+            continue
+        return False
+    return False
+
+
+def _move_to_beets_retry(album_dirs, label):
+    """Move album dirs that failed all beets attempts into
+    STAGING_DIR/<BEETS_RETRY_DIR>/<timestamp>-<label>/ so the next batch
+    isn't dragged down by them. The user can replay later with
+    ``beet import`` of that subtree."""
+    if not album_dirs:
+        return
+    retry_root = cfg.STAGING_DIR / cfg.BEETS_RETRY_DIR
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    safe_label = re.sub(r"[^A-Za-z0-9._-]+", "_", label)[:60] or "album"
+    dest_parent = retry_root / f"{stamp}-{safe_label}"
+    try:
+        dest_parent.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        log.info(fmt(C.YELLOW,
+            f"  ⚠  couldn't create {dest_parent}: {e}; leaving album in staging."))
+        return
+    moved = 0
+    for d in album_dirs:
+        if not d.exists():
+            continue
+        try:
+            shutil.move(str(d), str(dest_parent / d.name))
+            moved += 1
+        except OSError as e:
+            log.info(fmt(C.YELLOW,
+                f"  ⚠  couldn't move {d.name} to {dest_parent}: {e}"))
+    if moved:
+        log.info(fmt(C.YELLOW,
+            f"  ⏭  parked {moved} album dir(s) at "
+            f"{dest_parent.relative_to(cfg.STAGING_DIR)}/ "
+            f"— retry later with: beet import {dest_parent}"))
 
 
 def _resolve_queue_item(item, args, imported_globally):
@@ -485,13 +575,18 @@ def _resolve_queue_item(item, args, imported_globally):
 
 
 def _execute_download_queue(queue, args, token):
-    """Flush a batch of pre-confirmed download decisions.
+    """Flush a batch of pre-confirmed download decisions, one album at a time.
 
-    Runs three internal phases per batch — (A) backup + rip, (B) beets
-    import, (C) backup resolution. Returns ``(results, beets_ok)``;
-    callers that persist the queue on disk must skip the clear when
-    ``beets_ok`` is False so a silent beets failure doesn't wipe items
-    that never made it to the library.
+    Each item runs through its own pipeline — download → compress → lyrics →
+    beets import (with retry on idle-timeout) → backup resolution — so a
+    single broken or hung album in a 360-item batch loses only itself
+    instead of the entire import. Albums that exhaust ``BEETS_MAX_ATTEMPTS``
+    are parked under ``STAGING_DIR/<BEETS_RETRY_DIR>/`` so the rest of the
+    queue keeps moving.
+
+    Returns ``(results, beets_ok)``. ``beets_ok`` is True only when every
+    album that landed audio also imported it, so callers that persist the
+    queue on disk keep entries that didn't make it into the library.
     """
     if not queue:
         return [], True
@@ -515,17 +610,29 @@ def _execute_download_queue(queue, args, token):
     staging_preflight(args)
     interrupted = False
     cancelled = False
-    auth_lost_exc = None  # track AuthLost so Phase C still runs
+    auth_lost_exc = None
+    queue_transient_lyric_sigs = []
+    any_imported = False
+    all_landed_imported = True   # False once any album that landed audio fails to import
+    results = []
 
-    # ── Phase A: per-item backup + download ──────────────────────────────
+    def _short_circuit(item):
+        """Drain an item we can no longer process (cancel / interrupt / auth
+        loss): mark it, run backup resolution so any upgrade backup gets
+        restored, and stash the result. Skipping resolution would orphan
+        the original tracks under their backup path."""
+        item.setdefault("snapshot_before", set())
+        item.setdefault("result",
+                        "cancelled" if cancelled
+                        else "interrupted" if interrupted
+                        else "auth_lost")
+        results.append(_resolve_queue_item(item, args, False))
+
     for idx, item in enumerate(queue, 1):
         if interrupted or cancelled or auth_lost_exc is not None:
-            # Also short-circuit on auth loss so we don't thrash
-            # rip subprocesses guaranteed to fail with the same 401.
-            item["result"] = ("cancelled" if cancelled
-                              else "interrupted" if interrupted
-                              else "auth_lost")
+            _short_circuit(item)
             continue
+
         album = item["album"]
         album_dir = item["album_dir"]
         title = album.get("title") or "?"
@@ -540,6 +647,7 @@ def _execute_download_queue(queue, args, token):
                 log.info(fmt(C.RED,
                     "    ✗  Could not back up; skipping this album."))
                 item["result"] = "upgrade_aborted_backup_failed"
+                results.append(_resolve_queue_item(item, args, False))
                 continue
             item["backup_path"] = bp
 
@@ -549,23 +657,20 @@ def _execute_download_queue(queue, args, token):
         except KeyboardInterrupt:
             log.info(fmt(C.YELLOW,
                 "\n    Interrupted. Stopping further downloads — "
-                "will still beets-import what landed and resolve backups."))
+                "resolving backups for albums already processed."))
             item["result"] = "interrupted"
             interrupted = True
+            results.append(_resolve_queue_item(item, args, False))
             continue
         except AuthLost as _e_auth:
-            # Handle mid-queue auth loss. Skip the rest of
-            # Phase A. Phase C will restore all backups; we re-raise at
-            # the end so the caller surfaces AUTH RECOVERY.
             log.info(fmt(C.RED,
                 "\n    Auth lost. Stopping further downloads — "
                 "will restore upgrade backups and exit."))
             item["result"] = "auth_lost"
             auth_lost_exc = _e_auth
+            results.append(_resolve_queue_item(item, args, False))
             continue
-        # A web cancel makes rip stop mid-album (exit 130). Stop the batch and
-        # discard this item's partial output, so a later flush can't sweep half
-        # an album into the import.
+
         if is_cancel_requested():
             from qobuz_librarian.modes.process import _discard_staged_since
             _discard_staged_since(item["snapshot_before"])
@@ -573,8 +678,9 @@ def _execute_download_queue(queue, args, token):
             cancelled = True
             log.info(fmt(C.YELLOW,
                 "    Cancelled — discarded this album's partial download."))
+            results.append(_resolve_queue_item(item, args, False))
             continue
-        # Compact one-line result per album.
+
         summary_n_ok = item.get("n_ok", 0)
         summary_n_fail = item.get("n_fail", 0)
         summary_elapsed = int(item.get("elapsed", 0))
@@ -585,9 +691,53 @@ def _execute_download_queue(queue, args, token):
                 f"    ⚠ {summary_n_ok} ok · {summary_n_fail} failed · {summary_elapsed}s"))
         else:
             log.info(fmt(C.RED, f"    ✗ download failed · {summary_elapsed}s"))
+
+        # ── Per-album pre-import + beets import ──────────────────────────
+        item_imported = False
+        if summary_n_ok > 0 and not args.no_import:
+            album_dirs = _staged_album_dirs(item)
+            if not album_dirs:
+                log.info(fmt(C.YELLOW,
+                    "    ⚠  No staged audio dir found for this album — skipping beets."))
+            else:
+                try:
+                    sigs = _run_pre_import_hooks_for_dirs(album_dirs, args)
+                    queue_transient_lyric_sigs.extend(sigs)
+                except KeyboardInterrupt:
+                    log.info(fmt(C.YELLOW,
+                        "  ⚠  Pre-import hook interrupted — skipping beets "
+                        "for this album; stopping the queue."))
+                    interrupted = True
+                    results.append(_resolve_queue_item(item, args, False))
+                    continue
+
+                try:
+                    item_imported = _import_album_with_retry(album_dirs)
+                except KeyboardInterrupt:
+                    log.info(fmt(C.YELLOW,
+                        "\n  beets interrupted. Resolving backups based on disk."))
+                    interrupted = True
+                    item_imported = False
+                    results.append(_resolve_queue_item(item, args, False))
+                    continue
+
+                if item_imported:
+                    any_imported = True
+                else:
+                    all_landed_imported = False
+                    _move_to_beets_retry(album_dirs, title)
+        elif args.no_import:
+            log.info(fmt(C.YELLOW,
+                f"  --no-import: skipping beets. Files in {cfg.STAGING_DIR}/"))
+            all_landed_imported = False
+        elif summary_n_ok == 0:
+            log.info(fmt(C.GRAY, "  Skipping beets — nothing landed."))
+
+        results.append(_resolve_queue_item(item, args, item_imported))
+
         # Qobuz throttles sustained bulk queues. When the last rip showed
         # throttle signals, pause longer than the normal inter-album gap
-        # so we stop pounding the limit. Everything still downloads; this just paces it.
+        # so we stop pounding the limit.
         cooldown = cfg.RATE_LIMIT_COOLDOWN if item.get("rate_limited") else 0
         if cooldown and idx < len(queue):
             log.info(fmt(C.YELLOW,
@@ -598,95 +748,23 @@ def _execute_download_queue(queue, args, token):
         else:
             time.sleep(cfg.DELAY_BETWEEN)
 
-    # ── Pre-import: compress + lyrics on STAGING ─────────────────────────
-    # Hooks run here (whole-staging, pre-beets) rather than per-item
-    # post-import. Beets's `move: yes` then transfers already-compressed,
-    # already-lyriced FLACs into the library in one shot, closing the race
-    # window where a library scanner could pick up partially-processed
-    # files between the beets-move and the post-import hooks.
-    #
-    # Operates on STAGING_DIR as a whole (rglob picks up every album's
-    # FLACs across the queue). Skipped when nothing landed or --no-import
-    # is set, since beets won't run either.
-    #
-    # On Ctrl+C: set hooks_interrupted, skip beets so we don't import a
-    # half-compressed mix, fall through to Phase C for backup resolution,
-    # then re-raise at the end.
-    print()
-    any_landed = any(item.get("n_ok", 0) > 0 for item in queue)
-    hooks_interrupted = False
-    # Track Ctrl+C inside beets_import_paths separately from
-    # hooks_interrupted so the end-of-function re-raise covers all three
-    # interrupt points (download, hooks, beets). Returning normally on a
-    # beets KI would let the caller clear shared_queue and the on-disk
-    # pending file before all work was complete.
-    beets_interrupted = False
-    # Capture transient lyric signatures so we can write
-    # post-import paths (not staging paths) to the retry manifest after
-    # beets moves files. See _run_lyric_hook docstring for context.
-    queue_transient_lyric_sigs = []
-    if (any_landed and auth_lost_exc is None and not args.no_import):
+    # ── Post-batch: consolidate duplicate albums once if anything landed.
+    # The fold is a library-wide pass, so running it per-album would waste
+    # work; once at end is enough.
+    if any_imported:
         try:
-            queue_transient_lyric_sigs = _pre_import_staging_hooks(args)
-        except KeyboardInterrupt:
-            hooks_interrupted = True
-            log.info(fmt(C.YELLOW,
-                "  ⚠  Pre-import hook interrupted — skipping beets so staging "
-                "stays consistent; resolving backups."))
+            _consolidate_duplicate_albums()
+        except Exception as _e_c:
+            vlog(f"consolidate duplicate albums raised: {_e_c}")
 
-    # ── Phase B: single beets import ─────────────────────────────────────
-    if hooks_interrupted:
-        imported_globally = False
-    elif auth_lost_exc is not None:
-        # Don't run beets after auth loss.
-        log.info(fmt(C.RED, "  Auth lost — skipping beets import."))
-        imported_globally = False
-    elif args.no_import:
-        log.info(fmt(C.YELLOW,
-            f"  --no-import: skipping beets. Files in {cfg.STAGING_DIR}/"))
-        imported_globally = False
-    elif not any_landed:
-        log.info(fmt(C.YELLOW, "  Skipping beets — nothing succeeded."))
-        imported_globally = False
-    elif is_cancel_requested():
-        log.info(fmt(C.YELLOW,
-            "  Cancelled — skipping beets import of the partial queue."))
-        imported_globally = False
-    else:
-        section("Running beets on the queue")
-        # Only run the duplicate-album fold if some item targeted an existing
-        # folder (gap-fill / upgrade / repair) — an all-new batch can't have
-        # created the split rows it cleans up.
-        consolidate = any(it.get("album_dir") for it in queue)
-        try:
-            imported_globally = beets_import_paths(consolidate=consolidate)
-        except KeyboardInterrupt:
-            log.info(fmt(C.YELLOW,
-                "\n  beets interrupted. Resolving backups based on disk."))
-            imported_globally = False
-            beets_interrupted = True
-
-    # ── Phase C: backup resolution + result building ─────────────────────
-    results = []
-    for item in queue:
-        results.append(_resolve_queue_item(item, args, imported_globally))
-
+    # ── Post-batch lyric-retry resolution.
     print()
-    # Resolve transient lyric signatures (captured pre-beets)
-    # against the post-import album dirs we found during the backup-resolution
-    # phase, then write the post-import paths to LYRIC_RETRY_FILE so next-launch
-    # retry actually finds the files. Skipped on auth loss / interrupt
-    # so we don't churn manifest state when the run didn't really finish.
+    _post_dirs = [it.get("_resolved_post_dir") for it in queue
+                  if it.get("_resolved_post_dir") is not None]
     if (queue_transient_lyric_sigs
-            and imported_globally
+            and any_imported
             and auth_lost_exc is None
-            and not hooks_interrupted
-            and not beets_interrupted):
-        _post_dirs = []
-        for _it in queue:
-            _pd = _it.get("_resolved_post_dir")
-            if _pd is not None:
-                _post_dirs.append(_pd)
+            and not interrupted):
         try:
             resolved = _resolve_signatures_to_paths(
                 queue_transient_lyric_sigs, _post_dirs)
@@ -704,20 +782,16 @@ def _execute_download_queue(queue, args, token):
             vlog(f"post-import sidecar write raised: {_e_sc}")
     elif (queue_transient_lyric_sigs
             and auth_lost_exc is None
-            and not hooks_interrupted
-            and not beets_interrupted):
-        # The batch finished but beets import didn't succeed — the files
-        # are still in STAGING_DIR. Record their staging paths so next
-        # launch's offer_resume_lyric_retry gets a second chance instead
-        # of silently dropping the queue. Stale entries self-prune there.
-        # Auth-loss / interrupt are still excluded (run didn't finish, so
-        # don't churn manifest state).
+            and not interrupted):
+        # Some albums downloaded but none imported — files still in staging
+        # (or parked under .beets_retry/). Record those paths so the
+        # next-launch retry has a shot. Stale entries self-prune there.
         try:
             resolved = _resolve_signatures_to_paths(
                 queue_transient_lyric_sigs, [cfg.STAGING_DIR])
             if resolved:
                 _record_post_import_lyric_retry(resolved)
-                vlog(f"lyric retry: import unsuccessful; queued "
+                vlog(f"lyric retry: no album imported; queued "
                      f"{len(resolved)} staging path(s) for next-launch retry")
         except Exception as _e_lr:
             vlog(f"lyric retry (staging fallback) failed: {_e_lr}")
@@ -731,19 +805,11 @@ def _execute_download_queue(queue, args, token):
         f"{n_total_ok} track{'s' if n_total_ok != 1 else ''} downloaded · "
         f"{n_total_fail} failed"))
 
-    # Re-raise AuthLost (backups resolved in Phase C above) so
-    # the outer caller surfaces the standard AUTH RECOVERY exit message.
     if auth_lost_exc is not None:
         raise auth_lost_exc
-    # Re-raise KeyboardInterrupt for any of the three points
-    # we caught it (download phase, beets, pre-import hooks). Phase C is
-    # complete now and all backups are resolved, so the caller can exit
-    # cleanly. CRITICAL: without this, _flush_queue in modes 4/5 reaches
-    # `shared_queue.clear() + clear_pending_queue()` after this returns,
-    # silently destroying every queued decision the user gave. The whole
-    # point of the queue persistence was to prevent that — but
-    # only `hooks_interrupted` raised, so Ctrl+C during downloads or
-    # beets still nuked the queue.
-    if hooks_interrupted or interrupted or beets_interrupted:
+    # Re-raising KeyboardInterrupt is what stops _flush_queue in modes 4/5
+    # from reaching shared_queue.clear() and silently destroying every
+    # queued decision the user gave.
+    if interrupted:
         raise KeyboardInterrupt
-    return results, bool(imported_globally)
+    return results, bool(all_landed_imported)

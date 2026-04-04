@@ -384,8 +384,9 @@ class TestBeetsImportTimeout:
         monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: HungProc())
         monkeypatch.setattr(beets, "clear_scan_caches", lambda: None)
 
-        ok = beets._beets_direct(None, lambda: cleaned.append(True))
+        ok, kind = beets._beets_direct(None, lambda: cleaned.append(True))
         assert ok is False
+        assert kind == "timeout"
         assert killed == [True]
         assert cleaned == [True]
 
@@ -425,8 +426,9 @@ class TestBeetsDirect:
 
         monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: SkippingProc())
         monkeypatch.setattr(beets, "clear_scan_caches", lambda: None)
-        ok = beets._beets_direct(None, lambda: None)
+        ok, kind = beets._beets_direct(None, lambda: None)
         assert ok is False
+        assert kind == "error"
 
 
 class TestReportStagingRemnants:
@@ -680,8 +682,8 @@ def test_consolidate_runs_only_when_requested(tmp_path, monkeypatch):
     monkeypatch.setattr(cfg, "BEETS_DB_PATH", tmp_path / "lib.db")
     monkeypatch.setattr(cfg, "STAGING_DIR", tmp_path / "staging")
     monkeypatch.setattr(beets.shutil, "which", lambda _n: "/usr/bin/beet")
-    monkeypatch.setattr(beets, "_prepare_staging_tags", lambda: [])
-    monkeypatch.setattr(beets, "_beets_direct", lambda *a, **k: True)
+    monkeypatch.setattr(beets, "_prepare_staging_tags", lambda **_: [])
+    monkeypatch.setattr(beets, "_beets_direct", lambda *a, **k: (True, "ok"))
 
     calls = []
     monkeypatch.setattr(beets, "_consolidate_duplicate_albums",

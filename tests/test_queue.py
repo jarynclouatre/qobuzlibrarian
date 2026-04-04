@@ -350,6 +350,82 @@ def test_executor_gap_fill_backup_restored_when_track_returns_lossy(monkeypatch,
     assert owned.read_bytes() == b"the-owned-original"
 
 
+def test_executor_per_album_isolation_one_album_failure_keeps_others(monkeypatch, tmp_path):
+    """The whole point of the per-album pipeline: a beets failure on
+    album N leaves albums 1..N-1 already imported and N+1..end still
+    importable, instead of taking the whole batch down. The failing
+    album's staged dir is moved to BEETS_RETRY_DIR so the next batch
+    keeps moving."""
+    from qobuz_librarian import config as cfg
+    from qobuz_librarian.queue import executor
+
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    monkeypatch.setattr(cfg, "STAGING_DIR", staging)
+
+    items = []
+    for tag in ("A", "B", "C"):
+        items.append({
+            "album": {"id": tag, "title": f"Album {tag}",
+                      "artist": {"name": f"Artist-{tag}"},
+                      "tracks": {"items": []}},
+            "album_dir": None,
+            "auto_upgrade": False,
+            "missing": [], "present": [], "upgrade_only": False,
+            "label": tag,
+            "n_ok": 1, "n_fail": 0, "n_lossy": 0,
+            "failed_tracks": [], "lossy_tracks": [],
+            "rate_limited": False, "elapsed": 0.0,
+        })
+
+    def fake_download(item):
+        tag = item["label"]
+        d = staging / f"Artist-{tag}" / f"Album {tag}"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "01.flac").write_bytes(b"")
+
+    monkeypatch.setattr(executor, "staging_preflight", lambda _a: None)
+    monkeypatch.setattr(executor, "_download_for_queue_item", fake_download)
+    monkeypatch.setattr(executor, "_run_pre_import_hooks_for_dirs",
+                        lambda _d, _a: [])
+    # Item B fails beets ("error" = non-retryable); A and C succeed.
+    by_label = {"A": "ok", "B": "error", "C": "ok"}
+    seen = []
+
+    def fake_import(album_dirs):
+        # Map back to the item by its album-dir grandparent name ("Artist-X").
+        artist = album_dirs[0].parent.name.split("-")[-1]
+        seen.append(artist)
+        return by_label[artist]
+
+    monkeypatch.setattr(executor, "beets_import_albums", fake_import)
+    monkeypatch.setattr(executor, "_consolidate_duplicate_albums", lambda: None)
+    monkeypatch.setattr(executor, "_resolve_queue_item",
+                        lambda item, args, imported_globally: {
+                            "dir": item["album_dir"], "imported": imported_globally,
+                            "result": "downloaded" if imported_globally else "failed",
+                            "n_ok": item.get("n_ok", 0),
+                            "n_fail": item.get("n_fail", 0),
+                            "n_lossy": item.get("n_lossy", 0),
+                            "auto_upgrade": False,
+                        })
+
+    args = Namespace(dry_run=False, no_import=False, no_downsample=True,
+                     no_compress=True, migrate_multi_artist=False,
+                     consolidate=False)
+    results, beets_ok = executor._execute_download_queue(items, args, token=None)
+
+    assert seen == ["A", "B", "C"]
+    assert [r["imported"] for r in results] == [True, False, True]
+    # B's staged folder got parked; A and C's are still where the test left
+    # them (beets would have moved them in real life, but we stubbed it out).
+    assert not (staging / "Artist-B" / "Album B").exists()
+    parked = list((staging / cfg.BEETS_RETRY_DIR).rglob("Album B"))
+    assert len(parked) == 1
+    # beets_ok is False because B's import failed — caller keeps the queue.
+    assert beets_ok is False
+
+
 def test_push_progress_streams_separately_and_stays_out_of_the_log():
     from qobuz_librarian.web import jobs as jm
     job = jm.Job(kind="scan")
