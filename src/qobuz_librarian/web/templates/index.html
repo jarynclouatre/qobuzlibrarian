@@ -88,7 +88,7 @@
     <input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}">
     <input type="text" name="q" aria-label="Search Qobuz" placeholder="Artist, album, or Qobuz URL"
            inputmode="search" enterkeyhint="search" autocapitalize="off" spellcheck="false" maxlength="500"
-           class="input input-bordered input-lg flex-1" autocomplete="off" autofocus>
+           class="input input-bordered input-lg flex-1" autocomplete="off">
     <button type="submit" class="btn btn-primary btn-lg gap-2">
       <span id="dashboard-search-spinner"
             class="loading loading-spinner loading-sm htmx-indicator"></span>
@@ -175,7 +175,7 @@
       {% for job in review %}
       <div class="flex items-center justify-between gap-3">
         <div class="min-w-0">
-          <p class="font-medium truncate">{{ job.title }}</p>
+          <p class="font-medium truncate">{% if job.artist %}{{ job.artist }} — {% endif %}{{ job.title }}</p>
           <p class="text-xs text-base-content/50">
             {% set _n = job.candidates | length %}{{ _n }} candidate{% if _n != 1 %}s{% endif %}</p>
         </div>
@@ -187,57 +187,102 @@
 </div>
 {% endif %}
 
-<!-- Active job card -->
-{% if active_job %}
-<div class="card bg-base-200 border border-warning shadow mb-6" id="active-job-card">
-  <div class="card-body">
-    <div class="flex items-center gap-3 mb-3">
-      <span class="loading loading-spinner loading-sm text-warning"></span>
-      <div>
-        <p class="font-semibold text-warning">{% if active_job.status.value == 'scanning' %}Scanning{% else %}Downloading{% endif %}<span id="active-reconnect" class="badge badge-warning badge-sm ml-2 hidden">connection lost — reconnecting…</span></p>
-        <p class="text-sm text-base-content/70">{% if active_job.artist %}{{ active_job.artist }} — {% endif %}{{ active_job.title }}</p>
+<!-- Active job(s): live progress cards. Always rendered as #dashboard-active
+     so SSE-driven swaps land on a stable target even when the list goes empty. -->
+<div id="dashboard-active" class="{% if active_jobs %}space-y-3 mb-6{% endif %}">
+  {% if active_jobs %}
+  {% for j in active_jobs %}
+  <div class="card bg-base-200 border border-warning shadow">
+    <div class="card-body py-4">
+      <div class="flex items-start justify-between gap-3">
+        <div class="min-w-0 flex-1">
+          <div class="flex items-center gap-2 mb-1 flex-wrap">
+            <span class="loading loading-spinner loading-xs text-warning"></span>
+            {% if j.status.value == 'scanning' %}
+            <span class="badge badge-info badge-sm">Scanning</span>
+            {% else %}
+            <span class="badge badge-warning badge-sm">Downloading</span>
+            {% endif %}
+            <span id="dash-reconnect-{{ j.id }}" class="badge badge-warning badge-sm hidden">connection lost — reconnecting…</span>
+          </div>
+          <p class="font-semibold truncate">
+            <a href="/jobs/{{ j.id }}" class="link link-hover">
+              {% if j.artist %}{{ j.artist }} — {% endif %}{{ j.title }}</a>
+          </p>
+          <p id="dash-prog-{{ j.id }}" class="text-sm text-base-content/60 mt-1">
+            {%- if j.progress_total > 0 -%}
+            {{ j.progress_phase or ('Scanning' if j.status.value == 'scanning' else 'Downloading') }} {{ j.progress_current }} / {{ j.progress_total }}{% if j.progress_item %} · {{ j.progress_item }}{% endif %}
+            {%- elif j.progress_phase -%}
+            {{ j.progress_phase }}
+            {%- else -%}
+            {% if j.status.value == 'scanning' %}Scanning your library…{% else %}Downloading…{% endif %}
+            {%- endif -%}
+          </p>
+        </div>
+        <div class="flex gap-2 shrink-0">
+          <a href="/jobs/{{ j.id }}" class="btn btn-sm btn-ghost">Open</a>
+          <form action="/jobs/{{ j.id }}/cancel" method="post">
+            <input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}">
+            <button type="submit" class="btn btn-square min-h-[44px] min-w-[44px] sm:btn-sm btn-ghost"
+                    title="Cancel" aria-label="Cancel">×</button>
+          </form>
+        </div>
       </div>
     </div>
-    <div class="log-console" id="active-log-{{ active_job.id }}">
-      {%- for line in active_job.log_lines[-30:] %}{{ line }}
-{% endfor -%}
-    </div>
+    <script>
+    (function () {
+      const src = new EventSource('/api/jobs/{{ j.id }}/stream');
+      const reconnect = document.getElementById('dash-reconnect-{{ j.id }}');
+      function shut() {
+        try { src.close(); } catch (_) {}
+        document.removeEventListener('htmx:beforeSwap', onSwap);
+      }
+      function onSwap(e) {
+        if (e.detail && e.detail.target && e.detail.target.id === 'dashboard-active') shut();
+      }
+      document.addEventListener('htmx:beforeSwap', onSwap);
+      src.onopen = () => { if (reconnect) reconnect.classList.add('hidden'); };
+      src.onerror = () => {
+        if (reconnect && src.readyState !== EventSource.CLOSED) reconnect.classList.remove('hidden');
+      };
+      src.addEventListener('progress', e => {
+        let p; try { p = JSON.parse(e.data); } catch (_) { return; }
+        const el = document.getElementById('dash-prog-{{ j.id }}');
+        if (!el) return;
+        const verb = ('{{ j.status.value }}' === 'scanning') ? 'Scanning' : (p.phase || 'Downloading');
+        if (p.total > 0) {
+          el.textContent = verb + ' ' + p.current + ' / ' + p.total + (p.item ? ' · ' + p.item : '');
+        } else if (p.phase) {
+          el.textContent = p.phase + (p.item ? ' · ' + p.item : '');
+        }
+      });
+      src.addEventListener('done', () => {
+        shut();
+        // Don't yank the user mid-search — if search results are showing, just
+        // drop this card and leave the rest alone.
+        const results = document.getElementById('search-results');
+        if (results && results.children.length) {
+          const wrap = document.getElementById('dashboard-active');
+          if (wrap) wrap.classList.add('hidden');
+          return;
+        }
+        if (window.htmx) {
+          window.htmx.ajax('GET', '/',
+            {target: '#dashboard-active', swap: 'outerHTML', select: '#dashboard-active'});
+        } else {
+          location.reload();
+        }
+      });
+    })();
+    </script>
   </div>
+  {% endfor %}
+  {% endif %}
 </div>
-<script>
-(function() {
-  const logEl = document.getElementById('active-log-{{ active_job.id }}');
-  const reconnect = document.getElementById('active-reconnect');
-  const src = new EventSource('/api/jobs/{{ active_job.id }}/stream');
-  src.onmessage = e => {
-    logEl.appendChild(document.createTextNode(e.data + '\n'));
-    logEl.scrollTop = logEl.scrollHeight;
-  };
-  src.onopen = () => { if (reconnect) reconnect.classList.add('hidden'); };
-  src.onerror = () => {
-    if (reconnect && src.readyState !== EventSource.CLOSED) {
-      reconnect.classList.remove('hidden');
-    }
-  };
-  src.addEventListener('done', () => {
-    src.close();
-    const results = document.getElementById('search-results');
-    if (results && results.children.length) {
-      // Search results are showing — don't reload over them. Just hide the
-      // now-stale active-job card so it doesn't keep saying "Downloading".
-      const card = document.getElementById('active-job-card');
-      if (card) card.classList.add('hidden');
-      return;
-    }
-    setTimeout(() => window.location.reload(), 1500);
-  });
-})();
-</script>
-{% endif %}
 
-<!-- Queue summary (if jobs pending but not running) -->
+<!-- Pending-only summary (non-review pending, none active) -->
 {% set queued_only = pending | rejectattr('status.value', 'equalto', 'awaiting_review') | list %}
-{% if queued_only and not active_job %}
+{% if queued_only and not active_jobs %}
 <div class="alert alert-info mb-6">
   <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
@@ -261,8 +306,8 @@
       {% for entry in recent %}
       <div class="py-2 flex items-center justify-between gap-3">
         <div class="min-w-0">
-          <p class="font-medium truncate">{{ entry.get('artist') or '?' }} — {{ entry.get('title') or '?' }}</p>
-          <p class="text-xs text-base-content/50">{{ (entry.get('ts') or '')[:10] }}</p>
+          <p class="font-medium truncate">{{ entry.get('artist') or 'Unknown artist' }} — {{ entry.get('title') or 'Unknown title' }}</p>
+          <p class="text-xs text-base-content/50">{{ (entry.get('ts') or '')[:16].replace('T', ' ') }}</p>
         </div>
         <div class="shrink-0">
           {% set result = entry.get('result') or '' %}

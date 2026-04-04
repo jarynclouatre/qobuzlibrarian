@@ -522,7 +522,8 @@ async def dashboard_head():
 @app.get("/", response_class=HTMLResponse)
 async def dashboard(request: Request):
     from qobuz_librarian import config as _cfg
-    active_job = _active_job()
+    active_jobs = [j for j in job_mgr.registry.pending_and_running()
+                   if j.status.value in ('running', 'scanning')]
 
     # These all read the (often NAS / network-mounted) data + music volumes —
     # the fetch log, the creds file, the lyric-retry file, and a staging
@@ -540,14 +541,14 @@ async def dashboard(request: Request):
             "creds_ok": bool(_read_creds().get("auth_token")),
             "lyric_retry_count":
                 len(load_lyric_retry()) if _cfg.LYRIC_RETRY_FILE.exists() else 0,
-            "staging_album_count": 0 if active_job else _staging_album_count(),
+            "staging_album_count": 0 if active_jobs else _staging_album_count(),
             "last_library_scan": _last_scan_age(),
         }
 
     loop = asyncio.get_running_loop()
     disk = await loop.run_in_executor(None, _gather_disk_state)
     return _tr(request, "index.html", {
-        "active_job": active_job,
+        "active_jobs": active_jobs,
         "pending": job_mgr.registry.pending_and_running(),
         "review": job_mgr.registry.awaiting_review(),
         "creds_token_valid": _TOKEN_VALID,
