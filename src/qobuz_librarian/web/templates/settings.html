@@ -6,13 +6,13 @@
 
 {% if connected %}
 {% if unverified %}
-<div class="alert alert-warning mb-6">
+<div class="alert alert-warning mb-6" data-flash>
   <span>Saved your token, but Qobuz couldn't be reached just now to check it.
     Open the <a href="/" class="link">dashboard</a> and try a search — if it
     works, you're all set.</span>
 </div>
 {% else %}
-<div class="alert alert-success mb-6">
+<div class="alert alert-success mb-6" data-flash>
   <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
   </svg>
@@ -23,7 +23,7 @@
 {% endif %}
 
 {% if saved %}
-<div class="alert {% if queued %}alert-info{% else %}alert-success{% endif %} mb-6">
+<div class="alert {% if queued %}alert-info{% else %}alert-success{% endif %} mb-6" data-flash>
   <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
   </svg>
@@ -32,46 +32,46 @@
 {% endif %}
 
 {% if error == "creds" %}
-<div class="alert alert-error mb-6">
+<div class="alert alert-error mb-6" data-flash>
   <span>Couldn't write credentials — the config volume isn't writable.
   On a NAS, set <code>PUID</code>/<code>PGID</code> and grant that user
   write access to the config volume.</span>
 </div>
 {% elif error == "rejected" %}
-<div class="alert alert-error mb-6">
+<div class="alert alert-error mb-6" data-flash>
   <span>Qobuz rejected this token, so it wasn't saved. Re-grab it from
   play.qobuz.com — dev tools → Application → Local Storage →
   <code>localuser</code> → <code>token</code> — and try again.</span>
 </div>
 {% elif error == "empty" %}
-<div class="alert alert-warning mb-6">
+<div class="alert alert-warning mb-6" data-flash>
   <span>Token can't be empty — paste the <code>user_auth_token</code> from
   play.qobuz.com (dev tools → Application → Local Storage → <code>localuser</code>
   → <code>token</code>), or set
   <code>QOBUZ_USER_AUTH_TOKEN</code> in your environment.</span>
 </div>
 {% elif error == "needuser" %}
-<div class="alert alert-warning mb-6">
+<div class="alert alert-warning mb-6" data-flash>
   <span>Add your User ID / Email as well — a token on its own isn't enough
   to use the app. Fill in both fields, then save.</span>
 </div>
 {% elif error == "persist" %}
-<div class="alert alert-warning mb-6">
+<div class="alert alert-warning mb-6" data-flash>
   <span>Applied for this session, but couldn't be saved to disk (data
   volume not writable) — it won't survive a restart. Check volume
   permissions / <code>PUID</code>/<code>PGID</code>.</span>
 </div>
 {% elif error %}
-<div class="alert alert-warning mb-6"><span>{{ error }}</span></div>
+<div class="alert alert-warning mb-6" data-flash><span>{{ error }}</span></div>
 {% endif %}
 
 {% if mode_changed == "cli" %}
-<div class="alert alert-info mb-6">
+<div class="alert alert-info mb-6" data-flash>
   <span>Handed off to the terminal. Downloads and scans here are paused until
   you resume the web app below.</span>
 </div>
 {% elif mode_changed == "web" %}
-<div class="alert alert-success mb-6"><span>Web app resumed.</span></div>
+<div class="alert alert-success mb-6" data-flash><span>Web app resumed.</span></div>
 {% endif %}
 
 <!-- Qobuz auth -->

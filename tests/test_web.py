@@ -943,6 +943,37 @@ def test_queue_awaiting_review_job_shows_review_and_cancel(client):
         _remove_job(job)
 
 
+def test_flash_banners_carry_data_flash_attribute(client):
+    """Server-rendered banners driven by one-shot query flags (?approved=1,
+    ?error=…, ?saved=1) must be tagged data-flash so the shared app.js can
+    auto-fade them and strip the param from the URL — otherwise a refresh
+    re-renders the same stale message forever. (Three screenshots' worth of
+    bug reports were this same issue, page after page.)"""
+    import urllib.parse
+
+    job = _inject_job(jm.JobStatus.RUNNING)
+    try:
+        r = client.get(f"/jobs/{job.id}?approved=1")
+        assert r.status_code == 200
+        # The "Downloads queued" banner must carry data-flash so app.js
+        # auto-dismisses and the URL gets cleaned.
+        flat = r.text.replace("\n", " ")
+        assert "Downloads queued" in flat
+        assert "data-flash" in flat, (
+            "approved banner is missing data-flash — it'll stick in the URL "
+            "and re-render on every refresh")
+    finally:
+        _remove_job(job)
+
+    # The /queue?error=… path is the same pattern from a different angle —
+    # any error string passed through the query becomes a stale banner if
+    # it's not flagged as flash.
+    r = client.get("/queue?error=" + urllib.parse.quote("Something broke"))
+    assert r.status_code == 200
+    assert "Something broke" in r.text
+    assert "data-flash" in r.text
+
+
 def test_review_list_groups_candidates_by_artist(client):
     """The review list renders one collapsed section per artist with its album
     count, keeps a per-group select-all, and drops no candidate id."""

@@ -3,14 +3,14 @@
 {% block content %}
 
 {% if stale %}
-<div class="alert alert-warning mb-4">
+<div class="alert alert-warning mb-4" data-flash>
   <span>This job is no longer awaiting review — the previous click already
     started it.</span>
 </div>
 {% endif %}
 
 {% if approved %}
-<div class="alert alert-success mb-4">
+<div class="alert alert-success mb-4" data-flash>
   <span>Downloads queued — they'll start shortly. Watch the progress below.</span>
 </div>
 {% endif %}

@@ -724,7 +724,8 @@ async def queue_download(request: Request, album_id: str = Form(""),
         msg = "Missing album id."
         if _is_htmx(request):
             return HTMLResponse(
-                f'<div class="alert alert-error">{msg}</div>', status_code=400)
+                f'<div class="alert alert-error" data-flash>{msg}</div>',
+                status_code=400)
         return RedirectResponse(url="/queue?error=" + urllib.parse.quote(msg),
                                 status_code=303)
     # Refuse duplicates — same album already active or pending. Includes
@@ -735,7 +736,7 @@ async def queue_download(request: Request, album_id: str = Form(""),
     if existing:
         if _is_htmx(request):
             return HTMLResponse(
-                f'<div class="alert alert-warning">Already queued — '
+                f'<div class="alert alert-warning" data-flash>Already queued — '
                 f'<a href="/jobs/{existing.id}" class="link">view job</a>.</div>')
         return RedirectResponse(url=f"/jobs/{existing.id}", status_code=303)
     force_redownload = str(force).strip().lower() in ("1", "true", "yes", "on")
@@ -775,7 +776,7 @@ async def queue_download(request: Request, album_id: str = Form(""),
                     msg = "You already own this album."
                     if _is_htmx(request):
                         return HTMLResponse(
-                            f'<div class="alert alert-warning">{html.escape(msg)} '
+                            f'<div class="alert alert-warning" data-flash>{html.escape(msg)} '
                             f'<a href="/" class="link">Back to dashboard</a>.</div>')
                     return RedirectResponse(
                         url="/queue?error=" + urllib.parse.quote(msg),
@@ -791,7 +792,7 @@ async def queue_download(request: Request, album_id: str = Form(""),
             if dup:
                 if _is_htmx(request):
                     return HTMLResponse(
-                        f'<div class="alert alert-warning">Already queued — '
+                        f'<div class="alert alert-warning" data-flash>Already queued — '
                         f'<a href="/jobs/{dup.id}" class="link">view job</a>.</div>')
                 return RedirectResponse(url=f"/jobs/{dup.id}", status_code=303)
             job_mgr.submit(job, _make_download_run(album, token))
@@ -802,7 +803,8 @@ async def queue_download(request: Request, album_id: str = Form(""),
     except (SystemExit, NoCredsError):
         msg = "No Qobuz credentials set — visit Settings."
         if _is_htmx(request):
-            return HTMLResponse(f'<div class="alert alert-error">{msg}</div>')
+            return HTMLResponse(
+                f'<div class="alert alert-error" data-flash>{msg}</div>')
         return RedirectResponse(url="/settings?error=creds", status_code=303)
     except Exception as e:
         from qobuz_librarian.api.auth import AuthLost, QobuzError, friendly_qobuz_error
@@ -821,7 +823,8 @@ async def queue_download(request: Request, album_id: str = Form(""),
         else:
             user_msg = "Couldn't queue download — check your token and try again."
         if _is_htmx(request):
-            return HTMLResponse(f'<div class="alert alert-error">{html.escape(user_msg)}</div>')
+            return HTMLResponse(
+                f'<div class="alert alert-error" data-flash>{html.escape(user_msg)}</div>')
         msg = urllib.parse.quote(user_msg, safe="")
         return RedirectResponse(url=f"/queue?error={msg}", status_code=303)
 

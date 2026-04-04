@@ -180,9 +180,11 @@
           const q = document.querySelector('input[name="q"], input[name="artist"]');
           if (q) { e.preventDefault(); q.focus(); q.select && q.select(); }
         } else if (e.key === 'Escape') {
-          ['error', 'warning'].forEach(kind => {
-            document.querySelectorAll('.alert.alert-' + kind).forEach(a => a.remove());
-          });
+          // Esc dismisses any flash banner (any severity), plus any leftover
+          // error/warning alert that isn't flagged as a flash. Inputs lose
+          // focus too, so a stuck modal-style keypress can be escaped.
+          document.querySelectorAll('[data-flash], .alert.alert-error, .alert.alert-warning')
+            .forEach(a => a.remove());
           if (inField) document.activeElement.blur();
         } else if (e.key === 'g' && !inField) {
           gPending = true;

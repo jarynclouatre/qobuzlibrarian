@@ -1,5 +1,5 @@
 {% if error %}
-<div class="alert alert-error mb-4">
+<div class="alert alert-error mb-4" data-flash>
   <span>Search error: {{ error }}{% if not error.endswith('.') %}.{% endif %}</span>
 </div>
 {% endif %}
