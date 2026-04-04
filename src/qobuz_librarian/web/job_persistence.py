@@ -147,6 +147,65 @@ def delete(job_id: str) -> None:
             pass
 
 
+def load_one(job_id: str) -> Optional[dict]:
+    """Return one persisted job by id (the same shape ``load_all`` yields
+    per row), or None if it isn't on disk. Used by the read-only "this
+    job was archived" page so a registry eviction doesn't make a job's
+    history disappear from view."""
+    with _lock:
+        conn = _get_conn()
+        if conn is None:
+            return None
+        try:
+            row = conn.execute(
+                "SELECT id, title, artist, album_id, kind, status, phase, "
+                "candidates, error, summary, review_verb, execute_kind, "
+                "execute_args, created_at, finished_at FROM jobs WHERE id=?",
+                (job_id,),
+            ).fetchone()
+        except sqlite3.Error as e:
+            _log.debug("load_one failed for %s: %s", job_id, e)
+            return None
+    if row is None:
+        return None
+    try:
+        return {
+            "id": row[0], "title": row[1], "artist": row[2], "album_id": row[3],
+            "kind": row[4], "status": row[5], "phase": row[6],
+            "candidates": json.loads(row[7] or "[]"),
+            "error": row[8], "summary": row[9] or "", "review_verb": row[10] or "Download",
+            "execute_kind": row[11] or "",
+            "execute_args": json.loads(row[12] or "{}"),
+            "created_at": row[13], "finished_at": row[14],
+        }
+    except (ValueError, TypeError):
+        return None
+
+
+def prune_finished(keep: int) -> None:
+    """Drop the oldest terminal rows past ``keep`` so the archive doesn't
+    grow without bound. Non-terminal jobs are never pruned here — they're
+    live state, not history. Best-effort: a sqlite error logs and bows out."""
+    if keep <= 0:
+        return
+    with _lock:
+        conn = _get_conn()
+        if conn is None:
+            return
+        try:
+            conn.execute(
+                "DELETE FROM jobs WHERE id IN ("
+                "  SELECT id FROM jobs "
+                "  WHERE status IN ('done', 'failed', 'canceled') "
+                "  ORDER BY COALESCE(finished_at, created_at) DESC "
+                "  LIMIT -1 OFFSET ?)",
+                (keep,),
+            )
+            conn.commit()
+        except sqlite3.Error as e:
+            _log.debug("prune_finished(%d) failed: %s", keep, e)
+
+
 def load_all() -> list[dict]:
     """Return every persisted job as a plain dict — caller rehydrates into
     a Job. Returns [] when the db can't be opened."""

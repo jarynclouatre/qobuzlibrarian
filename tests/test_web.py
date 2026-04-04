@@ -943,6 +943,41 @@ def test_queue_awaiting_review_job_shows_review_and_cancel(client):
         _remove_job(job)
 
 
+def test_job_page_renders_archived_job_from_sqlite_after_eviction(client):
+    """Evicting a finished job from the in-memory registry used to make
+    /jobs/{id} silently 303 back to /queue, even though the row was still in
+    jobs.db. Now the page falls back to the persistence layer and shows the
+    "archived" banner instead of vanishing the history."""
+    from qobuz_librarian.web import job_persistence
+
+    # The session conftest disables persistence so tests don't share a jobs.db.
+    # Re-enable it just for this test so the SQLite-fallback path is exercised.
+    job_persistence._reset_for_tests()
+    job_persistence.init()
+    try:
+        job = jm.Job(title="Ancient History", status=jm.JobStatus.DONE,
+                     summary="Imported 12 tracks across 2 albums.")
+        job_persistence.persist(job)
+        # Eviction only removes from the registry — the SQLite row stays so
+        # the archive view has something to render.
+        _remove_job(job)
+        assert jm.registry.get(job.id) is None
+
+        r = client.get(f"/jobs/{job.id}")
+        assert r.status_code == 200
+        assert "Ancient History" in r.text
+        assert "Imported 12 tracks across 2 albums." in r.text
+        assert "archived" in r.text  # the historical banner copy
+    finally:
+        job_persistence._disabled = True
+        if job_persistence._conn is not None:
+            try:
+                job_persistence._conn.close()
+            except Exception:
+                pass
+            job_persistence._conn = None
+
+
 def test_flash_banners_carry_data_flash_attribute(client):
     """Server-rendered banners driven by one-shot query flags (?approved=1,
     ?error=…, ?saved=1) must be tagged data-flash so the shared app.js can

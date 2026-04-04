@@ -1026,10 +1026,15 @@ async def audit_redirect_post():
 async def job_page(request: Request, job_id: str, approved: bool = False,
                    stale: bool = False):
     job = job_mgr.registry.get(job_id)
+    historical = False
     if not job:
-        return RedirectResponse(url="/queue", status_code=303)
+        job = job_mgr.load_historical_job(job_id)
+        if job is None:
+            return RedirectResponse(url="/queue", status_code=303)
+        historical = True
     return _tr(request, "job.html", {"job": job, "page": "queue",
                                      "approved": approved, "stale": stale,
+                                     "historical": historical,
                                      "JobStatus": job_mgr.JobStatus})
 
 

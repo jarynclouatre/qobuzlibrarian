@@ -300,6 +300,8 @@ class JobRegistry:
     def finished(self) -> list[Job]:
         return [j for j in self.all() if j.status in TERMINAL]
 
+    PERSIST_KEEP = 1000  # finished rows retained on disk for the archive view
+
     def _prune(self):
         finished_ids = [jid for jid in self._order
                         if jid in self._jobs
@@ -313,7 +315,11 @@ class JobRegistry:
                 continue
             self._order.remove(old)
             self._jobs.pop(old, None)
-            job_persistence.delete(old)
+            # The SQLite row stays so /jobs/{id} can still render the archive
+            # view; the explicit "Clear finished" button is the only path that
+            # deletes from the on-disk archive (see clear_finished).
+        # Cap the archive separately so it doesn't grow forever.
+        job_persistence.prune_finished(self.PERSIST_KEEP)
 
     def clear_finished(self):
         """Drop every job in a terminal state. Active jobs are kept."""
@@ -716,6 +722,37 @@ def restore_jobs(execute_registry: dict) -> None:
         logging.getLogger("qobuz_librarian").info(
             "Restored %d historical / %d review / %d interrupted job(s) "
             "from the previous run.", historical, review, interrupted)
+
+
+def load_historical_job(job_id: str) -> Optional[Job]:
+    """Rebuild a Job from the on-disk archive without inserting it back into
+    the registry. Used by /jobs/{id} when the live registry doesn't know
+    about it, so an evicted (or restart-old) terminal job still gets a
+    read-only render instead of silently redirecting to /queue."""
+    row = job_persistence.load_one(job_id)
+    if row is None:
+        return None
+    try:
+        status = JobStatus(row["status"])
+    except ValueError:
+        return None
+    return Job(
+        id=row["id"],
+        title=row.get("title") or "",
+        artist=row.get("artist") or "",
+        album_id=row.get("album_id") or "",
+        kind=row.get("kind") or "download",
+        status=status,
+        phase=row.get("phase") or "",
+        candidates=row.get("candidates") or [],
+        error=row.get("error"),
+        summary=row.get("summary") or "",
+        review_verb=row.get("review_verb") or "Download",
+        execute_kind=row.get("execute_kind") or "",
+        execute_args=row.get("execute_args") or {},
+        created_at=row.get("created_at") or time.time(),
+        finished_at=row.get("finished_at"),
+    )
 
 
 def request_cancel(job: Job) -> bool:
