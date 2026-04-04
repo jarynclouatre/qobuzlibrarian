@@ -401,10 +401,19 @@ def _beets_direct(override_path, cleanup_fn, paths=None):
         cmd += ["-c", str(override_path)]
     cmd += ["import", *paths]
 
-    report_progress("Importing into your library", 0, 0, "")
+    # Total album count when the caller passed explicit paths; 0 (= indeterminate
+    # progress bar) when the whole staging dir is being scanned.
+    staging_root = str(cfg.STAGING_DIR).rstrip("/")
+    explicit_album_paths = [p for p in paths if p.rstrip("/") != staging_root]
+    total_albums = len(explicit_album_paths)
+    report_progress("Importing into your library", 0, total_albums, "")
     log.info(fmt(C.CYAN, "  ⟳  Running beets import ..."))
     out_lines = []
     last_output = [time.monotonic()]
+    # Captured by _reader for per-album progress updates — list-of-1 so the
+    # nested function can mutate without `nonlocal`.
+    last_album = [None]
+    seen_albums = [0]
 
     beet_env = {**os.environ, "BEETSDIR": str(cfg.BEETS_CONFIG_DIR)}
     try:
@@ -424,14 +433,28 @@ def _beets_direct(override_path, cleanup_fn, paths=None):
         return False, "error"
 
     def _reader():
+        prefix = staging_root + "/"
         for line in proc.stdout:
             out_lines.append(line)
             last_output[0] = time.monotonic()
             stripped = line.strip()
             if not stripped:
                 continue
-            # Suppress staging-path echo lines (noise)
-            if str(cfg.STAGING_DIR) in stripped:
+            # Staging-path echoes are too noisy for the log, but they're the
+            # signal that tells us which album beets is on. Pull the first
+            # path segment after the staging root (the album folder) and use
+            # it as the live "Importing: …" subtitle. Same album seen twice
+            # in a row doesn't tick the counter — beets often prints the path
+            # several times for one album.
+            idx = stripped.find(prefix)
+            if idx >= 0:
+                rest = stripped[idx + len(prefix):]
+                album = rest.split("/", 1)[0].split(" (", 1)[0].strip()
+                if album and album != last_album[0]:
+                    last_album[0] = album
+                    seen_albums[0] += 1
+                    report_progress("Importing into your library",
+                                    seen_albums[0], total_albums, album)
                 continue
             # Route through the shared logger so the web UI's SSE stream
             # sees beets output too (raw sys.stdout would only land in

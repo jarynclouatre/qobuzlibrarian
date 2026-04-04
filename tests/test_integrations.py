@@ -430,6 +430,52 @@ class TestBeetsDirect:
         assert ok is False
         assert kind == "error"
 
+    def test_per_album_progress_during_import(self, monkeypatch):
+        """The web UI's progress card sits on a stale 'Importing into your
+        library' label for the whole import unless beets' staging-path echoes
+        get translated into report_progress() calls naming the current album."""
+        from qobuz_librarian import config as cfg
+        from qobuz_librarian.integrations import beets
+        from qobuz_librarian.ui_cli import logging as ql_logging
+
+        staging = str(cfg.STAGING_DIR).rstrip("/")
+
+        class TwoAlbumProc:
+            stdout = iter([
+                f"{staging}/Four Tet - There Is Love In You (3 items)\n",
+                "Tagging:\n",
+                "    Four Tet - There Is Love In You\n",
+                f"{staging}/Four Tet - There Is Love In You (3 items)\n",  # echo
+                f"{staging}/Bonobo - Black Sands (2 items)\n",
+                "Tagging:\n",
+                "    Bonobo - Black Sands\n",
+            ])
+            returncode = 0
+            def wait(self, timeout=None): return 0
+            def kill(self): pass
+
+        events = []
+        ql_logging.set_progress_reporter(
+            lambda phase, c, t, item: events.append((phase, c, t, item)))
+        monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: TwoAlbumProc())
+        monkeypatch.setattr(beets, "clear_scan_caches", lambda: None)
+        try:
+            beets._beets_direct(
+                None, lambda: None,
+                paths=[f"{staging}/Four Tet - There Is Love In You",
+                       f"{staging}/Bonobo - Black Sands"])
+        finally:
+            ql_logging.set_progress_reporter(None)
+
+        items = [e[3] for e in events if e[3]]
+        assert "Four Tet - There Is Love In You" in items
+        assert "Bonobo - Black Sands" in items
+        # Repeat staging echo for the same album must not double-count.
+        assert items.count("Four Tet - There Is Love In You") == 1
+        # Total should reflect the album paths we passed in.
+        totals = {e[2] for e in events}
+        assert 2 in totals
+
 
 class TestReportStagingRemnants:
     def test_lists_album_folders_with_track_counts(self, tmp_path, monkeypatch, caplog):
