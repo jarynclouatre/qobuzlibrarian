@@ -180,8 +180,14 @@ def run_album_mode(args, token, *, query_args=None, loop=False):
         if not album_queue:
             return
         banner(f"Executing queue — {len(album_queue)} album(s)", C.GREEN)
-        _execute_download_queue(album_queue, args, token)
-        album_queue.clear()
+        _, beets_ok = _execute_download_queue(album_queue, args, token)
+        if beets_ok:
+            album_queue.clear()
+        else:
+            log.info(fmt(C.YELLOW,
+                f"  ⚠  beets import did not succeed — keeping the queue "
+                f"({len(album_queue)} album(s)) so you can retry. Files "
+                f"remain in staging."))
 
     try:
         while True:
