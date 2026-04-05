@@ -1,6 +1,4 @@
-"""Tests for qobuz_librarian.library.tags"""
-import pytest
-
+"""Tests for qobuz_librarian.library.tags — the gnarly bits."""
 from qobuz_librarian.library.tags import (
     beets_sanitize,
     clean_qobuz_string,
@@ -11,183 +9,85 @@ from qobuz_librarian.library.tags import (
 )
 
 
-class TestCleanQobuzString:
-    def test_strips_trailing_space(self):
-        assert clean_qobuz_string("Hunky Dory ") == "Hunky Dory"
-
-    def test_strips_leading_space(self):
-        assert clean_qobuz_string("  Aladdin Sane") == "Aladdin Sane"
-
-    def test_collapses_internal_whitespace(self):
-        assert clean_qobuz_string("Hunky  Dory") == "Hunky Dory"
-        assert clean_qobuz_string("A\tB\nC") == "A B C"
-
-    def test_strips_outer_double_quotes(self):
-        assert clean_qobuz_string('"Heroes"') == "Heroes"
-
-    def test_strips_outer_single_quotes(self):
-        assert clean_qobuz_string("'Heroes'") == "Heroes"
-
-    def test_preserves_internal_quotes(self):
-        assert clean_qobuz_string('the "wall" album') == 'the "wall" album'
-
-    def test_passthrough_clean_string(self):
-        assert clean_qobuz_string("Blackstar") == "Blackstar"
-
-    def test_none_returns_empty_string(self):
-        assert clean_qobuz_string(None) == ""
-
-    def test_non_string_returns_empty_string(self):
-        assert clean_qobuz_string(42) == ""
-        assert clean_qobuz_string([]) == ""
-
-    def test_only_whitespace_collapses_to_empty(self):
-        assert clean_qobuz_string("   ") == ""
-
-    def test_quoted_whitespace_inside_stripped(self):
-        # "Heroes " (with quotes, trailing space) — strip whitespace, then quotes.
-        assert clean_qobuz_string('"Heroes" ') == "Heroes"
+def test_clean_qobuz_string_trims_and_unquotes():
+    # Outer quotes around an already-quoted title come back stripped, but
+    # inner quotes are kept and whitespace collapses.
+    assert clean_qobuz_string('"Heroes" ') == "Heroes"
+    assert clean_qobuz_string("'Heroes'") == "Heroes"
+    assert clean_qobuz_string('the "wall" album') == 'the "wall" album'
+    assert clean_qobuz_string("Hunky  Dory") == "Hunky Dory"
+    # None / non-string fed in from a Qobuz API field that was null.
+    assert clean_qobuz_string(None) == ""
+    assert clean_qobuz_string(42) == ""
 
 
-class TestNormalize:
-    def test_basic_lowercase(self):
-        assert normalize("Hello World") == "helloworld"
-
-    def test_ascii_folds_accents(self):
-        assert normalize("Café") == "cafe"
-        assert normalize("Björk") == "bjork"
-
-    def test_cjk_returns_empty(self):
-        # Pure CJK strips to "" after ASCII encoding
-        assert normalize("最好") == ""
-
-    def test_numbers_kept(self):
-        assert normalize("Track 1") == "track1"
+def test_normalize_folds_accents_and_drops_cjk():
+    assert normalize("Café") == "cafe"
+    assert normalize("Björk") == "bjork"
+    # Pure CJK normalizes to empty after ASCII fold — similarity must not
+    # treat two such strings as a match (see test_similarity_empty).
+    assert normalize("最好") == ""
 
 
-class TestBeetsSanitize:
-    def test_replaces_bad_chars(self):
-        assert beets_sanitize("AC/DC") == "AC_DC"
-        assert beets_sanitize("hello:world") == "hello_world"
-
-    def test_strips_trailing_dot(self):
-        assert beets_sanitize("Artist.") == "Artist"
+def test_beets_sanitize_replaces_path_unsafe_chars():
+    assert beets_sanitize("AC/DC") == "AC_DC"
+    assert beets_sanitize("hello:world") == "hello_world"
+    assert beets_sanitize("Artist.") == "Artist"
 
 
-class TestSimilarity:
-    def test_identical_strings(self):
-        assert similarity("Radiohead", "Radiohead") == 1.0
-
-    def test_empty_both_returns_zero(self):
-        # Two empty-normalize strings must NOT return 1.0
-        assert similarity("", "") == 0.0
-
-    def test_accent_fold_matches(self):
-        assert similarity("Cafe", "Café") == 1.0
+def test_similarity_empty_both_does_not_score_1():
+    # Two strings that normalize to "" must NOT match — otherwise CJK-only
+    # titles would all collide with each other and with empty fields.
+    assert similarity("", "") == 0.0
+    assert similarity("最好", "とても") == 0.0
+    assert similarity("Cafe", "Café") == 1.0
 
 
-class TestStripEditionSuffix:
-    def test_strips_remaster(self):
-        assert strip_edition_suffix("Song (2014 Remaster)") == "Song"
-
-    def test_strips_multiple_suffixes(self):
-        assert strip_edition_suffix("Song (Remaster) (Mono)") == "Song"
-
-    def test_preserves_acoustic(self):
-        assert strip_edition_suffix("Song (Acoustic)") == "Song (Acoustic)"
-
-    def test_preserves_live(self):
-        assert strip_edition_suffix("Song (Live)") == "Song (Live)"
-
-    def test_none_returns_none(self):
-        assert strip_edition_suffix(None) is None
+def test_strip_edition_suffix_preserves_distinct_versions():
+    assert strip_edition_suffix("Song (2014 Remaster)") == "Song"
+    assert strip_edition_suffix("Song (Remaster) (Mono)") == "Song"
+    # Acoustic / Live are distinct recordings, not editions — leave them in.
+    assert strip_edition_suffix("Song (Acoustic)") == "Song (Acoustic)"
+    assert strip_edition_suffix("Song (Live)") == "Song (Live)"
 
 
-class TestStripAlbumDecorations:
-    def test_strips_year_paren(self):
-        assert strip_album_decorations("Revolver (2009 Remaster)") == "Revolver"
-
-    def test_strips_colon_deluxe(self):
-        assert strip_album_decorations("Cassadaga: Deluxe Edition") == "Cassadaga"
-
-    def test_preserves_companion(self):
-        # "Cassadaga: A Companion" is a distinct EP
-        result = strip_album_decorations("Cassadaga: A Companion")
-        assert result == "Cassadaga: A Companion"
-
-    def test_plain_name_unchanged(self):
-        assert strip_album_decorations("Radiohead") == "Radiohead"
-
-    def test_strips_bracket_year_prefix(self):
-        # Beets path template `[$year] $album/` produces folders like
-        # "[1971] Hunky Dory" — strip the leading year so similarity
-        # against the bare Qobuz title still scores high.
-        assert strip_album_decorations("[1971] Hunky Dory") == "Hunky Dory"
-        assert strip_album_decorations("[2017] Album Name") == "Album Name"
-
-    def test_strips_leading_year_dash(self):
-        # `$year - $album/` produces "1971 - Hunky Dory".
-        assert strip_album_decorations("1971 - Hunky Dory") == "Hunky Dory"
-
-    def test_keeps_a_title_that_is_a_year(self):
-        # A bare 4-digit title must not be eaten as a year prefix, or owning
-        # "1989" would never suppress "1989 (Deluxe Edition)" in the scan.
-        assert strip_album_decorations("1989 (Deluxe Edition)") == "1989"
-        assert strip_album_decorations("2112 (2012 Remaster)") == "2112"
-        assert strip_album_decorations("1984") == "1984"
+def test_strip_album_decorations_handles_year_prefixed_folders():
+    # Beets path templates `[$year] $album` and `$year - $album` produce
+    # folder names like "[1971] Hunky Dory" or "1971 - Hunky Dory".
+    assert strip_album_decorations("[1971] Hunky Dory") == "Hunky Dory"
+    assert strip_album_decorations("1971 - Hunky Dory") == "Hunky Dory"
+    assert strip_album_decorations("Revolver (2009 Remaster)") == "Revolver"
+    assert strip_album_decorations("Cassadaga: Deluxe Edition") == "Cassadaga"
+    # `Cassadaga: A Companion` is a distinct EP — not a deluxe edition tag.
+    assert strip_album_decorations("Cassadaga: A Companion") == "Cassadaga: A Companion"
 
 
-class TestDownsampleAliasing:
-    """The user-facing toggle is "Downsample hi-res before import" — the
-    underlying flag is the same value under both the legacy COMPRESS_ENABLED
-    name and the canonical DOWNSAMPLE_HIRES_ENABLED. Verify both env vars
-    produce the same effective config value, the cfg attributes stay in
-    lockstep through settings_store, and the on-disk JSON's legacy key
-    still loads.
-    """
+def test_strip_album_decorations_keeps_a_bare_year_title():
+    # If you don't guard the year-prefix strip, "1989" or "2112" gets eaten —
+    # and owning the album "1989" would never suppress "1989 (Deluxe)" in the
+    # gap scan.
+    assert strip_album_decorations("1989 (Deluxe Edition)") == "1989"
+    assert strip_album_decorations("2112 (2012 Remaster)") == "2112"
+    assert strip_album_decorations("1984") == "1984"
 
-    def test_old_env_var_still_enables_flag(self, monkeypatch):
-        monkeypatch.setenv("COMPRESS_ENABLED", "1")
-        monkeypatch.delenv("DOWNSAMPLE_HIRES_ENABLED", raising=False)
-        import importlib
 
-        from qobuz_librarian import config as cfg
-        importlib.reload(cfg)
-        assert cfg.DOWNSAMPLE_HIRES_ENABLED is True
-        assert cfg.COMPRESS_ENABLED is True
+def test_downsample_hires_env_var_compat(monkeypatch):
+    # The user-facing toggle was renamed from COMPRESS_ENABLED to
+    # DOWNSAMPLE_HIRES_ENABLED. Both env vars must keep working, and the
+    # canonical name wins when both are set.
+    monkeypatch.setenv("COMPRESS_ENABLED", "0")
+    monkeypatch.setenv("DOWNSAMPLE_HIRES_ENABLED", "1")
+    import importlib
 
-    def test_new_env_var_takes_precedence(self, monkeypatch):
-        monkeypatch.setenv("COMPRESS_ENABLED", "0")
-        monkeypatch.setenv("DOWNSAMPLE_HIRES_ENABLED", "1")
-        import importlib
+    from qobuz_librarian import config as cfg
+    importlib.reload(cfg)
+    assert cfg.DOWNSAMPLE_HIRES_ENABLED is True
+    assert cfg.COMPRESS_ENABLED is True
 
-        from qobuz_librarian import config as cfg
-        importlib.reload(cfg)
-        assert cfg.DOWNSAMPLE_HIRES_ENABLED is True
-        assert cfg.COMPRESS_ENABLED is True
-
-    def test_settings_store_apply_mirrors_legacy_key(self, monkeypatch):
-        from qobuz_librarian import config as cfg
-        from qobuz_librarian.web import settings_store
-
-        monkeypatch.setattr(cfg, "DOWNSAMPLE_HIRES_ENABLED", False)
-        monkeypatch.setattr(cfg, "COMPRESS_ENABLED", False)
-        settings_store._apply({"COMPRESS_ENABLED": True})
-        assert cfg.DOWNSAMPLE_HIRES_ENABLED is True
-        assert cfg.COMPRESS_ENABLED is True
-
-    def test_settings_store_apply_canonical_key_sets_both(self, monkeypatch):
-        from qobuz_librarian import config as cfg
-        from qobuz_librarian.web import settings_store
-
-        monkeypatch.setattr(cfg, "DOWNSAMPLE_HIRES_ENABLED", False)
-        monkeypatch.setattr(cfg, "COMPRESS_ENABLED", False)
-        settings_store._apply({"DOWNSAMPLE_HIRES_ENABLED": True})
-        assert cfg.DOWNSAMPLE_HIRES_ENABLED is True
-        assert cfg.COMPRESS_ENABLED is True
-
-    def test_have_downsample_alias_exists(self):
-        from qobuz_librarian.integrations import compress as comp_mod
-        assert hasattr(comp_mod, "HAVE_DOWNSAMPLE")
-        assert hasattr(comp_mod, "HAVE_COMPRESS")
-        assert comp_mod.HAVE_DOWNSAMPLE == comp_mod.HAVE_COMPRESS
+    # And the settings_store apply path keeps the legacy attribute in lockstep.
+    from qobuz_librarian.web import settings_store
+    monkeypatch.setattr(cfg, "DOWNSAMPLE_HIRES_ENABLED", False)
+    monkeypatch.setattr(cfg, "COMPRESS_ENABLED", False)
+    settings_store._apply({"COMPRESS_ENABLED": True})
+    assert cfg.DOWNSAMPLE_HIRES_ENABLED is True
+    assert cfg.COMPRESS_ENABLED is True

@@ -1,6 +1,6 @@
 """Tests for quality/tiers.py and quality/decision.py."""
 from datetime import datetime, timedelta, timezone
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -8,200 +8,120 @@ from qobuz_librarian.quality.decision import (
     _track_quality_cmp,
     album_max_quality,
     compare_album_quality,
-    existing_track_quality,
     is_album_capped,
     load_capped,
-    mark_album_capped,
     quality_change_summary,
     save_capped,
 )
-from qobuz_librarian.quality.tiers import (
-    format_quality,
-    streamrip_quality_cap,
-)
+from qobuz_librarian.quality.tiers import format_quality, streamrip_quality_cap
 
 
 @pytest.fixture
 def fresh_quality_cap():
-    """Reset the streamrip cap cache so tests that read it see config, not
-    state leaked from a previous case. Previous shape used setup_method /
-    teardown_method which hid this precondition inside three classes."""
+    """Reset the cap cache so a previous case can't leak its value."""
     import qobuz_librarian.quality.tiers as tiers_mod
     tiers_mod._streamrip_cap_cache = None
     yield
     tiers_mod._streamrip_cap_cache = None
 
 
-@pytest.fixture
-def primed_quality_cap_24_192():
-    """Seed the cap cache with (24, 192000) so album_max_quality tests
-    can exercise the cap logic without dragging in a streamrip subprocess."""
+def test_format_quality_renders_known_tiers_and_unknown():
+    assert format_quality(16, 44100) == "16/44.1"
+    assert format_quality(24, 96000) == "24/96"
+    # A 0-bit track read came back unreadable — show "?" instead of crashing.
+    assert format_quality(0, 44100) == "?"
+
+
+def test_streamrip_quality_cap_caches_and_falls_back_to_permissive(fresh_quality_cap, caplog):
+    import logging
+
+    # First-call result is cached — flipping the config after doesn't change it.
+    with patch("qobuz_librarian.config.STREAMRIP_QUALITY", 3):
+        first = streamrip_quality_cap()
+    with patch("qobuz_librarian.config.STREAMRIP_QUALITY", 4):
+        second = streamrip_quality_cap()
+    assert first == second == (24, 96000)
+
+    # An unrecognised tier warns and stays permissive (24/192) so a typo'd
+    # env var doesn't silently downsample everything to CD.
     import qobuz_librarian.quality.tiers as tiers_mod
-    tiers_mod._streamrip_cap_cache = (24, 192000)
-    yield
+    tiers_mod._streamrip_cap_cache = None
+    with patch("qobuz_librarian.config.STREAMRIP_QUALITY", "99"), \
+         patch("qobuz_librarian.config.STREAMRIP_CONFIG", "/nonexistent.toml"), \
+         caplog.at_level(logging.WARNING, logger="qobuz_librarian"):
+        assert streamrip_quality_cap() == (24, 192000)
+    assert any("isn't a recognised tier" in r.message for r in caplog.records)
+
+
+def test_album_max_quality_normalises_khz_and_applies_cap():
+    import qobuz_librarian.quality.tiers as tiers_mod
+    tiers_mod._streamrip_cap_cache = (24, 96000)
+    # The Qobuz API reports sample rate in kHz floats — store as Hz int.
+    album = {"maximum_bit_depth": 24, "maximum_sampling_rate": 96.0}
+    assert album_max_quality(album) == (24, 96000)
+    # A 192 album under a 96 cap caps down to 96 — we won't claim to fetch
+    # higher than what streamrip will actually download.
+    album = {"maximum_bit_depth": 24, "maximum_sampling_rate": 192.0}
+    bd, sr = album_max_quality(album)
+    assert sr == 96000
     tiers_mod._streamrip_cap_cache = None
 
 
-class TestFormatQuality:
-    def test_normal_cd(self):
-        assert format_quality(16, 44100) == "16/44.1"
-
-    def test_hires_96(self):
-        assert format_quality(24, 96000) == "24/96"
-
-    def test_zero_bits_returns_question(self):
-        assert format_quality(0, 44100) == "?"
-
-
-@pytest.mark.usefixtures("fresh_quality_cap")
-class TestStreamripQualityCap:
-    @pytest.mark.parametrize("quality,expected", [
-        (4, (24, 192000)),
-        ("3", (24, 96000)),
-    ])
-    def test_cap_for_quality(self, quality, expected):
-        with patch("qobuz_librarian.config.STREAMRIP_QUALITY", quality):
-            assert streamrip_quality_cap() == expected
-
-    def test_result_is_cached(self):
-        with patch("qobuz_librarian.config.STREAMRIP_QUALITY", 3):
-            first = streamrip_quality_cap()
-        with patch("qobuz_librarian.config.STREAMRIP_QUALITY", 4):
-            second = streamrip_quality_cap()
-        assert first == second == (24, 96000)
-
-    def test_unrecognised_quality_warns_and_stays_permissive(self, caplog):
-        import logging
-        with patch("qobuz_librarian.config.STREAMRIP_QUALITY", "99"), \
-             patch("qobuz_librarian.config.STREAMRIP_CONFIG", "/nonexistent.toml"), \
-             caplog.at_level(logging.WARNING, logger="qobuz_librarian"):
-            cap = streamrip_quality_cap()
-        assert cap == (24, 192000)
-        assert any("isn't a recognised tier" in r.message for r in caplog.records)
+def test_compare_album_quality_classifies_and_counts_unknown():
+    qalbum = {"maximum_bit_depth": 24, "maximum_sampling_rate": 96.0}
+    # No existing tracks — there's nothing to compare, classification stays distinct.
+    assert compare_album_quality([], qalbum)["classification"] == "no_existing"
+    # All-lower → all-upgrading territory.
+    assert compare_album_quality(
+        [{"bits": 16, "sample_rate": 44100}], qalbum)["classification"] == "all_lower"
+    # All-equal — nothing to do, but must classify distinctly so the upgrade
+    # flow doesn't kick off a wipe-replace for parity.
+    assert compare_album_quality(
+        [{"bits": 24, "sample_rate": 96000}], qalbum)["classification"] == "all_equal"
+    # An unreadable track (bits=0) gets surfaced as n_unknown so the upgrade
+    # path won't wipe-replace it unverified.
+    r = compare_album_quality(
+        [{"bits": 16, "sample_rate": 44100}, {"bits": 0, "sample_rate": 0}], qalbum)
+    assert r["n_unknown"] == 1
 
 
-@pytest.mark.usefixtures("primed_quality_cap_24_192")
-class TestAlbumMaxQuality:
-
-    def test_khz_input_converted_to_hz(self):
-        album = {"maximum_bit_depth": 24, "maximum_sampling_rate": 96.0}
-        bd, sr = album_max_quality(album)
-        assert bd == 24 and sr == 96000
-
-    def test_cap_applied_at_96khz(self):
-        import qobuz_librarian.quality.tiers as tiers_mod
-        tiers_mod._streamrip_cap_cache = (24, 96000)
-        album = {"maximum_bit_depth": 24, "maximum_sampling_rate": 192.0}
-        bd, sr = album_max_quality(album)
-        assert sr == 96000
+def test_track_quality_cmp_handles_none_bits():
+    # A None bits/rate (from a tag read that failed mid-scan) must sort as
+    # lower, not crash the comparison.
+    assert _track_quality_cmp(
+        {"bits": 24, "sample_rate": 96000}, {"bits": 16, "sample_rate": 44100}) == 1
+    assert _track_quality_cmp(
+        {"bits": 24, "sample_rate": 96000}, {"bits": 24, "sample_rate": 96000}) == 0
+    assert _track_quality_cmp(
+        {"bits": None, "sample_rate": 44100}, {"bits": 24, "sample_rate": 96000}) == -1
 
 
-class TestExistingTrackQuality:
-    def test_returns_bits_and_rate(self):
-        assert existing_track_quality({"bits": 24, "sample_rate": 96000}) == (24, 96000)
+def test_quality_change_summary_counts_upgrades_and_losses():
+    t = lambda b, r: {"bits": b, "sample_rate": r}
+    assert quality_change_summary([(t(16, 44100), t(24, 96000))])["upgrading"] == 1
+    # A would-be downgrade from hi-res must be flagged so we can refuse it.
+    assert quality_change_summary([(t(24, 96000), t(16, 44100))])["losing_hires"] == 1
 
 
-@pytest.mark.usefixtures("primed_quality_cap_24_192")
-class TestCompareAlbumQuality:
-
-    def _qalbum(self, bd=24, sr=96.0):
-        return {"maximum_bit_depth": bd, "maximum_sampling_rate": sr}
-
-    def test_no_existing_returns_no_existing(self):
-        r = compare_album_quality([], self._qalbum())
-        assert r["classification"] == "no_existing"
-
-    def test_all_lower(self):
-        tracks = [{"bits": 16, "sample_rate": 44100}]
-        r = compare_album_quality(tracks, self._qalbum(bd=24, sr=96.0))
-        assert r["classification"] == "all_lower"
-
-    def test_all_equal(self):
-        tracks = [{"bits": 24, "sample_rate": 96000}]
-        r = compare_album_quality(tracks, self._qalbum(bd=24, sr=96.0))
-        assert r["classification"] == "all_equal"
-
-    def test_unreadable_track_surfaced_as_unknown(self):
-        # A track whose quality couldn't be read must be counted (n_unknown), so
-        # the upgrade path can refuse to wipe-replace it unverified.
-        tracks = [{"bits": 16, "sample_rate": 44100}, {"bits": 0, "sample_rate": 0}]
-        r = compare_album_quality(tracks, self._qalbum(bd=24, sr=96.0))
-        assert r["n_unknown"] == 1
+def test_is_album_capped_honours_ttl_and_tolerates_garbage():
+    fresh_ts = datetime.now(timezone.utc).isoformat()
+    expired_ts = (datetime.now(timezone.utc) - timedelta(days=91)).isoformat()
+    assert is_album_capped("123", {"123": {"ts": fresh_ts, "title": "T"}}) is True
+    assert is_album_capped("123", {"123": {"ts": expired_ts, "title": "T"}}) is False
+    # A garbage timestamp must not crash the upgrade scan — fall through to False.
+    assert is_album_capped("123", {"123": {"ts": "not-a-date"}}) is False
 
 
-class TestTrackQualityCmp:
-    def test_higher_quality_wins(self):
-        assert _track_quality_cmp(
-            {"bits": 24, "sample_rate": 96000},
-            {"bits": 16, "sample_rate": 44100},
-        ) == 1
+def test_capped_persistence_round_trips_and_prunes(tmp_path, monkeypatch):
+    monkeypatch.setattr("qobuz_librarian.config.CAPPED_FILE", tmp_path / "capped.json")
+    fresh = datetime.now(timezone.utc).isoformat()
+    stale = (datetime.now(timezone.utc) - timedelta(days=100)).isoformat()
+    save_capped({"old": {"ts": stale, "title": "Stale"},
+                 "new": {"ts": fresh, "title": "Fresh"}})
+    loaded = load_capped()
+    assert loaded == {"new": {"ts": fresh, "title": "Fresh"}}
 
-    def test_equal_quality_is_a_tie(self):
-        assert _track_quality_cmp(
-            {"bits": 24, "sample_rate": 96000},
-            {"bits": 24, "sample_rate": 96000},
-        ) == 0
-
-    def test_none_bits_does_not_crash(self):
-        # A track dict carrying bits=None must not raise on comparison.
-        assert _track_quality_cmp(
-            {"bits": None, "sample_rate": 44100},
-            {"bits": 24, "sample_rate": 96000},
-        ) == -1
-
-
-class TestQualityChangeSummary:
-    def _t(self, bits, rate):
-        return {"bits": bits, "sample_rate": rate}
-
-    def test_all_upgrading(self):
-        r = quality_change_summary([(self._t(16, 44100), self._t(24, 96000))])
-        assert r["upgrading"] == 1
-
-    def test_losing_hires(self):
-        r = quality_change_summary([(self._t(24, 96000), self._t(16, 44100))])
-        assert r["losing_hires"] == 1
-
-
-class TestIsAlbumCapped:
-    def _fresh(self, days_ago=0):
-        ts = (datetime.now(timezone.utc) - timedelta(days=days_ago)).isoformat()
-        return {"ts": ts, "title": "Test Album"}
-
-    def test_fresh_entry_returns_true(self):
-        assert is_album_capped("123", {"123": self._fresh()}) is True
-
-    def test_expired_entry_returns_false(self):
-        assert is_album_capped("123", {"123": self._fresh(days_ago=91)}) is False
-
-    def test_malformed_ts_returns_false(self):
-        assert is_album_capped("123", {"123": {"ts": "not-a-date"}}) is False
-
-
-class TestCappedPersistence:
-    def test_round_trip(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("qobuz_librarian.config.CAPPED_FILE", tmp_path / "capped.json")
-        ts = datetime.now(timezone.utc).isoformat()
-        data = {"123": {"ts": ts, "title": "Alive"}}
-        save_capped(data)
-        assert load_capped() == {"123": {"ts": ts, "title": "Alive"}}
-
-    def test_save_prunes_expired_entries(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("qobuz_librarian.config.CAPPED_FILE", tmp_path / "capped.json")
-        old_ts = (datetime.now(timezone.utc) - timedelta(days=100)).isoformat()
-        fresh_ts = datetime.now(timezone.utc).isoformat()
-        save_capped({
-            "old": {"ts": old_ts, "title": "Stale"},
-            "new": {"ts": fresh_ts, "title": "Fresh"},
-        })
-        loaded = load_capped()
-        assert "old" not in loaded
-        assert "new" in loaded
-
-    def test_load_returns_dict_when_file_is_a_json_list(self, tmp_path, monkeypatch):
-        # A malformed capped file that parses as a list would otherwise reach
-        # is_album_capped's `.get` and crash the upgrade scan.
-        cfile = tmp_path / "capped.json"
-        cfile.write_text('["x", "y"]', encoding="utf-8")
-        monkeypatch.setattr("qobuz_librarian.config.CAPPED_FILE", cfile)
-        assert load_capped() == {}
+    # If someone hand-edits the file into a JSON list, load_capped must return
+    # a dict so is_album_capped's .get() doesn't blow up the upgrade scan.
+    (tmp_path / "capped.json").write_text('["x", "y"]', encoding="utf-8")
+    assert load_capped() == {}

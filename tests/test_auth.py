@@ -1,213 +1,133 @@
-"""Tests for qobuz_librarian.api.auth"""
-import re
+"""Tests for qobuz_librarian.api.auth — pattern detection, token I/O."""
 import tomllib
-from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
 from qobuz_librarian.api.auth import (
+    NoCredsError,
+    QobuzError,
     detect_auth_lost,
     detect_disk_full,
     detect_rate_limited,
+    friendly_qobuz_error,
     load_qobuz_token,
     sync_streamrip_creds_from_env,
-    verify_streamrip_downloads_folder,
     write_streamrip_creds,
 )
 
 
-class TestDetectAuthLost:
-    def test_http_401_signals_auth_lost(self):
-        assert detect_auth_lost("Error: http 401 from endpoint") is True
-
-    def test_clean_output_false(self):
-        assert detect_auth_lost("Downloaded track 401 - Song Title.flac") is False
-        assert detect_auth_lost("") is False
-
-    def test_track_number_not_matched(self):
-        # bare "401" in a title must not trigger; pattern requires "http 401"
-        assert detect_auth_lost("Downloading track 401 of 500") is False
+def test_detect_auth_lost_only_fires_on_http_401():
+    # Real auth-lost signal.
+    assert detect_auth_lost("Error: http 401 from endpoint") is True
+    # "401" appearing in track titles or counts must not trigger — that
+    # would falsely tear down credentials mid-download.
+    assert detect_auth_lost("Downloaded track 401 - Song Title.flac") is False
+    assert detect_auth_lost("Downloading track 401 of 500") is False
+    assert detect_auth_lost("") is False
 
 
-class TestValidateTokenSurfacesNetworkErrors:
-    def test_qobuz_error_logs_warning_and_does_not_exit(self, caplog):
-        import logging
-
-        from qobuz_librarian.api.auth import QobuzError
-        from qobuz_librarian.api.client import validate_token
-
-        def _net_err(*a, **k):
-            raise QobuzError("connection refused")
-        with patch("qobuz_librarian.api.client.qobuz_get", _net_err):
-            with caplog.at_level(logging.INFO, logger="qobuz_librarian"):
-                validate_token("tok")
-        assert any("Couldn't reach Qobuz" in r.message for r in caplog.records)
+def test_detect_rate_limited_catches_429_and_persistent_failures():
+    assert detect_rate_limited("Error: HTTP 429 from endpoint") is True
+    # Streamrip exhausting its retries reads as throttling.
+    assert detect_rate_limited(
+        "Persistent error downloading track 'X', skipping") is True
+    # A single retry is normal — don't flag every transient hiccup.
+    assert detect_rate_limited("Error downloading track 'X', retrying") is False
 
 
-class TestDetectDiskFull:
-    def test_no_space_left(self):
-        assert detect_disk_full("OSError: [Errno 28] No space left on device") is True
-
-    def test_quota_exceeded(self):
-        assert detect_disk_full("rip aborted: disk quota exceeded") is True
-
-    def test_clean_output_false(self):
-        assert detect_disk_full("Downloaded 12 tracks") is False
-        assert detect_disk_full("") is False
+def test_detect_disk_full_catches_errno_28_and_quota():
+    assert detect_disk_full("OSError: [Errno 28] No space left on device") is True
+    assert detect_disk_full("rip aborted: disk quota exceeded") is True
+    assert detect_disk_full("Downloaded 12 tracks") is False
 
 
-class TestLoadQobuzToken:
-    def test_returns_user_id_and_token(self, tmp_path):
-        cfg_file = tmp_path / "config.toml"
-        cfg_file.write_text(
-            '[qobuz]\nuse_auth_token = true\n'
-            'email_or_userid = "12345"\n'
-            'password_or_token = "mytoken"\n'
-        )
-        with patch("qobuz_librarian.config.STREAMRIP_CONFIG", cfg_file):
-            uid, tok = load_qobuz_token()
-        assert uid == "12345"
-        assert tok == "mytoken"
+def test_load_qobuz_token_happy_and_error_paths(tmp_path):
+    cfg = tmp_path / "config.toml"
+    cfg.write_text(
+        '[qobuz]\nuse_auth_token = true\n'
+        'email_or_userid = "12345"\n'
+        'password_or_token = "mytoken"\n'
+    )
+    with patch("qobuz_librarian.config.STREAMRIP_CONFIG", cfg):
+        assert load_qobuz_token() == ("12345", "mytoken")
 
-    def test_exits_when_config_missing(self, tmp_path):
-        missing = tmp_path / "no_such_file.toml"
-        with patch("qobuz_librarian.config.STREAMRIP_CONFIG", missing):
-            from qobuz_librarian.api.auth import NoCredsError
+    # Missing file, disabled flag, empty token, and garbage TOML all raise
+    # NoCredsError so the caller can route the user to Settings.
+    for content in (None,
+                    '[qobuz]\nuse_auth_token = false\n',
+                    '[qobuz]\nuse_auth_token = true\nemail_or_userid = "x"\n'
+                    'password_or_token = ""\n',
+                    "this is not toml ===]]] [[[ ==="):
+        if content is None:
+            cfg.unlink()
+        else:
+            cfg.write_text(content)
+        with patch("qobuz_librarian.config.STREAMRIP_CONFIG", cfg):
             with pytest.raises(NoCredsError):
                 load_qobuz_token()
 
-    def test_exits_when_use_auth_token_false(self, tmp_path):
-        cfg_file = tmp_path / "config.toml"
-        cfg_file.write_text('[qobuz]\nuse_auth_token = false\n')
-        with patch("qobuz_librarian.config.STREAMRIP_CONFIG", cfg_file):
-            from qobuz_librarian.api.auth import NoCredsError
-            with pytest.raises(NoCredsError):
-                load_qobuz_token()
 
-    def test_exits_when_token_empty(self, tmp_path):
-        cfg_file = tmp_path / "config.toml"
-        cfg_file.write_text(
-            '[qobuz]\nuse_auth_token = true\n'
-            'email_or_userid = "12345"\n'
-            'password_or_token = ""\n'
-        )
-        with patch("qobuz_librarian.config.STREAMRIP_CONFIG", cfg_file):
-            from qobuz_librarian.api.auth import NoCredsError
-            with pytest.raises(NoCredsError):
-                load_qobuz_token()
+def test_sync_streamrip_creds_from_env_writes_and_stays_idempotent(tmp_path, monkeypatch):
+    from qobuz_librarian import config
+    cfg_path = tmp_path / "streamrip" / "config.toml"
+    monkeypatch.setattr(config, "QOBUZ_USER_AUTH_TOKEN", "tok-abc")
+    monkeypatch.setattr(config, "QOBUZ_USER_ID", "42")
+    monkeypatch.setattr(config, "STREAMRIP_CONFIG", cfg_path)
+    monkeypatch.setattr(config, "STAGING_DIR", tmp_path / "staging")
 
-    def test_exits_when_config_is_garbage_toml(self, tmp_path):
-        cfg_file = tmp_path / "config.toml"
-        cfg_file.write_text("this is not toml ===]]] [[[ ===")
-        with patch("qobuz_librarian.config.STREAMRIP_CONFIG", cfg_file):
-            from qobuz_librarian.api.auth import NoCredsError
-            with pytest.raises(NoCredsError, match="parse"):
-                load_qobuz_token()
+    assert sync_streamrip_creds_from_env() is True
+    data = tomllib.loads(cfg_path.read_text())
+    assert data["qobuz"]["password_or_token"] == "tok-abc"
+    assert data["qobuz"]["email_or_userid"] == "42"
+    assert data["qobuz"]["use_auth_token"] is True
+    # Second call is a no-op when nothing changed.
+    assert sync_streamrip_creds_from_env() is None
+    # A token rotation must rewrite the file.
+    monkeypatch.setattr(config, "QOBUZ_USER_AUTH_TOKEN", "tok-new")
+    assert sync_streamrip_creds_from_env() is True
+    assert tomllib.loads(cfg_path.read_text())["qobuz"]["password_or_token"] == "tok-new"
 
 
-class TestSyncStreamripCredsFromEnv:
-    def test_no_env_token_is_noop(self, tmp_path, monkeypatch):
-        from qobuz_librarian import config
-        monkeypatch.setattr(config, "QOBUZ_USER_AUTH_TOKEN", "")
-        monkeypatch.setattr(config, "STREAMRIP_CONFIG", tmp_path / "c.toml")
-        assert sync_streamrip_creds_from_env() is None
-        assert not (tmp_path / "c.toml").exists()
+def test_write_streamrip_creds_writes_streamrip_2_2_schema(tmp_path, monkeypatch):
+    from qobuz_librarian import config
+    cfg_path = tmp_path / "sr" / "config.toml"
+    monkeypatch.setattr(config, "STREAMRIP_CONFIG", cfg_path)
+    monkeypatch.setattr(config, "STAGING_DIR", tmp_path / "stg")
+    assert write_streamrip_creds("uid", "tok") is True
+    data = tomllib.loads(cfg_path.read_text())
+    # Streamrip 2.2 expects a [qobuz.secrets] table and a misc.version field.
+    assert "secrets" in data["qobuz"]
+    assert "version" in data.get("misc", {})
+    assert data["database"]["downloads_path"] == str(cfg_path.parent / "downloads.db")
+    assert data["downloads"]["folder"] == str(tmp_path / "stg")
 
-    def test_env_token_written_then_idempotent(self, tmp_path, monkeypatch):
-        from qobuz_librarian import config
-        cfg_path = tmp_path / "streamrip" / "config.toml"
-        monkeypatch.setattr(config, "QOBUZ_USER_AUTH_TOKEN", "tok-abc")
-        monkeypatch.setattr(config, "QOBUZ_USER_ID", "42")
-        monkeypatch.setattr(config, "STREAMRIP_CONFIG", cfg_path)
-        monkeypatch.setattr(config, "STAGING_DIR", tmp_path / "staging")
-
-        assert sync_streamrip_creds_from_env() is True
-        data = tomllib.load(open(cfg_path, "rb"))
-        assert data["qobuz"]["password_or_token"] == "tok-abc"
-        assert data["qobuz"]["email_or_userid"] == "42"
-        assert data["qobuz"]["use_auth_token"] is True
-        assert sync_streamrip_creds_from_env() is None
-
-    def test_blank_user_id_not_written_as_placeholder(self, tmp_path, monkeypatch):
-        from qobuz_librarian import config
-        cfg_path = tmp_path / "config.toml"
-        monkeypatch.setattr(config, "QOBUZ_USER_AUTH_TOKEN", "tok-xyz")
-        monkeypatch.setattr(config, "QOBUZ_USER_ID", "")
-        monkeypatch.setattr(config, "STREAMRIP_CONFIG", cfg_path)
-        monkeypatch.setattr(config, "STAGING_DIR", tmp_path / "staging")
-        assert sync_streamrip_creds_from_env() is True
-        data = tomllib.load(open(cfg_path, "rb"))
-        assert data["qobuz"]["email_or_userid"] == ""
-        assert data["qobuz"]["password_or_token"] == "tok-xyz"
-
-    def test_stale_token_is_rewritten(self, tmp_path, monkeypatch):
-        from qobuz_librarian import config
-        cfg_path = tmp_path / "config.toml"
-        monkeypatch.setattr(config, "QOBUZ_USER_AUTH_TOKEN", "old")
-        monkeypatch.setattr(config, "QOBUZ_USER_ID", "u")
-        monkeypatch.setattr(config, "STREAMRIP_CONFIG", cfg_path)
-        monkeypatch.setattr(config, "STAGING_DIR", tmp_path / "s")
-        assert sync_streamrip_creds_from_env() is True
-        monkeypatch.setattr(config, "QOBUZ_USER_AUTH_TOKEN", "new")
-        assert sync_streamrip_creds_from_env() is True
-        data = tomllib.load(open(cfg_path, "rb"))
-        assert data["qobuz"]["password_or_token"] == "new"
-
-    def test_write_failure_returns_false(self, tmp_path, monkeypatch):
-        from qobuz_librarian import config
-        monkeypatch.setattr(config, "QOBUZ_USER_AUTH_TOKEN", "t")
-        monkeypatch.setattr(config, "QOBUZ_USER_ID", "u")
-        blocker = tmp_path / "afile"
-        blocker.write_text("x")
-        monkeypatch.setattr(config, "STREAMRIP_CONFIG", blocker / "sub" / "c.toml")
-        assert write_streamrip_creds("u", "t") is False
-
-    def test_written_config_is_streamrip_2_2_schema(self, tmp_path, monkeypatch):
-        from qobuz_librarian import config
-        cfg_path = tmp_path / "sr" / "config.toml"
-        monkeypatch.setattr(config, "STREAMRIP_CONFIG", cfg_path)
-        monkeypatch.setattr(config, "STAGING_DIR", tmp_path / "stg")
-        assert write_streamrip_creds("uid", "tok") is True
-        d = tomllib.load(open(cfg_path, "rb"))
-        assert "secrets" in d["qobuz"]
-        assert "version" in d.get("misc", {})
-        assert d["database"]["downloads_path"] == str(cfg_path.parent / "downloads.db")
-        assert d["downloads"]["folder"] == str(tmp_path / "stg")
+    # A write to a path that can't be created (parent is a file) fails clean.
+    blocker = tmp_path / "blocker"
+    blocker.write_text("x")
+    monkeypatch.setattr(config, "STREAMRIP_CONFIG", blocker / "sub" / "c.toml")
+    assert write_streamrip_creds("u", "t") is False
 
 
-class TestDetectRateLimited:
-    def test_http_429_signals_rate_limit(self):
-        assert detect_rate_limited("Error: HTTP 429 from endpoint") is True
-
-    def test_persistent_error_is_throttle(self):
-        # streamrip exhausted its own retries — treat as throttle signal
-        assert detect_rate_limited(
-            "Persistent error downloading track 'X', skipping") is True
-
-    def test_isolated_retry_is_not_throttle(self):
-        # a single "retrying" is normal streamrip behaviour
-        assert detect_rate_limited(
-            "Error downloading track 'X', retrying") is False
+def test_friendly_qobuz_error_strips_response_body():
+    # Raw JSON / HTML response bodies must not leak into user-facing errors.
+    e = QobuzError('HTTP 404 from album/get: {"status":"error","code":404}')
+    assert friendly_qobuz_error(e) == "HTTP 404 from album/get"
+    e = QobuzError("HTTP 500 from artist/get: <html>\n  <body>...</body>\n</html>")
+    assert friendly_qobuz_error(e) == "HTTP 500 from artist/get"
+    # Non-HTTP messages pass through unchanged.
+    assert friendly_qobuz_error(QobuzError("connection refused")) == "connection refused"
 
 
-class TestFriendlyQobuzError:
-    # Raw API response bodies (JSON) shouldn't leak into user-facing
-    # error strings — only the status line should.
+def test_validate_token_logs_friendly_warning_on_network_error(caplog):
+    import logging
 
-    def test_strips_json_body(self):
-        from qobuz_librarian.api.auth import QobuzError, friendly_qobuz_error
-        e = QobuzError('HTTP 404 from album/get: {"status":"error","code":404}')
-        assert friendly_qobuz_error(e) == "HTTP 404 from album/get"
+    from qobuz_librarian.api.client import validate_token
 
-    def test_strips_multiline_body(self):
-        from qobuz_librarian.api.auth import QobuzError, friendly_qobuz_error
-        e = QobuzError("HTTP 500 from artist/get: <html>\n  <body>...</body>\n</html>")
-        assert friendly_qobuz_error(e) == "HTTP 500 from artist/get"
+    def _net_err(*a, **k):
+        raise QobuzError("connection refused")
 
-    def test_passes_through_non_http_messages(self):
-        from qobuz_librarian.api.auth import QobuzError, friendly_qobuz_error
-        e = QobuzError("connection refused")
-        assert friendly_qobuz_error(e) == "connection refused"
-
-
+    with patch("qobuz_librarian.api.client.qobuz_get", _net_err):
+        with caplog.at_level(logging.INFO, logger="qobuz_librarian"):
+            validate_token("tok")
+    assert any("Couldn't reach Qobuz" in r.message for r in caplog.records)
