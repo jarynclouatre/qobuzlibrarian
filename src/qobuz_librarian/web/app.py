@@ -460,10 +460,13 @@ def _tr(request, name, context):
     The navbar badge is computed once per full-page render and injected via
     context; partial-fragment renders skip this entirely.
     """
-    context.setdefault(
-        "pending_job_count",
-        len(job_mgr.registry.pending_and_running()),
-    )
+    if "pending_job_count" not in context or "queue_has_running" not in context:
+        active = job_mgr.registry.pending_and_running()
+        context.setdefault("pending_job_count", len(active))
+        context.setdefault(
+            "queue_has_running",
+            any(j.status.value in ('running', 'scanning') for j in active),
+        )
     context.setdefault("cli_mode", _CLI_MODE)
     return templates.TemplateResponse(request=request, name=name, context=context)
 

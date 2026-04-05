@@ -60,6 +60,13 @@
 </head>
 <body class="min-h-screen bg-base-100 flex flex-col">
 
+  <noscript>
+    <div class="bg-error text-error-content px-4 py-2 text-sm text-center">
+      Qobuz Librarian needs JavaScript to run. Enable it in your browser
+      to use the web UI.
+    </div>
+  </noscript>
+
   <!-- Navbar -->
   <nav class="navbar bg-base-200 shadow-lg px-4">
     <div class="flex-1 min-w-0">
@@ -79,7 +86,7 @@
         <li><a href="/queue"   class="{% if page=='queue' %}active{% endif %}">
           Queue
           {% set _qbadge = pending_job_count or 0 %}
-          {% if _qbadge > 0 %}<span class="badge badge-primary badge-sm">{% if _qbadge > 99 %}99+{% else %}{{ _qbadge }}{% endif %}</span>{% endif %}
+          {% if _qbadge > 0 %}<span class="badge {% if queue_has_running %}badge-warning{% else %}badge-primary{% endif %} badge-sm">{% if _qbadge > 99 %}99+{% else %}{{ _qbadge }}{% endif %}</span>{% endif %}
         </a></li>
         <li><a href="/migrate"  class="{% if page=='migrate' %}active{% endif %}">Migrate</a></li>
         <li><a href="/settings" class="{% if page=='settings' %}active{% endif %}">Settings</a></li>
@@ -166,8 +173,19 @@
 
   <script>
     if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.register('/sw.js');
+      // ?v= the app version so a release invalidates the SW + its caches.
+      navigator.serviceWorker.register('/sw.js?v={{ app_version }}');
     }
+    // Close the mobile nav dropdown when a link inside it is tapped — daisyUI
+    // otherwise keeps it open until focus drops, which feels broken on slow
+    // navigations.
+    document.addEventListener('click', e => {
+      const link = e.target.closest('.dropdown-content a, .dropdown-content button');
+      if (!link) return;
+      const label = link.closest('.dropdown') && link.closest('.dropdown').querySelector('label[tabindex]');
+      if (label && label.blur) label.blur();
+      if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+    });
     // Global keyboard shortcuts. "/" focuses the search box; Esc dismisses
     // any visible alert and blurs the focused input; "g s/q/h" navigate.
     (function() {
