@@ -78,16 +78,22 @@
 <div class="card bg-base-200 shadow mb-6">
   <div class="card-body">
     <h2 class="card-title mb-1">Qobuz authentication</h2>
-    <p class="text-sm text-base-content/60 mb-4">
-      Qobuz has no public login, so the app reuses the token your own browser
-      already holds — you copy it once, and it's stored only on your server,
-      never sent anywhere but Qobuz. To find it: sign in at play.qobuz.com,
-      open dev tools (F12), then go to Local Storage →
-      play.qobuz.com (<strong>Chrome/Edge:</strong> Application tab;
-      <strong>Firefox:</strong> Storage tab). Click the <code>localuser</code>
-      entry and copy its <code>token</code> value — the <code>id</code> in the
-      same entry is your user ID.
+    <p class="text-sm text-base-content/60 mb-2">
+      Paste your Qobuz user token below. Qobuz has no public login API, so the
+      app reuses the token your own browser already holds — stored only on your
+      server, never sent anywhere but Qobuz.
     </p>
+    <details class="mb-4">
+      <summary class="text-sm text-primary cursor-pointer select-none hover:underline">How do I find my token?</summary>
+      <p class="text-sm text-base-content/60 mt-2">
+        Sign in at <a href="https://play.qobuz.com" target="_blank" rel="noopener" class="link">play.qobuz.com</a>,
+        open dev tools (F12), then go to Local Storage →
+        play.qobuz.com (<strong>Chrome/Edge:</strong> Application tab;
+        <strong>Firefox:</strong> Storage tab). Click the <code>localuser</code>
+        entry and copy its <code>token</code> value — the <code>id</code> in the
+        same entry is your user ID.
+      </p>
+    </details>
 
     {% if creds_from_env %}
     <div class="alert alert-info mb-4">

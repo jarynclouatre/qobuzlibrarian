@@ -956,7 +956,7 @@ async def migrate_page(request: Request):
     import os as _os
     src, dest = cfg.MIGRATE_SRC, cfg.MIGRATE_DEST
     migrate_checks = []
-    for label, path in (("Source (QL_MIGRATE_SRC)", src), ("Destination (QL_MIGRATE_DEST)", dest)):
+    for label, path in (("Source folder", src), ("Destination folder", dest)):
         if not path:
             migrate_checks.append({"label": label, "ok": False, "detail": "not set"})
         else:
