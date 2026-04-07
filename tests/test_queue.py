@@ -18,142 +18,81 @@ from qobuz_librarian.queue.persistence import (
 )
 
 
-class TestBuildQueueItem:
-    def _item(self, **overrides):
-        defaults = dict(
-            album={"id": "1", "title": "Test"},
-            album_dir=Path("/music/test"),
-            label="test",
-            missing=[],
-            present=[],
-            upgrade_only=False,
-            auto_upgrade=False,
-        )
-        defaults.update(overrides)
-        return _build_queue_item(**defaults)
-
-    def test_runtime_fields_start_at_defaults(self):
-        item = self._item()
-        assert item["backup_path"] is None
-        assert item["n_ok"] == 0
-        assert item["n_fail"] == 0
-        assert item["imported"] is False
-        assert item["result"] is None
-
-    def test_siblings_to_delete_is_a_copy(self):
-        original = [Path("/a"), Path("/b")]
-        item = self._item(siblings_to_delete=original)
-        original.append(Path("/c"))
-        assert len(item["siblings_to_delete"]) == 2
+def _qitem(title="Test", **overrides):
+    defaults = dict(
+        album={"id": "1", "title": title},
+        album_dir=Path(f"/music/{title.lower()}"),
+        label=title, missing=[], present=[],
+        upgrade_only=False, auto_upgrade=False,
+    )
+    defaults.update(overrides)
+    return _build_queue_item(**defaults)
 
 
-class TestSerializeDeserialize:
-    def _make_item(self, **overrides):
-        defaults = dict(
-            album={"id": "42", "title": "Round Trip"},
-            album_dir=Path("/music/round-trip"),
-            label="round-trip",
-            missing=[{"title": "Track 1"}],
-            present=[],
-            upgrade_only=False,
-            auto_upgrade=True,
-            siblings_to_delete=[Path("/music/old-edition")],
-            quality=None,
-        )
-        defaults.update(overrides)
-        return _build_queue_item(**defaults)
-
-    def test_round_trip_restores_album_dir(self):
-        item = self._make_item()
-        restored = _deserialize_queue_item(_serialize_queue_item(item))
-        assert restored["album_dir"] == item["album_dir"]
-
-    def test_round_trip_runtime_fields_reset(self):
-        item = self._make_item()
-        item["n_ok"] = 5
-        item["imported"] = True
-        restored = _deserialize_queue_item(_serialize_queue_item(item))
-        assert restored["n_ok"] == 0
-        assert restored["imported"] is False
-
-    def test_round_trip_preserves_quality(self):
-        item = self._make_item(quality=3)
-        restored = _deserialize_queue_item(_serialize_queue_item(item))
-        assert restored["quality"] == 3
+def test_build_queue_item_defaults_and_copies_siblings():
+    original = [Path("/a"), Path("/b")]
+    item = _qitem(siblings_to_delete=original)
+    # Runtime accounting starts clean.
+    assert item["backup_path"] is None
+    assert (item["n_ok"], item["n_fail"]) == (0, 0)
+    assert item["imported"] is False and item["result"] is None
+    # siblings_to_delete must be a copy — mutating the caller's list mustn't leak in.
+    original.append(Path("/c"))
+    assert len(item["siblings_to_delete"]) == 2
 
 
-class TestQueuePersistence:
-    def _make_item(self, title="Test"):
-        return _build_queue_item(
-            album={"id": "1", "title": title},
-            album_dir=Path(f"/music/{title.lower()}"),
-            label=title,
-            missing=[], present=[], upgrade_only=False, auto_upgrade=False,
-        )
+def test_queue_item_round_trips_and_resets_runtime_fields():
+    item = _qitem(album={"id": "42", "title": "Round Trip"}, auto_upgrade=True,
+                  siblings_to_delete=[Path("/music/old-edition")], quality=3)
+    item["n_ok"] = 5
+    item["imported"] = True
+    restored = _deserialize_queue_item(_serialize_queue_item(item))
+    assert restored["album_dir"] == item["album_dir"]
+    assert restored["quality"] == 3
+    # Runtime accounting is per-run state, not persisted — it resets on restore.
+    assert restored["n_ok"] == 0 and restored["imported"] is False
 
-    def test_round_trip_single_item(self, tmp_path, monkeypatch):
-        qfile = tmp_path / "queue.json"
-        monkeypatch.setattr("qobuz_librarian.config.PENDING_QUEUE_FILE", qfile)
-        item = self._make_item(title="Album A")
-        save_pending_queue([item], mode="album_walk")
-        items, mode, _ = load_pending_queue()
-        assert len(items) == 1
-        assert items[0]["album"]["title"] == "Album A"
-        assert mode == "album_walk"
 
-    def test_load_rejects_wrong_version(self, tmp_path, monkeypatch):
-        qfile = tmp_path / "queue.json"
-        monkeypatch.setattr("qobuz_librarian.config.PENDING_QUEUE_FILE", qfile)
-        payload = {"version": 99, "items": [], "mode": "album_walk", "count": 0}
-        qfile.write_text(json.dumps(payload))
-        items, mode, _ = load_pending_queue()
-        assert items is None
+def test_pending_queue_round_trips_and_clears(tmp_path, monkeypatch):
+    qfile = tmp_path / "queue.json"
+    monkeypatch.setattr("qobuz_librarian.config.PENDING_QUEUE_FILE", qfile)
+    save_pending_queue([_qitem(title="Album A")], mode="album_walk")
+    items, mode, saved_at = load_pending_queue()
+    assert len(items) == 1 and items[0]["album"]["title"] == "Album A"
+    assert mode == "album_walk"
+    datetime.fromisoformat(saved_at)        # saved_at is valid ISO
+    clear_pending_queue()
+    assert not qfile.exists()
 
-    def test_clear_removes_file(self, tmp_path, monkeypatch):
-        qfile = tmp_path / "queue.json"
-        monkeypatch.setattr("qobuz_librarian.config.PENDING_QUEUE_FILE", qfile)
-        save_pending_queue([self._make_item()], mode="album_walk")
-        assert qfile.exists()
-        clear_pending_queue()
-        assert not qfile.exists()
 
-    def test_save_failure_does_not_raise(self, tmp_path, monkeypatch):
-        qfile = tmp_path / "nowrite" / "queue.json"
-        monkeypatch.setattr("qobuz_librarian.config.PENDING_QUEUE_FILE", qfile)
-        with patch("pathlib.Path.mkdir", side_effect=OSError("no perms")):
-            save_pending_queue([self._make_item()], mode="album_walk")
-        assert not qfile.exists()
+def test_pending_queue_rejects_bad_payloads(tmp_path, monkeypatch):
+    qfile = tmp_path / "queue.json"
+    monkeypatch.setattr("qobuz_librarian.config.PENDING_QUEUE_FILE", qfile)
+    # A future schema version is ignored rather than mis-parsed.
+    qfile.write_text(json.dumps({"version": 99, "items": [], "mode": "x", "count": 0}))
+    assert load_pending_queue()[0] is None
+    # A file that parses as a list/string must not crash startup.
+    qfile.write_text('["a", "b"]', encoding="utf-8")
+    assert load_pending_queue() == (None, None, None)
 
-    def test_saved_at_is_valid_iso(self, tmp_path, monkeypatch):
-        qfile = tmp_path / "queue.json"
-        monkeypatch.setattr("qobuz_librarian.config.PENDING_QUEUE_FILE", qfile)
-        save_pending_queue([self._make_item()], mode="album_walk")
-        _, _, saved_at = load_pending_queue()
-        assert saved_at is not None
-        datetime.fromisoformat(saved_at)
 
-    def test_load_ignores_valid_json_that_is_not_an_object(self, tmp_path, monkeypatch):
-        # A queue file that parses as a list/string must not crash startup.
-        qfile = tmp_path / "queue.json"
-        qfile.write_text('["a", "b"]', encoding="utf-8")
-        monkeypatch.setattr("qobuz_librarian.config.PENDING_QUEUE_FILE", qfile)
-        assert load_pending_queue() == (None, None, None)
+def test_pending_queue_save_failure_is_silent(tmp_path, monkeypatch):
+    qfile = tmp_path / "nowrite" / "queue.json"
+    monkeypatch.setattr("qobuz_librarian.config.PENDING_QUEUE_FILE", qfile)
+    with patch("pathlib.Path.mkdir", side_effect=OSError("no perms")):
+        save_pending_queue([_qitem()], mode="album_walk")   # must not raise
+    assert not qfile.exists()
 
-    def test_resume_keeps_queue_on_silent_beets_failure(self, tmp_path, monkeypatch):
-        qfile = tmp_path / "queue.json"
-        monkeypatch.setattr("qobuz_librarian.config.PENDING_QUEUE_FILE", qfile)
-        save_pending_queue([self._make_item()], mode="walk_queue")
-        assert qfile.exists()
 
-        def fake_execute(items, args, token):
-            return [], False
-
-        monkeypatch.setattr(
-            "qobuz_librarian.queue.executor._execute_download_queue", fake_execute)
-        monkeypatch.setattr("builtins.input", lambda _prompt: "y")
-
-        offer_resume_pending_queue(Namespace(), "tok")
-        assert qfile.exists()
+def test_resume_keeps_queue_on_silent_beets_failure(tmp_path, monkeypatch):
+    qfile = tmp_path / "queue.json"
+    monkeypatch.setattr("qobuz_librarian.config.PENDING_QUEUE_FILE", qfile)
+    save_pending_queue([_qitem()], mode="walk_queue")
+    monkeypatch.setattr("qobuz_librarian.queue.executor._execute_download_queue",
+                        lambda items, args, token: ([], False))
+    monkeypatch.setattr("builtins.input", lambda _prompt: "y")
+    offer_resume_pending_queue(Namespace(), "tok")
+    assert qfile.exists()   # a silent beets failure must not drop the queue
 
 
 # ── force_track_by_track decouples repair from the ratio heuristic ─────
