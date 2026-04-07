@@ -1,4 +1,4 @@
-"""Tests for qobuz_librarian.api.client"""
+"""Tests for qobuz_librarian.api.client — status handling, retry/backoff, UA."""
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -8,72 +8,55 @@ from qobuz_librarian.api.auth import AuthLost, QobuzError
 from qobuz_librarian.api.client import qobuz_get, validate_token
 
 
-class TestQobuzGet:
-    def _make_response(self, status_code=200, json_data=None, text=""):
-        mock_r = MagicMock()
-        mock_r.status_code = status_code
-        mock_r.json.return_value = json_data or {}
-        mock_r.text = text
-        return mock_r
-
-    def test_returns_json_on_200(self):
-        mock_r = self._make_response(200, {"albums": {"items": []}})
-        with patch("qobuz_librarian.api.client._get_session") as mock_session:
-            mock_session.return_value.get.return_value = mock_r
-            result = qobuz_get("album/search", {"query": "test"}, "tok")
-        assert result == {"albums": {"items": []}}
-
-    def test_raises_authlost_on_401(self):
-        mock_r = self._make_response(401)
-        with patch("qobuz_librarian.api.client._get_session") as mock_session:
-            mock_session.return_value.get.return_value = mock_r
-            with pytest.raises(AuthLost):
-                qobuz_get("album/search", {}, "bad_token")
-
-    def test_raises_qobuzerror_on_network_failure(self):
-        with patch("qobuz_librarian.api.client._get_session") as mock_session:
-            mock_session.return_value.get.side_effect = requests.RequestException("timeout")
-            with pytest.raises(QobuzError):
-                qobuz_get("album/search", {}, "tok")
-
-    def test_retries_on_429_then_succeeds(self):
-        from qobuz_librarian.api import client as _client
-        rate_limited = self._make_response(429)
-        rate_limited.headers = {}
-        ok = self._make_response(200, {"ok": True})
-        with patch("qobuz_librarian.api.client._get_session") as mock_session:
-            mock_session.return_value.get.side_effect = [rate_limited, rate_limited, ok]
-            result = _client.qobuz_get("album/search", {}, "tok")
-        assert result == {"ok": True}
-
-    def test_does_not_retry_on_404(self):
-        from qobuz_librarian.api import client as _client
-        bad = self._make_response(404, text="missing")
-        with patch("qobuz_librarian.api.client._get_session") as mock_session:
-            mock_session.return_value.get.return_value = bad
-            with pytest.raises(QobuzError):
-                _client.qobuz_get("album/get", {"album_id": "nope"}, "tok")
-        assert mock_session.return_value.get.call_count == 1
+def _response(status_code=200, json_data=None, text=""):
+    r = MagicMock()
+    r.status_code = status_code
+    r.json.return_value = json_data or {}
+    r.text = text
+    r.headers = {}
+    return r
 
 
-class TestValidateToken:
-    def test_exits_on_authlost(self):
-        with patch("qobuz_librarian.api.client.qobuz_get", side_effect=AuthLost("401")):
-            with pytest.raises(SystemExit):
-                validate_token("bad_token")
+def test_qobuz_get_maps_status_codes():
+    # 200 → parsed JSON; 401 → AuthLost (so creds get torn down); network
+    # failure → QobuzError (retryable / surfaced as a friendly message).
+    with patch("qobuz_librarian.api.client._get_session") as sess:
+        sess.return_value.get.return_value = _response(200, {"albums": {"items": []}})
+        assert qobuz_get("album/search", {"query": "x"}, "tok") == {"albums": {"items": []}}
+    with patch("qobuz_librarian.api.client._get_session") as sess:
+        sess.return_value.get.return_value = _response(401)
+        with pytest.raises(AuthLost):
+            qobuz_get("album/search", {}, "bad")
+    with patch("qobuz_librarian.api.client._get_session") as sess:
+        sess.return_value.get.side_effect = requests.RequestException("timeout")
+        with pytest.raises(QobuzError):
+            qobuz_get("album/search", {}, "tok")
 
-    def test_passes_on_success(self):
-        with patch("qobuz_librarian.api.client.qobuz_get", return_value={}):
-            assert validate_token("good_token") is None
+
+def test_qobuz_get_retries_429_but_not_404():
+    # 429 backs off and retries; a 404 is terminal and must not be retried.
+    with patch("qobuz_librarian.api.client._get_session") as sess:
+        sess.return_value.get.side_effect = [_response(429), _response(429),
+                                             _response(200, {"ok": True})]
+        assert qobuz_get("album/search", {}, "tok") == {"ok": True}
+    with patch("qobuz_librarian.api.client._get_session") as sess:
+        sess.return_value.get.return_value = _response(404, text="missing")
+        with pytest.raises(QobuzError):
+            qobuz_get("album/get", {"album_id": "nope"}, "tok")
+        assert sess.return_value.get.call_count == 1
 
 
-class TestUserAgent:
-    def test_user_agent_carries_installed_package_version(self):
-        from importlib.metadata import version
+def test_validate_token_exits_on_authlost_passes_otherwise():
+    with patch("qobuz_librarian.api.client.qobuz_get", side_effect=AuthLost("401")):
+        with pytest.raises(SystemExit):
+            validate_token("bad")
+    with patch("qobuz_librarian.api.client.qobuz_get", return_value={}):
+        assert validate_token("good") is None
 
-        from qobuz_librarian.api.client import _get_session
 
-        ua = _get_session().headers["User-Agent"]
-        installed = version("qobuz-librarian")
-        assert installed in ua, f"UA {ua!r} doesn't mention installed version {installed!r}"
-        assert "qobuz-librarian" in ua
+def test_user_agent_carries_installed_version():
+    from importlib.metadata import version
+
+    from qobuz_librarian.api.client import _get_session
+    ua = _get_session().headers["User-Agent"]
+    assert version("qobuz-librarian") in ua and "qobuz-librarian" in ua
