@@ -685,28 +685,16 @@ def test_diagnostics_reports_paths_and_binaries(tmp_path, monkeypatch):
     (music / "Some Artist").mkdir()
     monkeypatch.setattr(cfg, "MUSIC_ROOT", music)
     monkeypatch.setattr(cfg, "STAGING_DIR", tmp_path / "not_mounted")
+    monkeypatch.setattr(cfg, "BEETS_DB_PATH", tmp_path / "nope" / "library.db")
 
-    checks = webapp._diagnostics()
-    by_label = {c["label"]: c for c in checks}
-
+    by_label = {c["label"]: c for c in webapp._diagnostics()}
     assert by_label["Music library (MUSIC_ROOT)"]["ok"] is True
     assert by_label["Staging (STAGING_DIR)"]["ok"] is False
-    assert "`rip` binary" in by_label
-    assert "`beet` binary" in by_label
+    # A beets DB whose parent dir is unmounted is flagged with a clear reason.
+    beets_row = by_label["beets DB (BEETS_DB_PATH)"]
+    assert beets_row["ok"] is False and "does not exist" in beets_row["detail"]
+    assert "`rip` binary" in by_label and "`beet` binary" in by_label
     assert "`ffprobe` binary" in by_label
-
-
-
-
-def test_diagnostics_beets_db_parent_missing(tmp_path, monkeypatch):
-    from qobuz_librarian import config as cfg
-    from qobuz_librarian.web import app as webapp
-    db = tmp_path / "nope" / "library.db"
-    monkeypatch.setattr(cfg, "BEETS_DB_PATH", db)
-    checks = webapp._diagnostics()
-    row = next(c for c in checks if c["label"] == "beets DB (BEETS_DB_PATH)")
-    assert row["ok"] is False
-    assert "does not exist" in row["detail"]
 
 
 def test_settings_empty_save_with_no_existing_creds_returns_error(client, monkeypatch):
@@ -757,19 +745,21 @@ def test_rejected_token_is_not_saved(client, monkeypatch):
     assert wrote == []
 
 
-def test_accepted_token_saves_and_lands_on_connected(client, monkeypatch):
+def test_accepted_token_saves_connects_and_clears_stale_banner(client, monkeypatch):
     import qobuz_librarian.api.client as client_mod
     import qobuz_librarian.web.app as _app
     monkeypatch.delenv("QOBUZ_USER_AUTH_TOKEN", raising=False)
     wrote = []
     monkeypatch.setattr(_app, "_write_creds", lambda *a: wrote.append(a) or True)
     monkeypatch.setattr(client_mod, "qobuz_get", lambda *a, **k: {"albums": {}})
+    monkeypatch.setattr(_app, "_TOKEN_VALID", False)   # a stale "invalid" banner is up
     r = client.post("/settings", data={"user_id": "u", "auth_token": "tok"},
                     follow_redirects=False)
     assert r.status_code == 303
     loc = r.headers["location"]
     assert "connected=1" in loc and "unverified" not in loc
     assert wrote == [("u", "tok")]
+    assert _app._TOKEN_VALID is True   # a working save clears the stale banner
 
 
 def test_unreachable_qobuz_saves_token_but_flags_unverified(client, monkeypatch):
@@ -789,18 +779,6 @@ def test_unreachable_qobuz_saves_token_but_flags_unverified(client, monkeypatch)
     loc = r.headers["location"]
     assert "connected=1" in loc and "unverified=1" in loc
     assert wrote == [("u", "tok")]
-
-
-def test_saving_a_working_token_clears_stale_invalid_banner(client, monkeypatch):
-    import qobuz_librarian.api.client as client_mod
-    import qobuz_librarian.web.app as _app
-    monkeypatch.delenv("QOBUZ_USER_AUTH_TOKEN", raising=False)
-    monkeypatch.setattr(_app, "_write_creds", lambda *a: True)
-    monkeypatch.setattr(client_mod, "qobuz_get", lambda *a, **k: {"albums": {}})
-    monkeypatch.setattr(_app, "_TOKEN_VALID", False)
-    client.post("/settings", data={"user_id": "u", "auth_token": "good"},
-                follow_redirects=False)
-    assert _app._TOKEN_VALID is True
 
 
 def test_settings_behavior_persist_failure_redirects_with_error(client, monkeypatch):
@@ -1097,6 +1075,9 @@ def test_jobs_list_returns_array_and_respects_filter(client):
         # limit caps the response
         r3 = client.get("/api/jobs?limit=1")
         assert len(r3.json()["jobs"]) == 1
+        # an unrecognised status filter is a 400, not a silent empty list
+        r4 = client.get("/api/jobs?status=garbage")
+        assert r4.status_code == 400 and r4.json() == {"detail": "Unknown status filter"}
     finally:
         _remove_job(pending)
         _remove_job(done)
@@ -1148,28 +1129,25 @@ def _inject_album_job(album_id, status=jm.JobStatus.PENDING):
     return job
 
 
-def test_download_duplicate_rejected_htmx(client, monkeypatch):
+def test_download_dedups_against_queued_jobs_and_scan_candidates(client, monkeypatch):
     import qobuz_librarian.web.app as webapp
     monkeypatch.setattr(webapp, "_get_token", lambda: "tok")
+    # An album already queued → htmx "Already queued", linking the existing job.
     existing = _inject_album_job("dup-album")
-    r = client.post("/download", data={"album_id": "dup-album"},
-                    headers={"HX-Request": "true"})
-    assert r.status_code == 200
-    assert "Already queued" in r.text
-    assert existing.id in r.text
-
-
-def test_download_duplicate_matches_scan_candidate(client, monkeypatch):
-    import qobuz_librarian.web.app as webapp
-    monkeypatch.setattr(webapp, "_get_token", lambda: "tok")
+    try:
+        r = client.post("/download", data={"album_id": "dup-album"},
+                        headers={"HX-Request": "true"})
+        assert r.status_code == 200 and "Already queued" in r.text and existing.id in r.text
+    finally:
+        _remove_job(existing)
+    # An album that matches an awaiting-review scan candidate → go to that scan,
+    # don't queue a second copy.
     scan = jm.Job(title="Library scan", status=jm.JobStatus.AWAITING_REVIEW)
     scan.candidates = [{"cid": "c1", "payload": {"album_id": "scan-X"}}]
     jm.registry.add(scan)
     try:
-        r = client.post("/download", data={"album_id": "scan-X"},
-                        follow_redirects=False)
-        assert r.status_code == 303
-        assert scan.id in r.headers["location"]
+        r = client.post("/download", data={"album_id": "scan-X"}, follow_redirects=False)
+        assert r.status_code == 303 and scan.id in r.headers["location"]
     finally:
         _remove_job(scan)
 
@@ -1429,25 +1407,20 @@ def test_settings_page_does_not_leak_auth_token(client, monkeypatch):
     assert "Token is set" in r.text
 
 
-def test_run_task_authlost_yields_friendly_error():
-    from qobuz_librarian.api.auth import AuthLost
-    job = jm.Job(title="x")
-    def _raise(j):
-        raise AuthLost("401")
-    jm._run_task(job, _raise)
-    assert job.status == jm.JobStatus.FAILED
-    assert "Token is expired or invalid" in job.error
-    assert "401" in job.log_lines[-1]
-
-
-def test_run_task_disk_full_yields_friendly_error():
+def test_run_task_maps_exceptions_to_friendly_errors():
     import errno
+
+    from qobuz_librarian.api.auth import AuthLost
+    # AuthLost → a "token expired" message, with the raw detail kept in the log.
     job = jm.Job(title="x")
-    def _ensp(j):
-        raise OSError(errno.ENOSPC, "No space left on device")
-    jm._run_task(job, _ensp)
+    jm._run_task(job, lambda j: (_ for _ in ()).throw(AuthLost("401")))
     assert job.status == jm.JobStatus.FAILED
-    assert "Out of disk space" in job.error
+    assert "Token is expired or invalid" in job.error and "401" in job.log_lines[-1]
+    # ENOSPC → "out of disk space" instead of a raw OSError string.
+    job2 = jm.Job(title="x")
+    jm._run_task(job2, lambda j: (_ for _ in ()).throw(
+        OSError(errno.ENOSPC, "No space left on device")))
+    assert job2.status == jm.JobStatus.FAILED and "Out of disk space" in job2.error
 
 
 def test_queue_cancel_pending_cancels_all_pending(client):
@@ -1465,46 +1438,38 @@ def test_queue_cancel_pending_cancels_all_pending(client):
         _remove_job(p2)
 
 
-def test_job_retry_resubmits_failed_download(client, monkeypatch):
+def test_job_retry_resubmits_only_a_failed_job(client, monkeypatch):
     import qobuz_librarian.web.app as webapp
     monkeypatch.setattr(webapp, "_get_token", lambda: "tok")
     monkeypatch.setattr(
         "qobuz_librarian.api.search.get_album",
-        lambda aid, tok: {"title": "Album", "artist": {"name": "Artist"}, "id": aid},
-    )
+        lambda aid, tok: {"title": "Album", "artist": {"name": "Artist"}, "id": aid})
     captured = {}
     original_submit = jm.submit
-    def fake_submit(job, fn):
-        captured["job"] = job
-    monkeypatch.setattr(jm, "submit", fake_submit)
+    monkeypatch.setattr(jm, "submit", lambda job, fn: captured.__setitem__("job", job))
 
     failed = jm.Job(title="Album", album_id="abc", status=jm.JobStatus.FAILED)
     failed.error = "old failure"
     jm.registry.add(failed)
+    # Distinct album id so it doesn't dedup-collide with the failed job's retry.
+    pending = jm.Job(title="X", album_id="xyz", status=jm.JobStatus.PENDING)
+    jm.registry.add(pending)
     try:
+        # A failed job resubmits as a fresh job pointing at the same album.
         r = client.post(f"/jobs/{failed.id}/retry", follow_redirects=False)
         assert r.status_code == 303
         new_job = captured.get("job")
-        assert new_job is not None
-        assert new_job.album_id == "abc"
-        assert new_job.id != failed.id
+        assert new_job is not None and new_job.album_id == "abc" and new_job.id != failed.id
         assert new_job.id in r.headers["location"]
+        # A non-failed job is bounced back to the queue, not resubmitted.
+        r2 = client.post(f"/jobs/{pending.id}/retry", follow_redirects=False)
+        assert r2.status_code == 303 and r2.headers["location"] == "/queue"
     finally:
         _remove_job(failed)
+        _remove_job(pending)
         if captured.get("job"):
             _remove_job(captured["job"])
         jm.submit = original_submit
-
-
-def test_job_retry_rejects_non_failed_job(client):
-    pending = jm.Job(title="X", album_id="abc", status=jm.JobStatus.PENDING)
-    jm.registry.add(pending)
-    try:
-        r = client.post(f"/jobs/{pending.id}/retry", follow_redirects=False)
-        assert r.status_code == 303
-        assert r.headers["location"] == "/queue"
-    finally:
-        _remove_job(pending)
 
 
 
@@ -1656,15 +1621,24 @@ def test_api_401_flips_dashboard_token_state(monkeypatch):
 # ── empty form values reach friendly branches, never 422 JSON ──────
 
 
-def test_download_empty_album_id_renders_friendly_error(client):
-    r = client.post("/download", data={"album_id": ""},
-                    headers={"HX-Request": "true"})
+def test_download_bad_album_id_renders_friendly_error(client, monkeypatch):
+    # Empty id → inline "Missing album id" error.
+    r = client.post("/download", data={"album_id": ""}, headers={"HX-Request": "true"})
     assert r.status_code in (200, 400)
     assert r.headers["content-type"].startswith("text/html")
-    assert "alert-error" in r.text
-    assert "Missing album id" in r.text
-
-
+    assert "alert-error" in r.text and "Missing album id" in r.text
+    # A 404 from Qobuz → "no album with that id", not a scary network message.
+    import qobuz_librarian.api.search as search_mod
+    import qobuz_librarian.web.app as webapp
+    from qobuz_librarian.api.auth import QobuzError
+    monkeypatch.setattr(webapp, "_get_token", lambda: "tok")
+    monkeypatch.setattr(search_mod, "get_album",
+                        lambda _id, _tok: (_ for _ in ()).throw(QobuzError(
+                            "HTTP 404 from album/get: {'status':'error','code':404}")))
+    r2 = client.post("/download", data={"album_id": "ghost-album"},
+                     headers={"HX-Request": "true"})
+    assert r2.status_code == 200
+    assert "No album with that id" in r2.text and "container's network" not in r2.text
 
 
 def test_artist_empty_form_redirects_with_friendly_error(client):
@@ -1674,28 +1648,6 @@ def test_artist_empty_form_redirects_with_friendly_error(client):
     loc = r.headers["location"]
     assert loc.startswith("/artist?error=")
     assert "required" in loc
-
-
-# ── 404 album_id maps to a "no album" message, not "network" ────────
-
-
-def test_download_404_maps_to_no_album_message(client, monkeypatch):
-    import qobuz_librarian.api.search as search_mod
-    import qobuz_librarian.web.app as webapp
-    from qobuz_librarian.api.auth import QobuzError
-    monkeypatch.setattr(webapp, "_get_token", lambda: "tok")
-
-    def _missing(_id, _tok):
-        raise QobuzError(
-            "HTTP 404 from album/get: "
-            "{'status':'error','code':404,'message':'album not found'}"
-        )
-    monkeypatch.setattr(search_mod, "get_album", _missing)
-    r = client.post("/download", data={"album_id": "ghost-album"},
-                    headers={"HX-Request": "true"})
-    assert r.status_code == 200
-    assert "No album with that id" in r.text
-    assert "container's network" not in r.text
 
 
 # ── HEAD requests on /healthz / /queue / /settings ─────────────────
@@ -1772,12 +1724,6 @@ def test_settings_behavior_partial_post_preserves_other_booleans(
 
 
 # ── invalid status filter on /api/jobs returns 400 ──────────
-
-
-def test_jobs_list_unknown_status_returns_400(client):
-    r = client.get("/api/jobs?status=garbage")
-    assert r.status_code == 400
-    assert r.json() == {"detail": "Unknown status filter"}
 
 
 # ── XSS-like artist names rejected before reaching Qobuz ────
