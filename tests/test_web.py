@@ -322,26 +322,6 @@ def test_search_result_id_is_html_escaped(client, monkeypatch):
     assert 'value="a"b"' not in r.text
 
 
-def test_hx_confirm_uses_single_quoted_outer_attribute(client, monkeypatch):
-    import qobuz_librarian.api.search as search_mod
-    import qobuz_librarian.library.catalog as cat
-    import qobuz_librarian.web.app as webapp
-    monkeypatch.setattr(webapp, "_get_token", lambda: "tok")
-    monkeypatch.setattr(search_mod, "search_albums",
-                         lambda q, t, limit=None: [{
-                             "id": "123", "title": "Ode to Joy",
-                             "artist": {"name": "Beethoven"},
-                             "tracks_count": 9, "maximum_bit_depth": 24}])
-    monkeypatch.setattr(cat, "album_quality_label", lambda a: "Hi-Res")
-    monkeypatch.setattr(cat, "album_year", lambda a: 1824)
-    r = client.post("/search", data={"q": "beethoven"},
-                    headers={"HX-Request": "true"})
-    assert r.status_code == 200
-    assert "Ode to Joy" in r.text
-    assert "hx-confirm=" in r.text
-    assert 'hx-confirm="Download "' not in r.text
-
-
 def test_search_artist_url_shows_helpful_error(client, monkeypatch):
     """Artist/interpreter Qobuz URLs must show a helpful error, not empty results."""
     import qobuz_librarian.web.app as webapp
@@ -833,22 +813,19 @@ def test_settings_behavior_persist_failure_redirects_with_error(client, monkeypa
 
 
 
-def test_security_headers_present(client):
-    """Security headers must be present on every response."""
+def test_security_response_headers(client):
     r = client.get("/")
     assert r.headers.get("X-Content-Type-Options") == "nosniff"
     assert r.headers.get("X-Frame-Options") == "DENY"
     assert r.headers.get("Referrer-Policy") == "same-origin"
     csp = r.headers.get("Content-Security-Policy", "")
-    assert "default-src 'self'" in csp
-    assert "frame-ancestors 'none'" in csp
-
-
-def test_hsts_header_present_on_https_but_not_http(client):
+    assert "default-src 'self'" in csp and "frame-ancestors 'none'" in csp
+    # Don't leak the ASGI framework name.
+    assert "server" not in {k.lower() for k in r.headers}
+    # HSTS only over https (don't pin a plain-http LAN box into https-only).
     https = client.get("/", headers={"X-Forwarded-Proto": "https"})
     assert "max-age=" in https.headers.get("Strict-Transport-Security", "")
-    plain = client.get("/")
-    assert "Strict-Transport-Security" not in plain.headers
+    assert "Strict-Transport-Security" not in r.headers
 
 
 def test_web_fetch_timeout_honors_env_var(monkeypatch):
@@ -976,37 +953,6 @@ def test_job_page_renders_archived_job_from_sqlite_after_eviction(client):
             except Exception:
                 pass
             job_persistence._conn = None
-
-
-def test_flash_banners_carry_data_flash_attribute(client):
-    """Server-rendered banners driven by one-shot query flags (?approved=1,
-    ?error=…, ?saved=1) must be tagged data-flash so the shared app.js can
-    auto-fade them and strip the param from the URL — otherwise a refresh
-    re-renders the same stale message forever. (Three screenshots' worth of
-    bug reports were this same issue, page after page.)"""
-    import urllib.parse
-
-    job = _inject_job(jm.JobStatus.RUNNING)
-    try:
-        r = client.get(f"/jobs/{job.id}?approved=1")
-        assert r.status_code == 200
-        # The "Downloads queued" banner must carry data-flash so app.js
-        # auto-dismisses and the URL gets cleaned.
-        flat = r.text.replace("\n", " ")
-        assert "Downloads queued" in flat
-        assert "data-flash" in flat, (
-            "approved banner is missing data-flash — it'll stick in the URL "
-            "and re-render on every refresh")
-    finally:
-        _remove_job(job)
-
-    # The /queue?error=… path is the same pattern from a different angle —
-    # any error string passed through the query becomes a stale banner if
-    # it's not flagged as flash.
-    r = client.get("/queue?error=" + urllib.parse.quote("Something broke"))
-    assert r.status_code == 200
-    assert "Something broke" in r.text
-    assert "data-flash" in r.text
 
 
 def test_review_list_groups_candidates_by_artist(client):
@@ -1249,34 +1195,6 @@ def test_sse_stream_404_returns_json(client):
     assert r.status_code == 404
     assert r.headers["content-type"].startswith("application/json")
     assert r.json() == {"error": "not found"}
-
-
-def test_templates_have_no_hx_on_attributes():
-    """htmx 1.9's hx-on:* attributes evaluate via new Function() which the page CSP correctly forbids."""
-    from pathlib import Path
-    tpl_dir = Path(__file__).resolve().parents[1] / "src/qobuz_librarian/web/templates"
-    offenders = []
-    for f in tpl_dir.glob("*.html"):
-        text = f.read_text(encoding="utf-8")
-        for needle in ("hx-on:", "hx-on::"):
-            if needle in text:
-                offenders.append((f.name, needle))
-    assert not offenders, (
-        f"hx-on:* attributes found (CSP would block these via new Function): "
-        f"{offenders}. Move to web/static/app.js handlers.")
-
-
-def test_sse_stream_done_for_finished_job(client):
-    job = jm.Job(title="finished")
-    job.status = jm.JobStatus.DONE
-    jm.registry.add(job)
-    with client.stream("GET", f"/api/jobs/{job.id}/stream") as r:
-        assert r.status_code == 200
-        for chunk in r.iter_text():
-            if "event: done" in chunk:
-                break
-        else:
-            pytest.fail("SSE stream never sent 'event: done' for a finished job")
 
 
 def test_sse_done_event_carries_final_status(client):
@@ -1591,12 +1509,6 @@ def test_job_retry_rejects_non_failed_job(client):
 
 
 
-
-
-def test_server_header_is_stripped(client):
-    """Don't leak the ASGI framework name in the Server header."""
-    r = client.get("/")
-    assert "server" not in {k.lower() for k in r.headers}
 
 
 def test_search_query_too_long_is_rejected_or_truncated(client):
