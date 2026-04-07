@@ -5,7 +5,12 @@ name; the literal in this file is just the fallback when the env is
 unset. `compose.yaml` sets the ones a container deployment needs.
 """
 import os
+import sys
 from pathlib import Path
+
+
+def _warn(msg: str) -> None:
+    print(f"warning: {msg}", file=sys.stderr)
 
 
 def _env(key, default):
@@ -16,18 +21,46 @@ def _env(key, default):
     try:
         return type(default)(val)
     except (ValueError, TypeError):
-        import sys
-        print(f"warning: {key}={val!r} is not a valid "
-              f"{type(default).__name__}; using default {default!r}",
-              file=sys.stderr)
+        _warn(f"{key}={val!r} is not a valid {type(default).__name__}; "
+              f"using default {default!r}")
         return default
+
+
+_TRUE_TOKENS  = {"1", "true", "yes", "on", "y", "t"}
+_FALSE_TOKENS = {"0", "false", "no", "off", "n", "f"}
 
 
 def _env_bool(key, default: bool) -> bool:
     val = os.environ.get(key)
     if val is None:
         return default
-    return val.strip().lower() in ("1", "true", "yes")
+    v = val.strip().lower()
+    if not v:                       # `${VAR:-}` in compose resolves to empty
+        return default
+    if v in _TRUE_TOKENS:
+        return True
+    if v in _FALSE_TOKENS:
+        return False
+    _warn(f"{key}={val!r} is not a valid boolean; using default {default!r}")
+    return default
+
+
+def _env_choice(key, default: str, choices) -> str:
+    """Lowercased env value restricted to `choices`, else `default`.
+
+    An explicit value outside the set warns instead of silently degrading —
+    a typo'd LYRICS_FORMAT shouldn't quietly stop sidecars being written.
+    """
+    val = os.environ.get(key)
+    if val is None:
+        return default
+    v = val.strip().lower()
+    if v in choices:
+        return v
+    if v:
+        _warn(f"{key}={val!r} must be one of {', '.join(choices)}; "
+              f"using default {default!r}")
+    return default
 
 
 def _env_path(key, default: Path) -> Path:
@@ -111,9 +144,7 @@ BEETS_PLUGINS = [p.strip() for p in
 #   sidecar = a cover image file in the album folder (beets `fetchart`, default)
 #   embed   = embedded in the track tags only, no leftover file (`embedart`)
 #   both    = a cover file AND embedded art
-ARTWORK = (os.environ.get("ARTWORK", "sidecar").strip().lower() or "sidecar")
-if ARTWORK not in ("sidecar", "embed", "both"):
-    ARTWORK = "sidecar"
+ARTWORK = _env_choice("ARTWORK", "sidecar", ("sidecar", "embed", "both"))
 
 # COMPOSE_FILE is only used by the legacy docker-exec beets fallback (when
 # `beet` isn't on PATH and a compose file exists — never the case in the
@@ -192,12 +223,17 @@ QOBUZ_APP_ID   = os.environ.get("QOBUZ_APP_ID",   "798273057")
 # subscription serves (hi-res where Qobuz has it). Drop to 2 for CD
 # lossless if you want smaller files. Passed to `rip -q`.
 STREAMRIP_QUALITY = _env("STREAMRIP_QUALITY", 4)
+if STREAMRIP_QUALITY not in (1, 2, 3, 4):
+    # Out-of-range goes straight to `rip -q`, which then fails the download
+    # with an opaque usage error. Fall back to the highest tier loudly.
+    _warn(f"STREAMRIP_QUALITY={STREAMRIP_QUALITY!r} isn't a tier (1-4); using 4.")
+    STREAMRIP_QUALITY = 4
 
 # ── Lyrics ────────────────────────────────────────────────────────────────────
 LYRICS_ENABLED   = _env_bool("LYRICS_ENABLED", True)
 # How fetched lyrics are written: "embed" (FLAC tag), "sidecar" (.lrc file
 # next to the track), or "both".
-LYRICS_FORMAT    = os.environ.get("LYRICS_FORMAT", "embed").strip().lower()
+LYRICS_FORMAT    = _env_choice("LYRICS_FORMAT", "embed", ("embed", "sidecar", "both"))
 # Comma-separated provider names to try, in order. Empty = built-in default.
 LYRICS_PROVIDERS = [p.strip() for p in
                     os.environ.get("LYRICS_PROVIDERS", "").split(",")
