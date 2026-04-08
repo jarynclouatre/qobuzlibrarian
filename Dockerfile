@@ -27,11 +27,13 @@ WORKDIR /app
 # when a Qobuz-side schema change forces it; verify with scripts/smoke_test.sh
 # before changing the SHA. Last verified: 2026-04 against streamrip dev.
 #
-# beets gets --no-deps + an explicit minimum-deps list. Full install pulls
-# in chroma/acoustid prerequisites (llvmlite, scipy, numpy, numba) — ~350 MB
-# we never load because the bundled beets-default.yaml only enables fetchart.
-# If you ever enable the chroma or acoustid plugin, install beets[chroma]
-# (or its equivalent) on top inside the container or in a flag-gated build.
+# beets gets --no-deps + an explicit dependency list so the image stays lean
+# and reproducible rather than resolving beets' optional extras we never
+# enable. The list already covers everything the bundled configs touch: core
+# beets, the fetchart + inline plugins (beets-default.yaml), and the
+# chroma/AcoustID path — pyacoustid here, fpcalc via libchromaprint-tools in
+# the runtime stage — that beets-chroma.yaml and the library-migration
+# fingerprint stage depend on.
 RUN pip install --no-cache-dir \
         "streamrip @ git+https://github.com/nathom/streamrip.git@e3291615ba6be34aa76df19da8aeb6f41673c6a0" \
         "syncedlyrics>=0.4" \
@@ -93,9 +95,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 ENV VIRTUAL_ENV=/opt/venv
 ENV PATH="$VIRTUAL_ENV/bin:$PATH"
 
-# Dedicated unprivileged user for the app. The entrypoint stays root-capable
-# so it can chown PUID/PGID-owned mount points on first run, then drops to
-# this uid (or the user-supplied PUID:PGID) via gosu.
+# Dedicated uid:gid (1000:1000) that owns the app files. The container starts
+# as root so the entrypoint can chown the config/data volumes on first run; it
+# then drops to PUID:PGID via gosu when those are set, and otherwise stays root
+# (the documented single-user default — see compose.yaml).
 RUN groupadd -g 1000 appuser \
  && useradd -u 1000 -g 1000 -m -s /bin/bash appuser
 
