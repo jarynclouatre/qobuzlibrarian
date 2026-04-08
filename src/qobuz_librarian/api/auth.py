@@ -6,8 +6,6 @@ here without needing to import anything back).
 
 detect_auth_lost() lives here because it parses rip subprocess output for
 auth signals — no API calls, no session needed.
-
-validate_token() lives in client.py (not here) because it calls qobuz_get().
 """
 import re
 import tomllib

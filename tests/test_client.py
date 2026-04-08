@@ -5,7 +5,7 @@ import pytest
 import requests
 
 from qobuz_librarian.api.auth import AuthLost, QobuzError
-from qobuz_librarian.api.client import qobuz_get, validate_token
+from qobuz_librarian.api.client import qobuz_get
 
 
 def _response(status_code=200, json_data=None, text=""):
@@ -46,12 +46,21 @@ def test_qobuz_get_retries_429_but_not_404():
         assert sess.return_value.get.call_count == 1
 
 
-def test_validate_token_exits_on_authlost_passes_otherwise():
-    with patch("qobuz_librarian.api.client.qobuz_get", side_effect=AuthLost("401")):
-        with pytest.raises(SystemExit):
-            validate_token("bad")
-    with patch("qobuz_librarian.api.client.qobuz_get", return_value={}):
-        assert validate_token("good") is None
+def test_qobuz_get_reports_token_validity_both_ways(monkeypatch):
+    # The dashboard banner listens for auth state. A 200 must report the
+    # token good and a 401 must report it bad — reporting only failures
+    # leaves the banner stuck red after a transient 401 even once calls work.
+    from qobuz_librarian.api import auth
+    seen = []
+    monkeypatch.setattr(auth, "_auth_state_listeners", [seen.append])
+    with patch("qobuz_librarian.api.client._get_session") as sess:
+        sess.return_value.get.return_value = _response(200, {"ok": True})
+        qobuz_get("album/search", {}, "tok")
+    with patch("qobuz_librarian.api.client._get_session") as sess:
+        sess.return_value.get.return_value = _response(401)
+        with pytest.raises(AuthLost):
+            qobuz_get("album/search", {}, "bad")
+    assert seen == [True, False]
 
 
 def test_user_agent_carries_installed_version():

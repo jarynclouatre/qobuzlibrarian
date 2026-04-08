@@ -1,13 +1,9 @@
-"""Qobuz API session and core request.
+"""Qobuz API session and the core ``qobuz_get`` request.
 
-validate_token() lives here (not in auth.py) because it calls qobuz_get()
-and putting it here avoids a circular import: client.py imports AuthLost
-from auth.py, so auth.py cannot import back from client.py.
-
-Search helpers (search_albums, search_tracks, find_qobuz_track_by_isrc,
-etc.) live in api/search.py.
+Shared exceptions and auth helpers live in api/auth.py; this module imports
+from there and never the reverse, which keeps the dependency acyclic. The
+search/lookup helpers built on ``qobuz_get`` live in api/search.py.
 """
-import json
 import threading
 import time
 
@@ -50,10 +46,11 @@ def _get_session() -> requests.Session:
 # enough that a sustained outage still fails the call quickly. Honors a
 # Retry-After header if Qobuz sends one. 401/403/404 do NOT retry.
 #
-# _REQUEST_TIMEOUT must stay below WEB_FETCH_TIMEOUT so a cancelled
-# asyncio.wait_for awaiter doesn't leak the executor thread for the full
-# window. Derive from config rather than risking drift between two
-# independently-tuned literals.
+# Per-attempt budget, derived from WEB_FETCH_TIMEOUT (rather than a second
+# independently-tuned literal) so a single stalled request frees a web
+# awaiter close to when it gives up. A call that retries can outlive that
+# window, but only as a bounded background thread (≤_MAX_ATTEMPTS) the
+# executor pool absorbs — the user already got their timeout response.
 _REQUEST_TIMEOUT = max(2, int(config.WEB_FETCH_TIMEOUT) - 2)
 _RETRY_STATUSES  = (429, 500, 502, 503, 504)
 _MAX_ATTEMPTS    = 3
@@ -131,29 +128,14 @@ def qobuz_get(endpoint, params, token):
                 f"rate-limited or a temporary outage; try again later.")
         if r.status_code != 200:
             raise QobuzError(f"HTTP {r.status_code} from {endpoint}: {r.text[:200]}")
+        # A 200 means Qobuz accepted the token. Report that so the web
+        # dashboard's auth banner recovers from an earlier transient 401
+        # instead of staying red until the next restart probe.
+        notify_auth_state(True)
         try:
             return r.json()
-        except json.JSONDecodeError as e:
+        except ValueError as e:
+            # requests raises its own JSONDecodeError (a ValueError subclass,
+            # and simplejson's variant when that's installed) — catch the base
+            # so a junk body surfaces as a QobuzError, not an opaque traceback.
             raise QobuzError(f"bad JSON from {endpoint}: {e}") from e
-
-
-# ── Token preflight ───────────────────────────────────────────────────────────
-def validate_token(token):
-    """Lightweight preflight: surface an expired token before the user picks an album.
-
-    Uses a cheap search so the round-trip is fast. Non-auth API errors are
-    ignored — they don't mean the token is bad.
-    """
-    try:
-        qobuz_get("album/search", {"query": "test", "limit": 1}, token)
-    except AuthLost:
-        from qobuz_librarian.ui_cli.errors import EXIT_AUTH, die
-        die(fmt(C.RED,
-            "\n✗  Qobuz token is expired or invalid."
-            " Re-authenticate: Settings page in the web UI, or set QOBUZ_USER_AUTH_TOKEN env var.\n"),
-            EXIT_AUTH)
-    except QobuzError as e:
-        # Don't treat a failed preflight as fatal — but tell the user so
-        # later "search failed" errors don't look like the token is broken.
-        log.info(fmt(C.YELLOW,
-            f"  ⚠  Couldn't reach Qobuz on preflight ({e}); continuing."))

@@ -117,17 +117,3 @@ def test_friendly_qobuz_error_strips_response_body():
     assert friendly_qobuz_error(e) == "HTTP 500 from artist/get"
     # Non-HTTP messages pass through unchanged.
     assert friendly_qobuz_error(QobuzError("connection refused")) == "connection refused"
-
-
-def test_validate_token_logs_friendly_warning_on_network_error(caplog):
-    import logging
-
-    from qobuz_librarian.api.client import validate_token
-
-    def _net_err(*a, **k):
-        raise QobuzError("connection refused")
-
-    with patch("qobuz_librarian.api.client.qobuz_get", _net_err):
-        with caplog.at_level(logging.INFO, logger="qobuz_librarian"):
-            validate_token("tok")
-    assert any("Couldn't reach Qobuz" in r.message for r in caplog.records)
