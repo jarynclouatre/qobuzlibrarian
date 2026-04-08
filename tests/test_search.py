@@ -118,3 +118,19 @@ def test_get_artist_albums_cached_within_ttl(tmp_path, monkeypatch):
         assert [a["id"] for a in items1] == [a["id"] for a in items2] == ["A1"]
     finally:
         album_cache._reset_for_tests()
+
+
+def test_album_cache_rebuilds_corrupt_db(tmp_path, monkeypatch):
+    import qobuz_librarian.config as cfg
+    from qobuz_librarian.api import album_cache
+    monkeypatch.setattr(cfg, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(cfg, "ALBUM_CACHE_ENABLED", True)
+    album_cache._reset_for_tests()
+    # A truncated/garbage db file used to disable the cache for the whole
+    # process; it should instead be discarded and rebuilt so caching resumes.
+    (tmp_path / "album_cache.db").write_bytes(b"not a sqlite database, just junk")
+    try:
+        album_cache.put("ALB9", {"id": "ALB9", "title": "X"})
+        assert album_cache.get("ALB9") == {"id": "ALB9", "title": "X"}
+    finally:
+        album_cache._reset_for_tests()

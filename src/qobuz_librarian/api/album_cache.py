@@ -16,6 +16,7 @@ import json
 import sqlite3
 import threading
 import time
+from contextlib import closing
 from pathlib import Path
 
 from qobuz_librarian import config as cfg
@@ -33,8 +34,34 @@ def _connect() -> sqlite3.Connection:
     return sqlite3.connect(str(_db_path()), timeout=5)
 
 
+def _is_corrupt_error(e: sqlite3.Error) -> bool:
+    msg = str(e).lower()
+    return any(s in msg for s in
+               ("malformed", "not a database", "file is encrypted"))
+
+
+def _discard_corrupt_db() -> bool:
+    """Remove a malformed cache db (and its WAL sidecars). Returns True if
+    anything was cleared. The cache is derived data — losing it just makes
+    the next scan refetch from Qobuz, which beats a permanently dead cache."""
+    db = _db_path()
+    cleared = False
+    for p in (db, db.with_name(db.name + "-wal"), db.with_name(db.name + "-shm")):
+        try:
+            p.unlink()
+            cleared = True
+        except FileNotFoundError:
+            pass
+        except OSError as e:
+            vlog(f"couldn't clear corrupt album cache {p.name}: {e}")
+            return False
+    if cleared:
+        vlog("album cache was corrupt — rebuilt from scratch")
+    return cleared
+
+
 def _ensure() -> bool:
-    """Create the table once. Returns False if the cache can't be used."""
+    """Create the tables once. Returns False if the cache can't be used."""
     global _initialized
     if not cfg.ALBUM_CACHE_ENABLED:
         return False
@@ -45,29 +72,40 @@ def _ensure() -> bool:
             return True
         try:
             _db_path().parent.mkdir(parents=True, exist_ok=True)
-            with _connect() as conn:
-                conn.execute("PRAGMA journal_mode=WAL")
-                conn.execute(
-                    "CREATE TABLE IF NOT EXISTS albums "
-                    "(id TEXT PRIMARY KEY, payload TEXT NOT NULL, fetched_at REAL)")
-                # Artist catalogs change when new releases drop, so unlike album
-                # track lists they're served with a TTL (see get_catalog).
-                conn.execute(
-                    "CREATE TABLE IF NOT EXISTS catalogs "
-                    "(key TEXT PRIMARY KEY, payload TEXT NOT NULL, fetched_at REAL)")
-                conn.commit()
-            _initialized = True
-            return True
-        except sqlite3.Error as e:
-            vlog(f"album cache init failed ({e}); proceeding without it")
+        except OSError as e:
+            vlog(f"album cache dir unavailable ({e}); proceeding without it")
             return False
+        for attempt in (1, 2):
+            try:
+                with closing(_connect()) as conn:
+                    conn.execute("PRAGMA journal_mode=WAL")
+                    conn.execute(
+                        "CREATE TABLE IF NOT EXISTS albums "
+                        "(id TEXT PRIMARY KEY, payload TEXT NOT NULL, fetched_at REAL)")
+                    # Artist catalogs change when new releases drop, so unlike
+                    # album track lists they're served with a TTL (see get_catalog).
+                    conn.execute(
+                        "CREATE TABLE IF NOT EXISTS catalogs "
+                        "(key TEXT PRIMARY KEY, payload TEXT NOT NULL, fetched_at REAL)")
+                    conn.commit()
+                _initialized = True
+                return True
+            except sqlite3.Error as e:
+                # A corrupt db is the one error we can fix: drop it and retry
+                # once. Anything else (locked, full, unwritable) isn't ours to
+                # repair, so disable the cache and let the scan hit the API.
+                if attempt == 1 and _is_corrupt_error(e) and _discard_corrupt_db():
+                    continue
+                vlog(f"album cache init failed ({e}); proceeding without it")
+                return False
+        return False
 
 
 def get(album_id) -> dict | None:
     if not album_id or not _ensure():
         return None
     try:
-        with _connect() as conn:
+        with closing(_connect()) as conn:
             row = conn.execute(
                 "SELECT payload FROM albums WHERE id = ?", (str(album_id),)
             ).fetchone()
@@ -90,7 +128,7 @@ def put(album_id, payload) -> None:
     except (TypeError, ValueError):
         return
     try:
-        with _connect() as conn:
+        with closing(_connect()) as conn:
             conn.execute(
                 "INSERT OR REPLACE INTO albums (id, payload, fetched_at) "
                 "VALUES (?, ?, ?)", (str(album_id), data, time.time()))
@@ -107,7 +145,7 @@ def get_catalog(key, ttl_seconds) -> dict | None:
     if not key or ttl_seconds <= 0 or not _ensure():
         return None
     try:
-        with _connect() as conn:
+        with closing(_connect()) as conn:
             row = conn.execute(
                 "SELECT payload, fetched_at FROM catalogs WHERE key = ?",
                 (str(key),)).fetchone()
@@ -130,7 +168,7 @@ def put_catalog(key, payload) -> None:
     except (TypeError, ValueError):
         return
     try:
-        with _connect() as conn:
+        with closing(_connect()) as conn:
             conn.execute(
                 "INSERT OR REPLACE INTO catalogs (key, payload, fetched_at) "
                 "VALUES (?, ?, ?)", (str(key), data, time.time()))
