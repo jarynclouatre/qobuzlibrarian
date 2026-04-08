@@ -94,6 +94,14 @@ def test_entrypoint_leaves_a_correct_config_alone(tmp_path):
     assert (cfg / "streamrip" / "config.toml").read_text() == original
 
 
+def test_entrypoint_defaults_to_nonroot_user(tmp_path):
+    # With no PUID/PGID the app must still drop to 1000:1000, not run as root.
+    cfg = _make_config(tmp_path, "[database]\n")
+    r = _run_entrypoint_head(tmp_path, {"CONFIG_DIR": str(cfg)}, capture=True)
+    assert r.returncode == 0
+    assert "Running as 1000:1000" in r.stdout
+
+
 def test_entrypoint_warns_when_puid_is_non_numeric(tmp_path):
     cfg = _make_config(tmp_path, "[database]\n")
     r = _run_entrypoint_head(tmp_path,

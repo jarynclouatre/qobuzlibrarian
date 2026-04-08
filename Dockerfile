@@ -95,10 +95,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 ENV VIRTUAL_ENV=/opt/venv
 ENV PATH="$VIRTUAL_ENV/bin:$PATH"
 
-# Dedicated uid:gid (1000:1000) that owns the app files. The container starts
-# as root so the entrypoint can chown the config/data volumes on first run; it
-# then drops to PUID:PGID via gosu when those are set, and otherwise stays root
-# (the documented single-user default — see compose.yaml).
+# Dedicated uid:gid (1000:1000), the default the entrypoint drops to. The
+# container starts as root so the entrypoint can chown the config/data volumes
+# on first run, then hands off to PUID:PGID (default 1000:1000) via gosu so the
+# app never runs as root unless you explicitly ask for it (PUID=0 PGID=0).
 RUN groupadd -g 1000 appuser \
  && useradd -u 1000 -g 1000 -m -s /bin/bash appuser
 

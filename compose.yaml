@@ -22,12 +22,12 @@ services:
 
     environment:
       # ── User / permissions ────────────────────────────────────────────────
-      # Set PUID/PGID to match your host user so downloaded and imported files
-      # are owned by you, not root. Find your values with `id -u` / `id -g`.
-      # Unset = run as root (works fine for a single-user desktop box;
-      # not recommended on a shared NAS).
-      # PUID: "${PUID:-1000}"
-      # PGID: "${PGID:-1000}"
+      # The app runs as PUID:PGID (default 1000:1000) so downloaded and
+      # imported files aren't root-owned. Set these to match the host user
+      # that owns your media — find your values with `id -u` / `id -g` — by
+      # putting PUID/PGID in .env. PUID=0 PGID=0 runs as root if you need it.
+      PUID: "${PUID:-1000}"
+      PGID: "${PGID:-1000}"
 
       # ── Auth ──────────────────────────────────────────────────────────────
       # Optional: set QOBUZ_USER_AUTH_TOKEN / QOBUZ_USER_ID in .env, or just

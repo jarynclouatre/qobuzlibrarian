@@ -506,28 +506,26 @@ default — bump `MISSING_ALBUMS_MIN_TRACKS` in `compose.yaml` (or pass
   folder named `Primary Artist, Other Artist/Album` is moved into
   `Primary Artist/Album`. Off keeps your paths stable across scans.
 
-## Running on a NAS
+## Permissions (NAS and shared storage)
 
-By default the container runs as root, so downloaded files are root-owned.
-On a NAS, uncomment the `PUID`/`PGID` lines already in `compose.yaml` and
-set them to the user that owns your media share so files are created with
-the right ownership:
+The container runs as `PUID:PGID`, which defaults to `1000:1000`, so
+downloaded files are owned by a normal user rather than root. If your host
+user or media-share owner isn't `1000`, set the right values in your `.env`:
 
-```yaml
-# already in compose.yaml, just uncomment:
-PUID: "${PUID:-1000}"
-PGID: "${PGID:-1000}"
+```bash
+PUID=1000   # id -u
+PGID=1000   # id -g
 ```
 
-Then set `PUID=1000` / `PGID=1000` in your `.env` (or whatever values
-your host uses). Find them with `id -u` / `id -g`.
+They flow straight into the container — no need to edit `compose.yaml`. If
+you genuinely need the app to run as root, set `PUID=0` / `PGID=0`.
 
 The app drops to that user at startup and warns in the logs if a mounted
 path isn't writable by it. Only the small `config`/`data` volumes are
-chowned automatically; grant your media-share user write access on the NAS
-side for `/music` and `/staging`. If your music share is read-only on the
-NAS, append `:ro` to the `/music` bind in `compose.yaml` — the app will
-refuse to mutate but scans and upgrade detection still work.
+chowned automatically; grant that user write access for `/music` and
+`/staging`. If your music share is read-only on the NAS, append `:ro` to the
+`/music` bind in `compose.yaml` — the app will refuse to mutate but scans and
+upgrade detection still work.
 
 If the bind dirs already exist (typical: Compose auto-created them as root
 on first `up`), `chown` them to your `PUID`/`PGID` before enabling those

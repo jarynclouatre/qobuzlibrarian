@@ -60,31 +60,29 @@ export STREAMRIP_CONFIG="$STREAMRIP_DIR/config.toml"
 # is purely for ad-hoc CLI use.
 export BEETSDIR="$BEETS_DIR"
 
-# ── Optional privilege drop (NAS-friendly) ────────────────────────────────────
-# Set PUID/PGID to the owner of your media share so downloaded/imported
-# files aren't root-owned. Unset = run as root (simplest; fine for a
-# single-user box). gosu takes a numeric uid:gid directly — no account
-# needs to exist.
+# ── Privilege drop ────────────────────────────────────────────────────────────
+# Run as a non-root uid:gid so downloaded/imported files aren't root-owned.
+# Defaults to 1000:1000; set PUID/PGID to match the owner of your media share
+# (find them with `id -u` / `id -g`). PUID=0 PGID=0 deliberately runs as root.
+# gosu takes a numeric uid:gid directly — no account needs to exist.
+PUID="${PUID:-1000}"
+PGID="${PGID:-1000}"
 APP_USER="root"
-if [ -n "$PUID" ] || [ -n "$PGID" ]; then
-    PUID="${PUID:-1000}"
-    PGID="${PGID:-1000}"
-    case "${PUID}${PGID}" in
-        *[!0-9]*)
-            # gosu needs a numeric uid:gid; a name like "appuser" would make
-            # the final exec fail fatally. Warn and stay root instead.
-            echo "[warn] PUID/PGID must be numeric (got ${PUID}:${PGID}); running as root." >&2
-            ;;
-        *)
-            APP_USER="${PUID}:${PGID}"
-            # Only the small, app-owned dirs are chowned. The music/staging
-            # trees may be huge NAS mounts — recursively chowning them would
-            # be slow and wrong; their permissions are the user's to manage.
-            chown -R "$APP_USER" "$CONFIG_DIR" /data 2>/dev/null || true
-            echo "[init] Running as ${APP_USER} (PUID/PGID)."
-            ;;
-    esac
-fi
+case "${PUID}${PGID}" in
+    *[!0-9]*)
+        # gosu needs a numeric uid:gid; a name like "appuser" would make the
+        # final exec fail fatally. Warn and stay root instead.
+        echo "[warn] PUID/PGID must be numeric (got ${PUID}:${PGID}); running as root." >&2
+        ;;
+    *)
+        APP_USER="${PUID}:${PGID}"
+        # Only the small, app-owned dirs are chowned. The music/staging trees
+        # may be huge NAS mounts — recursively chowning them would be slow and
+        # wrong; their permissions are the user's to manage.
+        chown -R "$APP_USER" "$CONFIG_DIR" /data 2>/dev/null || true
+        echo "[init] Running as ${APP_USER}."
+        ;;
+esac
 
 # ── Writability diagnostics ───────────────────────────────────────────────────
 # A NAS export that doesn't grant the run user write access is the most
