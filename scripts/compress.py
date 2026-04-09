@@ -79,18 +79,32 @@ def human(b):
     return f"{s}{b:.1f} PB"
 
 
+_RESAMPLER_FILTER = None
+
+
 def detect_resampler_filter():
-    """Return the -af filter string to use, based on what ffmpeg has compiled in."""
+    """Return the -af filter string to use, based on what ffmpeg has compiled in.
+
+    Cached after the first probe — what ffmpeg supports doesn't change within
+    a run, and the per-album hook would otherwise spawn `ffmpeg -resamplers`
+    once for every album in a batch."""
+    global _RESAMPLER_FILTER
+    if _RESAMPLER_FILTER is not None:
+        return _RESAMPLER_FILTER
+    result = ("aresample=filter_size=512:phase_shift=20:dither_method=triangular_hp",
+              "swresample HQ")
     try:
         r = subprocess.run(
             ["ffmpeg", "-hide_banner", "-resamplers"],
             capture_output=True, timeout=5,
         )
         if r.returncode == 0 and b"soxr" in r.stdout:
-            return ("aresample=resampler=soxr:precision=28:dither_method=triangular_hp", "soxr p28")
+            result = ("aresample=resampler=soxr:precision=28:dither_method=triangular_hp",
+                      "soxr p28")
     except Exception:
         pass
-    return ("aresample=filter_size=512:phase_shift=20:dither_method=triangular_hp", "swresample HQ")
+    _RESAMPLER_FILTER = result
+    return result
 
 
 def parse_flac_info(data: bytes):
