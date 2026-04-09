@@ -218,8 +218,8 @@ def _prepare_staging_tags(roots=None):
         if changed:
             try:
                 tags.save()
-            except Exception:
-                pass
+            except Exception as e:
+                vlog(f"couldn't rewrite cleaned tags on {f.name}: {e}")
     if moved:
         log.info(fmt(C.YELLOW,
             f"  ⚠  Set aside {len(moved)} untagged file(s) → {quarantine}\n"
@@ -366,6 +366,15 @@ def beets_import_albums(album_dirs):
     return "ok" if ok else kind
 
 
+def _reap(proc):
+    """Collect a killed child's exit status so it doesn't linger as a zombie
+    until the Popen object is garbage-collected."""
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        pass
+
+
 def _wait_or_idle_kill(proc, last_output):
     """Block until proc exits. Raise subprocess.TimeoutExpired ONLY if it
     emits no output for cfg.BEETS_TIMEOUT seconds — a genuinely hung
@@ -476,6 +485,7 @@ def _beets_direct(override_path, cleanup_fn, paths=None):
         # progressing import keeps printing, so it never reaches here).
         # Left unbounded this freezes the single web job worker for good.
         proc.kill()
+        _reap(proc)
         reader.join(timeout=5)
         cleanup_fn()
         clear_scan_caches()
@@ -487,6 +497,7 @@ def _beets_direct(override_path, cleanup_fn, paths=None):
         return False, "timeout"
     except KeyboardInterrupt:
         proc.kill()
+        _reap(proc)
         reader.join(timeout=5)
         cleanup_fn()
         clear_scan_caches()
