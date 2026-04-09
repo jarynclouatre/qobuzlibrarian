@@ -103,61 +103,87 @@ def _flac_signature(path: Path):
 # ── FLAC validation ───────────────────────────────────────────────────────────
 
 def is_flac(path: Path) -> bool:
-    """Returns False when ffprobe identifies non-flac OR when the file is
-    obviously broken (tiny size, zero duration). Trusts the .flac extension
-    on ffprobe infrastructure failures.
+    """True when the file is a complete, decodable FLAC.
 
-    Also rejects truncated/empty files from interrupted streamrip
-    downloads. These pass FLAC magic-bytes detection but contain no audio.
-    Without this, partial downloads inflate n_ok, beets silently skips
-    them, and the upgrade flow falsely declares success."""
+    An interrupted streamrip download leaves a truncated file behind: it
+    keeps a valid FLAC header — including the header's *advertised*
+    duration — so a metadata probe is fooled into reporting the full
+    track length even though most of the audio frames are missing. Only
+    decoding the frames reveals the gap. Without catching it, partials
+    inflate n_ok, beets silently skips them on import, and the upgrade
+    flow declares a false success.
+
+    The metadata probe still does the cheap work: confirm the stream is
+    really FLAC and carries audio, and (when ffprobe is unavailable) fall
+    back to a size heuristic. The decode pass is what guarantees the file
+    is whole."""
     try:
-        size = path.stat().st_size
+        if path.stat().st_size == 0:
+            return False
     except OSError:
-        size = 0
-    # 150KB floor — a 5-second FLAC at typical bitrates is well above this.
-    # The lower 10KB floor let interrupted ~50KB downloads slip through when
-    # ffprobe was unavailable (we trust the extension on ffprobe failure).
-    if size < _FLAC_TRUNCATION_FLOOR:
-        log.info(fmt(C.YELLOW,
-            f"  ⚠  {path.name} suspiciously small ({size}B); treating as broken."))
         return False
+
     try:
-        r = subprocess.run(
-            ["ffprobe", "-v", "error", "-show_streams", "-show_format",
-             "-select_streams", "a:0", "-of", "json", str(path)],
+        probe = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "a:0",
+             "-show_entries", "stream=codec_name:format=duration",
+             "-of", "json", str(path)],
             capture_output=True, text=True, timeout=30,
             stdin=subprocess.DEVNULL)
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
-        log.info(fmt(C.YELLOW, f"  ⚠  ffprobe failed on {path.name}; trusting .flac extension."))
-        return True
-    if r.returncode != 0:
+        # No usable ffprobe: fall back to a size heuristic. A few seconds of
+        # FLAC sits well above 150 KB, so anything smaller is almost certainly
+        # a partial download. Larger files we can't verify — trust them.
+        try:
+            small = path.stat().st_size < _FLAC_TRUNCATION_FLOOR
+        except OSError:
+            small = True
+        if small:
+            log.info(fmt(C.YELLOW,
+                f"  ⚠  {path.name} suspiciously small and ffprobe unavailable; "
+                "treating as broken."))
+            return False
         log.info(fmt(C.YELLOW,
-            f"  ⚠  ffprobe rejected {path.name} ({r.stderr.strip()[:100]}); treating as broken."))
-        return False
-    if not r.stdout:
-        log.info(fmt(C.YELLOW, f"  ⚠  ffprobe gave no output for {path.name}; trusting extension."))
+            f"  ⚠  ffprobe unavailable for {path.name}; trusting .flac extension."))
         return True
+    if probe.returncode != 0:
+        log.info(fmt(C.YELLOW,
+            f"  ⚠  ffprobe rejected {path.name} ({probe.stderr.strip()[:100]}); "
+            "treating as broken."))
+        return False
     try:
-        data = json.loads(r.stdout)
+        data = json.loads(probe.stdout or "{}")
     except json.JSONDecodeError:
-        log.info(fmt(C.YELLOW, f"  ⚠  ffprobe output not JSON for {path.name}; trusting extension."))
-        return True
-    streams = data.get("streams", [])
-    if not streams:
+        data = {}
+    streams = data.get("streams") or []
+    if not streams or streams[0].get("codec_name", "").lower() != "flac":
         return False
-    if streams[0].get("codec_name", "").lower() != "flac":
-        return False
-    # Duration check catches files that have valid FLAC headers but no
-    # actual audio samples (truncated mid-download).
-    fmt_block = data.get("format") or {}
     try:
-        duration = float(fmt_block.get("duration") or 0)
+        duration = float((data.get("format") or {}).get("duration") or 0)
     except (TypeError, ValueError):
         duration = 0.0
     if duration < 0.1:
         log.info(fmt(C.YELLOW,
-            f"  ⚠  {path.name} has no audio data ({duration:.1f}s); treating as broken."))
+            f"  ⚠  {path.name} carries no audio ({duration:.1f}s); treating as broken."))
+        return False
+
+    # Decode the audio to confirm every frame is present. ffmpeg still exits
+    # 0 on a truncated file but prints decode errors to stderr at the error
+    # level; a clean decode leaves it empty. The timeout caps a pathological
+    # hang without tripping on long tracks (FLAC decodes far faster than
+    # real time); on timeout or a missing ffmpeg we trust the probe rather
+    # than delete a file we couldn't fully check.
+    try:
+        decode = subprocess.run(
+            ["ffmpeg", "-v", "error", "-nostdin", "-i", str(path), "-f", "null", "-"],
+            capture_output=True, text=True, timeout=300,
+            stdin=subprocess.DEVNULL)
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return True
+    if decode.stderr.strip():
+        log.info(fmt(C.YELLOW,
+            f"  ⚠  {path.name} won't decode cleanly (truncated/corrupt); "
+            "treating as broken."))
         return False
     return True
 
@@ -184,6 +210,23 @@ def _kill_process_group(proc):
         proc.kill()  # child pid only — never our own group
     except OSError:
         pass
+
+
+def _terminate(proc, reader):
+    """Kill the rip process group, reap the child, and drain the reader.
+
+    Reaping matters: in the container uvicorn runs as PID 1 with no init to
+    harvest orphans, so a killed rip left unwaited stays a zombie for the
+    life of the web process, one per cancel or timeout. Once the child is
+    reaped its stdout is closed, so joining the reader afterwards can't race
+    the ``lines`` buffer the caller is about to read.
+    """
+    _kill_process_group(proc)
+    try:
+        proc.wait(timeout=5)
+    except (subprocess.TimeoutExpired, OSError):
+        pass
+    reader.join(timeout=5)
 
 
 # ── streamrip wrapper ─────────────────────────────────────────────────────────
@@ -310,8 +353,7 @@ def rip_url(url, timeout=None, live_output=False, quality=None):
     try:
         while True:
             if _CANCEL_CHECK is not None and _CANCEL_CHECK():
-                _kill_process_group(proc)
-                reader.join(timeout=5)
+                _terminate(proc, reader)
                 return 130, "".join(lines) + "\n<<< canceled by user >>>"
             poll_for = 1.0
             if deadline is not None:
@@ -325,9 +367,7 @@ def rip_url(url, timeout=None, live_output=False, quality=None):
             except subprocess.TimeoutExpired:
                 continue
     except subprocess.TimeoutExpired:
-        # Kill the whole process group (covers rip's child downloaders too).
-        _kill_process_group(proc)
-        reader.join(timeout=5)
+        _terminate(proc, reader)
         # 124 (the conventional timeout exit code) so a timeout is
         # distinguishable from a generic rip failure (rc=1) in the logs.
         return 124, "".join(lines) + (
@@ -335,10 +375,9 @@ def rip_url(url, timeout=None, live_output=False, quality=None):
             "or raise RIP_TIMEOUT in compose.yaml. >>>")
     except KeyboardInterrupt:
         # Ctrl-C: with start_new_session=True the SIGINT did NOT propagate to
-        # rip's group. Without explicit killpg, rip + its downloader children
-        # keep running after this script exits — wasted bandwidth, zombie files.
-        _kill_process_group(proc)
-        reader.join(timeout=5)
+        # rip's group, so rip + its children would keep running after this
+        # process exits — wasted bandwidth, half-written staging files.
+        _terminate(proc, reader)
         raise
 
     reader.join(timeout=5)

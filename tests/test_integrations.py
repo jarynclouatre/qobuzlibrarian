@@ -1,6 +1,5 @@
 """Tests for integrations/rip.py, integrations/beets.py, integrations/lyrics.py
 — the streamrip/beets seams where most real bugs live."""
-import json
 import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -19,6 +18,7 @@ from qobuz_librarian.integrations.lyrics import (
     save_lyric_retry,
 )
 from qobuz_librarian.integrations.rip import (
+    _FLAC_TRUNCATION_FLOOR,
     cleanup_lossy,
     cleanup_staging_residue,
     files_added_since,
@@ -27,19 +27,31 @@ from qobuz_librarian.integrations.rip import (
 
 # ── rip: FLAC validation + lossy cleanup ──────────────────────────────────
 
-def test_is_flac_rejects_under_floor_and_accepts_valid(tmp_path):
-    # Under the 150 KB floor → rejected even when ffprobe is unavailable.
-    small = tmp_path / "truncated.flac"
-    small.write_bytes(b"\x00" * 50_000)
-    with patch("subprocess.run", side_effect=FileNotFoundError):
-        assert is_flac(small) is False
+def test_is_flac_rejects_truncated_keeps_complete(tmp_path, _need_ffmpeg):
+    def _sine(path, seconds):
+        subprocess.run(
+            ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi",
+             "-i", f"sine=frequency=440:sample_rate=44100:duration={seconds}",
+             "-c:a", "flac", str(path)],
+            check=True)
 
-    good = tmp_path / "good.flac"
-    good.write_bytes(b"\x00" * 200_000)
-    probe = MagicMock(returncode=0, stdout=json.dumps(
-        {"streams": [{"codec_name": "flac"}], "format": {"duration": "3.5"}}))
-    with patch("subprocess.run", return_value=probe):
-        assert is_flac(good) is True
+    # A short but complete track is real audio — keep it even though it sits
+    # well under the size heuristic the no-ffprobe fallback uses.
+    short = tmp_path / "interlude.flac"
+    _sine(short, 1.2)
+    assert short.stat().st_size < _FLAC_TRUNCATION_FLOOR
+    assert is_flac(short) is True
+
+    # An interrupted download leaves a file whose header still advertises the
+    # full duration, so only decoding the (missing) frames exposes the gap.
+    full = tmp_path / "full.flac"
+    _sine(full, 3)
+    data = full.read_bytes()
+    partial = tmp_path / "partial.flac"
+    partial.write_bytes(data[: len(data) * 2 // 5])
+    assert is_flac(partial) is False
+
+    assert is_flac(tmp_path / "never-written.flac") is False
 
 
 def test_cleanup_lossy_keeps_flac_drops_mp3(tmp_path):
