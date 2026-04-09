@@ -3,6 +3,12 @@ services:
     image: dinkeyes/qobuz-librarian:latest
     container_name: qobuz-librarian
     restart: unless-stopped
+    # Run an init (tini) as PID 1 to reap orphaned processes. The app is the
+    # container's main process, and when a download is cancelled or times out
+    # it kills streamrip's process group; without an init to harvest them,
+    # any children left behind would linger as zombies for the container's
+    # whole life.
+    init: true
     mem_limit: 1g
     pids_limit: 256
     security_opt:
