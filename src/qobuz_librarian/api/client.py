@@ -6,6 +6,7 @@ search/lookup helpers built on ``qobuz_get`` live in api/search.py.
 """
 import threading
 import time
+from contextlib import contextmanager
 
 import requests
 
@@ -46,14 +47,67 @@ def _get_session() -> requests.Session:
 # enough that a sustained outage still fails the call quickly. Honors a
 # Retry-After header if Qobuz sends one. 401/403/404 do NOT retry.
 #
-# Per-attempt budget, derived from WEB_FETCH_TIMEOUT (rather than a second
-# independently-tuned literal) so a single stalled request frees a web
-# awaiter close to when it gives up. A call that retries can outlive that
-# window, but only as a bounded background thread (≤_MAX_ATTEMPTS) the
-# executor pool absorbs — the user already got their timeout response.
+# Per-attempt timeout, derived from WEB_FETCH_TIMEOUT rather than a second
+# independently-tuned literal. The retry loop also respects an optional
+# per-call deadline (see request_deadline): a web request that's already
+# given up at WEB_FETCH_TIMEOUT shouldn't leave its executor thread retrying
+# — and possibly sleeping out a 30s Retry-After — for a result nobody's
+# waiting on. CLI and background jobs leave the deadline unset and keep the
+# full retry resilience.
 _REQUEST_TIMEOUT = max(2, int(config.WEB_FETCH_TIMEOUT) - 2)
 _RETRY_STATUSES  = (429, 500, 502, 503, 504)
 _MAX_ATTEMPTS    = 3
+
+
+@contextmanager
+def request_deadline(seconds: float):
+    """Bound the total wall-time qobuz_get (incl. retries/backoff) spends on
+    this thread. Set it on the worker thread that actually runs the request
+    (e.g. via call_within under run_in_executor), not the event loop. Nests to
+    the tighter deadline; an unset deadline means unbounded (full retries)."""
+    prev = getattr(_thread_local, "deadline", None)
+    new = time.monotonic() + max(0.0, seconds)
+    _thread_local.deadline = new if prev is None else min(prev, new)
+    try:
+        yield
+    finally:
+        _thread_local.deadline = prev
+
+
+def call_within(seconds: float, fn, *args, **kwargs):
+    """Run fn under a qobuz_get deadline of `seconds`. Intended as the
+    run_in_executor target so the deadline lands on the worker thread."""
+    with request_deadline(seconds):
+        return fn(*args, **kwargs)
+
+
+def _remaining_budget() -> float | None:
+    deadline = getattr(_thread_local, "deadline", None)
+    return None if deadline is None else deadline - time.monotonic()
+
+
+def _attempt_timeout() -> float | None:
+    """Per-request timeout, shrunk to whatever the deadline still allows.
+    None means the deadline has already passed — don't even start a request."""
+    remaining = _remaining_budget()
+    if remaining is None:
+        return _REQUEST_TIMEOUT
+    if remaining <= 0:
+        return None
+    return max(1.0, min(_REQUEST_TIMEOUT, remaining))
+
+
+def _retry_delay(attempt: int, suggested: float) -> float | None:
+    """How long to wait before the next attempt, or None to stop retrying:
+    attempts exhausted, or the deadline can't fit the wait plus a real retry."""
+    if attempt >= _MAX_ATTEMPTS:
+        return None
+    remaining = _remaining_budget()
+    if remaining is None:
+        return suggested
+    if remaining - suggested < 1.0:
+        return None
+    return suggested
 
 
 def _retry_after(resp) -> float | None:
@@ -90,14 +144,17 @@ def qobuz_get(endpoint, params, token):
     headers = {"X-App-Id": config.QOBUZ_APP_ID, "X-User-Auth-Token": token}
     url = f"{config.QOBUZ_API_BASE}/{endpoint}"
     for attempt in range(1, _MAX_ATTEMPTS + 1):
+        timeout = _attempt_timeout()
+        if timeout is None:
+            raise QobuzError(f"the Qobuz API timed out (while calling {endpoint})")
         try:
             r = _get_session().get(url, params=params, headers=headers,
-                                   timeout=_REQUEST_TIMEOUT)
+                                   timeout=timeout)
         except requests.RequestException as e:
-            if attempt == _MAX_ATTEMPTS:
+            wait = _retry_delay(attempt, min(2 ** (attempt - 1), 8))
+            if wait is None:
                 raise QobuzError(
                     f"{_net_reason(e)} (while calling {endpoint})") from e
-            wait = min(2 ** (attempt - 1), 8)
             vlog(f"{endpoint}: network error ({e}); retry {attempt}/{_MAX_ATTEMPTS} in {wait}s")
             _retry_sleep(wait)
             continue
@@ -105,27 +162,27 @@ def qobuz_get(endpoint, params, token):
             notify_auth_state(False)
             raise AuthLost(f"401 from Qobuz {endpoint}")
         if r.status_code in _RETRY_STATUSES:
-            if attempt < _MAX_ATTEMPTS:
-                # `is not None`, not truthiness: a server "Retry-After: 0"
-                # (retry immediately) is valid and must not fall back to backoff.
-                _ra = _retry_after(r)
-                wait = _ra if _ra is not None else min(2 ** (attempt - 1), 8)
-                if r.status_code == 429:
-                    # Surface rate-limit waits in the shared logger so the web
-                    # SSE stream shows "rate-limited, waiting Ns" instead of a
-                    # silent pause that looks like a hang.
-                    log.info(fmt(C.YELLOW,
-                        f"  ⏳ Qobuz rate-limit — waiting {wait:.0f}s "
-                        f"(retry {attempt}/{_MAX_ATTEMPTS})"))
-                else:
-                    vlog(f"{endpoint}: HTTP {r.status_code}; retry "
-                         f"{attempt}/{_MAX_ATTEMPTS} in {wait:.1f}s")
-                _retry_sleep(wait)
-                continue
-            raise QobuzError(
-                f"Qobuz API kept returning HTTP {r.status_code} after "
-                f"{_MAX_ATTEMPTS} attempts (while calling {endpoint}) — "
-                f"rate-limited or a temporary outage; try again later.")
+            # `is not None`, not truthiness: a server "Retry-After: 0"
+            # (retry immediately) is valid and must not fall back to backoff.
+            _ra = _retry_after(r)
+            wait = _retry_delay(attempt, _ra if _ra is not None else min(2 ** (attempt - 1), 8))
+            if wait is None:
+                raise QobuzError(
+                    f"Qobuz API kept returning HTTP {r.status_code} after "
+                    f"{attempt} attempt(s) (while calling {endpoint}) — "
+                    f"rate-limited or a temporary outage; try again later.")
+            if r.status_code == 429:
+                # Surface rate-limit waits in the shared logger so the web
+                # SSE stream shows "rate-limited, waiting Ns" instead of a
+                # silent pause that looks like a hang.
+                log.info(fmt(C.YELLOW,
+                    f"  ⏳ Qobuz rate-limit — waiting {wait:.0f}s "
+                    f"(retry {attempt}/{_MAX_ATTEMPTS})"))
+            else:
+                vlog(f"{endpoint}: HTTP {r.status_code}; retry "
+                     f"{attempt}/{_MAX_ATTEMPTS} in {wait:.1f}s")
+            _retry_sleep(wait)
+            continue
         if r.status_code != 200:
             raise QobuzError(f"HTTP {r.status_code} from {endpoint}: {r.text[:200]}")
         # A 200 means Qobuz accepted the token. Report that so the web

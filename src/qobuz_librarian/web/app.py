@@ -293,10 +293,12 @@ async def _probe_token():
     if not creds.get("auth_token"):
         return
     token = creds["auth_token"]
+    from qobuz_librarian.api.client import call_within
     try:
         verdict = await asyncio.wait_for(
             asyncio.get_running_loop().run_in_executor(
-                None, lambda: _classify_token(token)),
+                None, lambda: call_within(cfg.WEB_TEST_AUTH_TIMEOUT,
+                                          _classify_token, token)),
             timeout=cfg.WEB_TEST_AUTH_TIMEOUT,
         )
     except asyncio.TimeoutError:
@@ -608,11 +610,13 @@ async def do_search(request: Request, q: str = Form("", max_length=500)):
             raw = []
             loop = asyncio.get_running_loop()
             from qobuz_librarian.api.auth import AuthLost, QobuzError
+            from qobuz_librarian.api.client import call_within
             if parsed and parsed[0] == "album":
                 try:
                     raw = [await asyncio.wait_for(
                         loop.run_in_executor(
-                            None, lambda: get_album(parsed[1], token)
+                            None, lambda: call_within(
+                                cfg.WEB_FETCH_TIMEOUT, get_album, parsed[1], token)
                         ),
                         timeout=cfg.WEB_FETCH_TIMEOUT,
                     )]
@@ -647,7 +651,8 @@ async def do_search(request: Request, q: str = Form("", max_length=500)):
                     raw = await asyncio.wait_for(
                         loop.run_in_executor(
                             None,
-                            lambda: search_albums(query, token, limit=cfg.SEARCH_LIMIT),
+                            lambda: call_within(cfg.WEB_FETCH_TIMEOUT, search_albums,
+                                                query, token, limit=cfg.SEARCH_LIMIT),
                         ),
                         timeout=cfg.WEB_FETCH_TIMEOUT,
                     )
@@ -746,10 +751,13 @@ async def queue_download(request: Request, album_id: str = Form(""),
     force_redownload = str(force).strip().lower() in ("1", "true", "yes", "on")
     try:
         token = _get_token()
+        from qobuz_librarian.api.client import call_within
         from qobuz_librarian.api.search import get_album
         loop = asyncio.get_running_loop()
         album = await asyncio.wait_for(
-            loop.run_in_executor(None, lambda: get_album(album_id, token)),
+            loop.run_in_executor(
+                None,
+                lambda: call_within(cfg.WEB_FETCH_TIMEOUT, get_album, album_id, token)),
             timeout=cfg.WEB_FETCH_TIMEOUT,
         )
         if not force_redownload:
@@ -1086,10 +1094,13 @@ async def job_retry(request: Request, job_id: str):
         return RedirectResponse(url=f"/jobs/{duplicate.id}", status_code=303)
     try:
         token = _get_token()
+        from qobuz_librarian.api.client import call_within
         from qobuz_librarian.api.search import get_album
         loop = asyncio.get_running_loop()
         album = await asyncio.wait_for(
-            loop.run_in_executor(None, lambda: get_album(album_id, token)),
+            loop.run_in_executor(
+                None,
+                lambda: call_within(cfg.WEB_FETCH_TIMEOUT, get_album, album_id, token)),
             timeout=cfg.WEB_FETCH_TIMEOUT,
         )
         title = album.get("title") or job.title or "?"
@@ -1353,9 +1364,12 @@ async def save_settings(request: Request, user_id: str = Form(""), auth_token: s
     # failure can't tell us either way, so we save and flag it unverified.
     verdict = "unreachable"
     if new_token:
+        from qobuz_librarian.api.client import call_within
         try:
             verdict = await asyncio.wait_for(
-                loop.run_in_executor(None, lambda: _classify_token(new_token)),
+                loop.run_in_executor(
+                    None, lambda: call_within(cfg.WEB_TEST_AUTH_TIMEOUT,
+                                              _classify_token, new_token)),
                 timeout=cfg.WEB_TEST_AUTH_TIMEOUT,
             )
         except asyncio.TimeoutError:

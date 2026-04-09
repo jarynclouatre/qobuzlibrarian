@@ -46,6 +46,19 @@ def test_qobuz_get_retries_429_but_not_404():
         assert sess.return_value.get.call_count == 1
 
 
+def test_qobuz_get_gives_up_when_the_deadline_is_spent():
+    # A repeating 503 normally burns all three attempts. Under a deadline with
+    # no slack left, the call must bail after the first request instead of
+    # sleeping out the backoff for a result the caller already stopped awaiting.
+    from qobuz_librarian.api.client import request_deadline
+    with patch("qobuz_librarian.api.client._get_session") as sess:
+        sess.return_value.get.return_value = _response(503)
+        with request_deadline(0.5):
+            with pytest.raises(QobuzError):
+                qobuz_get("album/search", {}, "tok")
+        assert sess.return_value.get.call_count == 1
+
+
 def test_qobuz_get_reports_token_validity_both_ways(monkeypatch):
     # The dashboard banner listens for auth state. A 200 must report the
     # token good and a 401 must report it bad — reporting only failures
