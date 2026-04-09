@@ -231,12 +231,16 @@ def _prepare_staging_tags(roots=None):
 def _build_import_override_yaml():
     """The beets config override the import runs with, as a YAML string.
 
-    Forces only the keys the app needs (library/directory, non-interactive,
-    non-incremental) and lets everything else fall through to the user's
-    config.yaml. Optional path templates, a plugins list, and album-art
-    handling are derived from config. Emitting `plugins:` REPLACES the
-    config.yaml list (beets doesn't merge lists), so it's only emitted when a
-    plugins override or a non-default art mode requires it.
+    Forces the keys the import contract depends on — library/directory,
+    non-interactive, non-incremental, and autotag off — and lets everything
+    else fall through to the user's config.yaml. Autotag is forced off because
+    streamrip already wrote authoritative Qobuz tags; matching them against
+    MusicBrainz would, on anything but a confident match, skip the album
+    outright under quiet mode and leave the files stranded in staging.
+    Optional path templates, a plugins list, and album-art handling are
+    derived from config. Emitting `plugins:` REPLACES the config.yaml list
+    (beets doesn't merge lists), so it's only emitted when a plugins override
+    or a non-default art mode requires it.
     """
     import re as _re
     override_yaml = (
@@ -245,6 +249,7 @@ def _build_import_override_yaml():
         "import:\n"
         "  quiet: yes\n"
         "  incremental: no\n"
+        "  autotag: no\n"
     )
     # Path templates are deployer-supplied and can contain single quotes
     # (e.g. `$albumartist's stuff/$album`); _yaml_sq keeps the scalar safe.

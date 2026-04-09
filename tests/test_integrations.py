@@ -603,3 +603,13 @@ def test_import_override_combines_user_plugins_and_keeps_inline(monkeypatch):
     assert "lastgenre" in y and "fetchart" in y and "embedart" in y
     y = _build_artwork_yaml(monkeypatch, BEETS_PLUGINS=["lastgenre"])
     assert "inline" in y
+
+
+def test_import_override_pins_autotag_off(monkeypatch):
+    # Streamrip already wrote authoritative Qobuz tags. The override has to pin
+    # autotag off so a user config.yaml with autotag:yes can't push downloads
+    # through MusicBrainz matching, which skips every unmatched album under
+    # quiet mode and strands the files in staging.
+    import yaml
+    conf = yaml.safe_load(_build_artwork_yaml(monkeypatch))
+    assert conf["import"]["autotag"] is False
