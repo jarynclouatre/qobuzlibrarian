@@ -1,19 +1,12 @@
 """Core album processing — detect gaps, prompt, download, import, consolidate.
 
 """
-import re
 import shutil
-import time
 from datetime import datetime, timezone
 from pathlib import Path
 
 from qobuz_librarian import config as cfg
-from qobuz_librarian.api.auth import (
-    AuthLost,
-    detect_auth_lost,
-    detect_disk_full,
-    detect_rate_limited,
-)
+from qobuz_librarian.download import run_album_download
 from qobuz_librarian.integrations.beets import (
     _merge_split_folder,
     beets_import_paths,
@@ -25,15 +18,12 @@ from qobuz_librarian.integrations.lyrics import (
     write_post_import_sidecars,
 )
 from qobuz_librarian.integrations.rip import (
-    cleanup_lossy,
     files_added_since,
     is_cancel_requested,
-    rip_url,
     snapshot_staging,
 )
 from qobuz_librarian.library.backup import (
     backup_album_dir,
-    backup_gap_fill_files,
     restore_gap_fill_backup,
     restore_upgrade_backup,
 )
@@ -59,7 +49,7 @@ from qobuz_librarian.quality.decision import (
 from qobuz_librarian.queue.executor import _pre_import_staging_hooks
 from qobuz_librarian.ui_cli.colors import C, fmt, format_size, section, truncate
 from qobuz_librarian.ui_cli.errors import plural
-from qobuz_librarian.ui_cli.logging import log, report_progress, vlog
+from qobuz_librarian.ui_cli.logging import log, vlog
 from qobuz_librarian.ui_cli.prompts import (
     confirm,
     log_fetch,
@@ -154,23 +144,6 @@ def sweep_staging_artwork():
     for d in roots:
         if d.is_dir():
             shutil.rmtree(d, ignore_errors=True)
-
-
-def _match_key_from_stem(p):
-    """Normalized title key from a filename stem (or bare stem string) used to
-    line a downloaded/deleted file up against its Qobuz track.
-
-    Accepts a Path or a string: cleanup_lossy hands back ``f.stem`` strings, and
-    a Path's ``.stem`` would mis-split a title like "01. ★" (pathlib reads ". ★"
-    as a suffix), so strings are taken verbatim. Strips a leading
-    "<disc>-<track>"/"<track>" number and any "Artist - " prefix streamrip
-    writes, then runs the result through the same normalize/strip_edition_suffix
-    a Qobuz title goes through, so the two sides compare on equal terms."""
-    s = p.stem if hasattr(p, "stem") else str(p)
-    m = re.match(r"^(?:\d+[-.])?\d+[\s\-–—.]+(.+)$", s)
-    t = m.group(1) if m else s
-    m = re.match(r"^.+?\s+-\s+(.+)$", t)
-    return normalize(strip_edition_suffix(m.group(1) if m else t))
 
 
 def _discard_staged_since(snapshot):
@@ -284,7 +257,6 @@ def process_album(album, args, *, allow_force=True, label=None,
     # in effect (--force has its own destructive flow with its own prompt).
     auto_upgrade_active = False    # if True, do backup-then-wipe-then-redownload
     upgrade_backup_path = None     # populated after backup_album_dir succeeds
-    gap_fill_backup_path = None    # populated when full-album gap-fill moves present tracks to backup
     upgrade_existing_label = None  # before-quality label, set in the auto-upgrade branch
 
     # Quality-upgrade replace path. This is opt-in: it only runs when
@@ -631,254 +603,34 @@ def process_album(album, args, *, allow_force=True, label=None,
                 return {"result": "cancelled"}
 
     # ── Download phase ───────────────────────────────────────────────────────
-    # Pre-init so the upgrade-backup finally block has sane defaults if an
-    # exception fires anywhere inside the try (rip_url, beets, etc.).
+    # Pre-init so the backup-resolution finally block has sane defaults if a
+    # rip raises AuthLost / OSError before the result is read back. The
+    # download itself lives in run_album_download, shared with the queue
+    # executor; it writes its outcome into download_result as it goes (the
+    # gap-fill backup path the moment it's taken) so the finally can still
+    # restore it on a raise.
     n_ok = n_fail = n_lossy = 0
     failed_tracks, lossy_tracks = [], []
     imported = False
-    new_files, kept, deleted = [], [], []
     elapsed = 0.0
     download_phase_completed = False
-    full_album_rc = None
     transient_lyric_sigs = []
+    download_result = {}
 
     try:
         snapshot = snapshot_staging()
         vlog(f"staging snapshot: {len(snapshot)} files before download")
 
-        # Streamrip's track-URL path crashes with KeyError: 'body' on
-        # certain tracks (older catalog, edge metadata cases). The album-URL
-        # path is more robust. Use it when most of the album is missing —
-        # any redundant duplicate of an already-present track is merged on
-        # beets import. Threshold: >=70% missing AND at least 4 missing,
-        # so small gap-fills still go track-by-track.
-        n_tracks_total = len(qobuz_tracks)
-        # In upgrade_only mode, allow the full-album URL only when EVERY
-        # Qobuz track is being re-ripped (album was fully present at lower
-        # quality). Partial-album upgrades stay track-by-track so
-        # streamrip's album URL doesn't accidentally pull missing tracks —
-        # filling gaps is a gap-fill's job, not an upgrade's.
-        if upgrade_only:
-            download_full_album = (len(missing) == n_tracks_total)
-        else:
-            download_full_album = (
-                len(present) == 0
-                or len(missing) >= max(4, int(n_tracks_total * 0.7))
-            )
-        album_id = album.get("id")
-        t_start = time.time()
-
-        # Surface which path was chosen and why, so the user can
-        # tell a wipe-and-fill (full-album URL, backs up present tracks
-        # first) apart from a targeted gap-fill without reading staging.
-        if download_full_album:
-            log.info(fmt(C.GRAY,
-                f"  Strategy: full-album URL "
-                f"({len(missing)} of {n_tracks_total} missing)"))
-        else:
-            log.info(fmt(C.GRAY,
-                f"  Strategy: per-track "
-                f"({len(missing)} of {n_tracks_total} missing)"))
-
-        if download_full_album:
-            url = f"https://play.qobuz.com/album/{album_id}"
-            section("Downloading full album")
-            report_progress("Downloading album", 0, 0,
-                            f"{album.get('title') or '?'} · {n_tracks_total} tracks")
-            vlog(f"  ⟳  {url}")
-            # Remove already-present tracks before ripping so beets
-            # doesn't create 'Foo.1.flac' duplicates during import.
-            # Move them to a backup dir first so a rip failure
-            # (network drop, Ctrl+C, auth loss) doesn't leave the user
-            # with permanently lost tracks. Backup is restored from the
-            # finally block below if download_phase_completed=False.
-            if present and album_dir and existing:
-                present_extras = find_extras_in_existing(qobuz_tracks, existing)
-                present_extra_paths = {e["path"] for e in present_extras}
-                present_to_clear = [e for e in existing
-                                if e["path"] not in present_extra_paths]
-                if present_to_clear:
-                    vlog(f"pre-download: backing up + removing {len(present_to_clear)} present "
-                         f"track(s) to prevent .1.flac collisions")
-                    gap_fill_backup_path = backup_gap_fill_files(
-                        [e["path"] for e in present_to_clear], album_dir)
-            rc, out = rip_url(url, timeout=cfg.RIP_TIMEOUT, live_output=True,
-                              quality=quality)
-            full_album_rc = rc
-            if detect_auth_lost(out):
-                raise AuthLost("rip output contained auth-lost markers")
-            if detect_disk_full(out):
-                raise OSError(28, f"No space left on device at {cfg.STAGING_DIR}")
-            # Count ERROR markers — rip exits 0 even when it
-            # skipped tracks after persistent retries.
-            n_errors = len(re.findall(
-                r"^\s*(?:\[\d{2}:\d{2}:\d{2}\]\s*)?ERROR\b",
-                out, re.MULTILINE))
-            if rc != 0:
-                log.info(fmt(C.RED, f"  ✗  rip exit {rc}; last 300 chars:"))
-                log.info(fmt(C.GRAY, "  " + out[-300:].replace("\n", "\n  ")))
-            elif n_errors:
-                log.info(fmt(C.YELLOW,
-                    f"  ⚠  rip exit 0 but {n_errors} error(s) in output — "
-                    f"some tracks likely skipped (see summary below)."))
-            else:
-                log.info(fmt(C.GREEN, "  ✓  Download succeeded."))
-            # Reconciliation against surviving FLACs happens after cleanup_lossy
-            # regardless of rc — rip occasionally exits 0 while silently dropping tracks.
-        else:
-            section("Downloading missing tracks")
-            for i, t in enumerate(missing, 1):
-                if is_cancel_requested():
-                    break
-                tid = t.get("id")
-                # Surface the Qobuz version + track number so an album with
-                # several same-titled tracks (e.g. an EP of remixes) doesn't
-                # render as N identical-looking lines that look like a
-                # duplicate-download bug.
-                ttl = t.get("title") or "?"
-                ver = t.get("version") or ""
-                if ver and ver.lower() not in ttl.lower():
-                    ttl = f"{ttl} ({ver})"
-                tnum = t.get("track_number")
-                _tnum_prefix = f"#{tnum:>2} · " if tnum else ""
-                log.info(fmt(C.BLUE, f"\n  [{i}/{len(missing)}]") +
-                         f"  {fmt(C.WHITE, truncate(_tnum_prefix + ttl, 60))}")
-                report_progress("Downloading", i, len(missing), ttl)
-                url = f"https://play.qobuz.com/track/{tid}"
-                rc, out = rip_url(url, timeout=cfg.RIP_TIMEOUT, quality=quality)
-                if detect_auth_lost(out):
-                    raise AuthLost("rip output contained auth-lost markers")
-                if detect_disk_full(out):
-                    raise OSError(28, f"No space left on device at {cfg.STAGING_DIR}")
-                if rc == 0:
-                    log.info(fmt(C.GREEN, "    ✓ ok"))
-                elif is_cancel_requested():
-                    # rip exited because we asked it to stop, not a real failure.
-                    break
-                else:
-                    n_fail += 1
-                    failed_tracks.append(ttl)
-                    if "KeyError: 'body'" in out:
-                        log.info(fmt(C.RED,
-                            "    ✗ streamrip KeyError on track endpoint "
-                            "(known bug; usually works via album URL)."))
-                    else:
-                        log.info(fmt(C.RED, f"    ✗ rip exit {rc}"))
-                        log.info(fmt(C.GRAY,
-                            "      " + out[-200:].replace("\n", " ")))
-                # Qobuz throttles sustained per-track pulls. When the last rip
-                # shows throttle signals, pause longer before the next track so
-                # we stop pounding the limit — same handling the queue executor
-                # applies between albums.
-                cooldown = cfg.RATE_LIMIT_COOLDOWN if detect_rate_limited(out) else 0
-                if cooldown and i < len(missing):
-                    log.info(fmt(C.YELLOW,
-                        f"    ⏳ Qobuz rate-limit detected — cooling down "
-                        f"{int(cooldown)}s before the next track "
-                        f"(set RATE_LIMIT_COOLDOWN=0 to disable)."))
-                    time.sleep(cooldown)
-                else:
-                    time.sleep(cfg.DELAY_BETWEEN)
-
-        # ── Verify what landed: keep FLACs, delete lossy ─────────────────────────
-        new_files = files_added_since(snapshot)
-        audio_new = [f for f in new_files if f.suffix.lower() in cfg.AUDIO_EXTS]
-        vlog(f"  {len(new_files)} new file(s) in staging ({len(audio_new)} audio)")
-        kept, deleted = cleanup_lossy(audio_new)
-        n_ok = len(kept)
-        n_lossy = len(deleted)
-        lossy_tracks = deleted
-
-        # Single-track retry for 0-byte / lossy-deleted files. A single
-        # network glitch shouldn't strand the track in the lossy bucket
-        # when a one-off per-track URL almost always succeeds. Cap at one
-        # retry per track (no recursion, no loop risk).
-        if lossy_tracks and missing and not is_cancel_requested():
-            lossy_norms = {_match_key_from_stem(d) for d in lossy_tracks}
-            retry_targets = []
-            for t in missing:
-                if normalize(strip_edition_suffix(t.get("title") or "")) in lossy_norms:
-                    retry_targets.append(t)
-            if retry_targets:
-                log.info(fmt(C.GRAY,
-                    f"  ↻  Retrying {len(retry_targets)} lossy/empty "
-                    "track(s) once via per-track URL"))
-                retry_snapshot = snapshot_staging()
-                for t in retry_targets:
-                    tid = t.get("id")
-                    if not tid:
-                        continue
-                    r_url = f"https://play.qobuz.com/track/{tid}"
-                    rc, out = rip_url(r_url, timeout=cfg.RIP_TIMEOUT,
-                                      quality=quality)
-                    if detect_auth_lost(out):
-                        raise AuthLost("rip output contained auth-lost markers")
-                    if detect_disk_full(out):
-                        raise OSError(28, f"No space left on device at {cfg.STAGING_DIR}")
-                retry_new = files_added_since(retry_snapshot)
-                retry_audio = [f for f in retry_new
-                               if f.suffix.lower() in cfg.AUDIO_EXTS]
-                retry_kept, retry_deleted = cleanup_lossy(retry_audio)
-                if retry_kept:
-                    # Move retry survivors from lossy to ok; drop their titles
-                    # from the deleted list so the summary doesn't re-list them.
-                    recovered_norms = {_match_key_from_stem(p) for p in retry_kept}
-                    lossy_tracks = [d for d in lossy_tracks
-                                    if _match_key_from_stem(d)
-                                    not in recovered_norms]
-                    kept = kept + retry_kept
-                    n_ok = len(kept)
-                    n_lossy = len(lossy_tracks)
-                    log.info(fmt(C.GREEN,
-                        f"  ✓  Retry recovered {len(retry_kept)} track(s)"))
-
-        # Reconcile failure counts for full-album rips that exited non-zero but
-        # still landed some FLACs. Without this, the summary AND the activity log
-        # would report e.g. "8 downloaded / 12 failed" for a 12-track album.
-        # Track-by-track path can also have files-landed-despite-error
-        # (streamrip crashes in post-processing). Reconcile failed_tracks
-        # against what's actually on disk.
-        if not download_full_album and failed_tracks and kept:
-            surviving = {_match_key_from_stem(p) for p in kept}
-            recovered = [t for t in failed_tracks
-                         if normalize(strip_edition_suffix(t)) in surviving]
-            if recovered:
-                failed_tracks = [t for t in failed_tracks
-                                 if normalize(strip_edition_suffix(t)) not in surviving]
-                n_fail = max(0, n_fail - len(recovered))
-                log.info(fmt(C.GRAY,
-                    f"  · {len(recovered)} track(s) actually landed despite "
-                    f"streamrip post-processing error — counting as success."))
-
-        if download_full_album and full_album_rc is not None:
-            # Lossy fallbacks count once as lossy, not also as failed.
-            # ``n_ok + n_lossy + n_fail`` is supposed to equal the number of
-            # tracks attempted, so the "missing - ok" math has to deduct
-            # the lossy bucket too.
-            n_fail = max(0, len(missing) - n_ok - n_lossy)
-            if n_fail > 0:
-                surviving_norms = {_match_key_from_stem(p) for p in kept}
-                # Lossy-deleted file stems show up in ``lossy_tracks`` — those
-                # tracks belong in the lossy bucket only, so exclude them from
-                # the failed list and the same title can't land in both
-                # summary sections.
-                lossy_norms = {_match_key_from_stem(stem) for stem in lossy_tracks}
-                failed_tracks = [
-                    t.get("title") for t in missing
-                    if normalize(strip_edition_suffix(t.get("title", ""))) not in surviving_norms
-                    and normalize(strip_edition_suffix(t.get("title", ""))) not in lossy_norms
-                ]
-            else:
-                failed_tracks = []
-
-        if n_lossy:
-            log.info(fmt(C.YELLOW,
-                f"  ⚠  {n_lossy} track(s) deleted — not lossless "
-                f"(lossy Qobuz fallback or an incomplete download):"))
-            for d in lossy_tracks[:5]:
-                log.info(fmt(C.GRAY, f"     {d}"))
-
-        elapsed = time.time() - t_start
+        run_album_download(
+            album=album, missing=missing, present=present, existing=existing,
+            album_dir=album_dir, snapshot=snapshot, quality=quality,
+            upgrade_only=upgrade_only, result=download_result)
+        n_ok = download_result["n_ok"]
+        n_fail = download_result["n_fail"]
+        n_lossy = download_result["n_lossy"]
+        failed_tracks = download_result["failed_tracks"]
+        lossy_tracks = download_result["lossy_tracks"]
+        elapsed = download_result["elapsed"]
 
         # Cancelled mid-rip: the user hit stop, so the partial set must not be
         # imported. Discard just this job's staged files and bail before the
@@ -960,6 +712,9 @@ def process_album(album, args, *, allow_force=True, label=None,
                         f"     Manual restore: mv {upgrade_backup_path!s} {album_dir!s}"))
 
         # ── Gap-fill backup resolution ───────────────────────────────────────
+        # run_album_download records this the moment it stashes present tracks,
+        # so it's reachable here even when the rip raised before returning.
+        gap_fill_backup_path = download_result.get("gap_fill_backup_path")
         if gap_fill_backup_path is not None and gap_fill_backup_path.exists():
             gap_fill_succeeded = (download_phase_completed
                                   and imported
@@ -1110,7 +865,7 @@ def process_album(album, args, *, allow_force=True, label=None,
 
     log_fetch({
         "ts": datetime.now(timezone.utc).isoformat(),
-        "album_id": album_id,
+        "album_id": album.get("id"),
         "artist": (album.get("artist") or {}).get("name"),
         "title": album.get("title"),
         "result": result_status,

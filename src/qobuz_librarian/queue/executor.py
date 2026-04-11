@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 
 from qobuz_librarian import config as cfg
 from qobuz_librarian.api.auth import AuthLost
+from qobuz_librarian.download import run_album_download
 from qobuz_librarian.integrations.beets import (
     _consolidate_duplicate_albums,
     beets_import_albums,
@@ -22,15 +23,12 @@ from qobuz_librarian.integrations.lyrics import (
     write_post_import_sidecars,
 )
 from qobuz_librarian.integrations.rip import (
-    cleanup_lossy,
     files_added_since,
     is_cancel_requested,
-    rip_url,
     snapshot_staging,
 )
 from qobuz_librarian.library.backup import (
     backup_album_dir,
-    backup_gap_fill_files,
     restore_gap_fill_backup,
     restore_upgrade_backup,
 )
@@ -39,232 +37,30 @@ from qobuz_librarian.library.catalog import (
     _is_split_album_merge,
     cleanup_duplicate_art,
     find_album_dir_filesystem,
-    find_extras_in_existing,
     prompt_and_migrate_multi_artist_folder,
 )
-from qobuz_librarian.library.scanner import clear_scan_caches, read_album_dir
-from qobuz_librarian.library.tags import normalize, strip_edition_suffix
+from qobuz_librarian.library.scanner import clear_scan_caches
 from qobuz_librarian.ui_cli.colors import C, fmt, section, truncate
 from qobuz_librarian.ui_cli.logging import log, vlog
 from qobuz_librarian.ui_cli.prompts import log_fetch
 
 
-def _track_title_from_path(p):
-    """Strip track-number prefix and artist prefix from a path stem to get the bare title."""
-    s = p.stem if hasattr(p, "stem") else str(p)
-    m = re.match(r"^(?:\d+[-.])?\d+[\s\-–—.]+(.+)$", s)
-    title = m.group(1) if m else s
-    m = re.match(r"^.+?\s+-\s+(.+)$", title)
-    return m.group(1) if m else title
-
-
 def _download_for_queue_item(item):
-    """Download phase for one queue item: rip + cleanup_lossy + reconcile.
-    Mutates item with n_ok/n_fail/etc. AuthLost & KeyboardInterrupt
-    propagate to caller."""
-    from qobuz_librarian.api.auth import detect_auth_lost, detect_disk_full, detect_rate_limited
-    rate_limited = False
-
-    album = item["album"]
-    missing = item["missing"]
-    present = item["present"]
-    upgrade_only = item["upgrade_only"]
-    qobuz_tracks = (album.get("tracks") or {}).get("items") or []
-    n_tracks_total = len(qobuz_tracks)
-
-    # Same upgrade_only fix as process_album above.
-    if item.get("force_track_by_track"):
-        # Repair sets this: download exactly the truncated tracks, never
-        # the whole-album URL. Decoupled from the ratio heuristic on
-        # purpose so changing that heuristic can't turn a targeted repair
-        # into a wipe-and-replace.
-        download_full_album = False
-    elif upgrade_only:
-        download_full_album = (len(missing) == n_tracks_total)
-    else:
-        download_full_album = (
-            len(present) == 0
-            or len(missing) >= max(4, int(n_tracks_total * 0.7))
-        )
-    album_id = album.get("id")
-    t_start = time.time()
-    n_fail = 0
-    failed_tracks = []
-    full_album_rc = None
-
-    # Surface the chosen path so a wipe-and-fill is distinguishable
-    # from a targeted gap-fill in the live log.
-    if download_full_album:
-        log.info(fmt(C.GRAY,
-            f"  Strategy: full-album URL "
-            f"({len(missing)} of {n_tracks_total} missing)"))
-    else:
-        _why = "forced per-track (repair)" if item.get("force_track_by_track") \
-            else f"{len(missing)} of {n_tracks_total} missing"
-        log.info(fmt(C.GRAY, f"  Strategy: per-track ({_why})"))
-
-    if download_full_album:
-        url = f"https://play.qobuz.com/album/{album_id}"
-        # Remove already-present tracks before ripping so beets doesn't
-        # create 'Foo.1.flac' duplicates during import. Move them to a
-        # backup dir first; the backup-resolution pass at the end of the
-        # batch will restore them if the queue item ends up failing (rip
-        # error, beets crash, KeyboardInterrupt during compress hook).
-        _qi_album_dir = item.get("album_dir")
-        _qi_present = item.get("present") or []
-        if _qi_present and _qi_album_dir:
-            _qi_existing = read_album_dir(_qi_album_dir)
-            _qi_extras = find_extras_in_existing(qobuz_tracks, _qi_existing)
-            _qi_extra_paths = {e["path"] for e in _qi_extras}
-            _qi_to_clear = [e for e in _qi_existing
-                            if e["path"] not in _qi_extra_paths]
-            if _qi_to_clear:
-                vlog(f"pre-download: backing up + removing {len(_qi_to_clear)} present "
-                     f"track(s) to prevent .1.flac collisions")
-                item["gap_fill_backup_path"] = backup_gap_fill_files(
-                    [e["path"] for e in _qi_to_clear], _qi_album_dir)
-        rc, out = rip_url(url, timeout=cfg.RIP_TIMEOUT, live_output=True,
-                          quality=item.get("quality"))
-        full_album_rc = rc
-        if detect_auth_lost(out):
-            raise AuthLost("rip output contained auth-lost markers")
-        if detect_disk_full(out):
-            raise OSError(28, f"No space left on device at {cfg.STAGING_DIR}")
-        rate_limited = rate_limited or detect_rate_limited(out)
-        n_errors = len(re.findall(
-            r"^\s*(?:\[\d{2}:\d{2}:\d{2}\]\s*)?ERROR\b",
-            out, re.MULTILINE))
-        if rc != 0:
-            log.info(fmt(C.RED, f"    ✗  rip exit {rc}"))
-        elif n_errors:
-            log.info(fmt(C.YELLOW,
-                f"    ⚠  {n_errors} error(s) in rip output"))
-    else:
-        for i, t in enumerate(missing, 1):
-            if is_cancel_requested():
-                break
-            tid = t.get("id")
-            ttl = t.get("title") or "?"
-            log.info(fmt(C.BLUE, f"      [{i}/{len(missing)}]") +
-                     f" {fmt(C.WHITE, truncate(ttl, 56))}")
-            url = f"https://play.qobuz.com/track/{tid}"
-            rc, out = rip_url(url, timeout=cfg.RIP_TIMEOUT,
-                              quality=item.get("quality"))
-            if detect_auth_lost(out):
-                raise AuthLost("rip output contained auth-lost markers")
-            if detect_disk_full(out):
-                raise OSError(28, f"No space left on device at {cfg.STAGING_DIR}")
-            rate_limited = rate_limited or detect_rate_limited(out)
-            if rc == 0:
-                log.info(fmt(C.GREEN, "        ✓ ok"))
-            elif is_cancel_requested():
-                # rip exited because we asked it to stop — not a failure.
-                break
-            else:
-                n_fail += 1
-                failed_tracks.append(ttl)
-                log.info(fmt(C.RED, f"        ✗ rip exit {rc}"))
-            time.sleep(cfg.DELAY_BETWEEN)
-
-    new_files = files_added_since(item["snapshot_before"])
-    audio_new = [f for f in new_files if f.suffix.lower() in cfg.AUDIO_EXTS]
-    kept, deleted = cleanup_lossy(audio_new)
-    n_ok = len(kept)
-    n_lossy = len(deleted)
-    lossy_tracks = deleted
-
-    # Single-track retry for lossy / 0-byte fallbacks, mirroring the direct
-    # album path (modes/process.py). A transient glitch shouldn't strand a
-    # track in the lossy bucket when a one-off per-track URL usually
-    # succeeds. One retry per track — no recursion, no loop. Skipped once a
-    # cancel is in flight so we don't fire fresh rips the user asked to stop.
-    if lossy_tracks and missing and not is_cancel_requested():
-        lossy_norms = {normalize(strip_edition_suffix(_track_title_from_path(d)))
-                       for d in lossy_tracks}
-        retry_targets = [
-            t for t in missing
-            if normalize(strip_edition_suffix(t.get("title") or "")) in lossy_norms
-        ]
-        if retry_targets:
-            log.info(fmt(C.GRAY,
-                f"      ↻  Retrying {len(retry_targets)} lossy/empty "
-                "track(s) once via per-track URL"))
-            retry_snapshot = snapshot_staging()
-            for t in retry_targets:
-                tid = t.get("id")
-                if not tid:
-                    continue
-                rc, out = rip_url(f"https://play.qobuz.com/track/{tid}",
-                                  timeout=cfg.RIP_TIMEOUT,
-                                  quality=item.get("quality"))
-                if detect_auth_lost(out):
-                    raise AuthLost("rip output contained auth-lost markers")
-                if detect_disk_full(out):
-                    raise OSError(28, f"No space left on device at {cfg.STAGING_DIR}")
-                rate_limited = rate_limited or detect_rate_limited(out)
-            retry_audio = [f for f in files_added_since(retry_snapshot)
-                           if f.suffix.lower() in cfg.AUDIO_EXTS]
-            retry_kept, _ = cleanup_lossy(retry_audio)
-            if retry_kept:
-                recovered_norms = {
-                    normalize(strip_edition_suffix(_track_title_from_path(p)))
-                    for p in retry_kept
-                }
-                lossy_tracks = [
-                    d for d in lossy_tracks
-                    if normalize(strip_edition_suffix(_track_title_from_path(d)))
-                    not in recovered_norms
-                ]
-                kept = kept + retry_kept
-                n_ok = len(kept)
-                n_lossy = len(lossy_tracks)
-                log.info(fmt(C.GREEN,
-                    f"      ✓  Retry recovered {len(retry_kept)} track(s)"))
-
-    if download_full_album and full_album_rc is not None:
-        # Lossy-fallback tracks aren't a failure; subtract them so the
-        # math holds (``n_ok + n_lossy + n_fail == n_attempted``).
-        n_fail = max(0, len(missing) - n_ok - n_lossy)
-        if n_fail > 0:
-            surviving = {normalize(strip_edition_suffix(_track_title_from_path(p))) for p in kept}
-            lossy_norms = {
-                normalize(strip_edition_suffix(_track_title_from_path(stem)))
-                for stem in lossy_tracks
-            }
-            failed_tracks = [
-                t.get("title") for t in missing
-                if normalize(strip_edition_suffix(t.get("title", ""))) not in surviving
-                and normalize(strip_edition_suffix(t.get("title", ""))) not in lossy_norms
-            ]
-        else:
-            failed_tracks = []
-        # Surface reconciliation. If rip exited non-zero but every
-        # track landed, say so; users were left guessing whether the
-        # green summary line was real.
-        if full_album_rc != 0 and n_fail == 0 and n_ok > 0:
-            log.info(fmt(C.GRAY,
-                f"      · {n_ok} track(s) landed despite rip exit "
-                f"{full_album_rc} (streamrip post-processing error)"))
-    elif failed_tracks and kept:
-        surviving = {normalize(strip_edition_suffix(_track_title_from_path(p))) for p in kept}
-        recovered = [t for t in failed_tracks
-                     if normalize(strip_edition_suffix(t)) in surviving]
-        if recovered:
-            failed_tracks = [t for t in failed_tracks
-                             if normalize(strip_edition_suffix(t)) not in surviving]
-            n_fail = max(0, n_fail - len(recovered))
-            # Surface per-track reconciliation.
-            log.info(fmt(C.GRAY,
-                f"      · {len(recovered)} track(s) reported failure "
-                f"but landed on disk — counting as success"))
-
-    item["n_ok"] = n_ok
-    item["n_fail"] = n_fail
-    item["n_lossy"] = n_lossy
-    item["failed_tracks"] = failed_tracks
-    item["lossy_tracks"] = lossy_tracks
-    item["rate_limited"] = rate_limited
-    item["elapsed"] = time.time() - t_start
+    """Download one queue item, writing n_ok/n_fail/etc back into the item.
+    AuthLost and KeyboardInterrupt propagate to the caller; existing=None lets
+    run_album_download read the on-disk tracks only if it reaches the
+    backup-present-tracks branch."""
+    run_album_download(
+        album=item["album"],
+        missing=item["missing"],
+        present=item["present"],
+        album_dir=item.get("album_dir"),
+        snapshot=item["snapshot_before"],
+        quality=item.get("quality"),
+        upgrade_only=item["upgrade_only"],
+        force_track_by_track=item.get("force_track_by_track", False),
+        result=item,
+    )
 
 
 _DISC_FOLDER_RE = re.compile(r"^(?:disc|cd)\s*\d+", re.IGNORECASE)
