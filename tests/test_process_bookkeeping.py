@@ -307,17 +307,15 @@ def test_cancel_mid_rip_skips_beets_import(monkeypatch, tmp_path):
     assert result["imported"] is False
 
 
-def test_retry_stem_title_handles_star_track_stem():
-    """A lossy stem like '01."""
+def test_match_key_from_stem_handles_star_track_stem():
+    """A lossy stem like "01. ★" must key to the same title as the Qobuz track,
+    or the per-track retry can't match it back."""
     from qobuz_librarian.library.tags import normalize, strip_edition_suffix
-    from qobuz_librarian.modes.process import _retry_stem_title
+    from qobuz_librarian.modes.process import _match_key_from_stem
 
     expected = normalize(strip_edition_suffix("★"))
-    assert _retry_stem_title("01. ★") == expected
-    # The Qobuz track title normalizes to the same key, so the retry matches.
-    assert normalize(strip_edition_suffix("★")) == expected
-    # A normal "NN - Title" stem still resolves to the title.
-    assert _retry_stem_title("03 - Changes") == normalize(
+    assert _match_key_from_stem("01. ★") == expected
+    assert _match_key_from_stem("03 - Changes") == normalize(
         strip_edition_suffix("Changes"))
 
 

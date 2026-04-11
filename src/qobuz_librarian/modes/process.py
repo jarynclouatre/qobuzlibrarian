@@ -49,6 +49,7 @@ from qobuz_librarian.library.catalog import (
     is_lossless_album,
     prompt_and_migrate_multi_artist_folder,
 )
+from qobuz_librarian.library.scanner import clear_scan_caches
 from qobuz_librarian.library.tags import normalize, strip_edition_suffix
 from qobuz_librarian.modes.consolidate import consolidate_albums
 from qobuz_librarian.quality.decision import (
@@ -155,12 +156,16 @@ def sweep_staging_artwork():
             shutil.rmtree(d, ignore_errors=True)
 
 
-def _retry_stem_title(p):
-    """Normalized track title from a staging stem or Path, used to match a
-    lossy-deleted file back to its Qobuz track for the single-track retry.
-    Accepts either a Path (real file) or a bare stem string — a Path's `.stem`
-    would mis-split titles like "01. ★" (pathlib treats ". ★" as a suffix), so
-    a string is used verbatim."""
+def _match_key_from_stem(p):
+    """Normalized title key from a filename stem (or bare stem string) used to
+    line a downloaded/deleted file up against its Qobuz track.
+
+    Accepts a Path or a string: cleanup_lossy hands back ``f.stem`` strings, and
+    a Path's ``.stem`` would mis-split a title like "01. ★" (pathlib reads ". ★"
+    as a suffix), so strings are taken verbatim. Strips a leading
+    "<disc>-<track>"/"<track>" number and any "Artist - " prefix streamrip
+    writes, then runs the result through the same normalize/strip_edition_suffix
+    a Qobuz title goes through, so the two sides compare on equal terms."""
     s = p.stem if hasattr(p, "stem") else str(p)
     m = re.match(r"^(?:\d+[-.])?\d+[\s\-–—.]+(.+)$", s)
     t = m.group(1) if m else s
@@ -204,6 +209,19 @@ def pick_canonical_sibling(dirs):
             n = 0
         return (n, len(d.name))
     return max(dirs, key=score)
+
+
+def _offer_expanded_edition(album, album_dir, existing, extras, token, args):
+    """Look for an expanded Qobuz edition that also covers the on-disk extras
+    and let the user pick one. Returns (edition, edition_extras, edition_qual)
+    for the chosen album, or (None, [], None) when nothing was offered or the
+    user declined."""
+    cands = find_expanded_edition(album, album_dir, existing, token, args)
+    exp, exp_extras = prompt_edition_pick(
+        album, len(extras), cands, existing, args, label_prefix="  ")
+    if exp is None:
+        return None, [], None
+    return exp, exp_extras, compare_album_quality(existing, exp)
 
 
 def process_album(album, args, *, allow_force=True, label=None,
@@ -316,87 +334,69 @@ def process_album(album, args, *, allow_force=True, label=None,
             # If user already said yes to gap-fill, honor it instead of
             # silently skipping — auto-upgrade is unsafe but gap-fill isn't.
             if extras and missing and already_confirmed:
-                _cands = find_expanded_edition(album, album_dir, existing, token, args)
-                _exp, _exp_extras = prompt_edition_pick(
-                    album, len(extras), _cands, existing, args, label_prefix="  ")
-                if _exp is not None:
-                    _exp_tracks = (_exp.get("tracks") or {}).get("items") or []
-                    _exp_qual = compare_album_quality(existing, _exp)
-                    if _exp_qual["classification"] in ("all_lower", "mixed_below"):
-                        log.info(fmt(C.MAGENTA,
-                            f"\n  ↑  Switching to {_exp.get('title') or '?'!r} — "
-                            f"covers your {len(existing)} tracks "
-                            f"with {len(_exp_extras)} local-only at {album_quality_label(_exp)}"))
-                        album = _exp
-                        qobuz_tracks = _exp_tracks
-                        extras = _exp_extras
-                        qual = _exp_qual
-                        cls = _exp_qual["classification"]
-                        qbits, qrate = _exp_qual["qobuz_quality"]
-                        target_label = (f"{qbits}-bit/{qrate/1000:.1f}kHz"
-                                        if qbits and qrate else "Qobuz quality")
-                        missing, present = compute_missing(qobuz_tracks, existing)
-                        # Re-enter the elif extras / else branches below with updated values.
-                        # Can't re-run the whole if/elif chain, so handle inline:
-                        if extras:
-                            log.info(fmt(C.YELLOW,
-                                f"\n  ⚠  Can't auto-upgrade ({len(extras)} bonus track(s) here); "
-                                f"filling {len(missing)} at {target_label} (will mix quality)."))
-                            # Fall through to plain gap-fill; do NOT set auto_upgrade_active.
-                        else:
-                            # No extras on expanded edition → auto-upgrade
-                            # is safe. Reset detection so the download path
-                            # treats this as wipe-and-replace, not gap-fill.
-                            log.info(fmt(C.MAGENTA + C.BOLD,
-                                f"\n  ↑ Auto-upgrade via expanded edition → {target_label}"))
-                            auto_upgrade_active = True
-                            existing = []
-                            missing, present = qobuz_tracks, []
-                    else:
+                # User already okayed a gap-fill. We can't safely wipe-and-
+                # replace while bonus tracks live on disk, but maybe an
+                # expanded edition carries them — offer it. If it does and has
+                # no extras of its own, upgrade; otherwise honor the gap-fill
+                # rather than silently skipping.
+                _exp, _exp_extras, _exp_qual = _offer_expanded_edition(
+                    album, album_dir, existing, extras, token, args)
+                if _exp is not None and _exp_qual["classification"] in ("all_lower", "mixed_below"):
+                    log.info(fmt(C.MAGENTA,
+                        f"\n  ↑  Switching to {_exp.get('title') or '?'!r} — "
+                        f"covers your {len(existing)} tracks "
+                        f"with {len(_exp_extras)} local-only at {album_quality_label(_exp)}"))
+                    album = _exp
+                    qobuz_tracks = (_exp.get("tracks") or {}).get("items") or []
+                    extras = _exp_extras
+                    qual = _exp_qual
+                    qbits, qrate = _exp_qual["qobuz_quality"]
+                    target_label = (f"{qbits}-bit/{qrate/1000:.1f}kHz"
+                                    if qbits and qrate else "Qobuz quality")
+                    missing, present = compute_missing(qobuz_tracks, existing)
+                    if extras:
                         log.info(fmt(C.YELLOW,
                             f"\n  ⚠  Can't auto-upgrade ({len(extras)} bonus track(s) here); "
                             f"filling {len(missing)} at {target_label} (will mix quality)."))
-                        # Fall through to plain gap-fill; do NOT set auto_upgrade_active.
+                    else:
+                        log.info(fmt(C.MAGENTA + C.BOLD,
+                            f"\n  ↑ Auto-upgrade via expanded edition → {target_label}"))
+                        auto_upgrade_active = True
+                        existing = []
+                        missing, present = qobuz_tracks, []
                 else:
                     log.info(fmt(C.YELLOW,
                         f"\n  ⚠  Can't auto-upgrade ({len(extras)} bonus track(s) here); "
                         f"filling {len(missing)} at {target_label} (will mix quality)."))
-                    # Fall through to plain gap-fill; do NOT set auto_upgrade_active.
             elif extras:
                 # Before giving up, try to find an expanded edition that covers
-                # the local tracks. If candidates exist, prompt the user to pick.
-                _cands = find_expanded_edition(album, album_dir, existing, token, args)
-                _exp, _exp_extras = prompt_edition_pick(
-                    album, len(extras), _cands, existing, args, label_prefix="  ")
-                _resolved = False
-                if _exp is not None:
-                    _exp_tracks = (_exp.get("tracks") or {}).get("items") or []
-                    _exp_qual = compare_album_quality(existing, _exp)
-                    if _exp_qual["classification"] in ("all_lower", "mixed_below") and not _exp_extras:
-                        log.info(fmt(C.MAGENTA,
-                            f"\n  ↑  Switching to {_exp.get('title') or '?'!r} — "
-                            f"covers your {len(existing)} tracks at {album_quality_label(_exp)}"))
-                        album = _exp
-                        qobuz_tracks = _exp_tracks
-                        extras = _exp_extras
-                        qual = _exp_qual
-                        qbits, qrate = _exp_qual["qobuz_quality"]
-                        target_label = (f"{qbits}-bit/{qrate/1000:.1f}kHz"
-                                        if qbits and qrate else "Qobuz quality")
-                        missing, present = compute_missing(qobuz_tracks, existing)
-                        _resolved = True
-                        # Auto-upgrade is safe here (no extras on the
-                        # expanded edition). Reset detection so the download
-                        # path treats this as wipe-and-replace.
-                        log.info(fmt(C.MAGENTA + C.BOLD,
-                            f"\n  ↑ Auto-upgrade via expanded edition → {target_label}"))
-                        log.info(fmt(C.YELLOW,
-                            "  ⚠  This was queued as a gap-fill but will now back up and\n"
-                            "     replace the entire folder. Ctrl+C to abort."))
-                        auto_upgrade_active = True
-                        existing = []
-                        missing, present = qobuz_tracks, []
-                if not _resolved:
+                # the local tracks. Only switch when it also carries no extras
+                # of its own — otherwise the wipe-replace would lose them.
+                _exp, _exp_extras, _exp_qual = _offer_expanded_edition(
+                    album, album_dir, existing, extras, token, args)
+                if (_exp is not None
+                        and _exp_qual["classification"] in ("all_lower", "mixed_below")
+                        and not _exp_extras):
+                    log.info(fmt(C.MAGENTA,
+                        f"\n  ↑  Switching to {_exp.get('title') or '?'!r} — "
+                        f"covers your {len(existing)} tracks at {album_quality_label(_exp)}"))
+                    album = _exp
+                    qobuz_tracks = (_exp.get("tracks") or {}).get("items") or []
+                    extras = _exp_extras
+                    qual = _exp_qual
+                    qbits, qrate = _exp_qual["qobuz_quality"]
+                    target_label = (f"{qbits}-bit/{qrate/1000:.1f}kHz"
+                                    if qbits and qrate else "Qobuz quality")
+                    missing, present = compute_missing(qobuz_tracks, existing)
+                    log.info(fmt(C.MAGENTA + C.BOLD,
+                        f"\n  ↑ Auto-upgrade via expanded edition → {target_label}"))
+                    log.info(fmt(C.YELLOW,
+                        "  ⚠  This was queued as a gap-fill but will now back up and\n"
+                        "     replace the entire folder. Ctrl+C to abort."))
+                    auto_upgrade_active = True
+                    existing = []
+                    missing, present = qobuz_tracks, []
+                else:
                     log.info(fmt(C.YELLOW,
                         f"\n  ⚠  Upgrade to {target_label} blocked: "
                         f"{len(extras)} on-disk track(s) Qobuz doesn't carry:"))
@@ -434,11 +434,9 @@ def process_album(album, args, *, allow_force=True, label=None,
                     f"filling gaps only."))
                 # Fall through to plain gap-fill; do NOT set auto_upgrade_active.
             else:
-                # No extras — auto-upgrade is safe. Build a louder banner with an
+                # No extras — auto-upgrade is safe. Build a banner with an
                 # explicit before→after quality contrast so the user sees at a
-                # glance what they're getting (gives the user a quick mental win).
-                # Removed unused n_replace; downstream code uses
-                # existing_label / target_label, not the count.
+                # glance what they're getting.
                 _qcounts = {}
                 for _t in existing:
                     _bb, _rr = existing_track_quality(_t)
@@ -730,6 +728,8 @@ def process_album(album, args, *, allow_force=True, label=None,
         else:
             section("Downloading missing tracks")
             for i, t in enumerate(missing, 1):
+                if is_cancel_requested():
+                    break
                 tid = t.get("id")
                 # Surface the Qobuz version + track number so an album with
                 # several same-titled tracks (e.g. an EP of remixes) doesn't
@@ -752,6 +752,9 @@ def process_album(album, args, *, allow_force=True, label=None,
                     raise OSError(28, f"No space left on device at {cfg.STAGING_DIR}")
                 if rc == 0:
                     log.info(fmt(C.GREEN, "    ✓ ok"))
+                elif is_cancel_requested():
+                    # rip exited because we asked it to stop, not a real failure.
+                    break
                 else:
                     n_fail += 1
                     failed_tracks.append(ttl)
@@ -790,12 +793,8 @@ def process_album(album, args, *, allow_force=True, label=None,
         # network glitch shouldn't strand the track in the lossy bucket
         # when a one-off per-track URL almost always succeeds. Cap at one
         # retry per track (no recursion, no loop risk).
-        if lossy_tracks and missing:
-            # lossy_tracks holds stem strings (cleanup_lossy returns f.stem);
-            # pass them straight in. Wrapping in Path() and re-.stem()-ing
-            # mangles titles like "01. ★" down to "01" (pathlib reads ". ★"
-            # as a suffix), so the retry lookup never matched.
-            lossy_norms = {_retry_stem_title(d) for d in lossy_tracks}
+        if lossy_tracks and missing and not is_cancel_requested():
+            lossy_norms = {_match_key_from_stem(d) for d in lossy_tracks}
             retry_targets = []
             for t in missing:
                 if normalize(strip_edition_suffix(t.get("title") or "")) in lossy_norms:
@@ -821,12 +820,11 @@ def process_album(album, args, *, allow_force=True, label=None,
                                if f.suffix.lower() in cfg.AUDIO_EXTS]
                 retry_kept, retry_deleted = cleanup_lossy(retry_audio)
                 if retry_kept:
-                    # Move retry survivors from lossy to ok; remove their
-                    # titles from the deleted list so the summary doesn't
-                    # re-list them as lossy.
-                    recovered_norms = {_retry_stem_title(p) for p in retry_kept}
+                    # Move retry survivors from lossy to ok; drop their titles
+                    # from the deleted list so the summary doesn't re-list them.
+                    recovered_norms = {_match_key_from_stem(p) for p in retry_kept}
                     lossy_tracks = [d for d in lossy_tracks
-                                    if _retry_stem_title(d)
+                                    if _match_key_from_stem(d)
                                     not in recovered_norms]
                     kept = kept + retry_kept
                     n_ok = len(kept)
@@ -841,13 +839,7 @@ def process_album(album, args, *, allow_force=True, label=None,
         # (streamrip crashes in post-processing). Reconcile failed_tracks
         # against what's actually on disk.
         if not download_full_album and failed_tracks and kept:
-            def _stem_title_t(p):
-                s = p.stem
-                m = re.match(r"^(?:\d+[-.])?\d+[\s\-–—.]+(.+)$", s)
-                t = m.group(1) if m else s
-                m = re.match(r"^.+?\s+-\s+(.+)$", t)
-                return m.group(1) if m else t
-            surviving = {normalize(strip_edition_suffix(_stem_title_t(p))) for p in kept}
+            surviving = {_match_key_from_stem(p) for p in kept}
             recovered = [t for t in failed_tracks
                          if normalize(strip_edition_suffix(t)) in surviving]
             if recovered:
@@ -865,29 +857,12 @@ def process_album(album, args, *, allow_force=True, label=None,
             # the lossy bucket too.
             n_fail = max(0, len(missing) - n_ok - n_lossy)
             if n_fail > 0:
-                def _stem_title(p) -> str:
-                    # cleanup_lossy hands back bare stem strings; only re-take
-                    # .stem on real paths, or pathlib trims a title like
-                    # "01. ★" down to "01" at the false "extension".
-                    s = p.stem if hasattr(p, "stem") else str(p)
-                    # Strip leading track number (with optional disc prefix).
-                    m = re.match(r"^(?:\d+[-.])?\d+[\s\-–—.]+(.+)$", s)
-                    title = m.group(1) if m else s
-                    # Streamrip sometimes prefixes "Artist - " before the title.
-                    # Strip it so comparison works against bare titles.
-                    m = re.match(r"^.+?\s+-\s+(.+)$", title)
-                    if m:
-                        title = m.group(1)
-                    return title
-                surviving_norms = {normalize(strip_edition_suffix(_stem_title(p))) for p in kept}
-                # Lossy-deleted file stems show up in ``lossy_tracks`` —
-                # those tracks belong in the lossy bucket only. Exclude them
-                # from the failed list so the same title can't appear in
-                # both summary sections.
-                lossy_norms = {
-                    normalize(strip_edition_suffix(_stem_title(stem)))
-                    for stem in lossy_tracks
-                }
+                surviving_norms = {_match_key_from_stem(p) for p in kept}
+                # Lossy-deleted file stems show up in ``lossy_tracks`` — those
+                # tracks belong in the lossy bucket only, so exclude them from
+                # the failed list and the same title can't land in both
+                # summary sections.
+                lossy_norms = {_match_key_from_stem(stem) for stem in lossy_tracks}
                 failed_tracks = [
                     t.get("title") for t in missing
                     if normalize(strip_edition_suffix(t.get("title", ""))) not in surviving_norms
@@ -897,7 +872,9 @@ def process_album(album, args, *, allow_force=True, label=None,
                 failed_tracks = []
 
         if n_lossy:
-            log.info(fmt(C.YELLOW, f"  ⚠  {n_lossy} non-FLAC file(s) deleted (Qobuz quality fallback):"))
+            log.info(fmt(C.YELLOW,
+                f"  ⚠  {n_lossy} track(s) deleted — not lossless "
+                f"(lossy Qobuz fallback or an incomplete download):"))
             for d in lossy_tracks[:5]:
                 log.info(fmt(C.GRAY, f"     {d}"))
 
@@ -1037,6 +1014,12 @@ def process_album(album, args, *, allow_force=True, label=None,
                 post_dir = find_album_dir_filesystem(album)
         else:
             post_dir = find_album_dir_filesystem(album)
+        # A brand-new album can land in a folder the cached listing predates;
+        # clear the cache and look once more before giving up, or art cleanup,
+        # the split-merge, and the lyric-retry queue all silently no-op.
+        if post_dir is None:
+            clear_scan_caches()
+            post_dir = find_album_dir_filesystem(album)
         if post_dir:
             n_art_removed = cleanup_duplicate_art(post_dir)
             if n_art_removed:
@@ -1110,7 +1093,8 @@ def process_album(album, args, *, allow_force=True, label=None,
                 log.info(f"     {truncate(t, 60)}")
         if lossy_tracks:
             log.info(fmt(C.YELLOW,
-                "\n  lossy-only on Qobuz (skipped — would need another source):"))
+                "\n  not saved as lossless (lossy on Qobuz, or the download "
+                "kept coming back incomplete):"))
             for t in lossy_tracks[:10]:
                 log.info(f"     {truncate(t, 60)}")
         log.info("")
