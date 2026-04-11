@@ -204,15 +204,16 @@ def run_album_walk_mode(args, token):
         save_pending_queue(shared_queue, mode="album_walk")
         log.info(fmt(C.CYAN,
             f"\n  ⟳  Flushing queue ({len(shared_queue)} album(s))…"))
-        _, beets_ok = _execute_download_queue(shared_queue, args, token)
-        if beets_ok:
-            shared_queue.clear()
+        _, drained = _execute_download_queue(
+            shared_queue, args, token, on_progress=_save_now)
+        if args.dry_run:
+            return
+        if drained:
             clear_pending_queue()
         else:
             log.info(fmt(C.YELLOW,
-                f"  ⚠  beets import did not succeed — keeping the queue "
-                f"({len(shared_queue)} album(s)) so the next launch can "
-                f"retry. Files remain in staging."))
+                f"  ⚠  {len(shared_queue)} album(s) couldn't be downloaded — "
+                f"kept in the queue to retry on the next launch."))
 
     n_artists_scanned = 0
     n_albums_complete = 0
@@ -373,15 +374,15 @@ def run_walk_queued_mode(args, token):
         save_pending_queue(shared_queue, mode="walk_queue")
         log.info(fmt(C.CYAN,
             f"\n  ⟳  Flushing queue ({len(shared_queue)} album(s))…"))
-        results, beets_ok = _execute_download_queue(shared_queue, args, token)
-        if beets_ok:
-            shared_queue.clear()
-            clear_pending_queue()
-        else:
-            log.info(fmt(C.YELLOW,
-                f"  ⚠  beets import did not succeed — keeping the queue "
-                f"({len(shared_queue)} album(s)) so the next launch can "
-                f"retry. Files remain in staging."))
+        results, drained = _execute_download_queue(
+            shared_queue, args, token, on_progress=_save_now)
+        if not args.dry_run:
+            if drained:
+                clear_pending_queue()
+            else:
+                log.info(fmt(C.YELLOW,
+                    f"  ⚠  {len(shared_queue)} album(s) couldn't be downloaded "
+                    f"— kept in the queue to retry on the next launch."))
         return sum(1 for r in results
                    if r.get("result") in ("downloaded", "partial"))
 

@@ -1,6 +1,7 @@
 """Queue executor — download, pre-import hooks, beets, backup resolution.
 
 """
+import errno
 import re
 import shutil
 import time
@@ -175,8 +176,9 @@ def _download_for_queue_item(item):
     # Single-track retry for lossy / 0-byte fallbacks, mirroring the direct
     # album path (modes/process.py). A transient glitch shouldn't strand a
     # track in the lossy bucket when a one-off per-track URL usually
-    # succeeds. One retry per track — no recursion, no loop.
-    if lossy_tracks and missing:
+    # succeeds. One retry per track — no recursion, no loop. Skipped once a
+    # cancel is in flight so we don't fire fresh rips the user asked to stop.
+    if lossy_tracks and missing and not is_cancel_requested():
         lossy_norms = {normalize(strip_edition_suffix(_track_title_from_path(d)))
                        for d in lossy_tracks}
         retry_targets = [
@@ -391,7 +393,63 @@ def _move_to_beets_retry(album_dirs, label):
         log.info(fmt(C.YELLOW,
             f"  ⏭  parked {moved} album dir(s) at "
             f"{dest_parent.relative_to(cfg.STAGING_DIR)}/ "
-            f"— retry later with: beet import {dest_parent}"))
+            f"— will re-import on the next download run."))
+
+
+def _reimport_parked_albums():
+    """Re-attempt beets import on albums an earlier batch parked under
+    ``STAGING_DIR/<BEETS_RETRY_DIR>/``. A park almost always means a transient
+    cause — a DB lock, an idle-timeout, a momentarily-busy disk — so retrying
+    the import (never the download; the files are already on disk) at the start
+    of the next flush clears the backlog without re-fetching anything. Groups
+    that still fail stay parked for the run after. Returns True if anything
+    imported, so the caller knows to run the duplicate-album fold."""
+    retry_root = cfg.STAGING_DIR / cfg.BEETS_RETRY_DIR
+    if not retry_root.is_dir():
+        return False
+    groups = sorted(d for d in retry_root.iterdir() if d.is_dir())
+    any_ok = False
+    for group in groups:
+        album_dirs = sorted(d for d in group.iterdir() if d.is_dir())
+        if not album_dirs:
+            try:
+                group.rmdir()
+            except OSError:
+                pass
+            continue
+        log.info(fmt(C.GRAY,
+            f"  ↻  Re-importing parked album(s): {truncate(group.name, 50)}"))
+        if _import_album_with_retry(album_dirs):
+            any_ok = True
+            try:
+                shutil.rmtree(group)
+            except OSError as e:
+                vlog(f"couldn't clear parked group {group}: {e}")
+        else:
+            log.info(fmt(C.YELLOW,
+                f"  ⏭  Still can't import {truncate(group.name, 50)} "
+                f"— left parked for a later run."))
+    return any_ok
+
+
+_RETRYABLE_STOP_RESULTS = {
+    "cancelled", "interrupted", "auth_lost", "disk_full",
+    "upgrade_aborted_backup_failed",
+}
+
+
+def _queue_item_needs_retry(item):
+    """Whether an item should stay queued for a later run.
+
+    Kept: items stopped before they could finish (cancel / interrupt / auth
+    loss / disk full / an upgrade whose backup couldn't be taken) and downloads
+    that landed nothing — re-running those is safe and can recover. Dropped:
+    anything that landed audio. Those files are now in the library, parked under
+    .beets_retry/, or a partial a later scan will pick up, so re-downloading
+    would only duplicate them."""
+    if item.get("result") in _RETRYABLE_STOP_RESULTS:
+        return True
+    return item.get("n_ok", 0) == 0
 
 
 def _resolve_queue_item(item, args, imported_globally):
@@ -574,19 +632,23 @@ def _resolve_queue_item(item, args, imported_globally):
     }
 
 
-def _execute_download_queue(queue, args, token):
+def _execute_download_queue(queue, args, token, *, on_progress=None):
     """Flush a batch of pre-confirmed download decisions, one album at a time.
 
     Each item runs through its own pipeline — download → compress → lyrics →
     beets import (with retry on idle-timeout) → backup resolution — so a
-    single broken or hung album in a 360-item batch loses only itself
-    instead of the entire import. Albums that exhaust ``BEETS_MAX_ATTEMPTS``
-    are parked under ``STAGING_DIR/<BEETS_RETRY_DIR>/`` so the rest of the
-    queue keeps moving.
+    single broken or hung album in a large batch loses only itself instead of
+    the whole import. Albums that exhaust ``BEETS_MAX_ATTEMPTS`` are parked
+    under ``STAGING_DIR/<BEETS_RETRY_DIR>/`` and re-imported (no re-download)
+    at the start of the next flush.
 
-    Returns ``(results, beets_ok)``. ``beets_ok`` is True only when every
-    album that landed audio also imported it, so callers that persist the
-    queue on disk keep entries that didn't make it into the library.
+    Items are dropped from ``queue`` in place the moment they're done, so what
+    remains is exactly the unfinished work: a resume re-downloads only what
+    never landed and never what already imported. ``on_progress`` (when given)
+    fires after each change so the caller can re-persist the shrinking queue.
+
+    Returns ``(results, drained)``. ``results`` stays 1:1 with the items passed
+    in; ``drained`` is True once nothing is left to retry.
     """
     if not queue:
         return [], True
@@ -608,28 +670,49 @@ def _execute_download_queue(queue, args, token):
         return dry_run_results, True
 
     staging_preflight(args)
+
+    items = list(queue)
+    n_items = len(items)
     interrupted = False
     cancelled = False
+    disk_full = False
     auth_lost_exc = None
     queue_transient_lyric_sigs = []
-    any_imported = False
-    all_landed_imported = True   # False once any album that landed audio fails to import
+    any_imported = _reimport_parked_albums()
     results = []
+
+    def _persist():
+        if on_progress is not None:
+            try:
+                on_progress()
+            except Exception as e:
+                vlog(f"queue progress hook failed: {e}")
+
+    def _drop(item):
+        """An item that's fully handled leaves the queue so a retry won't redo
+        it. Persist immediately, so even a hard crash mid-flush can't resurrect
+        already-imported albums."""
+        try:
+            queue.remove(item)
+        except ValueError:
+            pass
+        _persist()
 
     def _short_circuit(item):
         """Drain an item we can no longer process (cancel / interrupt / auth
-        loss): mark it, run backup resolution so any upgrade backup gets
-        restored, and stash the result. Skipping resolution would orphan
-        the original tracks under their backup path."""
+        loss / disk full): mark it, run backup resolution so any upgrade backup
+        gets restored, and keep it queued for a later retry. Skipping
+        resolution would orphan the original tracks under their backup path."""
         item.setdefault("snapshot_before", set())
         item.setdefault("result",
                         "cancelled" if cancelled
                         else "interrupted" if interrupted
+                        else "disk_full" if disk_full
                         else "auth_lost")
         results.append(_resolve_queue_item(item, args, False))
 
-    for idx, item in enumerate(queue, 1):
-        if interrupted or cancelled or auth_lost_exc is not None:
+    for idx, item in enumerate(items, 1):
+        if interrupted or cancelled or disk_full or auth_lost_exc is not None:
             _short_circuit(item)
             continue
 
@@ -639,7 +722,7 @@ def _execute_download_queue(queue, args, token):
 
         print()
         log.info(fmt(C.BOLD + C.WHITE,
-            f"  [Q {idx}/{len(queue)}] {truncate(title, 55)}"))
+            f"  [Q {idx}/{n_items}] {truncate(title, 55)}"))
 
         if item["auto_upgrade"] and album_dir and album_dir.exists():
             bp = backup_album_dir(album_dir)
@@ -648,7 +731,7 @@ def _execute_download_queue(queue, args, token):
                     "    ✗  Could not back up; skipping this album."))
                 item["result"] = "upgrade_aborted_backup_failed"
                 results.append(_resolve_queue_item(item, args, False))
-                continue
+                continue   # nothing downloaded — stays queued for retry
             item["backup_path"] = bp
 
         item["snapshot_before"] = snapshot_staging()
@@ -668,6 +751,17 @@ def _execute_download_queue(queue, args, token):
                 "will restore upgrade backups and exit."))
             item["result"] = "auth_lost"
             auth_lost_exc = _e_auth
+            results.append(_resolve_queue_item(item, args, False))
+            continue
+        except OSError as _e_os:
+            if _e_os.errno != errno.ENOSPC:
+                raise
+            log.info(fmt(C.RED,
+                f"\n    Out of disk space at {cfg.STAGING_DIR}. Stopping the "
+                "queue — restoring backups and keeping the rest for a retry "
+                "once space is freed."))
+            item["result"] = "disk_full"
+            disk_full = True
             results.append(_resolve_queue_item(item, args, False))
             continue
 
@@ -724,29 +818,30 @@ def _execute_download_queue(queue, args, token):
                 if item_imported:
                     any_imported = True
                 else:
-                    all_landed_imported = False
                     _move_to_beets_retry(album_dirs, title)
         elif args.no_import:
             log.info(fmt(C.YELLOW,
                 f"  --no-import: skipping beets. Files in {cfg.STAGING_DIR}/"))
-            all_landed_imported = False
         elif summary_n_ok == 0:
             log.info(fmt(C.GRAY, "  Skipping beets — nothing landed."))
 
         results.append(_resolve_queue_item(item, args, item_imported))
+        if not _queue_item_needs_retry(item):
+            _drop(item)
 
         # Qobuz throttles sustained bulk queues. When the last rip showed
         # throttle signals, pause longer than the normal inter-album gap
-        # so we stop pounding the limit.
-        cooldown = cfg.RATE_LIMIT_COOLDOWN if item.get("rate_limited") else 0
-        if cooldown and idx < len(queue):
-            log.info(fmt(C.YELLOW,
-                f"    ⏳ Qobuz rate-limit detected — cooling down "
-                f"{int(cooldown)}s before the next album "
-                f"(set RATE_LIMIT_COOLDOWN=0 to disable)."))
-            time.sleep(cooldown)
-        else:
-            time.sleep(cfg.DELAY_BETWEEN)
+        # so we stop pounding the limit. No pause after the final album.
+        if idx < n_items:
+            cooldown = cfg.RATE_LIMIT_COOLDOWN if item.get("rate_limited") else 0
+            if cooldown:
+                log.info(fmt(C.YELLOW,
+                    f"    ⏳ Qobuz rate-limit detected — cooling down "
+                    f"{int(cooldown)}s before the next album "
+                    f"(set RATE_LIMIT_COOLDOWN=0 to disable)."))
+                time.sleep(cooldown)
+            else:
+                time.sleep(cfg.DELAY_BETWEEN)
 
     # ── Post-batch: consolidate duplicate albums once if anything landed.
     # The fold is a library-wide pass, so running it per-album would waste
@@ -759,7 +854,7 @@ def _execute_download_queue(queue, args, token):
 
     # ── Post-batch lyric-retry resolution.
     print()
-    _post_dirs = [it.get("_resolved_post_dir") for it in queue
+    _post_dirs = [it.get("_resolved_post_dir") for it in items
                   if it.get("_resolved_post_dir") is not None]
     if (queue_transient_lyric_sigs
             and any_imported
@@ -801,15 +896,16 @@ def _execute_download_queue(queue, args, token):
     n_total_ok = sum(r.get("n_ok", 0) for r in results)
     n_total_fail = sum(r.get("n_fail", 0) for r in results)
     log.info(fmt(C.GREEN if n_total_fail == 0 else C.YELLOW,
-        f"  ✓ Queue done: {n_success}/{len(queue)} albums OK · "
+        f"  ✓ Queue done: {n_success}/{n_items} albums OK · "
         f"{n_total_ok} track{'s' if n_total_ok != 1 else ''} downloaded · "
         f"{n_total_fail} failed"))
 
+    _persist()
     if auth_lost_exc is not None:
         raise auth_lost_exc
     # Re-raising KeyboardInterrupt is what stops _flush_queue in modes 4/5
-    # from reaching shared_queue.clear() and silently destroying every
-    # queued decision the user gave.
+    # from reaching its clear-on-drain branch and discarding the items that
+    # were short-circuited (and so still need a retry).
     if interrupted:
         raise KeyboardInterrupt
-    return results, bool(all_landed_imported)
+    return results, not queue

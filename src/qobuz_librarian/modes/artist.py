@@ -526,15 +526,15 @@ def run_artist_gap_fill(artist_name, artist_dir, args, token, *,
             except Exception as _sce:
                 vlog(f"  save_callback raised: {_sce}")
     elif queue:
-        queue_results, beets_ok = _execute_download_queue(queue, args, token)
-        for qi, qr in zip(queue, queue_results):
+        pre_items = list(queue)
+        queue_results, drained = _execute_download_queue(queue, args, token)
+        for qi, qr in zip(pre_items, queue_results):
             results.append(qr)
             _maybe_delete_siblings(qi["album_dir"], qr)
-        if not beets_ok:
+        if not drained:
             log.info(fmt(C.YELLOW,
-                "  ⚠  beets import did not succeed for at least one album "
-                "— files remain in staging (or under the retry parking dir); "
-                "rerun once you've sorted the cause."))
+                "  ⚠  Some albums couldn't be downloaded — kept to retry; "
+                "rerun to try them again."))
 
     # Re-raise deferred AuthLost after hand-off completes.
     if pending_auth_lost is not None:

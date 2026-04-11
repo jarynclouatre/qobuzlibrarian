@@ -160,14 +160,22 @@ def offer_resume_pending_queue(args, token):
                 # Lazy import to avoid a circular dependency at module load:
                 # executor imports several names from this module.
                 from qobuz_librarian.queue.executor import _execute_download_queue
-                _, beets_ok = _execute_download_queue(items, args, token)
-                if beets_ok:
+
+                def _save_progress():
+                    save_pending_queue(items, mode=mode)
+
+                _, drained = _execute_download_queue(
+                    items, args, token, on_progress=_save_progress)
+                if getattr(args, "dry_run", False):
+                    pass  # preview only; leave the pending file untouched
+                elif drained:
                     clear_pending_queue()
                     log.info(fmt(C.GREEN, "  ✓ Resume complete; pending file cleared."))
                 else:
+                    save_pending_queue(items, mode=mode)
                     log.info(fmt(C.YELLOW,
-                        f"  ⚠  beets import did not succeed — pending file "
-                        f"kept for next launch ({len(items)} album(s) still queued)."))
+                        f"  ⚠  {len(items)} album(s) couldn't be downloaded — "
+                        f"pending file kept for next launch."))
             except KeyboardInterrupt:
                 log.info(fmt(C.YELLOW,
                     "\n  ⚠  Resume interrupted; pending file kept for next launch."))

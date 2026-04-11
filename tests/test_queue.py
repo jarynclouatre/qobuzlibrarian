@@ -84,15 +84,15 @@ def test_pending_queue_save_failure_is_silent(tmp_path, monkeypatch):
     assert not qfile.exists()
 
 
-def test_resume_keeps_queue_on_silent_beets_failure(tmp_path, monkeypatch):
+def test_resume_keeps_pending_file_when_not_drained(tmp_path, monkeypatch):
     qfile = tmp_path / "queue.json"
     monkeypatch.setattr("qobuz_librarian.config.PENDING_QUEUE_FILE", qfile)
     save_pending_queue([_qitem()], mode="walk_queue")
     monkeypatch.setattr("qobuz_librarian.queue.executor._execute_download_queue",
-                        lambda items, args, token: ([], False))
+                        lambda items, args, token, **kw: ([], False))
     monkeypatch.setattr("builtins.input", lambda _prompt: "y")
     offer_resume_pending_queue(Namespace(), "tok")
-    assert qfile.exists()   # a silent beets failure must not drop the queue
+    assert qfile.exists()   # albums left to retry must survive the resume
 
 
 # ── force_track_by_track decouples repair from the ratio heuristic ─────
@@ -292,9 +292,9 @@ def test_executor_gap_fill_backup_restored_when_track_returns_lossy(monkeypatch,
 def test_executor_per_album_isolation_one_album_failure_keeps_others(monkeypatch, tmp_path):
     """The whole point of the per-album pipeline: a beets failure on
     album N leaves albums 1..N-1 already imported and N+1..end still
-    importable, instead of taking the whole batch down. The failing
-    album's staged dir is moved to BEETS_RETRY_DIR so the next batch
-    keeps moving."""
+    importable, instead of taking the whole batch down. The failing album's
+    staged dir is parked under BEETS_RETRY_DIR for an import-only retry, and
+    every attempted album drops out of the queue — none get re-downloaded."""
     from qobuz_librarian import config as cfg
     from qobuz_librarian.queue import executor
 
@@ -352,7 +352,7 @@ def test_executor_per_album_isolation_one_album_failure_keeps_others(monkeypatch
     args = Namespace(dry_run=False, no_import=False, no_downsample=True,
                      no_compress=True, migrate_multi_artist=False,
                      consolidate=False)
-    results, beets_ok = executor._execute_download_queue(items, args, token=None)
+    results, drained = executor._execute_download_queue(items, args, token=None)
 
     assert seen == ["A", "B", "C"]
     assert [r["imported"] for r in results] == [True, False, True]
@@ -361,8 +361,83 @@ def test_executor_per_album_isolation_one_album_failure_keeps_others(monkeypatch
     assert not (staging / "Artist-B" / "Album B").exists()
     parked = list((staging / cfg.BEETS_RETRY_DIR).rglob("Album B"))
     assert len(parked) == 1
-    # beets_ok is False because B's import failed — caller keeps the queue.
-    assert beets_ok is False
+    # All three landed audio, so all three leave the queue: B recovers by
+    # re-importing the parked copy, not by re-downloading. Nothing to resume.
+    assert items == []
+    assert drained is True
+
+
+def test_executor_keeps_only_failed_downloads_for_retry(monkeypatch, tmp_path):
+    """A flush drops every album that landed audio and keeps only the ones
+    that downloaded nothing, so a resume re-downloads the genuine failures
+    and never the albums already on disk."""
+    from qobuz_librarian import config as cfg
+    from qobuz_librarian.queue import executor
+
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    monkeypatch.setattr(cfg, "STAGING_DIR", staging)
+
+    def make(tag, n_ok):
+        return {
+            "album": {"id": tag, "title": tag, "artist": {"name": tag},
+                      "tracks": {"items": []}},
+            "album_dir": None, "auto_upgrade": False,
+            "missing": [], "present": [], "upgrade_only": False, "label": tag,
+            "n_ok": n_ok, "n_fail": 0, "n_lossy": 0,
+            "failed_tracks": [], "lossy_tracks": [],
+            "rate_limited": False, "elapsed": 0.0,
+        }
+
+    imported = make("imported", 1)
+    nothing = make("nothing", 0)
+    queue = [imported, nothing]
+
+    monkeypatch.setattr(executor, "staging_preflight", lambda _a: None)
+    monkeypatch.setattr(executor, "_download_for_queue_item", lambda _i: None)
+    monkeypatch.setattr(executor, "_staged_album_dirs",
+                        lambda item: [staging / item["label"]] if item["n_ok"] else [])
+    monkeypatch.setattr(executor, "_run_pre_import_hooks_for_dirs", lambda _d, _a: [])
+    monkeypatch.setattr(executor, "beets_import_albums", lambda _d: "ok")
+    monkeypatch.setattr(executor, "_consolidate_duplicate_albums", lambda: None)
+    monkeypatch.setattr(executor, "_resolve_queue_item",
+                        lambda item, args, ok: {
+                            "dir": None, "imported": ok,
+                            "result": "downloaded" if item["n_ok"] else "failed",
+                            "n_ok": item["n_ok"], "n_fail": 0, "n_lossy": 0,
+                            "auto_upgrade": False})
+
+    saves = []
+    args = Namespace(dry_run=False, no_import=False, no_downsample=True,
+                     no_compress=True, migrate_multi_artist=False, consolidate=False)
+    results, drained = executor._execute_download_queue(
+        queue, args, token=None, on_progress=lambda: saves.append(list(queue)))
+
+    assert queue == [nothing]      # imported dropped, the empty download kept
+    assert drained is False
+    assert len(results) == 2       # results stay 1:1 with the items passed in
+    assert saves                   # progress persisted as the item dropped
+
+
+def test_reimport_parked_albums_clears_successes_and_keeps_failures(monkeypatch, tmp_path):
+    """Parked albums get an import-only retry on the next flush: the ones that
+    import are cleared from the parking dir, the ones that still fail stay put."""
+    from qobuz_librarian import config as cfg
+    from qobuz_librarian.queue import executor
+
+    staging = tmp_path / "staging"
+    monkeypatch.setattr(cfg, "STAGING_DIR", staging)
+    good = staging / cfg.BEETS_RETRY_DIR / "20260101_000000-good"
+    bad = staging / cfg.BEETS_RETRY_DIR / "20260101_000001-bad"
+    (good / "Good Album").mkdir(parents=True)
+    (bad / "Bad Album").mkdir(parents=True)
+
+    monkeypatch.setattr(executor, "beets_import_albums",
+                        lambda dirs: "ok" if "good" in str(dirs[0]) else "error")
+
+    assert executor._reimport_parked_albums() is True
+    assert not good.exists()      # re-imported cleanly → parking dir cleared
+    assert bad.exists()           # still unimportable → left parked
 
 
 def test_push_progress_streams_separately_and_stays_out_of_the_log():
