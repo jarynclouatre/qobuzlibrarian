@@ -93,10 +93,11 @@ def _run_lyric_hook(album_dir):
     plain        = counts.get("wrote-plain", 0)
     nofnd        = counts.get("not-found", 0)
     already      = counts.get("already-synced", 0)
-    # Files where every provider was unavailable when their turn came up;
-    # lyric_fetch records these as status="transient" in its state file.
-    # We surface the count and queue them for retry on next launch.
-    unavailable  = counts.get("providers-unavailable", 0) + counts.get("transient", 0)
+    # Files where every provider was unavailable when their turn came up. The
+    # fetcher tallies these under "providers-unavailable" and marks the file
+    # status="transient" in its state file; we surface the count and queue them
+    # for retry on next launch.
+    unavailable  = counts.get("providers-unavailable", 0)
 
     if synced or plain or nofnd or unavailable:
         msg = (f"  ✓  lyrics: {synced} synced, {plain} plain, "
