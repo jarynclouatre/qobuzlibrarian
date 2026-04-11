@@ -49,8 +49,13 @@ def _run_lyric_hook(album_dir):
         return empty_result
     if album_dir is None or not album_dir.exists():
         return empty_result
+    # When album_dir is STAGING_DIR (the single-album process path) the walk
+    # would otherwise descend into albums parked under .beets_retry/ and
+    # re-fetch their lyrics on every run; skip them, as beets' tag prep does.
+    from qobuz_librarian.integrations.beets import _under_retry_dir
     try:
-        flacs = sorted(album_dir.rglob("*.flac"))
+        flacs = sorted(p for p in album_dir.rglob("*.flac")
+                       if not _under_retry_dir(p))
     except OSError as e:
         log.info(fmt(C.YELLOW, f"  ⚠  Lyric hook: couldn't list {album_dir}: {e}."))
         return empty_result
