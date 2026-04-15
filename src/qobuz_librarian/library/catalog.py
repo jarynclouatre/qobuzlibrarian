@@ -5,20 +5,21 @@ Behaviour you should not change without understanding the consequence:
 - find_album_dir_filesystem: exact-path fast path first, then fuzzy scan.
   Artist-variant expansion covers "The X" / "X" / comma-prefix forms.
   Multi-artist folder detection (_MULTI_ARTIST_SEPS) expands search dirs.
-- compute_missing: 4-layer matching chain in order —
-    1. ISRC
-    2. MBID
-    3. (disc, normalized title)
-    4. edition-stripped variants on BOTH sides
+- compute_missing: 3-layer matching chain in order —
+    1. ISRC — authoritative recording identity
+    2. (disc, normalized title)
+    3. edition-stripped variants on BOTH sides
   A track is "present" if ANY layer matches. Order matters: ISRC is
   authoritative; title-match is a fallback. Reordering causes false
-  re-downloads of already-owned tracks.
+  re-downloads of already-owned tracks. compute_missing and
+  find_extras_in_existing share one matcher so the two never drift.
 - album_year(): prefers release_date_original; falls back to released_at
   parsed in UTC. Local-timezone parsing flipped years for late-night-UTC
   releases.
 - predicted_album_paths uses a list, not a set, to preserve deterministic
   candidate order across runs (set hash iteration is non-deterministic).
 """
+import os
 import re
 from datetime import datetime, timezone
 from pathlib import Path
@@ -112,14 +113,16 @@ def _find_multi_artist_dirs(qartist):
 
 # ── Path utilities ────────────────────────────────────────────────────────────
 def _paths_equal(a: Path, b: Path) -> bool:
-    """Best-effort path equality. samefile() is authoritative but can fail."""
+    """Best-effort path equality. samefile() is authoritative but raises when a
+    path doesn't exist; fall back to comparing resolved (symlink-collapsed)
+    forms, then to a plain string normalization."""
     try:
         return a.samefile(b)
     except OSError:
-        try:
-            return a.resolve() == b.resolve()
-        except OSError:
-            import os
+        pass
+    try:
+        return a.resolve() == b.resolve()
+    except OSError:
         return os.path.normpath(str(a)) == os.path.normpath(str(b))
 
 
@@ -363,153 +366,107 @@ def _norm_isrc(value):
     return (value or "").strip().replace("-", "").upper()
 
 
-def _norm_mbid(value):
-    """Canonical MBID for identity comparison; blank/whitespace → ''."""
-    return (value or "").strip().lower()
+def _track_key(title_raw, disc, isrc):
+    """Identity keys for one track: ISRC plus the disc-scoped title in both its
+    full and edition-stripped forms.
+
+    Titles are compared normalized (ASCII-folded, punctuation dropped). A
+    non-Latin title folds to '' under normalize, so fall back to the casefolded
+    raw title — without it, "東京" and "大阪" would both key on '' and either
+    match each other or nothing at all. A genuinely empty title leaves the key
+    None so two untitled tracks never pair on an empty string.
+    """
+    def _scoped(text):
+        norm = normalize(text) or text.strip().casefold()
+        return (disc, norm) if norm else None
+
+    title_raw = title_raw or ""
+    return {
+        "isrc": _norm_isrc(isrc),
+        "title": _scoped(title_raw),
+        "stripped": _scoped(strip_edition_suffix(title_raw)),
+    }
+
+
+# Strongest identity first: an ISRC-identifiable track claims its exact slot
+# before a weaker title match can consume it. Reordering causes false
+# re-downloads of already-owned tracks.
+_MATCH_LAYERS = ("isrc", "title", "stripped")
+
+
+def _keys_match(a, b, layer):
+    """Whether two track keys agree at one matching layer. Symmetric in a/b;
+    the 'stripped' layer pairs an edition-stripped title on either side, so
+    'Foo (LP Version)' matches a bare 'Foo' and the reverse."""
+    if layer == "isrc":
+        return bool(a["isrc"]) and a["isrc"] == b["isrc"]
+    if layer == "title":
+        return a["title"] is not None and a["title"] == b["title"]
+    return any(x is not None and x == y for x, y in (
+        (a["title"], b["stripped"]),
+        (a["stripped"], b["title"]),
+        (a["stripped"], b["stripped"]),
+    ))
+
+
+def _pair_tracks(claim_keys, slot_keys):
+    """One-to-one match claim_keys against slot_keys, strongest layer first.
+
+    Returns a bool list over claim_keys marking which claimed a slot. Each slot
+    is consumed once, so a repeated title (a reprise, a hidden track, two
+    same-named versions) leaves the surplus unclaimed rather than letting them
+    all match a single file — the multiplicity that keeps a real gap, or a bonus
+    track before an upgrade wipe, from being silently hidden.
+    """
+    used = [False] * len(slot_keys)
+    claimed = [False] * len(claim_keys)
+    for layer in _MATCH_LAYERS:
+        for ci, ck in enumerate(claim_keys):
+            if claimed[ci]:
+                continue
+            for si, sk in enumerate(slot_keys):
+                if not used[si] and _keys_match(ck, sk, layer):
+                    used[si] = claimed[ci] = True
+                    break
+    return claimed
+
+
+def _qobuz_keys(qobuz_tracks):
+    return [_track_key(qt.get("title"), qt.get("media_number", 1) or 1,
+                       qt.get("isrc")) for qt in qobuz_tracks]
+
+
+def _existing_keys(existing_tracks):
+    return [_track_key(et.get("title"), et.get("discnumber", 1) or 1,
+                       et.get("isrc")) for et in existing_tracks]
 
 
 def compute_missing(qobuz_tracks, existing_tracks):
-    """Classify qobuz_tracks into missing/present against existing_tracks.
+    """Split qobuz_tracks into (missing, present) against existing_tracks.
 
-    4-layer matching chain (order is load-bearing):
-      1. ISRC  — authoritative recording identity
-      2. MBID  — MusicBrainz track ID
-      3. (disc, normalized title)
-      4. edition-stripped variants on EITHER side
-         ('Foo (LP Version)' existing matches Qobuz 'Foo', and vice versa)
-
-    Returns (missing, present) lists of Qobuz track dicts.
-
-    Matching is multiplicity-aware: each on-disk track satisfies at most one
-    Qobuz track. An album with a repeated title (a reprise, a hidden track,
-    multi-disc "Intro"s, two same-named versions) must still flag the duplicate
-    as missing — a set-membership check would mark every same-titled Qobuz
-    track present off a single file and silently leave a gap.
+    A Qobuz track is present when an on-disk track matches it on ISRC,
+    normalized title, or edition-stripped title — in that priority. Matching is
+    one-to-one (see _pair_tracks), so a duplicate title surfaces as a real gap
+    instead of being masked by a single file.
     """
-    # One slot per on-disk track, consumed when it satisfies a Qobuz track.
-    slots = []
-    for t in existing_tracks:
-        disc = t.get("discnumber", 1) or 1
-        norm = t.get("normalized") or ""
-        ttl = t.get("title") or ""
-        stripped = normalize(strip_edition_suffix(ttl)) if ttl else ""
-        slots.append({
-            "used": False,
-            "isrc": _norm_isrc(t.get("isrc")),
-            "mbid": _norm_mbid(t.get("mb_trackid")),
-            "disc_title": (disc, norm) if norm else None,
-            "disc_stripped": (disc, stripped) if stripped else None,
-        })
-
-    qkeys = []
-    for qt in qobuz_tracks:
-        qtitle_raw = qt.get("title") or ""
-        qdisc = qt.get("media_number", 1) or 1
-        qkeys.append({
-            "isrc": _norm_isrc(qt.get("isrc")),
-            "mbid": _norm_mbid(qt.get("mbid")),
-            "title": (qdisc, normalize(qtitle_raw)) if qtitle_raw else None,
-            "stripped": (qdisc, normalize(strip_edition_suffix(qtitle_raw))) if qtitle_raw else None,
-        })
-
-    def _matches(k, s, layer):
-        if layer == "isrc":
-            return bool(k["isrc"]) and k["isrc"] == s["isrc"]
-        if layer == "mbid":
-            # Reserved: the Qobuz API doesn't return a track MBID today, so the
-            # qobuz-side key is empty and this layer is a no-op until it's wired.
-            return bool(k["mbid"]) and k["mbid"] == s["mbid"]
-        if layer == "title":
-            return k["title"] is not None and k["title"] == s["disc_title"]
-        # stripped: edition-stripped variants on either side
-        return any(x is not None and x == y for x, y in (
-            (k["title"], s["disc_stripped"]),
-            (k["stripped"], s["disc_title"]),
-            (k["stripped"], s["disc_stripped"]),
-        ))
-
-    claimed = [False] * len(qobuz_tracks)
-    # Layer priority is load-bearing: claim the strongest identity first so an
-    # ISRC-identifiable track takes its exact slot before a weaker title match
-    # can consume it.
-    for layer in ("isrc", "mbid", "title", "stripped"):
-        for qi, k in enumerate(qkeys):
-            if claimed[qi]:
-                continue
-            for s in slots:
-                if not s["used"] and _matches(k, s, layer):
-                    s["used"] = True
-                    claimed[qi] = True
-                    break
-
-    missing = [qt for qi, qt in enumerate(qobuz_tracks) if not claimed[qi]]
-    present = [qt for qi, qt in enumerate(qobuz_tracks) if claimed[qi]]
+    claimed = _pair_tracks(_qobuz_keys(qobuz_tracks),
+                           _existing_keys(existing_tracks))
+    missing = [qt for i, qt in enumerate(qobuz_tracks) if not claimed[i]]
+    present = [qt for i, qt in enumerate(qobuz_tracks) if claimed[i]]
     return missing, present
 
 
 def find_extras_in_existing(qobuz_tracks, existing_tracks):
-    """Return existing tracks that don't match any Qobuz track.
+    """Return on-disk tracks that match no Qobuz track.
 
-    Mirror of compute_missing in reverse: which on-disk tracks are NOT in
-    the Qobuz album? Critical safety check before upgrade-replace — if the
-    user has bonus tracks (custom rips, B-sides, deluxe extras), never wipe.
-
-    Multiplicity-aware (mirrors compute_missing): each Qobuz track accounts for
-    at most one on-disk track, so a genuine duplicate/bonus track on disk is
-    still flagged as an extra. Set membership would let one Qobuz track "cover"
-    several same-titled files and hide a real extra — dangerous here, since this
-    gates the upgrade wipe-and-replace.
+    The reverse of compute_missing: each Qobuz track accounts for at most one
+    file, so a same-titled bonus track (a custom rip, a B-side, a deluxe extra)
+    is flagged rather than hidden. This gates the upgrade wipe-and-replace, so a
+    missed extra means silently deleting a track the user can't get back.
     """
-    # One slot per Qobuz track, consumed when it accounts for an on-disk track.
-    slots = []
-    for qt in qobuz_tracks:
-        qtitle_raw = qt.get("title") or ""
-        qdisc = qt.get("media_number", 1) or 1
-        slots.append({
-            "used": False,
-            "isrc": _norm_isrc(qt.get("isrc")),
-            "mbid": _norm_mbid(qt.get("mbid")),
-            "disc_title": (qdisc, normalize(qtitle_raw)) if qtitle_raw else None,
-            "disc_stripped": (qdisc, normalize(strip_edition_suffix(qtitle_raw))) if qtitle_raw else None,
-        })
-
-    ekeys = []
-    for et in existing_tracks:
-        e_title_raw = et.get("title") or ""
-        e_disc = et.get("discnumber", 1) or 1
-        ekeys.append({
-            "isrc": _norm_isrc(et.get("isrc")),
-            "mbid": _norm_mbid(et.get("mb_trackid")),
-            "title": (e_disc, normalize(e_title_raw)) if e_title_raw else None,
-            "stripped": (e_disc, normalize(strip_edition_suffix(e_title_raw))) if e_title_raw else None,
-        })
-
-    def _matches(k, s, layer):
-        if layer == "isrc":
-            return bool(k["isrc"]) and k["isrc"] == s["isrc"]
-        if layer == "mbid":
-            # Reserved: the Qobuz API doesn't return a track MBID today, so the
-            # qobuz-side key is empty and this layer is a no-op until it's wired.
-            return bool(k["mbid"]) and k["mbid"] == s["mbid"]
-        if layer == "title":
-            return k["title"] is not None and k["title"] == s["disc_title"]
-        return any(x is not None and x == y for x, y in (
-            (k["title"], s["disc_stripped"]),
-            (k["stripped"], s["disc_title"]),
-            (k["stripped"], s["disc_stripped"]),
-        ))
-
-    matched = [False] * len(existing_tracks)
-    for layer in ("isrc", "mbid", "title", "stripped"):
-        for ei, k in enumerate(ekeys):
-            if matched[ei]:
-                continue
-            for s in slots:
-                if not s["used"] and _matches(k, s, layer):
-                    s["used"] = True
-                    matched[ei] = True
-                    break
-    return [et for ei, et in enumerate(existing_tracks) if not matched[ei]]
+    matched = _pair_tracks(_existing_keys(existing_tracks),
+                           _qobuz_keys(qobuz_tracks))
+    return [et for i, et in enumerate(existing_tracks) if not matched[i]]
 
 
 # ── Album metadata helpers ────────────────────────────────────────────────────
@@ -613,39 +570,6 @@ def _best_edition(group, prefer_hires):
         album_year_int(a),
         str(a.get("id") or ""),
     ))
-
-
-def dedup_albums(albums, prefer_hires=False):
-    """Group albums by (normalized-bare-title, year), pick one per group.
-
-    Key includes year so genuinely distinct self-titled albums
-    (LP1 1999 vs LP4 2019) don't collapse into one group. Within a group the
-    standard edition wins (see _best_edition), never the largest.
-
-    Returns list of (canonical_album, n_versions_in_group) sorted by year.
-    """
-    groups: dict = {}
-    for a in albums:
-        bare = strip_album_decorations(a.get("title") or "")
-        # Pure-CJK / emoji titles normalize to '' (ASCII-fold drops them);
-        # fall back to the raw title so they aren't silently dropped from the
-        # missing list. Only a genuinely empty title is skipped.
-        key_title = normalize(bare) or bare.strip().casefold()
-        if not key_title:
-            continue
-        key = (key_title, album_year_int(a))
-        groups.setdefault(key, []).append(a)
-
-    representatives = []
-    for key, group in groups.items():
-        best = _best_edition(group, prefer_hires)
-        representatives.append((best, len(group)))
-
-    representatives.sort(key=lambda pair: (
-        album_year_int(pair[0]),
-        normalize(pair[0].get("title", "")),
-    ))
-    return representatives
 
 
 def filter_owned_albums(catalog_pairs, owned_bare_titles):
@@ -776,7 +700,7 @@ def dedup_album_versions(albums, prefer_hires=False):
         groups.setdefault(key, []).append(a)
 
     representatives = []
-    for key, group in groups.items():
+    for group in groups.values():
         best = _best_edition(group, prefer_hires)
         representatives.append((best, len(group)))
 
@@ -863,12 +787,11 @@ def cleanup_duplicate_art(album_dir: Path) -> int:
     front.1/front.2 with no base front.<ext> are kept). Returns count of
     files removed.
     """
-    import re as _re
     if not album_dir or not album_dir.exists():
         return 0
     art_names = {"cover", "folder", "album", "front", "art", "artwork", "albumart"}
     art_exts = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"}
-    pattern = _re.compile(r"^(.+)\.\d+$")
+    pattern = re.compile(r"^(.+)\.\d+$")
     removed = 0
     try:
         names_present = {f.name.lower() for f in album_dir.iterdir() if f.is_file()}
@@ -1260,10 +1183,10 @@ def prompt_and_migrate_multi_artist_folder(album, args):
 
 def _catalog_candidates_for_dir(album_dir, catalog, artist_name, prefer_hires=False):
     """All catalog entries scoring above ARTIST_DIR_MATCH_THRESH for
-    album_dir, sorted best-first. Same rules as legacy match_dir_to_catalog
-    (similarity + year-proximity bonus, lossless only, artist-name guard).
-    Exposing the ranked list lets find_qobuz_album_for_dir use the catalog
-    for the target_dir case instead of falling back to the search API."""
+    album_dir, sorted best-first (similarity + year-proximity bonus, lossless
+    only, artist-name guard). Returning the ranked list — not just the top
+    pick — lets find_qobuz_album_for_dir resolve the target_dir case from the
+    catalog instead of falling back to the search API."""
     if not catalog:
         return []
     bare = strip_album_decorations(album_dir.name)
@@ -1327,11 +1250,10 @@ def _pick_best_target_dir_match(scored_cands, target_dir):
     scored_cands: iterable of (combined_score: float, album_dict).
     Returns (chosen_album, chosen_score) or (None, 0).
 
-    Why: prevents a 28-track anniversary box set with a bonus live disc
-    from outranking the standard 11-track album when target_dir has 11
-    audio files. r1's catalog fast-path picked the higher-quality edition
-    regardless of fit, leading to bizarre 'missing tracks' prompts that
-    listed songs from completely different albums.
+    Fitting on track count keeps a 28-track anniversary box set with a bonus
+    live disc from outranking the standard 11-track album when target_dir holds
+    11 audio files — picking on quality alone there lists 'missing tracks' from
+    a completely different edition.
     """
     n_disk = _count_audio_files_in(target_dir)
     resolving = []
@@ -1510,9 +1432,8 @@ def find_qobuz_album_for_dir(album_dir: Path, artist_name: str, token,
     # top hit is a deluxe edition that maps to a different on-disk folder —
     # we keep looking until we find a version that actually belongs here.
     if target_dir is not None:
-        # Collect all viable resolving candidates and pick by
-        # tracks_count fit. Same anniversary-edition bug as the catalog
-        # path, less common in practice (search rarely returns box sets).
+        # Pick among the viable candidates by track-count fit, not score, so a
+        # box set doesn't outrank the standard album the folder actually holds.
         viable = [(s + yb, r) for (s, yb, r) in candidates
                   if s >= config.ARTIST_DIR_MATCH_THRESH]
         best, best_score = _pick_best_target_dir_match(viable, target_dir)
@@ -1639,7 +1560,6 @@ def find_expanded_edition(album, album_dir, existing, token, args):
         len(fe[1]),
         -(fe[0].get("maximum_bit_depth") or 0),
         -(fe[0].get("maximum_sampling_rate") or 0),
-        -((fe[0].get("tracks") or {}).get("items") and
-          len((fe[0].get("tracks") or {}).get("items") or []) or 0),
+        -len((fe[0].get("tracks") or {}).get("items") or []),
     ))
     return found

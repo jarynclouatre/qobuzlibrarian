@@ -18,7 +18,6 @@ from qobuz_librarian.library.catalog import (
     album_year_int,
     compute_missing,
     dedup_album_versions,
-    dedup_albums,
     filter_compilation_albums,
     filter_owned_albums,
     filter_seen_album_ids,
@@ -30,14 +29,14 @@ from qobuz_librarian.library.catalog import (
 )
 
 
-def _qt(title, isrc="", mbid="", disc=1, **kw):
-    return {"title": title, "isrc": isrc, "mbid": mbid, "media_number": disc, **kw}
+def _qt(title, isrc="", disc=1, **kw):
+    return {"title": title, "isrc": isrc, "media_number": disc, **kw}
 
 
-def _et(title, isrc="", mb_trackid="", disc=1, **kw):
+def _et(title, isrc="", disc=1, **kw):
     from qobuz_librarian.library.tags import normalize
-    return {"title": title, "isrc": isrc, "mb_trackid": mb_trackid,
-            "discnumber": disc, "normalized": normalize(title), **kw}
+    return {"title": title, "isrc": isrc, "discnumber": disc,
+            "normalized": normalize(title), **kw}
 
 
 def _qalbum(title, year, bd=16, sr=44.1, tc=10):
@@ -88,6 +87,20 @@ def test_compute_missing_does_not_pair_on_blank_isrc():
     assert not p and len(m) == 1
 
 
+def test_non_latin_titles_match_on_text_not_empty_normalization():
+    # CJK titles fold to '' under normalize. They must match on the exact text,
+    # not collapse to a shared empty key — otherwise '東京' would pair with any
+    # other non-Latin track on the same disc.
+    _, p = compute_missing([_qt("東京")], [_et("東京")])
+    assert len(p) == 1
+    m, p = compute_missing([_qt("東京")], [_et("大阪")])
+    assert len(m) == 1 and not p
+    # The same guard protects the upgrade path: a different-titled non-Latin
+    # track on disk must be flagged as an extra, never silently wiped.
+    extras = find_extras_in_existing([_qt("東京")], [_et("大阪")])
+    assert [t["title"] for t in extras] == ["大阪"]
+
+
 # ── find_extras_in_existing: don't let bonus tracks get wiped on upgrade ─
 
 def test_find_extras_flags_bonus_tracks_for_upgrade_safety():
@@ -131,18 +144,6 @@ def test_album_year_int_fallback():
 
 # ── Dedup + filters ──────────────────────────────────────────────────────
 
-def test_dedup_albums_keeps_non_latin_distinct_and_picks_quality():
-    # Pure-CJK titles fold to '' under normalize — they must still survive
-    # as distinct rather than vanish from the missing list.
-    cjk = [_qalbum("東京", 2020), _qalbum("大阪", 2021)]
-    assert len(dedup_albums(cjk)) == 2
-
-    pair = [_qalbum("Album", 2020, bd=16, sr=44.1),
-            _qalbum("Album", 2020, bd=24, sr=96)]
-    result = dedup_albums(pair, prefer_hires=True)
-    assert len(result) == 1 and result[0][0]["maximum_bit_depth"] == 24
-
-
 def test_dedup_album_versions_collapses_editions_but_keeps_distinct_years():
     # Same title + same year + edition variant → collapse.
     pairs = [_qalbum("Abbey Road", 1969), _qalbum("Abbey Road (Remaster)", 1969)]
@@ -150,6 +151,15 @@ def test_dedup_album_versions_collapses_editions_but_keeps_distinct_years():
     # Same title but different years → two distinct albums.
     pairs = [_qalbum("American Football", 1999), _qalbum("American Football", 2016)]
     assert len(dedup_album_versions(pairs)) == 2
+    # Pure-CJK titles fold to '' under normalize — they must survive as distinct
+    # entries (keyed on the raw text) rather than collapse into one.
+    cjk = [_qalbum("東京", 2020), _qalbum("大阪", 2021)]
+    assert len(dedup_album_versions(cjk)) == 2
+    # prefer_hires picks the higher-resolution edition within a group.
+    pair = [_qalbum("Album", 2020, bd=16, sr=44.1),
+            _qalbum("Album", 2020, bd=24, sr=96)]
+    result = dedup_album_versions(pair, prefer_hires=True)
+    assert len(result) == 1 and result[0][0]["maximum_bit_depth"] == 24
 
 
 def test_dedup_album_versions_picks_standard_over_bloated_deluxe():
