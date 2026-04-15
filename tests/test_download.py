@@ -45,11 +45,11 @@ def test_full_album_lossy_counts_once_not_as_failed(monkeypatch, tmp_path):
     # empty retry pass leaves it stranded so we exercise the bookkeeping, not
     # recovery. T7 never landed.
     deltas = iter([kept + [tmp_path / "06 - T6.mp3"], []])
-    cleans = iter([(kept, ["06 - T6"]), ([], [])])
+    cleans = iter([(kept, ["06 - T6"], []), ([], [], [])])
     _patch(monkeypatch,
            rip=lambda *a, **k: (0, ""),
            added=lambda _s: next(deltas, []),
-           cleanup=lambda _f: next(cleans, ([], [])))
+           cleanup=lambda _f: next(cleans, ([], [], [])))
 
     r = dl.run_album_download(album=_album(tracks), missing=tracks, present=[],
                               album_dir=None, snapshot=set())
@@ -70,7 +70,7 @@ def test_edition_suffix_track_that_landed_is_not_flagged_failed(monkeypatch, tmp
     _patch(monkeypatch,
            rip=lambda *a, **k: (0, ""),
            added=lambda _s: landed,
-           cleanup=lambda f: (list(f), []))
+           cleanup=lambda f: (list(f), [], []))
 
     r = dl.run_album_download(album=_album(tracks), missing=tracks, present=[],
                               album_dir=None, snapshot=set())
@@ -95,10 +95,10 @@ def test_lossy_track_retried_once_and_recovers(monkeypatch, tmp_path):
         return (0, "")
 
     deltas = iter([[track_a, tmp_path / "02 - Star.mp3"], [star]])
-    cleans = iter([([track_a], ["02 - Star"]), ([star], [])])
+    cleans = iter([([track_a], ["02 - Star"], []), ([star], [], [])])
     _patch(monkeypatch, rip=rip,
            added=lambda _s: next(deltas, []),
-           cleanup=lambda _f: next(cleans, ([], [])))
+           cleanup=lambda _f: next(cleans, ([], [], [])))
     monkeypatch.setattr(dl, "snapshot_staging", lambda: {track_a})
 
     r = dl.run_album_download(album=_album(tracks), missing=tracks, present=[],
@@ -123,7 +123,7 @@ def test_strategy_full_vs_per_track_boundary(monkeypatch, total, missing, expect
     _patch(monkeypatch,
            rip=lambda url, **_k: (urls.append(url), (0, ""))[1],
            added=lambda _s: [],
-           cleanup=lambda f: (list(f), []))
+           cleanup=lambda f: (list(f), [], []))
 
     dl.run_album_download(album=_album(tracks), missing=tracks[:missing],
                           present=[{}], album_dir=None, snapshot=set())
@@ -138,7 +138,7 @@ def test_force_track_by_track_overrides_the_ratio(monkeypatch):
     _patch(monkeypatch,
            rip=lambda url, **_k: (urls.append(url), (0, ""))[1],
            added=lambda _s: [],
-           cleanup=lambda f: (list(f), []))
+           cleanup=lambda f: (list(f), [], []))
 
     dl.run_album_download(album=_album(tracks), missing=tracks[:11],
                           present=[{}, {}, {}], album_dir=None, snapshot=set(),
@@ -159,7 +159,7 @@ def test_per_track_loop_stops_on_cancel_without_counting_failures(monkeypatch):
     _patch(monkeypatch,
            rip=lambda url, **_k: (urls.append(url), (130, ""))[1],
            added=lambda _s: [],
-           cleanup=lambda f: (list(f), []))
+           cleanup=lambda f: (list(f), [], []))
     monkeypatch.setattr(dl, "is_cancel_requested", cancel)
 
     r = dl.run_album_download(album=_album(tracks), missing=tracks[:11],
@@ -181,7 +181,7 @@ def test_full_album_backs_up_present_tracks_before_rip(monkeypatch, tmp_path):
     _patch(monkeypatch,
            rip=lambda *a, **k: (0, ""),
            added=lambda _s: [],
-           cleanup=lambda f: (list(f), []))
+           cleanup=lambda f: (list(f), [], []))
     # existing=None drives the lazy read the queue executor relies on.
     monkeypatch.setattr(dl, "read_album_dir", lambda _d: [{"path": str(owned)}])
     monkeypatch.setattr(dl, "find_extras_in_existing", lambda *a, **k: [])

@@ -412,6 +412,7 @@ def _resolve_queue_item(item, args, imported_globally):
         "tracks_lossy_deleted": item.get("n_lossy", 0),
         "failed_titles": item.get("failed_tracks", []),
         "lossy_titles": item.get("lossy_tracks", []),
+        "broken_titles": item.get("broken_tracks", []),
         "imported": imported_globally,
         "auto_upgrade": item["auto_upgrade"],
         "elapsed_s": int(item.get("elapsed", 0)),

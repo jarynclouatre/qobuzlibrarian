@@ -138,7 +138,7 @@ def test_gap_fill_backup_restored_when_track_returns_lossy(monkeypatch, tmp_path
     monkeypatch.setattr(dl, "rip_url", lambda *a, **k: (0, ""))
     monkeypatch.setattr(dl, "files_added_since",
                         lambda _s: new_flacs + [staging / "01 - T1.mp3"])
-    monkeypatch.setattr(dl, "cleanup_lossy", lambda _f: (new_flacs, ["01 - T1"]))
+    monkeypatch.setattr(dl, "cleanup_lossy", lambda _f: (new_flacs, ["01 - T1"], []))
     monkeypatch.setattr(dl, "snapshot_staging", lambda: set())
     monkeypatch.setattr(dl, "detect_auth_lost", lambda _o: False)
     monkeypatch.setattr(dl, "detect_disk_full", lambda _o: False)

@@ -397,29 +397,34 @@ def files_added_since(prior_snapshot):
 
 
 def cleanup_lossy(new_files):
-    """Keep FLACs, delete anything else. Confirms FLAC codec via ffprobe — Qobuz
-    silently downgrades to lossy when hi-res isn't available for the user's tier."""
-    kept, deleted = [], []
+    """Sort freshly-downloaded audio into (kept, lossy, broken), deleting both
+    kinds of reject from staging. Returns the file stems for the two reject
+    buckets so the caller can tell them apart:
+
+      lossy   — a non-FLAC file (.mp3/.m4a/…). Qobuz served lossy because no
+                lossless master is available for the user's tier; another
+                source would be needed.
+      broken  — a .flac that won't decode (truncated/interrupted download).
+                A re-rip usually fixes it.
+    """
+    kept, lossy, broken = [], [], []
     for f in new_files:
         ext = f.suffix.lower()
         if ext == ".flac":
             if is_flac(f):
                 kept.append(f)
-            else:
-                try:
-                    f.unlink()
-                    deleted.append(f.stem)
-                except OSError as e:
-                    log.info(fmt(C.YELLOW,
-                        f"  ⚠  Couldn't remove broken FLAC {f.name}: {e}."))
+                continue
+            bucket, what = broken, "broken FLAC"
         elif ext in cfg.AUDIO_EXTS:
-            try:
-                f.unlink()
-                deleted.append(f.stem)
-            except OSError as e:
-                log.info(fmt(C.YELLOW,
-                    f"  ⚠  Couldn't remove non-FLAC {f.name}: {e}."))
-    return kept, deleted
+            bucket, what = lossy, "non-FLAC"
+        else:
+            continue
+        try:
+            f.unlink()
+            bucket.append(f.stem)
+        except OSError as e:
+            log.info(fmt(C.YELLOW, f"  ⚠  Couldn't remove {what} {f.name}: {e}."))
+    return kept, lossy, broken
 
 
 # Known non-audio artifacts that streamrip leaves in STAGING_DIR between runs.

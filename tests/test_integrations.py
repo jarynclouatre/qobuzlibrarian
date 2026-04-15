@@ -54,14 +54,20 @@ def test_is_flac_rejects_truncated_keeps_complete(tmp_path, _need_ffmpeg):
     assert is_flac(tmp_path / "never-written.flac") is False
 
 
-def test_cleanup_lossy_keeps_flac_drops_mp3(tmp_path):
-    flac = tmp_path / "track.flac"
-    flac.write_bytes(b"\x00" * 200_000)
+def test_cleanup_lossy_sorts_flac_lossy_and_broken(tmp_path):
+    good = tmp_path / "good.flac"
+    good.write_bytes(b"\x00" * 200_000)
+    bad = tmp_path / "truncated.flac"
+    bad.write_bytes(b"\x00" * 200_000)
     mp3 = tmp_path / "track.mp3"
     mp3.write_bytes(b"\x00" * 1000)
-    with patch("qobuz_librarian.integrations.rip.is_flac", return_value=True):
-        kept, _ = cleanup_lossy([flac, mp3])
-    assert flac in kept and not mp3.exists()
+    # ffprobe/decode stubbed: the truncated FLAC fails the codec check.
+    with patch("qobuz_librarian.integrations.rip.is_flac",
+               side_effect=lambda p: p == good):
+        kept, lossy, broken = cleanup_lossy([good, bad, mp3])
+    assert kept == [good]
+    assert lossy == ["track"] and broken == ["truncated"]
+    assert not bad.exists() and not mp3.exists()
 
 
 def test_files_added_since_only_returns_new_files(tmp_path, monkeypatch):

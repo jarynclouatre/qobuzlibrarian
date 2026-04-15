@@ -610,7 +610,7 @@ def process_album(album, args, *, allow_force=True, label=None,
     # gap-fill backup path the moment it's taken) so the finally can still
     # restore it on a raise.
     n_ok = n_fail = n_lossy = 0
-    failed_tracks, lossy_tracks = [], []
+    failed_tracks, lossy_tracks, broken_tracks = [], [], []
     imported = False
     elapsed = 0.0
     download_phase_completed = False
@@ -630,6 +630,7 @@ def process_album(album, args, *, allow_force=True, label=None,
         n_lossy = download_result["n_lossy"]
         failed_tracks = download_result["failed_tracks"]
         lossy_tracks = download_result["lossy_tracks"]
+        broken_tracks = download_result.get("broken_tracks", [])
         elapsed = download_result["elapsed"]
 
         # Cancelled mid-rip: the user hit stop, so the partial set must not be
@@ -834,8 +835,11 @@ def process_album(album, args, *, allow_force=True, label=None,
         section("Result")
         log.info("")
         log.info(f"  {fmt(C.GREEN if n_ok else C.GRAY,    '✓ downloaded:')}    {n_ok}")
-        if n_lossy:
-            log.info(f"  {fmt(C.YELLOW, '⚠ lossy/deleted:')} {n_lossy}")
+        n_truly_lossy = n_lossy - len(broken_tracks)
+        if n_truly_lossy:
+            log.info(f"  {fmt(C.YELLOW, '⚠ lossy on Qobuz:')} {n_truly_lossy}")
+        if broken_tracks:
+            log.info(f"  {fmt(C.YELLOW, '⚠ incomplete:')}    {len(broken_tracks)}")
         if n_fail:
             log.info(f"  {fmt(C.RED, '✗ failed:')}        {n_fail}")
         log.info(f"  {fmt(C.GRAY, '  runtime:')}        {int(elapsed)}s")
@@ -846,11 +850,17 @@ def process_album(album, args, *, allow_force=True, label=None,
             log.info(fmt(C.RED, "\n  failed tracks:"))
             for t in failed_tracks[:10]:
                 log.info(f"     {truncate(t, 60)}")
-        if lossy_tracks:
+        _broken = set(broken_tracks)
+        truly_lossy = [t for t in lossy_tracks if t not in _broken]
+        if truly_lossy:
             log.info(fmt(C.YELLOW,
-                "\n  not saved as lossless (lossy on Qobuz, or the download "
-                "kept coming back incomplete):"))
-            for t in lossy_tracks[:10]:
+                "\n  only available lossy on Qobuz (would need another source):"))
+            for t in truly_lossy[:10]:
+                log.info(f"     {truncate(t, 60)}")
+        if broken_tracks:
+            log.info(fmt(C.YELLOW,
+                "\n  downloaded incomplete and discarded (a re-run usually fixes these):"))
+            for t in broken_tracks[:10]:
                 log.info(f"     {truncate(t, 60)}")
         log.info("")
 
@@ -877,6 +887,7 @@ def process_album(album, args, *, allow_force=True, label=None,
         "tracks_failed": n_fail,
         "failed_titles": failed_tracks,
         "lossy_titles": lossy_tracks,
+        "broken_titles": broken_tracks,
         "imported": imported,
         "force": bool(use_force),
         "force_cleaned": force_cleaned,

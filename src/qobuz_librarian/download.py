@@ -205,22 +205,21 @@ def run_album_download(*, album, missing, present, album_dir, snapshot,
     new_files = files_added_since(snapshot)
     audio_new = [f for f in new_files if f.suffix.lower() in cfg.AUDIO_EXTS]
     vlog(f"  {len(new_files)} new file(s) in staging ({len(audio_new)} audio)")
-    kept, deleted = cleanup_lossy(audio_new)
+    kept, lossy, broken = cleanup_lossy(audio_new)
     n_ok = len(kept)
-    n_lossy = len(deleted)
-    lossy_tracks = deleted
 
-    # Single-track retry for 0-byte / lossy-deleted files: a one-off glitch
-    # shouldn't strand a track in the lossy bucket when a per-track URL almost
-    # always succeeds. One retry per track — no recursion, no loop. Skipped
-    # once a cancel is in flight so we don't fire rips the user asked to stop.
-    if lossy_tracks and missing and not is_cancel_requested():
-        lossy_norms = {match_key_from_stem(d) for d in lossy_tracks}
+    # Both reject kinds get one per-track retry: a broken FLAC is usually a
+    # transient glitch, and the album URL occasionally serves lossy for a track
+    # the track URL has lossless. One retry per track — no recursion, no loop.
+    # Skipped once a cancel is in flight so we don't fire rips the user stopped.
+    discarded = lossy + broken
+    if discarded and missing and not is_cancel_requested():
+        discarded_norms = {match_key_from_stem(d) for d in discarded}
         retry_targets = [t for t in missing
-                         if _bare_title(t.get("title")) in lossy_norms]
+                         if _bare_title(t.get("title")) in discarded_norms]
         if retry_targets:
             log.info(fmt(C.GRAY,
-                f"  ↻  Retrying {len(retry_targets)} lossy/empty "
+                f"  ↻  Retrying {len(retry_targets)} lossy/incomplete "
                 "track(s) once via per-track URL"))
             retry_snapshot = snapshot_staging()
             for t in retry_targets:
@@ -236,18 +235,25 @@ def run_album_download(*, album, missing, present, album_dir, snapshot,
                 rate_limited = rate_limited or detect_rate_limited(out)
             retry_audio = [f for f in files_added_since(retry_snapshot)
                            if f.suffix.lower() in cfg.AUDIO_EXTS]
-            retry_kept, _ = cleanup_lossy(retry_audio)
+            retry_kept, _, _ = cleanup_lossy(retry_audio)
             if retry_kept:
-                # Move retry survivors from lossy to ok; drop their titles from
-                # the deleted list so the summary doesn't re-list them.
+                # Recovered tracks move to ok; drop them from whichever reject
+                # bucket they were in so the summary doesn't re-list them.
                 recovered = {match_key_from_stem(p) for p in retry_kept}
-                lossy_tracks = [d for d in lossy_tracks
-                                if match_key_from_stem(d) not in recovered]
+                lossy = [d for d in lossy if match_key_from_stem(d) not in recovered]
+                broken = [d for d in broken if match_key_from_stem(d) not in recovered]
                 kept = kept + retry_kept
                 n_ok = len(kept)
-                n_lossy = len(lossy_tracks)
                 log.info(fmt(C.GREEN,
                     f"  ✓  Retry recovered {len(retry_kept)} track(s)"))
+
+    # `n_lossy`/`lossy_tracks` stay the count and stems of everything discarded
+    # (lossy + broken) — the album-whole gates and the reconciliation math key
+    # off "did every track land as a clean FLAC", which both kinds fail.
+    # broken_tracks carries the incomplete-download subset so the summary can
+    # word the two cases honestly.
+    lossy_tracks = lossy + broken
+    n_lossy = len(lossy_tracks)
 
     # Reconcile counts against what's actually on disk: rip can exit non-zero
     # yet land FLACs (post-processing crash), or exit 0 yet silently drop a
@@ -282,11 +288,17 @@ def run_album_download(*, album, missing, present, album_dir, snapshot,
                     f"  · {n_ok} track(s) landed despite rip exit "
                     f"{full_album_rc} (streamrip post-processing error)."))
 
-    if n_lossy:
+    if lossy:
         log.info(fmt(C.YELLOW,
-            f"  ⚠  {n_lossy} track(s) deleted — not lossless "
-            f"(lossy Qobuz fallback or an incomplete download):"))
-        for d in lossy_tracks[:5]:
+            f"  ⚠  {len(lossy)} track(s) only available lossy on Qobuz "
+            f"(no lossless for your tier — another source needed):"))
+        for d in lossy[:5]:
+            log.info(fmt(C.GRAY, f"     {d}"))
+    if broken:
+        log.info(fmt(C.YELLOW,
+            f"  ⚠  {len(broken)} track(s) downloaded incomplete and were "
+            f"discarded (a re-run usually fixes these):"))
+        for d in broken[:5]:
             log.info(fmt(C.GRAY, f"     {d}"))
 
     result.update({
@@ -295,6 +307,7 @@ def run_album_download(*, album, missing, present, album_dir, snapshot,
         "n_lossy": n_lossy,
         "failed_tracks": failed_tracks,
         "lossy_tracks": lossy_tracks,
+        "broken_tracks": broken,
         "rate_limited": rate_limited,
         "elapsed": time.time() - t_start,
         "download_full_album": download_full_album,
