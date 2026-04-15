@@ -165,9 +165,6 @@ def read_album_dir(album_dir: Path):
     return tracks
 
 
-# _normalize_title stub removed; now uses tags.normalize() directly
-
-
 # ── Library directory listing ─────────────────────────────────────────────────
 def _has_audio_anywhere(d: Path) -> bool:
     """True if any audio file exists anywhere under ``d`` (recursive).
@@ -257,7 +254,8 @@ def _list_artist_subdirs_cached(artist_dir: Path):
     if key in _ARTIST_SUBDIRS_CACHE:
         return _ARTIST_SUBDIRS_CACHE[key]
     try:
-        subdirs = [d for d in artist_dir.iterdir() if d.is_dir()]
+        subdirs = sorted((d for d in artist_dir.iterdir() if d.is_dir()),
+                         key=lambda p: p.name.lower())
     except OSError as e:
         vlog(f"  iterdir failed for {artist_dir}: {e}")
         subdirs = []
