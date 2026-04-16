@@ -137,17 +137,12 @@ def run_artist_gap_fill(artist_name, artist_dir, args, token, *,
     # Detect sibling folders (same bare title) before any downloads.
     sibling_choices = {}  # picked_dir -> [siblings to delete after fill]
 
-    def _maybe_delete_siblings(picked, r=None):
-        if picked not in sibling_choices:
-            return
-        ok = (r is None
-              or r.get("result") in ("already_complete",
-                                     "skipped_already_higher_quality")
-              or (r.get("n_ok", 0) > 0 and r.get("n_fail", 0) == 0
-                  and r.get("imported", False)))
-        if not ok:
-            return
-        for sib in sibling_choices[picked]:
+    def _delete_siblings_of_complete(picked):
+        # Only for an already-complete pick: no download runs, so the executor
+        # never sees this folder and won't clean its siblings. When an album
+        # IS downloaded, the executor deletes the siblings itself, gated on a
+        # clean result (no failed or lossy tracks) — don't second-guess it here.
+        for sib in sibling_choices.get(picked, []):
             if not sib.exists():
                 continue
             try:
@@ -450,7 +445,7 @@ def run_artist_gap_fill(artist_name, artist_dir, args, token, *,
                 log.info(fmt(C.GREEN,
                     f"    ✓  All {n_total} track(s) present — checking next"))
             results.append({"dir": ad, "result": "already_complete", "n_total": n_total})
-            _maybe_delete_siblings(ad)
+            _delete_siblings_of_complete(ad)
             continue
 
         # Artist mode is gap-fill only — no upgrade prompts.
@@ -531,12 +526,11 @@ def run_artist_gap_fill(artist_name, artist_dir, args, token, *,
                 save_callback()
             except Exception as _sce:
                 vlog(f"  save_callback raised: {_sce}")
-    elif queue:
-        pre_items = list(queue)
+    elif queue and pending_auth_lost is None:
+        # The executor deletes each item's chosen siblings itself once the
+        # fill lands cleanly, so there's nothing to clean up here.
         queue_results, drained = _execute_download_queue(queue, args, token)
-        for qi, qr in zip(pre_items, queue_results):
-            results.append(qr)
-            _maybe_delete_siblings(qi["album_dir"], qr)
+        results.extend(queue_results)
         if not drained:
             log.info(fmt(C.YELLOW,
                 "  ⚠  Some albums couldn't be downloaded — kept to retry; "
