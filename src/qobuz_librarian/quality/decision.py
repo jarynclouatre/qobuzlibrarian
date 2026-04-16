@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 from qobuz_librarian import config as cfg
 from qobuz_librarian.api.auth import AuthLost, QobuzError
 from qobuz_librarian.api.search import get_artist_albums, search_artists
+from qobuz_librarian.integrations.compress import HAVE_DOWNSAMPLE
 from qobuz_librarian.library.catalog import (
     album_quality_label,
     compute_missing,
@@ -17,28 +18,33 @@ from qobuz_librarian.library.catalog import (
 )
 from qobuz_librarian.library.scanner import clear_scan_caches, list_artist_album_dirs
 from qobuz_librarian.library.tags import similarity, strip_album_decorations
-from qobuz_librarian.quality.tiers import streamrip_quality_cap
+from qobuz_librarian.quality.tiers import downsample_target_rate, streamrip_quality_cap
 from qobuz_librarian.ui_cli.logging import vlog
 
 
 def album_max_quality(qobuz_album):
-    """Return (bit_depth, sample_rate_hz) for a Qobuz album, capped at
-    what streamrip will actually deliver under the user's quality setting.
+    """Return the (bit_depth, sample_rate_hz) the pipeline will actually put
+    on disk for a Qobuz album — capped to the streamrip quality tier, then
+    through the downsample hook if it's enabled.
 
-    Autodetects Hz vs kHz like album_quality_label does: Qobuz normally
-    returns kHz (e.g. 96.0), but values >= 1000 are treated as already-Hz
-    so a future API change can't silently flip every album to 'lower than
-    Qobuz' and trigger spurious auto-upgrades.
+    Qobuz reports sample rate in kHz (e.g. 96.0); values >= 1000 are treated
+    as already-Hz so an API change to Hz can't make every album read as
+    'lower than Qobuz' and trigger spurious upgrades.
 
-    The cap prevents an infinite-upgrade loop when Qobuz reports e.g.
-    24/192 but the user's quality setting caps at 24/96 — we'd otherwise
-    keep flagging existing 24/96 tracks as 'lower than target' forever."""
+    Comparing against the *post-downsample* rate matters: with downsampling
+    on, a 24/192 album lands as 24/48, so capping only to the rip tier would
+    flag every already-downsampled album as below target and re-rip it on
+    every scan, forever.
+    """
     bd = qobuz_album.get("maximum_bit_depth") or 0
     sr = qobuz_album.get("maximum_sampling_rate") or 0
     sr_hz = int(round(sr)) if sr >= 1000 else int(round(sr * 1000))
     cap_bd, cap_sr = streamrip_quality_cap()
-    return (min(bd, cap_bd) if bd else 0,
-            min(sr_hz, cap_sr) if sr_hz else 0)
+    bd = min(bd, cap_bd) if bd else 0
+    sr_hz = min(sr_hz, cap_sr) if sr_hz else 0
+    if sr_hz and cfg.DOWNSAMPLE_HIRES_ENABLED and HAVE_DOWNSAMPLE:
+        sr_hz = downsample_target_rate(sr_hz)
+    return (bd, sr_hz)
 
 
 def existing_track_quality(track):
@@ -283,6 +289,12 @@ def scan_artist_for_upgrades(artist_name, artist_dir, token, args, capped=None):
         if qual["classification"] not in ("all_lower", "mixed_below"):
             continue
 
+        # An unreadable track can't be verified as an upgrade, and the
+        # wipe-replace in process_album refuses the whole album when any
+        # exist. Don't surface a candidate it would only no-op on.
+        if qual["n_unknown"]:
+            continue
+
         # Bonus tracks normally block wipe-and-replace. Before giving up,
         # try to find an alternate Qobuz edition that covers everything
         # on disk. Auto-promote a perfect match (no new extras, still an
@@ -297,6 +309,11 @@ def scan_artist_for_upgrades(artist_name, artist_dir, token, args, capped=None):
             swapped = False
             for full, new_extras in cands:
                 if new_extras:
+                    continue
+                # A swapped-to edition has its own id, so its cap marker is
+                # separate from the one we checked above — honour it here or
+                # a capped expanded edition re-flags on every scan.
+                if capped and is_album_capped(full.get("id"), capped):
                     continue
                 new_qual = compare_album_quality(existing, full)
                 if new_qual["classification"] in ("all_lower", "mixed_below"):

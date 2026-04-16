@@ -1,8 +1,5 @@
 """Tests for quality/tiers.py and quality/decision.py."""
 from datetime import datetime, timedelta, timezone
-from unittest.mock import patch
-
-import pytest
 
 from qobuz_librarian.quality.decision import (
     _track_quality_cmp,
@@ -16,15 +13,6 @@ from qobuz_librarian.quality.decision import (
 from qobuz_librarian.quality.tiers import format_quality, streamrip_quality_cap
 
 
-@pytest.fixture
-def fresh_quality_cap():
-    """Reset the cap cache so a previous case can't leak its value."""
-    import qobuz_librarian.quality.tiers as tiers_mod
-    tiers_mod._streamrip_cap_cache = None
-    yield
-    tiers_mod._streamrip_cap_cache = None
-
-
 def test_format_quality_renders_known_tiers_and_unknown():
     assert format_quality(16, 44100) == "16/44.1"
     assert format_quality(24, 96000) == "24/96"
@@ -32,39 +20,42 @@ def test_format_quality_renders_known_tiers_and_unknown():
     assert format_quality(0, 44100) == "?"
 
 
-def test_streamrip_quality_cap_caches_and_falls_back_to_permissive(fresh_quality_cap, caplog):
-    import logging
-
-    # First-call result is cached — flipping the config after doesn't change it.
-    with patch("qobuz_librarian.config.STREAMRIP_QUALITY", 3):
-        first = streamrip_quality_cap()
-    with patch("qobuz_librarian.config.STREAMRIP_QUALITY", 4):
-        second = streamrip_quality_cap()
-    assert first == second == (24, 96000)
-
-    # An unrecognised tier warns and stays permissive (24/192) so a typo'd
-    # env var doesn't silently downsample everything to CD.
-    import qobuz_librarian.quality.tiers as tiers_mod
-    tiers_mod._streamrip_cap_cache = None
-    with patch("qobuz_librarian.config.STREAMRIP_QUALITY", "99"), \
-         patch("qobuz_librarian.config.STREAMRIP_CONFIG", "/nonexistent.toml"), \
-         caplog.at_level(logging.WARNING, logger="qobuz_librarian"):
-        assert streamrip_quality_cap() == (24, 192000)
-    assert any("isn't a recognised tier" in r.message for r in caplog.records)
+def test_streamrip_quality_cap_tracks_the_current_tier(monkeypatch):
+    # CD lossless and full hi-res cap to their tier's ceiling.
+    monkeypatch.setattr("qobuz_librarian.config.STREAMRIP_QUALITY", 2)
+    assert streamrip_quality_cap() == (16, 44100)
+    # Reads live, so a quality change (Settings page) takes effect at once
+    # rather than reasoning at the value in effect on first call.
+    monkeypatch.setattr("qobuz_librarian.config.STREAMRIP_QUALITY", 4)
+    assert streamrip_quality_cap() == (24, 192000)
 
 
-def test_album_max_quality_normalises_khz_and_applies_cap():
-    import qobuz_librarian.quality.tiers as tiers_mod
-    tiers_mod._streamrip_cap_cache = (24, 96000)
+def test_album_max_quality_normalises_khz_and_applies_cap(monkeypatch):
+    monkeypatch.setattr("qobuz_librarian.config.DOWNSAMPLE_HIRES_ENABLED", False)
+    monkeypatch.setattr("qobuz_librarian.config.STREAMRIP_QUALITY", 3)
     # The Qobuz API reports sample rate in kHz floats — store as Hz int.
-    album = {"maximum_bit_depth": 24, "maximum_sampling_rate": 96.0}
-    assert album_max_quality(album) == (24, 96000)
+    assert album_max_quality(
+        {"maximum_bit_depth": 24, "maximum_sampling_rate": 96.0}) == (24, 96000)
     # A 192 album under a 96 cap caps down to 96 — we won't claim to fetch
     # higher than what streamrip will actually download.
-    album = {"maximum_bit_depth": 24, "maximum_sampling_rate": 192.0}
-    bd, sr = album_max_quality(album)
-    assert sr == 96000
-    tiers_mod._streamrip_cap_cache = None
+    assert album_max_quality(
+        {"maximum_bit_depth": 24, "maximum_sampling_rate": 192.0})[1] == 96000
+
+
+def test_album_max_quality_reflects_downsample_target(monkeypatch):
+    # With downsampling on, a 24/192 master lands on disk as 24/48. The
+    # comparison target must match that, or the album reads as below target
+    # and gets re-ripped on every scan forever.
+    monkeypatch.setattr("qobuz_librarian.config.STREAMRIP_QUALITY", 4)
+    monkeypatch.setattr("qobuz_librarian.config.DOWNSAMPLE_HIRES_ENABLED", True)
+    monkeypatch.setattr("qobuz_librarian.quality.decision.HAVE_DOWNSAMPLE", True)
+    assert album_max_quality(
+        {"maximum_bit_depth": 24, "maximum_sampling_rate": 192.0}) == (24, 48000)
+    assert album_max_quality(
+        {"maximum_bit_depth": 24, "maximum_sampling_rate": 88.2}) == (24, 44100)
+    # 44.1/48 kHz aren't resampled, so they pass through.
+    assert album_max_quality(
+        {"maximum_bit_depth": 16, "maximum_sampling_rate": 44.1}) == (16, 44100)
 
 
 def test_compare_album_quality_classifies_and_counts_unknown():

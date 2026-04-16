@@ -302,10 +302,20 @@ def process_album(album, args, *, allow_force=True, label=None,
                 f"{target_label} would mix quality."))
 
         elif cls in ("all_lower", "mixed_below"):
-            # Qobuz is higher quality. Safe to replace ONLY if no extras.
-            # If user already said yes to gap-fill, honor it instead of
-            # silently skipping — auto-upgrade is unsafe but gap-fill isn't.
-            if extras and missing and already_confirmed:
+            # Qobuz is higher quality, but only replace when it's verifiably
+            # safe. An unreadable track (bit depth/rate we can't read) can't
+            # be confirmed as an upgrade and a wipe-replace could silently
+            # downgrade an unreadable hi-res file — refuse for the whole album
+            # before any edition-swap path can reach the destructive branch,
+            # and fill gaps instead. A gap-fill the user already okayed is
+            # honoured below; auto-upgrade is the unsafe part, not gap-fill.
+            if qual.get("n_unknown"):
+                log.info(fmt(C.YELLOW,
+                    f"\n  ⚠  Can't auto-upgrade — {qual['n_unknown']} track(s) "
+                    f"have unreadable quality and would be replaced unverified; "
+                    f"filling gaps only."))
+                # Fall through to plain gap-fill; do NOT set auto_upgrade_active.
+            elif extras and missing and already_confirmed:
                 # User already okayed a gap-fill. We can't safely wipe-and-
                 # replace while bonus tracks live on disk, but maybe an
                 # expanded edition carries them — offer it. If it does and has
@@ -395,16 +405,6 @@ def process_album(album, args, *, allow_force=True, label=None,
                     return {"result": "skipped_has_extras",
                             "n_total": len(qobuz_tracks),
                             "n_extras": len(extras)}
-            elif qual.get("n_unknown"):
-                # Some on-disk tracks have unreadable bit depth/sample rate, so
-                # we can't confirm the download is actually an upgrade for them.
-                # Refuse the destructive wipe-replace (it could silently
-                # downgrade an unreadable hi-res file) and fill any gaps instead.
-                log.info(fmt(C.YELLOW,
-                    f"\n  ⚠  Can't auto-upgrade — {qual['n_unknown']} track(s) "
-                    f"have unreadable quality and would be replaced unverified; "
-                    f"filling gaps only."))
-                # Fall through to plain gap-fill; do NOT set auto_upgrade_active.
             else:
                 # No extras — auto-upgrade is safe. Build a banner with an
                 # explicit before→after quality contrast so the user sees at a

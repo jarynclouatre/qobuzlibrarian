@@ -1,17 +1,7 @@
 """streamrip quality-tier constants and cap detection."""
-import sys
-
 from qobuz_librarian import config as cfg
 
-if sys.version_info >= (3, 11):
-    import tomllib
-else:
-    try:
-        import tomllib
-    except ImportError:
-        import tomli as tomllib  # type: ignore[no-redef]
-
-# Streamrip quality tiers we'll actually receive after download.
+# Highest (bit_depth, sample_rate_hz) streamrip delivers per quality tier:
 # 1=320 MP3, 2=16/44.1, 3=24-bit up to 96kHz, 4=24-bit up to 192kHz.
 _STREAMRIP_QUALITY_CAPS = {
     1: (16, 44100),
@@ -19,68 +9,35 @@ _STREAMRIP_QUALITY_CAPS = {
     3: (24, 96000),
     4: (24, 192000),
 }
-_streamrip_cap_cache = None
-
-
-def reset_streamrip_cap_cache():
-    """Drop the cached cap so the next call re-derives it.
-
-    Call this after STREAMRIP_QUALITY changes at runtime (the Settings
-    page) — otherwise the upgrade scanner keeps reasoning at the quality
-    that was in effect when the cap was first computed.
-    """
-    global _streamrip_cap_cache
-    _streamrip_cap_cache = None
 
 
 def streamrip_quality_cap():
-    """Return (max_bit_depth, max_sample_rate_hz) we will actually receive
-    given the user's quality setting. Cached after first call.
+    """Return (max_bit_depth, max_sample_rate_hz) streamrip will actually
+    deliver at the current quality setting.
 
-    rip.py always invokes streamrip with `-q cfg.STREAMRIP_QUALITY`, and the
-    CLI flag overrides whatever streamrip's own config.toml says — so
-    STREAMRIP_QUALITY (env / compose.yaml) is the authoritative value and
-    the cap must be derived from it, not the config file. Reading the cap
-    from config.toml instead made the upgrade scanner reason about a
-    different quality than downloads actually use: bump STREAMRIP_QUALITY
-    to 4 for hi-res and the scanner would still cap at the seeded config's
-    value and never surface the hi-res upgrades it could now fetch. The
-    config.toml is consulted only as a fallback when STREAMRIP_QUALITY
-    isn't a recognised tier.
+    rip.py invokes streamrip with `-q cfg.STREAMRIP_QUALITY`, and that flag
+    overrides streamrip's own config — so STREAMRIP_QUALITY (env / Settings)
+    is authoritative. config validates it to a 1-4 tier at load and the
+    Settings page only accepts those values, so this is a live tier lookup:
+    reading it fresh each call means a quality change takes effect at once.
     """
-    global _streamrip_cap_cache
-    if _streamrip_cap_cache is not None:
-        return _streamrip_cap_cache
-    cap = (24, 192000)  # safe permissive default
-    resolved = False
-    try:
-        q = int(cfg.STREAMRIP_QUALITY)
-    except (TypeError, ValueError):
-        q = None
-    if q in _STREAMRIP_QUALITY_CAPS:
-        cap = _STREAMRIP_QUALITY_CAPS[q]
-        resolved = True
-    else:
-        try:
-            with open(cfg.STREAMRIP_CONFIG, "rb") as f:
-                config = tomllib.load(f)
-            cq = (config.get("qobuz") or {}).get("quality")
-            if isinstance(cq, int) and cq in _STREAMRIP_QUALITY_CAPS:
-                cap = _STREAMRIP_QUALITY_CAPS[cq]
-                resolved = True
-        except Exception:
-            pass
-    if not resolved:
-        # Falling back to the permissive default silently makes the upgrade
-        # scanner reason at 24/192 even if downloads deliver less, so it
-        # re-flags the same albums as upgradeable every scan. Say so once.
-        from qobuz_librarian.ui_cli.logging import log
-        log.warning(
-            f"STREAMRIP_QUALITY={cfg.STREAMRIP_QUALITY!r} isn't a recognised "
-            "tier (1-4); assuming the most permissive quality cap, which can "
-            "keep re-flagging albums as upgradeable. Set it to 1-4.")
-    _streamrip_cap_cache = cap
-    return cap
+    return _STREAMRIP_QUALITY_CAPS[cfg.STREAMRIP_QUALITY]
+
+
+def downsample_target_rate(sr_hz):
+    """Sample rate (Hz) a file ends up at after the downsample hook runs.
+
+    Mirrors the resample families in scripts/compress.py: the high-rate
+    members of each integer-ratio family collapse to their 44.1/48 kHz base,
+    and rates already at (or below) the base pass through unchanged. Unlike
+    the script's target_rate, this returns the input for the no-change case
+    rather than None, so callers can chain it without a guard.
+    """
+    if sr_hz in (88200, 176400, 352800):
+        return 44100
+    if sr_hz in (96000, 192000, 384000):
+        return 48000
+    return sr_hz
 
 
 def format_quality(bits, rate):

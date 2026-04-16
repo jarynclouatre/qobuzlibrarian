@@ -210,12 +210,6 @@ def _apply(values: dict):
         else:
             setattr(cfg, key, str(raw or "").strip())
 
-    # The streamrip quality cap is cached after first use; if the quality
-    # just changed, drop the cache so the upgrade scanner re-derives it.
-    if "STREAMRIP_QUALITY" in values:
-        from qobuz_librarian.quality.tiers import reset_streamrip_cap_cache
-        reset_streamrip_cap_cache()
-
 
 def load():
     """Apply the persisted settings file over env defaults, if present."""
