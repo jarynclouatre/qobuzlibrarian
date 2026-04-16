@@ -1,18 +1,8 @@
 """String normalization, path sanitization, and title-stripping helpers.
 
 The regex constants, cache sizes, and iteration limits here are load-bearing:
-changing them shifts fuzzy-matching results across the codebase.
-
-normalize() and similarity() are used in:
-  - find_album_dir_filesystem (fuzzy folder matching)
-  - compute_missing (title matching)
-  - filter_owned_albums (catalog dedup)
-  - consolidation sibling detection
-
-strip_edition_suffix() and strip_album_decorations() are used in:
-  - compute_missing (matching "Foo (LP Version)" to Qobuz "Foo")
-  - find_sibling_album_dirs (dedup by bare title)
-  - filter_owned_albums (year-aware catalog filtering)
+changing them shifts fuzzy-matching results across catalog matching, folder
+resolution, and consolidation.
 """
 import re
 import unicodedata

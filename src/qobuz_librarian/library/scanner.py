@@ -9,8 +9,6 @@ Things worth knowing if you edit this:
   downloads never get scanned as if they were library content.
 - `read_album_dir` walks per-disc subdirs (`CD1/`, `CD2/`) but never
   follows symlinks, so a loop in the library can't recurse forever.
-  Reads from module-level `config.AUDIO_EXTS` so a formats-list change
-  in config takes effect without touching this file.
 - Only `.flac` gets full mutagen metadata; other audio formats get
   filename-only tags so bonus tracks (mp3, m4a from older rips) are
   still visible to `find_extras_in_existing`.
@@ -27,11 +25,12 @@ from qobuz_librarian.ui_cli.logging import vlog
 
 
 def iter_tree_no_symlinks(root: Path):
-    """rglob('*') equivalent that never traverses symlinks.
+    """Yield every entry under root, never descending into symlinked dirs.
 
-    `Path.rglob` follows symlinks by default — a loop in MUSIC_ROOT
-    sends it into unbounded recursion. Yields symlinked subdirs as
-    leaves so the caller still sees them, but never descends.
+    A symlink loop inside MUSIC_ROOT must not send a walk into unbounded
+    recursion, and content linked in from outside an album shouldn't be
+    scanned as if it lived there. Symlinked subdirs are yielded as leaves so
+    the caller still sees them; they're just never followed.
     """
     for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
         dp = Path(dirpath)
@@ -55,8 +54,7 @@ def parse_track_num(s):
     """Parse a FLAC TRACKNUMBER or DISCNUMBER tag value to int.
 
     Handles '1', '01', '1/12', '01/12', '5 of 12'. Returns 0 on empty or
-    unparseable. (regex form, not split — more
-    defensive against exotic tag values).
+    unparseable input.
     """
     if not s:
         return 0
@@ -89,13 +87,13 @@ def read_flac_meta(path: Path):
 
     info = f.info
     meta = {
-        "title":       first("TITLE") or first("title"),
-        "isrc":        (first("ISRC") or first("isrc") or "").strip().replace("-", "").upper(),
-        "mb_trackid":  (first("MUSICBRAINZ_TRACKID") or first("musicbrainz_trackid") or "").strip().lower(),
-        "album":       first("ALBUM"),
-        "albumartist": first("ALBUMARTIST") or first("ARTIST"),
-        "tracknumber": parse_track_num(first("TRACKNUMBER") or first("tracknumber")),
-        "discnumber":  parse_track_num(first("DISCNUMBER") or first("discnumber")) or 1,
+        "title":       first("title"),
+        "isrc":        first("isrc").strip().replace("-", "").upper(),
+        "mb_trackid":  first("musicbrainz_trackid").strip().lower(),
+        "album":       first("album"),
+        "albumartist": first("albumartist") or first("artist"),
+        "tracknumber": parse_track_num(first("tracknumber")),
+        "discnumber":  parse_track_num(first("discnumber")) or 1,
         "bits":        getattr(info, "bits_per_sample", 0) if info else 0,
         "sample_rate": getattr(info, "sample_rate", 0) if info else 0,
         "channels":    getattr(info, "channels", 0) if info else 0,
@@ -111,11 +109,9 @@ def read_album_dir(album_dir: Path):
     """Scan album_dir for audio files; return list of track-metadata dicts.
 
     Only .flac files get full mutagen metadata. Other formats get a
-    filename-only fallback so bonus tracks (mp3, m4a, etc.) still appear
-    in find_extras_in_existing and aren't silently destroyed by upgrade-replace.
-
-    Uses rglob so tracks in multi-disc subdirectories (CD1/, CD2/) are found.
-    Module-level AUDIO_EXTS is used — not a local copy — to stay in sync.
+    filename-only fallback so bonus tracks (mp3, m4a, etc.) still appear in
+    find_extras_in_existing and aren't silently destroyed by upgrade-replace.
+    Multi-disc subdirectories (CD1/, CD2/) are walked; symlinks never followed.
     """
     if not album_dir.exists():
         return []
