@@ -12,6 +12,7 @@ import time
 from qobuz_librarian import config as cfg
 from qobuz_librarian.api.auth import AuthLost, QobuzError
 from qobuz_librarian.api.search import get_album, get_artist_albums, search_artists
+from qobuz_librarian.integrations.compress import HAVE_DOWNSAMPLE
 from qobuz_librarian.library.catalog import (
     _count_audio_files_in,
     album_quality_label,
@@ -46,6 +47,7 @@ from qobuz_librarian.modes.process import (
     process_album,
 )
 from qobuz_librarian.quality.decision import compare_album_quality
+from qobuz_librarian.quality.tiers import downsample_target_rate
 from qobuz_librarian.queue.builder import _build_queue_item
 from qobuz_librarian.queue.executor import _execute_download_queue
 from qobuz_librarian.ui_cli.colors import C, banner, fmt, section, truncate
@@ -461,9 +463,13 @@ def run_artist_gap_fill(artist_name, artist_dir, args, token, *,
                 f"      {str(_tn).rjust(2)}. {truncate(_mt.get('title') or '?', 56)}"))
         if len(missing) > 8:
             log.info(fmt(C.GRAY, f"      … and {len(missing) - 8} more"))
-        _qsr_raw = album.get("maximum_sampling_rate") or 0
-        _qsr_khz = (_qsr_raw / 1000) if _qsr_raw >= 1000 else _qsr_raw
-        _compress_note = "  → will compress to 48kHz" if _qsr_khz > 48 else ""
+        _compress_note = ""
+        if cfg.DOWNSAMPLE_HIRES_ENABLED and HAVE_DOWNSAMPLE:
+            _sr = album.get("maximum_sampling_rate") or 0
+            _sr_hz = int(round(_sr)) if _sr >= 1000 else int(round(_sr * 1000))
+            _target_hz = downsample_target_rate(_sr_hz)
+            if _target_hz < _sr_hz:
+                _compress_note = f"  → will downsample to {_target_hz / 1000:g}kHz"
         log.info(fmt(C.GRAY,
             f"    Qobuz: {album_year(album) or '?'} • {album_quality_label(album)}{_compress_note}"))
 
