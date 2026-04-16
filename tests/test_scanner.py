@@ -66,7 +66,7 @@ def test_read_album_dir_filename_fallback_and_mutagen_meta(tmp_path):
                  "albumartist": "Artist", "bits": 24, "sample_rate": 96000,
                  "length": 245.0, "path": str(tmp_path / "05 - My Song.flac")}
     with patch("qobuz_librarian.library.scanner.HAVE_MUTAGEN", True), \
-         patch("qobuz_librarian.library.scanner.read_flac_meta", return_value=fake_meta):
+         patch("qobuz_librarian.library.scanner.read_audio_meta", return_value=fake_meta):
         result = read_album_dir(tmp_path)
     assert result[0]["title"] == "Real Title" and result[0]["bits"] == 24
 

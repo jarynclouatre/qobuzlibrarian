@@ -9,9 +9,10 @@ Things worth knowing if you edit this:
   downloads never get scanned as if they were library content.
 - `read_album_dir` walks per-disc subdirs (`CD1/`, `CD2/`) but never
   follows symlinks, so a loop in the library can't recurse forever.
-- Only `.flac` gets full mutagen metadata; other audio formats get
-  filename-only tags so bonus tracks (mp3, m4a from older rips) are
-  still visible to `find_extras_in_existing`.
+- Every audio format is read with mutagen; a file that won't parse or
+  has no tags falls back to a title/track guessed from its filename, so
+  untagged bonus tracks (mp3, m4a from older rips) stay visible to
+  `find_extras_in_existing`.
 """
 import logging
 import os
@@ -42,10 +43,10 @@ def iter_tree_no_symlinks(root: Path):
 log = logging.getLogger("qobuz_librarian")
 
 try:
-    from mutagen.flac import FLAC as MutagenFLAC
+    import mutagen
     HAVE_MUTAGEN = True
 except ImportError:
-    MutagenFLAC = None
+    mutagen = None
     HAVE_MUTAGEN = False
 
 
@@ -62,12 +63,15 @@ def parse_track_num(s):
     return int(m.group(1)) if m else 0
 
 
-# ── FLAC metadata ─────────────────────────────────────────────────────────────
-def read_flac_meta(path: Path):
-    """Read FLAC tags and audio info via mutagen. Returns dict or None.
+# ── Audio metadata ────────────────────────────────────────────────────────────
+def read_audio_meta(path: Path):
+    """Read tags and audio info via mutagen. Returns dict or None.
 
-    Returns None when mutagen is unavailable or the file can't be read.
-    Caller falls back to filename-based tags.
+    Works for any format mutagen understands (FLAC, MP3, M4A, …) through its
+    uniform "easy" tag interface. Returns None when mutagen is unavailable,
+    the file can't be parsed, or it has no title tag — the caller then derives
+    title and track number from the filename, so untagged bonus tracks still
+    show up.
     """
     if not HAVE_MUTAGEN:
         return None
@@ -75,19 +79,27 @@ def read_flac_meta(path: Path):
     if cached is not None:
         return cached
     try:
-        f = MutagenFLAC(str(path))
+        f = mutagen.File(str(path), easy=True)
     except Exception:
         return None
+    if f is None:
+        return None
+
+    tags = f.tags
 
     def first(key):
-        v = f.tags.get(key) if f.tags else None
+        v = tags.get(key) if tags else None
         if v and isinstance(v, list):
             return v[0]
         return ""
 
+    title = first("title")
+    if not title:
+        return None
+
     info = f.info
     meta = {
-        "title":       first("title"),
+        "title":       title,
         "isrc":        first("isrc").strip().replace("-", "").upper(),
         "mb_trackid":  first("musicbrainz_trackid").strip().lower(),
         "album":       first("album"),
@@ -108,9 +120,10 @@ def read_flac_meta(path: Path):
 def read_album_dir(album_dir: Path):
     """Scan album_dir for audio files; return list of track-metadata dicts.
 
-    Only .flac files get full mutagen metadata. Other formats get a
-    filename-only fallback so bonus tracks (mp3, m4a, etc.) still appear in
-    find_extras_in_existing and aren't silently destroyed by upgrade-replace.
+    Tags are read with mutagen for every format (flac, mp3, m4a, …); a file
+    that won't parse or carries no tags falls back to title/track from its
+    filename, so even untagged bonus tracks appear in find_extras_in_existing
+    and aren't silently destroyed by upgrade-replace.
     Multi-disc subdirectories (CD1/, CD2/) are walked; symlinks never followed.
     """
     if not album_dir.exists():
@@ -129,10 +142,7 @@ def read_album_dir(album_dir: Path):
 
     tracks = []
     for f in audio_files:
-        ext = f.suffix.lower()
-        tags = None
-        if ext == ".flac" and HAVE_MUTAGEN:
-            tags = read_flac_meta(f)
+        tags = read_audio_meta(f)
         if tags is None:
             stem = f.stem
             m = re.match(r"^(\d+)\s*-\s*(.+)$", stem)
