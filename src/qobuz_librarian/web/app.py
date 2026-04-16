@@ -214,6 +214,13 @@ async def _lifespan(_app: FastAPI):
         _prune_lyric_state_orphans()
     except Exception as e:
         _log.debug("lyric-state prune error at startup: %s", e)
+    try:
+        from qobuz_librarian.library import flac_cache
+        n_pruned = flac_cache.prune_missing()
+        if n_pruned:
+            _log.info("Pruned %d stale tag-cache entries at startup.", n_pruned)
+    except Exception as e:
+        _log.debug("flac-cache prune error at startup: %s", e)
     job_mgr.start_worker()
     if not shutil.which("rip"):
         _log.warning("`rip` (streamrip) not found in PATH — downloads will fail")

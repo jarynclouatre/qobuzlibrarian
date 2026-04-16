@@ -110,3 +110,33 @@ def test_flac_cache_hits_when_unchanged_and_invalidates_on_change(tmp_path, monk
         assert flac_cache.get(f) is None                        # self-invalidated
     finally:
         flac_cache._reset_for_tests()
+
+
+def test_flac_cache_prune_drops_moved_rows_but_spares_unmounted_volume(tmp_path, monkeypatch):
+    import qobuz_librarian.config as cfg
+    from qobuz_librarian.library import flac_cache
+    music = tmp_path / "music"
+    music.mkdir()
+    monkeypatch.setattr(cfg, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(cfg, "MUSIC_ROOT", music)
+    monkeypatch.setattr(cfg, "FLAC_CACHE_ENABLED", True)
+    flac_cache._reset_for_tests()
+    try:
+        here = music / "here.flac"
+        here.write_bytes(b"x")
+        gone = music / "gone.flac"
+        gone.write_bytes(b"y")
+        flac_cache.put(here, {"t": 1})
+        flac_cache.put(gone, {"t": 2})
+
+        gone.unlink()                                        # moved/deleted on disk
+        assert flac_cache.prune_missing(force=True) == 1     # only the orphan goes
+        assert flac_cache.get(here) == {"t": 1}              # live row untouched
+
+        # Library volume unmounted: every path looks gone, but a prune must
+        # not wipe the cache — those rows are still valid once it's back.
+        monkeypatch.setattr(cfg, "MUSIC_ROOT", tmp_path / "unmounted")
+        assert flac_cache.prune_missing(force=True) == 0
+        assert flac_cache.get(here) == {"t": 1}
+    finally:
+        flac_cache._reset_for_tests()

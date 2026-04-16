@@ -9,8 +9,10 @@ A file edited or replaced changes its mtime/size, so the cache self-invalidates
 force a re-parse.
 """
 import json
+import os
 import sqlite3
 import threading
+import time
 from pathlib import Path
 
 from qobuz_librarian import config as cfg
@@ -121,6 +123,42 @@ def put(path, payload) -> None:
         conn.commit()
     except sqlite3.Error as e:
         vlog(f"flac cache write failed: {e}")
+
+
+def prune_missing(force: bool = False) -> int:
+    """Drop rows whose file is gone, keeping the db proportional to the library.
+
+    Keying on absolute path means every upgrade-replace, move, or consolidation
+    leaves the old path's row orphaned, so the table would otherwise grow
+    without bound. Throttled to once a day — a CLI session that opens and closes
+    repeatedly shouldn't re-walk the whole table each time — and skipped when
+    MUSIC_ROOT is absent so an unmounted library volume can't wipe the cache.
+    """
+    if not _ensure() or not cfg.MUSIC_ROOT.exists():
+        return 0
+    stamp = Path(str(cfg.DATA_DIR)) / ".flac_cache_prune"
+    if not force and stamp.exists():
+        try:
+            if (time.time() - stamp.stat().st_mtime) < 86400:
+                return 0
+        except OSError:
+            pass
+    try:
+        conn = _conn()
+        gone = [(p,) for (p,) in conn.execute("SELECT path FROM files")
+                if not os.path.exists(p)]
+        if gone:
+            conn.executemany("DELETE FROM files WHERE path = ?", gone)
+            conn.commit()
+    except sqlite3.Error as e:
+        vlog(f"flac cache prune failed: {e}")
+        return 0
+    try:
+        stamp.parent.mkdir(parents=True, exist_ok=True)
+        stamp.touch()
+    except OSError:
+        pass
+    return len(gone)
 
 
 def _reset_for_tests() -> None:

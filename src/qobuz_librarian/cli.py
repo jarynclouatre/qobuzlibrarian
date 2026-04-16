@@ -420,6 +420,12 @@ def main():
         _prune_lyric_state_orphans()
     except Exception as e:
         vlog(f"lyric-state prune error: {e}")
+    # Drop tag-cache rows whose file has since been moved or deleted.
+    try:
+        from qobuz_librarian.library import flac_cache
+        flac_cache.prune_missing()
+    except Exception as e:
+        vlog(f"flac-cache prune error: {e}")
     try:
         user_id, token = load_qobuz_token()
     except NoCredsError:
