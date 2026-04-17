@@ -711,10 +711,6 @@ def run_artist_missing_albums(artist_name, owned_bare_titles, args, token,
     if not picks:
         return 0
 
-    # Quality is taken from the streamrip config for missing-album
-    # downloads; per-call override slot left in place for future use.
-    quality_override = None
-
     # Shared_queue mode — queue instead of processing immediately.
     if shared_queue is not None:
         log.info(fmt(C.GRAY,
@@ -735,7 +731,6 @@ def run_artist_missing_albums(artist_name, owned_bare_titles, args, token,
                 missing=list(full_tracks), present=[],
                 upgrade_only=False, auto_upgrade=False,
                 siblings_to_delete=[],
-                quality=quality_override,
             ))
             n_queued += 1
             time.sleep(cfg.ARTIST_API_DELAY)
@@ -762,8 +757,7 @@ def run_artist_missing_albums(artist_name, owned_bare_titles, args, token,
                 continue
             try:
                 r = process_album(full, args, allow_force=False, label=label,
-                                  already_confirmed=True, token=token,
-                                  quality=quality_override)
+                                  already_confirmed=True, token=token)
             except KeyboardInterrupt:
                 log.info(fmt(C.GRAY, "\n    Interrupted. Stopping step 2."))
                 break
