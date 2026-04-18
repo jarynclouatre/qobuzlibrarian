@@ -419,8 +419,8 @@ def scan_library(job, token, partial_only=False):
             job.push_progress("Scanning library", done, n, artist_name or name,
                               found=total, hit=hit)
             if albums:
-                what = "album with gaps" if partial_only else "album to fill"
-                log.info(f"  {artist_name} — {plural(len(albums), what)}")
+                tail = "with gaps" if partial_only else "to fill"
+                log.info(f"  {artist_name} — {plural(len(albums), 'album')} {tail}")
     flush_resolve_cache()
     _record_last_scan()
     if not job.cancel_requested:
