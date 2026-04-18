@@ -345,7 +345,10 @@ def scan_artist(job, query, token):
     log.info(f"  Matched: {artist_name}. Scanning catalog for gaps…")
     n = 0
     for album in _missing_albums(artist_id, artist_name, token):
-        _add_album_candidate(job, album, artist_name)
+        # Unticked by default — even a single artist can have dozens of albums,
+        # so don't let one click queue the lot. No hidden filter applies here:
+        # asking for an artist by name is a deliberate request to see everything.
+        _add_album_candidate(job, album, artist_name, selected=False)
         n += 1
     log.info(f"  {plural(n, 'missing album')} found for {artist_name}.")
     flush_resolve_cache()

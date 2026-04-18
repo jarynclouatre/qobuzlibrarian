@@ -1,5 +1,5 @@
-<details class="bg-base-200 rounded-lg" data-artist="{{ artist }}"{% if open %} open{% endif %}>
-  <summary class="flex items-center justify-between gap-2 px-3 py-2 cursor-pointer select-none">
+<details class="group bg-base-200 border border-base-300/70 rounded-lg shadow-sm overflow-hidden transition-colors hover:border-base-300" data-artist="{{ artist }}"{% if open %} open{% endif %}>
+  <summary class="flex items-center justify-between gap-2 px-3 py-2.5 cursor-pointer select-none transition-colors hover:bg-base-300/30 group-open:border-b group-open:border-base-300/50">
     <span class="font-medium min-w-0 truncate">{{ artist or 'Unknown artist' }}<span class="text-base-content/50 font-normal"> — {{ items | length }} album{% if items | length != 1 %}s{% endif %}</span></span>
     {% if triage %}
     {# artist via hx-vals (single, escaped) — htmx folds the whole review form
@@ -23,7 +23,7 @@
               onclick="this.closest('details').querySelectorAll('.cb').forEach(c=>c.checked=false)">None</button>
     </div>
     {% for c in items %}
-    <label class="flex items-center gap-3 px-3 py-2 bg-base-100 rounded-lg cursor-pointer">
+    <label class="flex items-center gap-3 px-3 py-2 bg-base-100 border border-base-300/40 rounded-lg cursor-pointer transition-colors hover:border-base-content/20">
       <input type="checkbox" class="checkbox checkbox-sm cb" name="cid"
              value="{{ c.cid }}" data-seq="{{ c.seq }}" {% if c.selected %}checked{% endif %}>
       <span class="flex-1 min-w-0">
