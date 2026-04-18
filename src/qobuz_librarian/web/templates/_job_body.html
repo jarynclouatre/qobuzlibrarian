@@ -1,7 +1,7 @@
 <div id="job-content">
   <div class="flex items-center justify-between gap-3 mb-1">
     <h1 class="text-2xl font-bold">{% if job.artist %}{{ job.artist }} — {% endif %}{{ job.title }}</h1>
-    <span class="badge whitespace-nowrap shrink-0
+    <span id="job-status-badge" class="badge whitespace-nowrap shrink-0
       {%- if job.status.value == 'done' %} badge-success
       {%- elif job.status.value == 'failed' %} badge-error
       {%- elif job.status.value == 'canceled' %} badge-ghost
@@ -12,8 +12,202 @@
 
   {% set s = job.status.value %}
 
-  {# ── Scanning / running: live log ─────────────────────────────────────── #}
-  {% if s in ('pending', 'scanning', 'running') %}
+  {# ── Live review — also drives a running Library scan, so its results fill
+       in and become hideable/tickable while the walk is still going. ─────── #}
+  {% if s == 'awaiting_review' or (job.execute_kind == 'library' and s == 'scanning') %}
+    {% set scanning = (s == 'scanning') %}
+    {% if scanning %}
+    <div id="scan-header" class="flex items-center justify-between mb-3">
+      <p class="text-base-content/60">Scanning
+        {% if job.cancel_requested %}<span class="badge badge-ghost badge-sm ml-2">stopping</span>{% endif %}
+        <span id="sse-reconnect" class="badge badge-warning badge-sm ml-2 hidden">connection lost — reconnecting…</span>
+      </p>
+      {% if not job.cancel_requested %}
+      <form action="/jobs/{{ job.id }}/cancel" method="post">
+        <input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}">
+        <button type="submit" class="btn btn-sm btn-ghost">Cancel</button>
+      </form>
+      {% endif %}
+    </div>
+    <div id="progress-card" class="card bg-base-200 mb-3 hidden">
+      <div class="card-body py-4">
+        <div class="flex items-baseline justify-between gap-3 mb-2">
+          <span id="prog-label" class="font-medium"></span>
+          <span id="prog-count" class="text-sm text-base-content/50 shrink-0"></span>
+        </div>
+        <progress id="prog-bar" class="progress progress-primary w-full"></progress>
+        <p id="prog-item" class="text-xs text-base-content/50 mt-2 truncate"></p>
+      </div>
+    </div>
+    {% endif %}
+
+    {% if job.summary %}
+    <div class="alert alert-info mb-4"><span class="break-words">{{ job.summary }}</span></div>
+    {% endif %}
+
+    <form id="review-form" action="/jobs/{{ job.id }}/approve" method="post">
+      <input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}">
+      {% include "_review_candidates.html" %}
+      <div class="flex flex-wrap items-center gap-2 mt-4">
+        <button type="submit" id="review-submit" class="btn btn-primary"{% if scanning %} disabled{% endif %}>{{ job.review_verb }}<span data-count></span> selected</button>
+        <button type="submit" formaction="/jobs/{{ job.id }}/cancel" class="btn btn-ghost">Cancel</button>
+        {% if job.execute_kind == 'library' %}
+        <a href="/library/hidden" class="btn btn-ghost btn-sm sm:ml-auto">Hidden albums</a>
+        {% endif %}
+      </div>
+    </form>
+
+    {% if scanning %}
+    <details class="mt-3">
+      <summary class="text-sm text-base-content/50 cursor-pointer select-none">Show scan log</summary>
+      <div class="log-console mt-2" id="log"></div>
+    </details>
+    {% elif job.log_lines %}
+    <div class="divider text-base-content/30 text-xs">log</div>
+    <div class="log-console" style="max-height:min(40vh,600px)">
+      {%- for line in job.log_lines %}{{ line }}
+{% endfor -%}
+    </div>
+    {% endif %}
+
+    <script>
+    (function () {
+      const form = document.getElementById('review-form');
+      if (!form) return;
+      const submit = document.getElementById('review-submit');
+      const countEl = submit ? submit.querySelector('[data-count]') : null;
+      const groupsBox = document.getElementById('review-groups');
+      const summaryRow = document.getElementById('review-summary-row');
+      const summaryCount = document.querySelector('#review-candidates [data-summary-count]');
+      const emptyBox = document.getElementById('review-empty');
+      const scanning = {{ 'true' if scanning else 'false' }};
+      let scanDone = !scanning;
+
+      function plural(n, w) { return n + ' ' + w + (n === 1 ? '' : 's'); }
+      function refresh() {
+        const checked = form.querySelectorAll('.cb:checked').length;
+        if (countEl) countEl.textContent = checked ? ' ' + checked : '';
+        if (submit) submit.disabled = !scanDone || checked === 0;
+        form.querySelectorAll('[data-hide]').forEach(function (btn) {
+          const det = btn.closest('details');
+          const lbl = btn.querySelector('[data-hide-label]');
+          if (!det || !lbl) return;
+          const total = det.querySelectorAll('.cb').length;
+          const picked = det.querySelectorAll('.cb:checked').length;
+          btn.classList.toggle('hidden', total > 0 && picked === total);
+          lbl.textContent = picked ? 'Hide other ' + (total - picked) : 'Hide all ' + total;
+        });
+        const albums = groupsBox ? groupsBox.querySelectorAll('.cb').length : 0;
+        const artists = groupsBox ? groupsBox.querySelectorAll(':scope > details').length : 0;
+        if (summaryCount) summaryCount.textContent = plural(albums, 'album') + ' across ' + plural(artists, 'artist');
+        if (summaryRow) summaryRow.classList.toggle('hidden', albums === 0);
+        if (emptyBox) emptyBox.classList.toggle('hidden', albums > 0 || !scanDone);
+      }
+      form.addEventListener('change', function (e) {
+        if (e.target.classList && e.target.classList.contains('cb')) refresh();
+      });
+      form.addEventListener('click', function (e) {
+        // A Hide button sits inside <summary>; keep its click from toggling the
+        // disclosure. htmx still fires the hx-post.
+        if (e.target.closest('[data-hide]')) e.preventDefault();
+        // All/None flip checkboxes via inline handlers (no change event fires).
+        if (e.target.closest('button')) setTimeout(refresh, 0);
+      });
+      form.addEventListener('htmx:afterSwap', refresh);
+      document.body.addEventListener('qlHidden', function () { setTimeout(refresh, 0); });
+      refresh();
+
+      if (!scanning) return;
+
+      // ── Live scan: stream log + progress, append artists as the walk finds
+      //    them, leaving on-screen groups (and their state) untouched. ──────
+      const logEl = document.getElementById('log');
+      const card = document.getElementById('progress-card');
+      const label = document.getElementById('prog-label');
+      const count = document.getElementById('prog-count');
+      const bar = document.getElementById('prog-bar');
+      const item = document.getElementById('prog-item');
+      const scanHeader = document.getElementById('scan-header');
+      const reconnect = document.getElementById('sse-reconnect');
+      const baseTitle = document.title;
+      let titleSet = false;
+      let after = -1;
+      form.querySelectorAll('.cb[data-seq]').forEach(function (cb) {
+        after = Math.max(after, parseInt(cb.dataset.seq, 10));
+      });
+      let pulling = false;
+      function pullGroups(done) {
+        if (pulling) { if (done) { done(); } return; }
+        pulling = true;
+        fetch('/jobs/{{ job.id }}/groups?after=' + after, {headers: {'HX-Request': 'true'}})
+          .then(function (r) { return r.text(); })
+          .then(function (txt) {
+            pulling = false;
+            const t = txt.trim();
+            if (t && groupsBox) {
+              const tmp = document.createElement('div');
+              tmp.innerHTML = t;
+              tmp.querySelectorAll(':scope > details[data-artist]').forEach(function (g) {
+                const a = g.getAttribute('data-artist');
+                const sel = 'details[data-artist="' + (window.CSS && CSS.escape ? CSS.escape(a) : a) + '"]';
+                const existing = groupsBox.querySelector(sel);
+                if (existing) { existing.replaceWith(g); } else { groupsBox.appendChild(g); }
+                g.querySelectorAll('.cb[data-seq]').forEach(function (cb) {
+                  after = Math.max(after, parseInt(cb.dataset.seq, 10));
+                });
+              });
+              if (window.htmx) { window.htmx.process(groupsBox); }
+            }
+            refresh();
+            if (done) { done(); }
+          })
+          .catch(function () { pulling = false; if (done) { done(); } });
+      }
+
+      const src = new EventSource('/api/jobs/{{ job.id }}/stream');
+      src.onmessage = function (e) {
+        if (!titleSet) { document.title = '▶ ' + baseTitle; titleSet = true; }
+        if (logEl) { logEl.appendChild(document.createTextNode(e.data + '\n')); logEl.scrollTop = logEl.scrollHeight; }
+      };
+      src.onopen = function () { if (reconnect) reconnect.classList.add('hidden'); };
+      src.onerror = function () {
+        if (reconnect && src.readyState !== EventSource.CLOSED) { reconnect.classList.remove('hidden'); }
+      };
+      src.addEventListener('progress', function (e) {
+        let p; try { p = JSON.parse(e.data); } catch (_) { return; }
+        if (window.qlDismissAllFlashes) { window.qlDismissAllFlashes(); }
+        if (card) card.classList.remove('hidden');
+        if (label) label.textContent = p.phase || 'Working';
+        let ct = p.total > 0 ? p.current + ' / ' + p.total : (p.current ? String(p.current) : '');
+        if (p.found > 0) { ct += (ct ? ' · ' : '') + p.found + ' with gaps'; }
+        if (count) count.textContent = ct;
+        if (bar) { if (p.total > 0) { bar.max = 100; bar.value = Math.round(p.current / p.total * 100); } else { bar.removeAttribute('value'); } }
+        if (item) item.textContent = p.item || '';
+        if (p.hit) { pullGroups(); }
+      });
+      src.addEventListener('done', function (e) {
+        src.close();
+        document.title = baseTitle;
+        if (window.qlDismissAllFlashes) { window.qlDismissAllFlashes(); }
+        if (e.data === 'awaiting_review') {
+          // Scan finished with results: enable downloading in place, keeping
+          // every tick/expansion the user made while it ran.
+          if (card) card.classList.add('hidden');
+          if (scanHeader) scanHeader.classList.add('hidden');
+          const badge = document.getElementById('job-status-badge');
+          if (badge) { badge.textContent = 'awaiting review'; badge.className = 'badge whitespace-nowrap shrink-0 badge-info'; }
+          pullGroups(function () { scanDone = true; refresh(); });
+        } else if (window.htmx) {
+          window.htmx.ajax('GET', '/jobs/{{ job.id }}/content', {target: '#job-content', swap: 'outerHTML'});
+        } else {
+          location.reload();
+        }
+      });
+    })();
+    </script>
+
+  {# ── Scanning (other modes) / running / pending: live log ─────────────── #}
+  {% elif s in ('pending', 'scanning', 'running') %}
     <div class="flex items-center justify-between mb-3">
       <p class="text-base-content/60">
         {% if s == 'scanning' %}Scanning{% elif s == 'running' %}Downloading{% else %}Queued{% endif %}
@@ -28,7 +222,6 @@
       {% endif %}
     </div>
 
-    {# Live progress header — updates in place from `event: progress`. #}
     <div id="progress-card" class="card bg-base-200 mb-3 hidden">
       <div class="card-body py-4">
         <div class="flex items-baseline justify-between gap-3 mb-2">
@@ -38,14 +231,6 @@
         <progress id="prog-bar" class="progress progress-primary w-full"></progress>
         <p id="prog-item" class="text-xs text-base-content/50 mt-2 truncate"></p>
       </div>
-    </div>
-
-    {# Live preview — artists with gaps fill in here as the scan finds them,
-       so a long walk isn't a blank wait. The full reviewable list replaces it
-       once the scan finishes. #}
-    <div id="scan-preview" class="mb-3 hidden">
-      <p class="text-xs text-base-content/40 mb-1">Found so far</p>
-      <div id="scan-preview-list" class="space-y-1 max-h-72 overflow-y-auto"></div>
     </div>
 
     <details class="mt-1">
@@ -60,8 +245,6 @@
       const count = document.getElementById('prog-count');
       const bar = document.getElementById('prog-bar');
       const item = document.getElementById('prog-item');
-      const preview = document.getElementById('scan-preview');
-      const previewList = document.getElementById('scan-preview-list');
       const baseTitle = document.title;
       const reconnect = document.getElementById('sse-reconnect');
       const src = new EventSource('/api/jobs/{{ job.id }}/stream');
@@ -73,53 +256,26 @@
       };
       src.onopen = () => { if (reconnect) reconnect.classList.add('hidden'); };
       src.onerror = () => {
-        // EventSource reconnects on its own (the server sends `retry:`), but a
-        // log that just freezes reads as a hang — say the connection dropped.
         if (reconnect && src.readyState !== EventSource.CLOSED) {
           reconnect.classList.remove('hidden');
         }
       };
       src.addEventListener('progress', e => {
         let p; try { p = JSON.parse(e.data); } catch (_) { return; }
-        // First real progress event means the job left the pending/queued
-        // state — clear the "Downloads queued" flash so the page isn't
-        // contradicting itself.
         if (window.qlDismissAllFlashes) { window.qlDismissAllFlashes(); }
         card.classList.remove('hidden');
         label.textContent = p.phase || 'Working';
-        let countText = p.total > 0 ? p.current + ' / ' + p.total
-                                    : (p.current ? String(p.current) : '');
-        if (p.found > 0) {
-          countText += (countText ? ' · ' : '') + p.found + ' with gaps';
-        }
-        count.textContent = countText;
-        if (p.total > 0) {
-          bar.max = 100; bar.value = Math.round(p.current / p.total * 100);
-        } else {
-          bar.removeAttribute('value');   // indeterminate
-        }
+        let ct = p.total > 0 ? p.current + ' / ' + p.total : (p.current ? String(p.current) : '');
+        if (p.found > 0) { ct += (ct ? ' · ' : '') + p.found + ' with gaps'; }
+        count.textContent = ct;
+        if (p.total > 0) { bar.max = 100; bar.value = Math.round(p.current / p.total * 100); }
+        else { bar.removeAttribute('value'); }
         item.textContent = p.item || '';
-        if (p.hit && previewList) {
-          const row = document.createElement('div');
-          row.className = 'text-sm px-3 py-1.5 bg-base-200 rounded flex justify-between gap-3';
-          const name = document.createElement('span');
-          name.className = 'truncate';
-          name.textContent = p.hit.artist || 'Unknown artist';
-          const n = document.createElement('span');
-          n.className = 'text-base-content/50 shrink-0';
-          n.textContent = p.hit.albums + (p.hit.albums === 1 ? ' album' : ' albums');
-          row.append(name, n);
-          previewList.appendChild(row);
-          preview.classList.remove('hidden');
-        }
       });
       src.addEventListener('done', () => {
         src.close();
         document.title = baseTitle;
         if (window.qlDismissAllFlashes) { window.qlDismissAllFlashes(); }
-        // Pull the finished/review view from the server and swap it in place.
-        // One render path for every terminal state — no faked progress bar to
-        // settle, and nothing for the user to click to see the result.
         if (window.htmx) {
           window.htmx.ajax('GET', '/jobs/{{ job.id }}/content',
                            {target: '#job-content', swap: 'outerHTML'});
@@ -129,69 +285,6 @@
       });
     })();
     </script>
-
-  {# ── Awaiting review: pick candidates ─────────────────────────────────── #}
-  {% elif s == 'awaiting_review' %}
-    {% if job.summary %}
-    <div class="alert alert-info mb-4"><span class="break-words">{{ job.summary }}</span></div>
-    {% endif %}
-    <form id="review-form" action="/jobs/{{ job.id }}/approve" method="post">
-      <input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}">
-      {% include "_review_candidates.html" %}
-      <div class="flex flex-wrap items-center gap-2 mt-4">
-        <button type="submit" id="review-submit" class="btn btn-primary">{{ job.review_verb }}<span data-count></span> selected</button>
-        <button type="submit" formaction="/jobs/{{ job.id }}/cancel"
-                class="btn btn-ghost">Cancel</button>
-        {% if job.execute_kind == 'library' %}
-        <a href="/library/hidden" class="btn btn-ghost btn-sm sm:ml-auto">Hidden albums</a>
-        {% endif %}
-      </div>
-    </form>
-    <script>
-    (function () {
-      const form = document.getElementById('review-form');
-      if (!form) return;
-      const submit = document.getElementById('review-submit');
-      const countEl = submit ? submit.querySelector('[data-count]') : null;
-      function update() {
-        const n = form.querySelectorAll('.cb:checked').length;
-        if (countEl) countEl.textContent = n ? ' ' + n : '';
-        if (submit) submit.disabled = n === 0;
-        form.querySelectorAll('[data-hide]').forEach(function (btn) {
-          const det = btn.closest('details');
-          const lbl = btn.querySelector('[data-hide-label]');
-          if (!det || !lbl) return;
-          const total = det.querySelectorAll('.cb').length;
-          const picked = det.querySelectorAll('.cb:checked').length;
-          // Nothing left to hide once every album in the group is ticked.
-          btn.classList.toggle('hidden', total > 0 && picked === total);
-          lbl.textContent = picked ? 'Hide other ' + (total - picked)
-                                   : 'Hide all ' + total;
-        });
-      }
-      form.addEventListener('change', function (e) {
-        if (e.target.classList && e.target.classList.contains('cb')) update();
-      });
-      form.addEventListener('click', function (e) {
-        // A Hide button sits inside <summary>; keep its click from toggling the
-        // disclosure. htmx still fires the hx-post.
-        if (e.target.closest('[data-hide]')) e.preventDefault();
-        // All/None flip checkboxes via inline handlers (no change event), so
-        // recount once they've run.
-        if (e.target.closest('button')) setTimeout(update, 0);
-      });
-      form.addEventListener('htmx:afterSwap', update);
-      update();
-    })();
-    </script>
-
-    {% if job.log_lines %}
-    <div class="divider text-base-content/30 text-xs">log</div>
-    <div class="log-console" style="max-height:min(40vh,600px)">
-      {%- for line in job.log_lines %}{{ line }}
-{% endfor -%}
-    </div>
-    {% endif %}
 
   {# ── Finished ─────────────────────────────────────────────────────────── #}
   {% else %}

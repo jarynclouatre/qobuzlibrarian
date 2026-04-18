@@ -1116,23 +1116,57 @@ async def job_hide(request: Request, job_id: str):
     """Dismiss an artist's still-missing albums from the library walk.
 
     A triage action, not a download — it writes the durable hidden-store and
-    drops those candidates from the review list, returning the refreshed list
-    for an htmx swap. Deliberately not lock-guarded: dismissing stays available
-    even while a download holds the staging lock.
+    drops those candidates from the review list, returning just the affected
+    artist's group (or empty if the whole artist is gone) for an htmx swap of
+    that one group. Allowed while the scan is still running, and never
+    lock-guarded, so dismissing stays available mid-scan and while a download
+    holds the staging lock.
     """
     job = job_mgr.registry.get(job_id)
     if not job:
         return HTMLResponse("", status_code=404)
-    just_hidden = 0
-    if (job.execute_kind == "library"
-            and job.status == job_mgr.JobStatus.AWAITING_REVIEW):
+    if (job.execute_kind == "library" and job.status in (
+            job_mgr.JobStatus.AWAITING_REVIEW, job_mgr.JobStatus.SCANNING)):
         from qobuz_librarian.web import flows
         form = await request.form()
         artist = (form.get("artist") or "").strip()
         keep = form.getlist("cid")[:10000]
-        just_hidden = flows.dismiss_albums(job, artist, keep)
-    return _tr(request, "_review_candidates.html",
-               {"job": job, "just_hidden": just_hidden})
+        n = flows.dismiss_albums(job, artist, keep)
+        remaining = [c for c in job.candidates if c.get("artist") == artist]
+        if remaining:
+            resp = _tr(request, "_review_group.html",
+                       {"job": job, "artist": artist, "items": remaining,
+                        "triage": True, "open": True})
+        else:
+            resp = HTMLResponse("")  # whole artist hidden — outerHTML drops it
+        if n:
+            resp.headers["HX-Trigger"] = '{"qlHidden": %d}' % n
+        return resp
+    return HTMLResponse("")
+
+
+@app.get("/jobs/{job_id}/groups", response_class=HTMLResponse)
+async def job_groups(request: Request, job_id: str, after: int = -1):
+    """Render artist groups whose albums are newer than ``after`` (candidate
+    seq). The live scan page polls this to append artists as the walk finds
+    them, leaving the groups already on screen — and their tick/expand state —
+    untouched."""
+    job = job_mgr.registry.get(job_id)
+    if not job or job.execute_kind != "library":
+        return HTMLResponse("")
+    with job._lock:
+        cands = list(job.candidates)
+    by_artist: dict = {}
+    for c in cands:
+        by_artist.setdefault(c.get("artist"), []).append(c)
+    fresh = [a for a, items in by_artist.items()
+             if any(c.get("seq", -1) > after for c in items)]
+    if not fresh:
+        return HTMLResponse("")
+    tmpl = templates.env.get_template("_review_group.html")
+    parts = [tmpl.render(job=job, artist=a, items=by_artist[a],
+                         triage=True, open=False) for a in fresh]
+    return HTMLResponse("\n".join(parts))
 
 
 @app.post("/jobs/{job_id}/retry")

@@ -123,6 +123,10 @@ class Job:
     _execute_fn: Optional[Callable] = field(default=None, repr=False)
     _subscribers: list = field(default_factory=list, repr=False)
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+    # Monotonic candidate counter. cids are c{seq} and never reused, so a hide
+    # that drops candidates mid-scan can't collide with a candidate the scan
+    # appends afterwards (a length-based id would).
+    _cand_seq: int = field(default=0, repr=False)
 
     @property
     def finished_at_str(self) -> str:
@@ -248,13 +252,18 @@ class Job:
 
     # ── candidates ───────────────────────────────────────────────────────────
     def add_candidate(self, kind, title, artist="", detail="", payload=None,
-                       selected=True):
-        cid = f"c{len(self.candidates)}"
-        self.candidates.append({
-            "cid": cid, "kind": kind, "title": title, "artist": artist,
-            "detail": detail, "payload": payload or {}, "selected": selected,
-        })
-        return cid
+                      selected=True):
+        # Locked: a live scan appends from the worker thread while the request
+        # thread may be reading/dropping candidates via the review screen.
+        with self._lock:
+            seq = self._cand_seq
+            self._cand_seq += 1
+            self.candidates.append({
+                "cid": f"c{seq}", "seq": seq, "kind": kind, "title": title,
+                "artist": artist, "detail": detail, "payload": payload or {},
+                "selected": selected,
+            })
+        return f"c{seq}"
 
     def selected_candidates(self) -> list:
         return [c for c in self.candidates if c.get("selected")]

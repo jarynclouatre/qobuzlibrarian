@@ -1,0 +1,37 @@
+<details class="bg-base-200 rounded-lg" data-artist="{{ artist }}"{% if open %} open{% endif %}>
+  <summary class="flex items-center justify-between gap-2 px-3 py-2 cursor-pointer select-none">
+    <span class="font-medium min-w-0 truncate">{{ artist or 'Unknown artist' }}<span class="text-base-content/50 font-normal"> — {{ items | length }} album{% if items | length != 1 %}s{% endif %}</span></span>
+    {% if triage %}
+    {# artist via hx-vals (single, escaped) — htmx folds the whole review form
+       into the POST, so a hidden <input name=artist> per group would arrive
+       multi-valued and the wrong artist would be hidden. The ticked cids still
+       ride along from the form and form the keep set. Target this group only so
+       a hide leaves the rest of the (possibly still-filling) list untouched. #}
+    <button type="button" data-hide
+            hx-post="/jobs/{{ job.id }}/hide"
+            hx-vals='{{ {"artist": artist}|tojson }}'
+            hx-target="closest details"
+            hx-swap="outerHTML"
+            class="btn btn-xs btn-ghost shrink-0"><span data-hide-label>Hide all {{ items | length }}</span></button>
+    {% endif %}
+  </summary>
+  <div class="px-3 pb-3 pt-1 space-y-1">
+    <div class="flex gap-2 mb-1">
+      <button type="button" class="btn btn-xs"
+              onclick="this.closest('details').querySelectorAll('.cb').forEach(c=>c.checked=true)">All</button>
+      <button type="button" class="btn btn-xs"
+              onclick="this.closest('details').querySelectorAll('.cb').forEach(c=>c.checked=false)">None</button>
+    </div>
+    {% for c in items %}
+    <label class="flex items-center gap-3 px-3 py-2 bg-base-100 rounded-lg cursor-pointer">
+      <input type="checkbox" class="checkbox checkbox-sm cb" name="cid"
+             value="{{ c.cid }}" data-seq="{{ c.seq }}" {% if c.selected %}checked{% endif %}>
+      <span class="flex-1 min-w-0">
+        <span class="font-medium">{{ c.title }}</span>{% if c.payload.is_new %}
+        <span class="badge badge-primary badge-xs align-middle ml-1">new</span>{% endif %}
+        <span class="block text-xs text-base-content/40">{{ c.detail }}</span>
+      </span>
+    </label>
+    {% endfor %}
+  </div>
+</details>

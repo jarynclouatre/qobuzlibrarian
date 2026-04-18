@@ -999,6 +999,53 @@ def test_library_hide_then_restore_round_trip(client, monkeypatch, tmp_path):
         _remove_job(job)
 
 
+def test_candidate_ids_stay_unique_after_a_drop():
+    """A live scan appends while a hide drops candidates; ids must never be
+    reused, or the dropped album's cid would later point at a different one."""
+    job = jm.Job(execute_kind="library")
+    a = job.add_candidate("album", "A", "Artist", payload={})
+    b = job.add_candidate("album", "B", "Artist", payload={})
+    job.candidates = [c for c in job.candidates if c["cid"] != a]  # hide A
+    c = job.add_candidate("album", "C", "Artist", payload={})
+    assert [a, b, c] == ["c0", "c1", "c2"]
+    assert len({x["cid"] for x in job.candidates}) == len(job.candidates)
+
+
+def test_groups_endpoint_returns_only_newer_artists(client):
+    """The live scan page pulls /groups?after=<seq> to append just the artists
+    found since its cursor, leaving on-screen groups untouched."""
+    job = _inject_job(jm.JobStatus.SCANNING)
+    job.execute_kind = "library"
+    job.add_candidate("album", "Old", "Alpha", payload={})   # seq 0
+    job.add_candidate("album", "New", "Beta", payload={})    # seq 1
+    try:
+        r = client.get(f"/jobs/{job.id}/groups?after=0")
+        assert r.status_code == 200
+        assert "Beta" in r.text and "Alpha" not in r.text
+        r = client.get(f"/jobs/{job.id}/groups?after=-1")
+        assert "Alpha" in r.text and "Beta" in r.text
+    finally:
+        _remove_job(job)
+
+
+def test_hide_works_while_still_scanning(client, monkeypatch, tmp_path):
+    """Dismissing an artist must be allowed mid-scan, not only once the walk
+    has finished."""
+    from qobuz_librarian.library import hidden
+    monkeypatch.setattr("qobuz_librarian.config.HIDDEN_FILE", tmp_path / "h.json")
+    job = _inject_job(jm.JobStatus.SCANNING)
+    job.execute_kind = "library"
+    job.add_candidate("album", "Dummy", "Portishead", payload={"year": "1994"})
+    try:
+        r = client.post(f"/jobs/{job.id}/hide", data={"artist": "Portishead"})
+        assert r.status_code == 200
+        assert job.candidates == []
+        assert hidden.is_hidden(hidden.SCOPE_MISSING, "Portishead", "Dummy",
+                                hidden.load())
+    finally:
+        _remove_job(job)
+
+
 def test_new_since_last_scan_badges_only_additions(monkeypatch, tmp_path):
     monkeypatch.setattr("qobuz_librarian.config.SCAN_SEEN_FILE", tmp_path / "seen.json")
     from qobuz_librarian.web import flows

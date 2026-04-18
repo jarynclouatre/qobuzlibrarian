@@ -307,24 +307,26 @@ def dismiss_albums(job, artist, keep_cids):
     from qobuz_librarian.web import job_persistence
 
     keep = set(keep_cids)
-    to_hide = [c for c in job.candidates
-               if c.get("artist") == artist and c.get("cid") not in keep]
-    if not to_hide:
-        return 0
-    hidden_mod.hide(hidden_mod.SCOPE_MISSING,
-                    [(c.get("artist"), c.get("title"),
-                      (c.get("payload") or {}).get("year")) for c in to_hide])
-    drop = {c["cid"] for c in to_hide}
-    # Mutate under the job lock: request threads read job.candidates to render
-    # the review page, and replacing the list mid-iteration would tear a read.
+    # Snapshot + mutate under the lock in one go: a live scan appends candidates
+    # from the worker thread, so reading job.candidates and replacing it in
+    # separate steps could drop a concurrently-added album.
     with job._lock:
+        to_hide = [c for c in job.candidates
+                   if c.get("artist") == artist and c.get("cid") not in keep]
+        if not to_hide:
+            return 0
+        drop = {c["cid"] for c in to_hide}
         survivors = [c for c in job.candidates if c["cid"] not in drop]
-        # The hide POST carries the currently-ticked cids; mirror them back onto
-        # the survivors so the re-rendered list keeps the user's selection
-        # (otherwise "hide the rest" would untick the album they meant to keep).
+        # The hide POST carries the currently-ticked cids; mirror them onto the
+        # survivors so "hide the rest" keeps the album the user meant to download.
         for c in survivors:
             c["selected"] = c["cid"] in keep
         job.candidates = survivors
+        specs = [(c.get("artist"), c.get("title"),
+                  (c.get("payload") or {}).get("year")) for c in to_hide]
+    # File write + persist outside the lock — neither needs it, and hide does
+    # disk I/O that shouldn't stall the scan thread's next add_candidate.
+    hidden_mod.hide(hidden_mod.SCOPE_MISSING, specs)
     job_persistence.persist(job)
     return len(to_hide)
 
