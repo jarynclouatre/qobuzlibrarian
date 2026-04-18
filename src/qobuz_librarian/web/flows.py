@@ -247,6 +247,55 @@ def _record_last_scan():
         pass
 
 
+def _load_scan_seen(mode):
+    """Fingerprints the last completed walk of this mode surfaced, or None if
+    there's no prior run to compare against (first scan badges nothing)."""
+    try:
+        data = json.loads(cfg.SCAN_SEEN_FILE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    bucket = data.get(mode) if isinstance(data, dict) else None
+    return set(bucket) if isinstance(bucket, list) else None
+
+
+def _save_scan_seen(mode, fingerprints):
+    try:
+        data = json.loads(cfg.SCAN_SEEN_FILE.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            data = {}
+    except (OSError, ValueError):
+        data = {}
+    data[mode] = sorted(fingerprints)
+    try:
+        cfg.SCAN_SEEN_FILE.parent.mkdir(parents=True, exist_ok=True)
+        tmp = cfg.SCAN_SEEN_FILE.with_suffix(cfg.SCAN_SEEN_FILE.suffix + ".tmp")
+        tmp.write_text(json.dumps(data), encoding="utf-8")
+        tmp.replace(cfg.SCAN_SEEN_FILE)
+    except OSError:
+        pass
+
+
+def _flag_new_since_last_scan(job, mode):
+    """Badge candidates whose album wasn't surfaced by the previous walk, then
+    record this walk's set for next time. First-ever run badges nothing (no
+    baseline to diff). Skipped on a cancelled scan so a partial run can't
+    poison the baseline."""
+    seen_now = set()
+    fps = {}
+    for c in job.candidates:
+        fp = hidden_mod.album_fingerprint(c.get("artist"), c.get("title"))
+        if fp:
+            seen_now.add(fp)
+            fps[c["cid"]] = fp
+    prev = _load_scan_seen(mode)
+    if prev is not None:
+        for c in job.candidates:
+            fp = fps.get(c["cid"])
+            if fp and fp not in prev:
+                c["payload"]["is_new"] = True
+    _save_scan_seen(mode, seen_now)
+
+
 def dismiss_albums(job, artist, keep_cids):
     """Hide every still-missing album for `artist` that isn't in `keep_cids`.
 
@@ -355,19 +404,27 @@ def scan_library(job, token, partial_only=False):
                 raise
             except Exception as e:
                 log.info(f"    skipped {futures[fut].name}: {e}")
-                job.push_progress("Scanning library", done, n, futures[fut].name)
+                job.push_progress("Scanning library", done, n, futures[fut].name,
+                                  found=total)
                 continue
-            job.push_progress("Scanning library", done, n, artist_name or name)
             for album in albums:
                 # Library is a discovery list — leave candidates unticked so a
                 # single click can't queue hundreds nobody reviewed.
                 _add_album_candidate(job, album, artist_name, selected=False)
                 total += 1
+            # Add the albums before the progress tick so a hit lands the live
+            # preview the same moment the running total moves.
+            hit = ({"artist": artist_name or name, "albums": len(albums)}
+                   if albums else None)
+            job.push_progress("Scanning library", done, n, artist_name or name,
+                              found=total, hit=hit)
             if albums:
                 what = "album with gaps" if partial_only else "album to fill"
                 log.info(f"  {artist_name} — {plural(len(albums), what)}")
     flush_resolve_cache()
     _record_last_scan()
+    if not job.cancel_requested:
+        _flag_new_since_last_scan(job, "partial" if partial_only else "missing")
     if partial_only:
         log.info(f"Done. {plural(total, 'album')} with track gaps across the library.")
     else:

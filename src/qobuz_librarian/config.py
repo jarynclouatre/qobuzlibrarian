@@ -179,6 +179,9 @@ CAPPED_FILE          = DATA_DIR / ".qobuz_upgrade_capped.json"
 # resurfacing on every scan. User-driven and durable (no auto-expiry, unlike
 # CAPPED_FILE). See library/hidden.py.
 HIDDEN_FILE          = DATA_DIR / ".qobuz_hidden.json"
+# Fingerprints surfaced by the last completed library walk, per mode, so a
+# re-run can badge albums that weren't there before ("new since last scan").
+SCAN_SEEN_FILE       = DATA_DIR / ".qobuz_scan_seen.json"
 # lyric_fetch's per-track state file. Defaults inside lyric_fetch.py put
 # it next to that script — which means /app/.lyric_fetch_state.json in the
 # container. After a PUID/PGID drop, /app is root-owned and not writable,

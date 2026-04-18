@@ -98,6 +98,7 @@ class Job:
     progress_current: int = 0
     progress_total: int   = 0
     progress_item: str    = ""
+    progress_found: int   = 0   # running tally of results found so far
     log_lines: list   = field(default_factory=list)
     # Review candidates: each is a dict
     #   {cid, kind, title, artist, detail, payload, selected}
@@ -175,21 +176,33 @@ class Job:
         """Close the current phase's live stream without storing a marker."""
         self._fan_out(STREAM_END)
 
-    def push_progress(self, phase, current=0, total=0, item=""):
+    def push_progress(self, phase, current=0, total=0, item="", found=0,
+                      hit=None):
         """Update the live progress header (phase + counts) and stream it as a
         distinct event. Kept out of log_lines so it never clutters the log or
         gets replayed line-by-line on reconnect; the latest snapshot is re-sent
-        once when a new subscriber attaches."""
+        once when a new subscriber attaches.
+
+        ``found`` is a running tally (e.g. albums with gaps so far); ``hit`` is
+        a one-off {artist, albums} the scanning page appends to its live preview
+        — it is deliberately left out of the stored snapshot so a reconnect
+        replay doesn't duplicate a preview row."""
         self.progress_phase = phase
         self.progress_current = current
         self.progress_total = total
         self.progress_item = item
-        self._fan_out(self._progress_snapshot())
+        self.progress_found = found
+        payload = {"phase": phase, "current": current, "total": total,
+                   "item": item, "found": found}
+        if hit:
+            payload["hit"] = hit
+        self._fan_out(PROGRESS_PREFIX + json.dumps(payload))
 
     def _progress_snapshot(self) -> str:
         return PROGRESS_PREFIX + json.dumps({
             "phase": self.progress_phase, "current": self.progress_current,
-            "total": self.progress_total, "item": self.progress_item})
+            "total": self.progress_total, "item": self.progress_item,
+            "found": self.progress_found})
 
     # Cap replay so a late subscriber doesn't get thousands of historical
     # lines blasted at them (and so the bounded queue isn't filled by

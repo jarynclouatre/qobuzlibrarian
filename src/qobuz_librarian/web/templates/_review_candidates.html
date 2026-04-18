@@ -54,7 +54,8 @@
           <input type="checkbox" class="checkbox checkbox-sm cb" name="cid"
                  value="{{ c.cid }}" {% if c.selected %}checked{% endif %}>
           <span class="flex-1 min-w-0">
-            <span class="font-medium">{{ c.title }}</span>
+            <span class="font-medium">{{ c.title }}</span>{% if c.payload.is_new %}
+            <span class="badge badge-primary badge-xs align-middle ml-1">new</span>{% endif %}
             <span class="block text-xs text-base-content/40">{{ c.detail }}</span>
           </span>
         </label>

@@ -40,6 +40,14 @@
       </div>
     </div>
 
+    {# Live preview — artists with gaps fill in here as the scan finds them,
+       so a long walk isn't a blank wait. The full reviewable list replaces it
+       once the scan finishes. #}
+    <div id="scan-preview" class="mb-3 hidden">
+      <p class="text-xs text-base-content/40 mb-1">Found so far</p>
+      <div id="scan-preview-list" class="space-y-1 max-h-72 overflow-y-auto"></div>
+    </div>
+
     <details class="mt-1">
       <summary class="text-sm text-base-content/50 cursor-pointer select-none">Show details</summary>
       <div class="log-console mt-2" id="log"></div>
@@ -52,6 +60,8 @@
       const count = document.getElementById('prog-count');
       const bar = document.getElementById('prog-bar');
       const item = document.getElementById('prog-item');
+      const preview = document.getElementById('scan-preview');
+      const previewList = document.getElementById('scan-preview-list');
       const baseTitle = document.title;
       const reconnect = document.getElementById('sse-reconnect');
       const src = new EventSource('/api/jobs/{{ job.id }}/stream');
@@ -77,14 +87,31 @@
         if (window.qlDismissAllFlashes) { window.qlDismissAllFlashes(); }
         card.classList.remove('hidden');
         label.textContent = p.phase || 'Working';
+        let countText = p.total > 0 ? p.current + ' / ' + p.total
+                                    : (p.current ? String(p.current) : '');
+        if (p.found > 0) {
+          countText += (countText ? ' · ' : '') + p.found + ' with gaps';
+        }
+        count.textContent = countText;
         if (p.total > 0) {
-          count.textContent = p.current + ' / ' + p.total;
           bar.max = 100; bar.value = Math.round(p.current / p.total * 100);
         } else {
-          count.textContent = p.current ? String(p.current) : '';
           bar.removeAttribute('value');   // indeterminate
         }
         item.textContent = p.item || '';
+        if (p.hit && previewList) {
+          const row = document.createElement('div');
+          row.className = 'text-sm px-3 py-1.5 bg-base-200 rounded flex justify-between gap-3';
+          const name = document.createElement('span');
+          name.className = 'truncate';
+          name.textContent = p.hit.artist || 'Unknown artist';
+          const n = document.createElement('span');
+          n.className = 'text-base-content/50 shrink-0';
+          n.textContent = p.hit.albums + (p.hit.albums === 1 ? ' album' : ' albums');
+          row.append(name, n);
+          previewList.appendChild(row);
+          preview.classList.remove('hidden');
+        }
       });
       src.addEventListener('done', () => {
         src.close();

@@ -999,6 +999,41 @@ def test_library_hide_then_restore_round_trip(client, monkeypatch, tmp_path):
         _remove_job(job)
 
 
+def test_new_since_last_scan_badges_only_additions(monkeypatch, tmp_path):
+    monkeypatch.setattr("qobuz_librarian.config.SCAN_SEEN_FILE", tmp_path / "seen.json")
+    from qobuz_librarian.web import flows
+
+    first = jm.Job(title="scan")
+    first.add_candidate("album", "Dummy", "Portishead", payload={})
+    flows._flag_new_since_last_scan(first, "missing")
+    # First-ever run is the baseline — nothing is "new".
+    assert all(not c["payload"].get("is_new") for c in first.candidates)
+
+    second = jm.Job(title="scan")
+    second.add_candidate("album", "Dummy", "Portishead", payload={})   # seen before
+    second.add_candidate("album", "Third", "Portishead", payload={})   # appeared since
+    flows._flag_new_since_last_scan(second, "missing")
+    flags = {c["title"]: c["payload"].get("is_new", False) for c in second.candidates}
+    assert flags == {"Dummy": False, "Third": True}
+
+
+def test_push_progress_streams_found_and_hit_but_not_in_replay():
+    import json as _json
+
+    job = jm.Job(title="scan")
+    q = job.subscribe()
+    job.push_progress("Scanning", 5, 10, "Artist", found=3,
+                      hit={"artist": "Artist", "albums": 2})
+    line = q.get_nowait()
+    payload = _json.loads(line[len(jm.PROGRESS_PREFIX):])
+    assert payload["found"] == 3
+    assert payload["hit"] == {"artist": "Artist", "albums": 2}
+    # The snapshot replayed to a reconnecting client must not carry the one-off
+    # hit, or the preview row would be appended twice.
+    snap = _json.loads(job._progress_snapshot()[len(jm.PROGRESS_PREFIX):])
+    assert snap["found"] == 3 and "hit" not in snap
+
+
 def test_cancel_check_predicate_reads_current_job_flag():
     # The installed hook returns True only when the worker thread's
     # current job has cancel_requested set.
