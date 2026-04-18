@@ -811,10 +811,6 @@ def run_artist_mode(artist_name, args, token):
                            and r.get("auto_upgrade"))
         n_skipped    = sum(1 for r in gap_fill_results
                            if r.get("result") in ("user_skipped", "user_stopped"))
-        n_extras     = sum(1 for r in gap_fill_results
-                           if r.get("result") == "skipped_has_extras")
-        n_already_hr = sum(1 for r in gap_fill_results
-                           if r.get("result") == "skipped_already_higher_quality")
         no_match     = [r for r in gap_fill_results if r.get("result") == "no_qobuz_match"]
         path_mis     = [r for r in gap_fill_results if r.get("result") == "predicted_path_mismatch"]
         false_match  = [r for r in gap_fill_results if r.get("result") == "false_match"]
@@ -827,10 +823,6 @@ def run_artist_mode(artist_name, args, token):
             log.info(f"  {fmt(C.GREEN,   '✓ tracks filled:')}       {n_filled}")
         if n_upgraded:
             log.info(f"  {fmt(C.MAGENTA, '↑ auto-upgraded:')}        {n_upgraded}")
-        if n_already_hr:
-            log.info(f"  {fmt(C.GRAY,  '· kept (already hi-res):')}{n_already_hr}")
-        if n_extras:
-            log.info(f"  {fmt(C.GRAY,  '· skipped (has extras):')} {n_extras}")
         if n_skipped:
             log.info(f"  {fmt(C.YELLOW,  'skipped by user:')}      {n_skipped}")
         if no_match:

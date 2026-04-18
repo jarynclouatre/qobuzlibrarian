@@ -193,32 +193,36 @@ def run_album_walk_mode(args, token):
     args.consolidate = False
 
     shared_queue = []
+    n_artists_scanned = 0
+    n_albums_complete = 0
+    n_albums_skipped = 0
+    n_albums_unmatched = 0
+    n_albums_filled = 0
+    interrupted = False
 
     def _save_now():
         save_pending_queue(shared_queue, mode="album_walk")
 
     def _flush_queue():
+        nonlocal n_albums_filled
         if not shared_queue:
             log.info(fmt(C.GRAY, "    Queue is empty — nothing to flush."))
             return
         save_pending_queue(shared_queue, mode="album_walk")
         log.info(fmt(C.CYAN,
             f"\n  ⟳  Flushing queue ({len(shared_queue)} album(s))…"))
-        _, drained = _execute_download_queue(
+        results, drained = _execute_download_queue(
             shared_queue, args, token, on_progress=_save_now)
         if args.dry_run:
             return
+        n_albums_filled += sum(1 for r in results
+                               if r.get("result") in ("downloaded", "partial"))
         if drained:
             clear_pending_queue()
         else:
             log.info(fmt(C.YELLOW,
                 f"  ⚠  {len(shared_queue)} album(s) couldn't be downloaded — "
                 f"kept in the queue to retry on the next launch."))
-
-    n_artists_scanned = 0
-    n_albums_complete = 0
-    n_albums_prompted = 0
-    interrupted = False
 
     try:
         for i, artist_dir in enumerate(artists, 1):
@@ -229,10 +233,7 @@ def run_album_walk_mode(args, token):
                      "(not a real artist).")
                 continue
 
-            try:
-                _albs = list_artist_album_dirs(artist_dir)
-            except Exception:
-                _albs = []
+            _albs = list_artist_album_dirs(artist_dir)
             if _albs and all(
                 _album_seen_key(artist_query, ad.name) in seen
                 for ad in _albs
@@ -276,8 +277,10 @@ def run_album_walk_mode(args, token):
                         seen.add(_album_seen_key(artist_query, _ad.name))
                     if _result == "already_complete":
                         n_albums_complete += 1
+                    elif _result in ("user_skipped", "user_stopped"):
+                        n_albums_skipped += 1
                     else:
-                        n_albums_prompted += 1
+                        n_albums_unmatched += 1
                 n_artists_scanned += 1
             except KeyboardInterrupt:
                 log.info(fmt(C.GRAY,
@@ -314,8 +317,15 @@ def run_album_walk_mode(args, token):
     log.info(fmt(C.GREEN,
         f"  ✓ Album walk complete. "
         f"Artists scanned: {n_artists_scanned} · "
-        f"Albums skipped (complete): {n_albums_complete} · "
-        f"Albums prompted: {n_albums_prompted}"))
+        f"Already complete: {n_albums_complete} · "
+        f"Filled: {n_albums_filled}"))
+    leftovers = []
+    if n_albums_skipped:
+        leftovers.append(f"skipped by you: {n_albums_skipped}")
+    if n_albums_unmatched:
+        leftovers.append(f"no Qobuz match: {n_albums_unmatched}")
+    if leftovers:
+        log.info(fmt(C.GRAY, "    " + " · ".join(leftovers)))
 
 
 # ── Library walk ──────────────────────────────────────────────────────
