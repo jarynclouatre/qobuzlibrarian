@@ -18,6 +18,7 @@ from qobuz_librarian.api.search import (
     get_artist_albums,
     search_artists,
 )
+from qobuz_librarian.library import hidden as hidden_mod
 from qobuz_librarian.library.catalog import (
     album_quality_label,
     album_year,
@@ -157,7 +158,8 @@ def resolve_artist(query, token):
     return aid, aname
 
 
-def _missing_albums(artist_id, artist_name, token, partial_only=False):
+def _missing_albums(artist_id, artist_name, token, partial_only=False,
+                    hidden=None):
     """Yield Qobuz album dicts that need attention — either entirely
     absent from the library, or present on disk with track-level gaps.
     Partial albums get a `_partial_missing_count` key set on the dict
@@ -165,6 +167,10 @@ def _missing_albums(artist_id, artist_name, token, partial_only=False):
 
     With partial_only, fully-missing albums are skipped — only on-disk
     albums with track gaps are yielded (the album-fill use case).
+
+    `hidden` is a preloaded hidden-store (library.hidden.load()) supplied by
+    the bulk library walk so dismissed albums are skipped. The single-artist
+    Artist scan passes None — typing a name overrides the memory.
     """
     catalog, total = get_artist_albums(artist_id, token,
                                        limit=cfg.ARTIST_CATALOG_LIMIT)
@@ -175,6 +181,9 @@ def _missing_albums(artist_id, artist_name, token, partial_only=False):
     pairs = filter_compilation_albums(pairs, artist_name)
     pairs = filter_short_releases(pairs, cfg.MISSING_ALBUMS_MIN_TRACKS)
     for album, _n_versions in pairs:
+        if hidden is not None and hidden_mod.is_hidden(
+                hidden_mod.SCOPE_MISSING, artist_name, album.get("title"), hidden):
+            continue
         existing, _album_dir = find_existing_tracks(album)
         if not existing:
             if not partial_only:
@@ -197,28 +206,36 @@ def _missing_albums(artist_id, artist_name, token, partial_only=False):
             qobuz_tracks = ((full or {}).get("tracks") or {}).get("items") or []
         if not qobuz_tracks:
             continue
-        missing, _present = compute_missing(qobuz_tracks, existing)
+        missing, present = compute_missing(qobuz_tracks, existing)
+        if not present:
+            # Zero track overlap: the folder fuzz-resolved to the wrong album.
+            # Yielding it would offer to download a whole album over a folder
+            # that only looks similarly named. A real collaboration filed
+            # elsewhere overlaps on tracks, so this only drops false matches.
+            continue
         if missing:
             album["_partial_missing_count"] = len(missing)
             yield album
 
 
-def _add_album_candidate(job, album, artist_name):
+def _add_album_candidate(job, album, artist_name, selected=True):
+    year = album_year(album)
     partial_n = album.get("_partial_missing_count")
     if partial_n:
-        detail = (f"{album_year(album) or '?'} · {album_quality_label(album)} · "
+        detail = (f"{year or '?'} · {album_quality_label(album)} · "
                   f"gap-fill: {partial_n} missing of "
                   f"{album.get('tracks_count') or '?'}")
     else:
         tc = album.get('tracks_count') or '?'
-        detail = (f"{album_year(album) or '?'} · {album_quality_label(album)} · "
+        detail = (f"{year or '?'} · {album_quality_label(album)} · "
                   f"{tc} track{'s' if tc != 1 else ''}")
     job.add_candidate(
         kind="album",
         title=album.get("title") or "?",
         artist=artist_name,
         detail=detail,
-        payload={"album_id": album.get("id")},
+        payload={"album_id": album.get("id"), "year": year},
+        selected=selected,
     )
 
 
@@ -228,6 +245,39 @@ def _record_last_scan():
         cfg.LAST_SCAN_FILE.write_text(str(time.time()), encoding="utf-8")
     except OSError:
         pass
+
+
+def dismiss_albums(job, artist, keep_cids):
+    """Hide every still-missing album for `artist` that isn't in `keep_cids`.
+
+    The hidden albums are recorded in the durable store so future bulk walks
+    skip them, then dropped from this job's review list. Independent of
+    downloading — the kept candidates stay for the normal approve flow.
+    Returns the number hidden.
+    """
+    from qobuz_librarian.web import job_persistence
+
+    keep = set(keep_cids)
+    to_hide = [c for c in job.candidates
+               if c.get("artist") == artist and c.get("cid") not in keep]
+    if not to_hide:
+        return 0
+    hidden_mod.hide(hidden_mod.SCOPE_MISSING,
+                    [(c.get("artist"), c.get("title"),
+                      (c.get("payload") or {}).get("year")) for c in to_hide])
+    drop = {c["cid"] for c in to_hide}
+    # Mutate under the job lock: request threads read job.candidates to render
+    # the review page, and replacing the list mid-iteration would tear a read.
+    with job._lock:
+        survivors = [c for c in job.candidates if c["cid"] not in drop]
+        # The hide POST carries the currently-ticked cids; mirror them back onto
+        # the survivors so the re-rendered list keeps the user's selection
+        # (otherwise "hide the rest" would untick the album they meant to keep).
+        for c in survivors:
+            c["selected"] = c["cid"] in keep
+        job.candidates = survivors
+    job_persistence.persist(job)
+    return len(to_hide)
 
 
 # ── Scans ─────────────────────────────────────────────────────────────────────
@@ -251,7 +301,7 @@ def scan_artist(job, query, token):
     _record_last_scan()
 
 
-def _scan_library_artist(artist_dir, token, partial_only):
+def _scan_library_artist(artist_dir, token, partial_only, hidden):
     """Worker: resolve one artist and collect its missing albums. Runs in a
     pool thread (its own HTTP session); returns plain data so the caller adds
     candidates serially — keeping job.candidates single-writer."""
@@ -260,7 +310,7 @@ def _scan_library_artist(artist_dir, token, partial_only):
     if not artist_id:
         return name, None, []
     albums = list(_missing_albums(artist_id, artist_name, token,
-                                  partial_only=partial_only))
+                                  partial_only=partial_only, hidden=hidden))
     return name, artist_name, albums
 
 
@@ -274,6 +324,10 @@ def scan_library(job, token, partial_only=False):
         return
     target = "track gaps in owned albums" if partial_only else "missing albums"
     log.info(f"Scanning {plural(len(artists), 'library artist')} for {target}")
+    # Snapshot the dismissed-album memory once so the parallel workers filter
+    # against a single consistent view (a dismiss landing mid-scan is picked up
+    # on the next run, not raced into this one).
+    hidden = hidden_mod.load()
     total = 0
     done = 0
     n = len(artists)
@@ -283,7 +337,8 @@ def scan_library(job, token, partial_only=False):
     # candidate list and progress stay single-writer.
     with ThreadPoolExecutor(max_workers=workers,
                             thread_name_prefix="libscan") as ex:
-        futures = {ex.submit(_scan_library_artist, ad, token, partial_only): ad
+        futures = {ex.submit(_scan_library_artist, ad, token, partial_only,
+                             hidden): ad
                    for ad in artists}
         for fut in as_completed(futures):
             if job.cancel_requested:
@@ -304,7 +359,9 @@ def scan_library(job, token, partial_only=False):
                 continue
             job.push_progress("Scanning library", done, n, artist_name or name)
             for album in albums:
-                _add_album_candidate(job, album, artist_name)
+                # Library is a discovery list — leave candidates unticked so a
+                # single click can't queue hundreds nobody reviewed.
+                _add_album_candidate(job, album, artist_name, selected=False)
                 total += 1
             if albums:
                 what = "album with gaps" if partial_only else "album to fill"

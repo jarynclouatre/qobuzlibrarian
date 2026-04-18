@@ -1,0 +1,73 @@
+<div id="review-candidates">
+  {% set triage = job.execute_kind == 'library' %}
+  {% if just_hidden %}
+  <div class="alert alert-success mb-3" data-flash>
+    <span>Hidden {{ just_hidden }} album{% if just_hidden != 1 %}s{% endif %} — they
+      won't be suggested again. <a href="/library/hidden" class="link">Manage hidden</a></span>
+  </div>
+  {% endif %}
+
+  {% if job.candidates %}
+  {% set _groups = job.candidates | groupby('artist') %}
+  <div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between mb-3">
+    <p class="text-base-content/70">
+      {% set _n = job.candidates | length %}{{ _n }} album{% if _n != 1 %}s{% endif %}
+      across {{ _groups | length }} artist{% if _groups | length != 1 %}s{% endif %} —
+      {% if triage %}tick the albums you want, or hide an artist you don't.
+      {% else %}everything's selected by default; untick anything to skip.{% endif %}
+    </p>
+    <div class="flex gap-2 shrink-0">
+      <button type="button" class="btn btn-xs"
+              onclick="document.querySelectorAll('#review-candidates .cb').forEach(c=>c.checked=true)">All</button>
+      <button type="button" class="btn btn-xs"
+              onclick="document.querySelectorAll('#review-candidates .cb').forEach(c=>c.checked=false)">None</button>
+    </div>
+  </div>
+
+  <div class="space-y-1">
+    {% for artist, items in _groups %}
+    <details class="bg-base-200 rounded-lg"{% if _groups | length == 1 %} open{% endif %}>
+      <summary class="flex items-center justify-between gap-2 px-3 py-2 cursor-pointer select-none">
+        <span class="font-medium min-w-0 truncate">{{ artist or 'Unknown artist' }}<span class="text-base-content/50 font-normal"> — {{ items | length }} album{% if items | length != 1 %}s{% endif %}</span></span>
+        {% if triage %}
+        {# artist via hx-vals (single, escaped) — htmx folds the whole review
+           form into the POST, so a hidden <input name=artist> per group would
+           arrive multi-valued and the wrong artist would be hidden. The ticked
+           cids still ride along from the form and form the keep set. #}
+        <button type="button" data-hide
+                hx-post="/jobs/{{ job.id }}/hide"
+                hx-vals='{{ {"artist": artist}|tojson }}'
+                hx-target="#review-candidates"
+                hx-swap="outerHTML"
+                class="btn btn-xs btn-ghost shrink-0"><span data-hide-label>Hide all {{ items | length }}</span></button>
+        {% endif %}
+      </summary>
+      <div class="px-3 pb-3 pt-1 space-y-1">
+        <div class="flex gap-2 mb-1">
+          <button type="button" class="btn btn-xs"
+                  onclick="this.closest('details').querySelectorAll('.cb').forEach(c=>c.checked=true)">All</button>
+          <button type="button" class="btn btn-xs"
+                  onclick="this.closest('details').querySelectorAll('.cb').forEach(c=>c.checked=false)">None</button>
+        </div>
+        {% for c in items %}
+        <label class="flex items-center gap-3 px-3 py-2 bg-base-100 rounded-lg cursor-pointer">
+          <input type="checkbox" class="checkbox checkbox-sm cb" name="cid"
+                 value="{{ c.cid }}" {% if c.selected %}checked{% endif %}>
+          <span class="flex-1 min-w-0">
+            <span class="font-medium">{{ c.title }}</span>
+            <span class="block text-xs text-base-content/40">{{ c.detail }}</span>
+          </span>
+        </label>
+        {% endfor %}
+      </div>
+    </details>
+    {% endfor %}
+  </div>
+  {% else %}
+  <div class="text-center py-8 text-base-content/60">
+    <p class="font-medium">Nothing left to review.</p>
+    <p class="text-sm mt-1">Everything here has been queued or hidden.
+      <a href="/library/hidden" class="link">Manage hidden albums</a>.</p>
+  </div>
+  {% endif %}
+</div>

@@ -175,6 +175,10 @@ PENDING_QUEUE_FILE   = DATA_DIR / ".qobuz_pending_queue.json"
 LYRIC_RETRY_FILE     = DATA_DIR / ".qobuz_lyric_retry.json"
 REPAIR_LOG_PATH      = DATA_DIR / ".qobuz_replaced_tracks.log"
 CAPPED_FILE          = DATA_DIR / ".qobuz_upgrade_capped.json"
+# Albums the user dismissed from the bulk library/upgrade walks so they stop
+# resurfacing on every scan. User-driven and durable (no auto-expiry, unlike
+# CAPPED_FILE). See library/hidden.py.
+HIDDEN_FILE          = DATA_DIR / ".qobuz_hidden.json"
 # lyric_fetch's per-track state file. Defaults inside lyric_fetch.py put
 # it next to that script — which means /app/.lyric_fetch_state.json in the
 # container. After a PUID/PGID drop, /app is root-owned and not writable,

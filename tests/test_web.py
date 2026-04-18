@@ -960,6 +960,45 @@ def test_review_list_groups_candidates_by_artist(client):
         _remove_job(job)
 
 
+def test_library_hide_then_restore_round_trip(client, monkeypatch, tmp_path):
+    """Hiding an artist from a library review writes the durable store and drops
+    those candidates; the Hidden view then restores them."""
+    from qobuz_librarian.library import hidden
+    monkeypatch.setattr("qobuz_librarian.config.HIDDEN_FILE", tmp_path / "h.json")
+
+    job = _inject_job(jm.JobStatus.AWAITING_REVIEW)
+    job.execute_kind = "library"
+    c_dummy = job.add_candidate(kind="album", title="Dummy", artist="Portishead",
+                                payload={"year": "1994"}, selected=False)
+    job.add_candidate(kind="album", title="Third", artist="Portishead",
+                      payload={"year": "2008"}, selected=False)
+    job.add_candidate(kind="album", title="Untrue", artist="Burial",
+                      payload={"year": "2007"}, selected=False)
+    try:
+        # "Hide the rest" with Dummy ticked: only Third is hidden, only for
+        # Portishead — Burial is untouched and the kept Dummy stays ticked.
+        r = client.post(f"/jobs/{job.id}/hide",
+                        data={"artist": "Portishead", "cid": c_dummy})
+        assert r.status_code == 200
+        survivors = {c["artist"] + "/" + c["title"]: c["selected"]
+                     for c in job.candidates}
+        assert survivors == {"Portishead/Dummy": True, "Burial/Untrue": False}
+        store = hidden.load()
+        assert hidden.is_hidden(hidden.SCOPE_MISSING, "Portishead", "Third", store)
+        assert not hidden.is_hidden(hidden.SCOPE_MISSING, "Portishead", "Dummy", store)
+        assert not hidden.is_hidden(hidden.SCOPE_MISSING, "Burial", "Untrue", store)
+
+        r = client.get("/library/hidden")
+        assert r.status_code == 200
+        assert "Portishead" in r.text
+
+        r = client.post("/library/hidden/restore", data={"artist": "Portishead"})
+        assert r.status_code == 200  # follows the 303 to the Hidden view
+        assert hidden.count(hidden.SCOPE_MISSING) == 0
+    finally:
+        _remove_job(job)
+
+
 def test_cancel_check_predicate_reads_current_job_flag():
     # The installed hook returns True only when the worker thread's
     # current job has cancel_requested set.

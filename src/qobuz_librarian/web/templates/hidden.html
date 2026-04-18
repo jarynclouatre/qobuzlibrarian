@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% block title %}Hidden albums — Qobuz Librarian{% endblock %}
+{% block content %}
+
+<div class="flex items-center justify-between gap-3 mb-2">
+  <h1 class="text-2xl font-bold">Hidden albums</h1>
+  <a href="/library" class="btn btn-ghost btn-sm">Back to Library</a>
+</div>
+<p class="text-base-content/60 mb-6">
+  Albums you've dismissed from the library scan — they won't be suggested again
+  until you restore them. Nothing here is deleted from your library or from Qobuz.
+</p>
+
+{% if groups %}
+<form action="/library/hidden/restore" method="post">
+  <input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}">
+  <div class="flex items-center justify-between mb-3">
+    <p class="text-base-content/70">{{ groups | length }} artist{% if groups | length != 1 %}s{% endif %} with hidden albums</p>
+    <div class="flex gap-2 shrink-0">
+      <button type="button" class="btn btn-xs"
+              onclick="document.querySelectorAll('.ha').forEach(c=>c.checked=true)">All</button>
+      <button type="button" class="btn btn-xs"
+              onclick="document.querySelectorAll('.ha').forEach(c=>c.checked=false)">None</button>
+    </div>
+  </div>
+
+  <div class="space-y-1 mb-4">
+    {% for g in groups %}
+    <label class="block bg-base-200 rounded-lg px-3 py-2 cursor-pointer">
+      <span class="flex items-center gap-3">
+        <input type="checkbox" class="checkbox checkbox-sm ha" name="artist" value="{{ g.artist }}">
+        <span class="font-medium flex-1 min-w-0 truncate">{{ g.artist }}</span>
+        <span class="text-base-content/50 text-sm shrink-0">{{ g.albums | length }} album{% if g.albums | length != 1 %}s{% endif %}</span>
+      </span>
+      <span class="block pl-8 pt-1 text-xs text-base-content/40">
+        {% for a in g.albums %}{{ a.title }}{% if a.year %} ({{ a.year }}){% endif %}{% if not loop.last %} · {% endif %}{% endfor %}
+      </span>
+    </label>
+    {% endfor %}
+  </div>
+
+  <button type="submit" class="btn btn-primary">Restore selected</button>
+</form>
+{% else %}
+<div class="text-center py-12 text-base-content/60">
+  <p class="font-medium">Nothing hidden.</p>
+  <p class="text-sm mt-1">Albums you dismiss from a library scan show up here so you can bring them back.</p>
+  <a href="/library" class="btn btn-primary btn-sm mt-4">Go to Library</a>
+</div>
+{% endif %}
+
+{% endblock %}

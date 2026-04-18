@@ -8,9 +8,17 @@
   list every album you're missing. Review and approve the list before
   anything downloads.
 </p>
-<p class="text-base-content/40 text-sm mb-6">
+<p class="text-base-content/40 text-sm mb-2">
   Roughly one Qobuz call per artist, with a small pause between each.
 </p>
+{% if hidden_count %}
+<p class="mb-6">
+  <a href="/library/hidden" class="link link-hover text-sm">
+    {{ hidden_count }} hidden album{% if hidden_count != 1 %}s{% endif %} — manage</a>
+</p>
+{% else %}
+<div class="mb-6"></div>
+{% endif %}
 
 {% if creds_ok %}
 <form action="/library" method="post">

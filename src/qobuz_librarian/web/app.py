@@ -114,6 +114,7 @@ def _resume_migration(job, args):
 # (possibly-rotated) one from the prior session.
 _RESUME_EXECUTE: dict = {
     "album":     _resume_album_download,
+    "library":   _resume_album_download,
     "upgrade":   _resume_upgrade,
     "repair":    _resume_repair,
     "migration": _resume_migration,
@@ -890,8 +891,11 @@ async def artist_scan(request: Request, artist: str = Form("")):
 
 @app.get("/library", response_class=HTMLResponse)
 async def library_page(request: Request):
+    from qobuz_librarian.library import hidden as hidden_mod
     creds_ok = bool(_read_creds().get("auth_token"))
-    return _tr(request, "library.html", {"creds_ok": creds_ok, "page": "library"})
+    return _tr(request, "library.html", {
+        "creds_ok": creds_ok, "page": "library",
+        "hidden_count": hidden_mod.count(hidden_mod.SCOPE_MISSING)})
 
 
 @app.post("/library")
@@ -908,13 +912,33 @@ async def library_scan(request: Request, mode: str = Form("missing_albums")):
     partial_only = mode_norm == "partial_fill"
     title = "Library album-fill scan" if partial_only else "Library gap scan"
     job = job_mgr.Job(title=title)
-    job.execute_kind = "album"
+    # "library" (not "album") so the review screen knows this is the paced
+    # triage surface: candidates start unticked and each artist gets a hide
+    # action. Both kinds run the same album executor (see _RESUME_EXECUTE).
+    job.execute_kind = "library"
     job_mgr.submit_scan(
         job,
         lambda j: flows.scan_library(j, _get_token(), partial_only=partial_only),
         lambda j, chosen: flows.execute_albums(j, chosen, _get_token()),
     )
     return RedirectResponse(url=f"/jobs/{job.id}", status_code=303)
+
+
+@app.get("/library/hidden", response_class=HTMLResponse)
+async def library_hidden(request: Request):
+    from qobuz_librarian.library import hidden as hidden_mod
+    groups = hidden_mod.hidden_by_artist(hidden_mod.SCOPE_MISSING)
+    return _tr(request, "hidden.html", {"page": "library", "groups": groups})
+
+
+@app.post("/library/hidden/restore")
+async def library_hidden_restore(request: Request):
+    from qobuz_librarian.library import hidden as hidden_mod
+    form = await request.form()
+    artists = form.getlist("artist")[:10000]
+    if artists:
+        hidden_mod.restore(hidden_mod.SCOPE_MISSING, artists)
+    return RedirectResponse(url="/library/hidden", status_code=303)
 
 
 @app.get("/upgrade", response_class=HTMLResponse)
@@ -1085,6 +1109,30 @@ async def job_approve(request: Request, job_id: str):
     approved = job_mgr.approve(job, selected)
     flag = "approved=1" if approved else "stale=1"
     return RedirectResponse(url=f"/jobs/{job_id}?{flag}", status_code=303)
+
+
+@app.post("/jobs/{job_id}/hide", response_class=HTMLResponse)
+async def job_hide(request: Request, job_id: str):
+    """Dismiss an artist's still-missing albums from the library walk.
+
+    A triage action, not a download — it writes the durable hidden-store and
+    drops those candidates from the review list, returning the refreshed list
+    for an htmx swap. Deliberately not lock-guarded: dismissing stays available
+    even while a download holds the staging lock.
+    """
+    job = job_mgr.registry.get(job_id)
+    if not job:
+        return HTMLResponse("", status_code=404)
+    just_hidden = 0
+    if (job.execute_kind == "library"
+            and job.status == job_mgr.JobStatus.AWAITING_REVIEW):
+        from qobuz_librarian.web import flows
+        form = await request.form()
+        artist = (form.get("artist") or "").strip()
+        keep = form.getlist("cid")[:10000]
+        just_hidden = flows.dismiss_albums(job, artist, keep)
+    return _tr(request, "_review_candidates.html",
+               {"job": job, "just_hidden": just_hidden})
 
 
 @app.post("/jobs/{job_id}/retry")

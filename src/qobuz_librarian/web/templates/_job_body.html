@@ -108,67 +108,55 @@
     {% if job.summary %}
     <div class="alert alert-info mb-4"><span class="break-words">{{ job.summary }}</span></div>
     {% endif %}
-    {% if job.candidates %}
-    <form action="/jobs/{{ job.id }}/approve" method="post">
+    <form id="review-form" action="/jobs/{{ job.id }}/approve" method="post">
       <input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}">
-      {% set _groups = job.candidates | groupby('artist') %}
-      <div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between mb-3">
-        <p class="text-base-content/70">
-          {% set _n = job.candidates | length %}{{ _n }} album{% if _n != 1 %}s{% endif %}
-          across {{ _groups | length }} artist{% if _groups | length != 1 %}s{% endif %} —
-          expand an artist to choose. Everything's selected by default.
-        </p>
-        <div class="flex gap-2 shrink-0">
-          <button type="button" class="btn btn-xs"
-                  onclick="document.querySelectorAll('.cb').forEach(c=>c.checked=true)">All</button>
-          <button type="button" class="btn btn-xs"
-                  onclick="document.querySelectorAll('.cb').forEach(c=>c.checked=false)">None</button>
-        </div>
-      </div>
-
-      <div class="space-y-1 mb-4">
-        {% for artist, items in _groups %}
-        <details class="bg-base-200 rounded-lg"{% if _groups | length == 1 %} open{% endif %}>
-          <summary class="px-3 py-2 cursor-pointer select-none font-medium">
-            {{ artist or 'Unknown artist' }}<span class="text-base-content/50 font-normal"> — {{ items | length }} album{% if items | length != 1 %}s{% endif %}</span>
-          </summary>
-          <div class="px-3 pb-3 pt-1 space-y-1">
-            <div class="flex gap-2 mb-1">
-              <button type="button" class="btn btn-xs"
-                      onclick="this.closest('details').querySelectorAll('.cb').forEach(c=>c.checked=true)">All</button>
-              <button type="button" class="btn btn-xs"
-                      onclick="this.closest('details').querySelectorAll('.cb').forEach(c=>c.checked=false)">None</button>
-            </div>
-            {% for c in items %}
-            <label class="flex items-center gap-3 px-3 py-2 bg-base-100 rounded-lg cursor-pointer">
-              <input type="checkbox" class="checkbox checkbox-sm cb" name="cid"
-                     value="{{ c.cid }}" {% if c.selected %}checked{% endif %}>
-              <span class="flex-1 min-w-0">
-                <span class="font-medium">{{ c.title }}</span>
-                <span class="block text-xs text-base-content/40">{{ c.detail }}</span>
-              </span>
-            </label>
-            {% endfor %}
-          </div>
-        </details>
-        {% endfor %}
-      </div>
-
-      <div class="flex gap-2">
-        <button type="submit" class="btn btn-primary">{{ job.review_verb }} selected</button>
+      {% include "_review_candidates.html" %}
+      <div class="flex flex-wrap items-center gap-2 mt-4">
+        <button type="submit" id="review-submit" class="btn btn-primary">{{ job.review_verb }}<span data-count></span> selected</button>
         <button type="submit" formaction="/jobs/{{ job.id }}/cancel"
                 class="btn btn-ghost">Cancel</button>
+        {% if job.execute_kind == 'library' %}
+        <a href="/library/hidden" class="btn btn-ghost btn-sm sm:ml-auto">Hidden albums</a>
+        {% endif %}
       </div>
     </form>
-    {% else %}
-    <div class="flex items-center justify-between flex-wrap gap-3">
-      <p class="text-base-content/60">Nothing to download — this scan didn't turn up anything missing.</p>
-      <form action="/jobs/{{ job.id }}/cancel" method="post">
-        <input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}">
-        <button type="submit" class="btn btn-sm btn-ghost">Dismiss</button>
-      </form>
-    </div>
-    {% endif %}
+    <script>
+    (function () {
+      const form = document.getElementById('review-form');
+      if (!form) return;
+      const submit = document.getElementById('review-submit');
+      const countEl = submit ? submit.querySelector('[data-count]') : null;
+      function update() {
+        const n = form.querySelectorAll('.cb:checked').length;
+        if (countEl) countEl.textContent = n ? ' ' + n : '';
+        if (submit) submit.disabled = n === 0;
+        form.querySelectorAll('[data-hide]').forEach(function (btn) {
+          const det = btn.closest('details');
+          const lbl = btn.querySelector('[data-hide-label]');
+          if (!det || !lbl) return;
+          const total = det.querySelectorAll('.cb').length;
+          const picked = det.querySelectorAll('.cb:checked').length;
+          // Nothing left to hide once every album in the group is ticked.
+          btn.classList.toggle('hidden', total > 0 && picked === total);
+          lbl.textContent = picked ? 'Hide other ' + (total - picked)
+                                   : 'Hide all ' + total;
+        });
+      }
+      form.addEventListener('change', function (e) {
+        if (e.target.classList && e.target.classList.contains('cb')) update();
+      });
+      form.addEventListener('click', function (e) {
+        // A Hide button sits inside <summary>; keep its click from toggling the
+        // disclosure. htmx still fires the hx-post.
+        if (e.target.closest('[data-hide]')) e.preventDefault();
+        // All/None flip checkboxes via inline handlers (no change event), so
+        // recount once they've run.
+        if (e.target.closest('button')) setTimeout(update, 0);
+      });
+      form.addEventListener('htmx:afterSwap', update);
+      update();
+    })();
+    </script>
 
     {% if job.log_lines %}
     <div class="divider text-base-content/30 text-xs">log</div>
