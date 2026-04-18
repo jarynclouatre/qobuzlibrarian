@@ -9,11 +9,19 @@
   re-rip; originals are backed up before anything is replaced, and the
   upgrade is skipped if it would drop bonus tracks you have.
 </p>
-<p class="text-base-content/40 text-sm mb-6">
+<p class="text-base-content/40 text-sm mb-2">
   This is opt-in: normal downloads never touch files you already have.
   Backups are kept for 7 days and then cleaned up on next startup.
   Slow: roughly one Qobuz call per album in your library.
 </p>
+{% if hidden_count %}
+<p class="mb-6">
+  <a href="/upgrade/hidden" class="link link-hover text-sm">
+    {{ hidden_count }} hidden upgrade{% if hidden_count != 1 %}s{% endif %} — manage</a>
+</p>
+{% else %}
+<div class="mb-6"></div>
+{% endif %}
 
 {% if creds_ok %}
 <form action="/upgrade" method="post">

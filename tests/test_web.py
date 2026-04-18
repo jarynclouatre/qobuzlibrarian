@@ -1046,6 +1046,33 @@ def test_hide_works_while_still_scanning(client, monkeypatch, tmp_path):
         _remove_job(job)
 
 
+def test_upgrade_hide_writes_upgrade_scope_only(client, monkeypatch, tmp_path):
+    """An upgrade dismiss records in the 'upgrade' scope and leaves the
+    missing-album scope alone; the upgrade Hidden view restores it."""
+    from qobuz_librarian.library import hidden
+    monkeypatch.setattr("qobuz_librarian.config.HIDDEN_FILE", tmp_path / "h.json")
+    job = _inject_job(jm.JobStatus.AWAITING_REVIEW)
+    job.execute_kind = "upgrade"
+    job.add_candidate("upgrade", "Dummy", "Portishead",
+                      payload={"year": "1994", "candidate": {}})
+    try:
+        r = client.post(f"/jobs/{job.id}/hide", data={"artist": "Portishead"})
+        assert r.status_code == 200
+        assert job.candidates == []
+        store = hidden.load()
+        assert hidden.is_hidden(hidden.SCOPE_UPGRADE, "Portishead", "Dummy", store)
+        assert not hidden.is_hidden(hidden.SCOPE_MISSING, "Portishead", "Dummy", store)
+
+        r = client.get("/upgrade/hidden")
+        assert r.status_code == 200 and "Portishead" in r.text
+
+        r = client.post("/upgrade/hidden/restore", data={"artist": "Portishead"})
+        assert r.status_code == 200
+        assert hidden.count(hidden.SCOPE_UPGRADE) == 0
+    finally:
+        _remove_job(job)
+
+
 def test_new_since_last_scan_badges_only_additions(monkeypatch, tmp_path):
     monkeypatch.setattr("qobuz_librarian.config.SCAN_SEEN_FILE", tmp_path / "seen.json")
     from qobuz_librarian.web import flows

@@ -1,5 +1,5 @@
 <div id="review-candidates">
-  {% set triage = job.execute_kind == 'library' %}
+  {% set triage = job.execute_kind in ('library', 'upgrade') %}
   {% set _groups = job.candidates | groupby('artist') %}
   {% set _n = job.candidates | length %}
   <div id="review-summary-row"

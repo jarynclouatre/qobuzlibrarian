@@ -296,12 +296,12 @@ def _flag_new_since_last_scan(job, mode):
     _save_scan_seen(mode, seen_now)
 
 
-def dismiss_albums(job, artist, keep_cids):
-    """Hide every still-missing album for `artist` that isn't in `keep_cids`.
+def dismiss_albums(job, artist, keep_cids, scope=hidden_mod.SCOPE_MISSING):
+    """Hide every album for `artist` that isn't in `keep_cids`, in `scope`.
 
-    The hidden albums are recorded in the durable store so future bulk walks
-    skip them, then dropped from this job's review list. Independent of
-    downloading — the kept candidates stay for the normal approve flow.
+    The hidden albums are recorded in the durable store so future bulk walks of
+    that scope skip them, then dropped from this job's review list. Independent
+    of downloading — the kept candidates stay for the normal approve flow.
     Returns the number hidden.
     """
     from qobuz_librarian.web import job_persistence
@@ -326,7 +326,7 @@ def dismiss_albums(job, artist, keep_cids):
                   (c.get("payload") or {}).get("year")) for c in to_hide]
     # File write + persist outside the lock — neither needs it, and hide does
     # disk I/O that shouldn't stall the scan thread's next add_candidate.
-    hidden_mod.hide(hidden_mod.SCOPE_MISSING, specs)
+    hidden_mod.hide(scope, specs)
     job_persistence.persist(job)
     return len(to_hide)
 
@@ -509,6 +509,9 @@ def scan_upgrades(job, token):
         return
     args = build_args()
     capped = load_capped()
+    # Upgrades the user dismissed ("I'm happy with my copy") — independent of
+    # the auto-`capped` memory and of the missing-album hides.
+    hidden = hidden_mod.load()
     log.info(f"Scanning {plural(len(artists), 'artist')} for quality upgrades")
     total = 0
     done = 0
@@ -530,7 +533,6 @@ def scan_upgrades(job, token):
                 break
             done += 1
             name = futures[fut].name
-            job.push_progress("Scanning for upgrades", done, n, name)
             try:
                 name, cands = fut.result()
             except AuthLost:
@@ -539,22 +541,36 @@ def scan_upgrades(job, token):
                 raise
             except Exception as e:
                 log.info(f"    skipped {name}: {e}")
+                job.push_progress("Scanning for upgrades", done, n, name, found=total)
                 continue
-            if cands:
-                log.info(f"  {name} — {plural(len(cands), 'album to upgrade')}")
+            added = 0
             for c in cands:
                 album = c["qobuz_album"]
+                title = album.get("title") or "?"
+                if hidden_mod.is_hidden(hidden_mod.SCOPE_UPGRADE, name, title, hidden):
+                    continue
                 np_, nt = c.get("n_present", 0), c.get("n_total", 0)
                 part = f" · {np_}/{nt} tracks" if nt and np_ < nt else ""
+                # Unticked by default — like the gap scan, one click shouldn't
+                # re-rip hundreds of albums nobody reviewed.
                 job.add_candidate(
                     kind="upgrade",
-                    title=album.get("title") or "?",
+                    title=title,
                     artist=name,
                     detail=f"{c.get('existing_quality_label','?')} → "
                            f"{c.get('target_quality_label','?')}{part}",
-                    payload={"candidate": c},
+                    payload={"candidate": c, "year": album_year(album)},
+                    selected=False,
                 )
                 total += 1
+                added += 1
+            hit = {"artist": name, "albums": added} if added else None
+            job.push_progress("Scanning for upgrades", done, n, name,
+                              found=total, hit=hit)
+            if added:
+                log.info(f"  {name} — {plural(added, 'album')} to upgrade")
+    if not job.cancel_requested:
+        _flag_new_since_last_scan(job, "upgrade")
     log.info(f"Done. {plural(total, 'upgradeable album')} found.")
 
 

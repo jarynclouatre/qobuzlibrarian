@@ -924,27 +924,56 @@ async def library_scan(request: Request, mode: str = Form("missing_albums")):
     return RedirectResponse(url=f"/jobs/{job.id}", status_code=303)
 
 
+def _hidden_view(request, scope, *, page, restore_action, back_url):
+    from qobuz_librarian.library import hidden as hidden_mod
+    return _tr(request, "hidden.html", {
+        "page": page, "scope": scope, "back_url": back_url,
+        "restore_action": restore_action,
+        "groups": hidden_mod.hidden_by_artist(scope)})
+
+
+async def _restore_hidden(request, scope, redirect):
+    from qobuz_librarian.library import hidden as hidden_mod
+    form = await request.form()
+    artists = form.getlist("artist")[:10000]
+    if artists:
+        hidden_mod.restore(scope, artists)
+    return RedirectResponse(url=redirect, status_code=303)
+
+
 @app.get("/library/hidden", response_class=HTMLResponse)
 async def library_hidden(request: Request):
     from qobuz_librarian.library import hidden as hidden_mod
-    groups = hidden_mod.hidden_by_artist(hidden_mod.SCOPE_MISSING)
-    return _tr(request, "hidden.html", {"page": "library", "groups": groups})
+    return _hidden_view(request, hidden_mod.SCOPE_MISSING, page="library",
+                        restore_action="/library/hidden/restore", back_url="/library")
 
 
 @app.post("/library/hidden/restore")
 async def library_hidden_restore(request: Request):
     from qobuz_librarian.library import hidden as hidden_mod
-    form = await request.form()
-    artists = form.getlist("artist")[:10000]
-    if artists:
-        hidden_mod.restore(hidden_mod.SCOPE_MISSING, artists)
-    return RedirectResponse(url="/library/hidden", status_code=303)
+    return await _restore_hidden(request, hidden_mod.SCOPE_MISSING, "/library/hidden")
 
 
 @app.get("/upgrade", response_class=HTMLResponse)
 async def upgrade_page(request: Request):
+    from qobuz_librarian.library import hidden as hidden_mod
     creds_ok = bool(_read_creds().get("auth_token"))
-    return _tr(request, "upgrade.html", {"creds_ok": creds_ok, "page": "upgrade"})
+    return _tr(request, "upgrade.html", {
+        "creds_ok": creds_ok, "page": "upgrade",
+        "hidden_count": hidden_mod.count(hidden_mod.SCOPE_UPGRADE)})
+
+
+@app.get("/upgrade/hidden", response_class=HTMLResponse)
+async def upgrade_hidden(request: Request):
+    from qobuz_librarian.library import hidden as hidden_mod
+    return _hidden_view(request, hidden_mod.SCOPE_UPGRADE, page="upgrade",
+                        restore_action="/upgrade/hidden/restore", back_url="/upgrade")
+
+
+@app.post("/upgrade/hidden/restore")
+async def upgrade_hidden_restore(request: Request):
+    from qobuz_librarian.library import hidden as hidden_mod
+    return await _restore_hidden(request, hidden_mod.SCOPE_UPGRADE, "/upgrade/hidden")
 
 
 @app.post("/upgrade")
@@ -959,6 +988,7 @@ async def upgrade_scan(request: Request):
     from qobuz_librarian.web import flows
     job = job_mgr.Job(title="Quality upgrade scan")
     job.execute_kind = "upgrade"
+    job.review_verb = "Upgrade"  # the action re-rips, not a fresh download
     job_mgr.submit_scan(
         job,
         lambda j: flows.scan_upgrades(j, _get_token()),
@@ -1111,27 +1141,40 @@ async def job_approve(request: Request, job_id: str):
     return RedirectResponse(url=f"/jobs/{job_id}?{flag}", status_code=303)
 
 
+# Scan kinds that get the paced-triage surface (unticked, hideable, live-fill).
+# Both share one review screen; they differ only in which hidden-store scope a
+# dismiss writes — missing-album for the gap scan, upgrade for the upgrade scan.
+_TRIAGE_KINDS = ("library", "upgrade")
+
+
+def _hide_scope(execute_kind):
+    from qobuz_librarian.library import hidden as hidden_mod
+    return (hidden_mod.SCOPE_UPGRADE if execute_kind == "upgrade"
+            else hidden_mod.SCOPE_MISSING)
+
+
 @app.post("/jobs/{job_id}/hide", response_class=HTMLResponse)
 async def job_hide(request: Request, job_id: str):
-    """Dismiss an artist's still-missing albums from the library walk.
+    """Dismiss an artist's albums from a triage scan (gap or upgrade).
 
-    A triage action, not a download — it writes the durable hidden-store and
-    drops those candidates from the review list, returning just the affected
-    artist's group (or empty if the whole artist is gone) for an htmx swap of
-    that one group. Allowed while the scan is still running, and never
-    lock-guarded, so dismissing stays available mid-scan and while a download
-    holds the staging lock.
+    A triage action, not a download — it writes the durable hidden-store (in
+    the scan's scope) and drops those candidates from the review list,
+    returning just the affected artist's group (or empty if the whole artist is
+    gone) for an htmx swap of that one group. Allowed while the scan is still
+    running, and never lock-guarded, so dismissing stays available mid-scan and
+    while a download holds the staging lock.
     """
     job = job_mgr.registry.get(job_id)
     if not job:
         return HTMLResponse("", status_code=404)
-    if (job.execute_kind == "library" and job.status in (
+    if (job.execute_kind in _TRIAGE_KINDS and job.status in (
             job_mgr.JobStatus.AWAITING_REVIEW, job_mgr.JobStatus.SCANNING)):
         from qobuz_librarian.web import flows
         form = await request.form()
         artist = (form.get("artist") or "").strip()
         keep = form.getlist("cid")[:10000]
-        n = flows.dismiss_albums(job, artist, keep)
+        n = flows.dismiss_albums(job, artist, keep,
+                                 scope=_hide_scope(job.execute_kind))
         remaining = [c for c in job.candidates if c.get("artist") == artist]
         if remaining:
             resp = _tr(request, "_review_group.html",
@@ -1152,7 +1195,7 @@ async def job_groups(request: Request, job_id: str, after: int = -1):
     them, leaving the groups already on screen — and their tick/expand state —
     untouched."""
     job = job_mgr.registry.get(job_id)
-    if not job or job.execute_kind != "library":
+    if not job or job.execute_kind not in _TRIAGE_KINDS:
         return HTMLResponse("")
     with job._lock:
         cands = list(job.candidates)
