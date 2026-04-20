@@ -1,68 +1,38 @@
 from pathlib import Path
 from types import SimpleNamespace
 
+from qobuz_librarian.library.discovery import AlbumGap
+from qobuz_librarian.modes import artist as artist_mode
 from qobuz_librarian.modes.artist import run_artist_missing_albums
 
 
-def _album(title, tracks_count, year):
+def _qalbum(title, tracks_count, year):
     return {
-        "id": title,
-        "title": title,
-        "tracks_count": tracks_count,
-        "maximum_bit_depth": 16,
-        "maximum_sampling_rate": 44.1,
+        "id": title, "title": title, "tracks_count": tracks_count,
+        "maximum_bit_depth": 16, "maximum_sampling_rate": 44.1,
         "artist": {"name": "Bonobo", "id": 99},
         "release_date_original": f"{year}-01-01",
     }
 
 
-def test_fully_owned_album_is_hidden_but_partial_still_listed(monkeypatch, capsys):
-    """An album whose every track is already on disk (e.g. a collaboration
-    filed under another artist's folder) must not be offered for download,
-    while an album that's genuinely missing tracks still appears."""
-    catalog = [_album("The Keeper", 4, 2009), _album("Black Sands", 11, 2010)]
-
-    def fake_existing(album):
-        present = 4 if album["title"] == "The Keeper" else 3
-        return [{}] * present, Path("/library/match")
-
-    monkeypatch.setattr(
-        "qobuz_librarian.modes.artist.find_existing_tracks", fake_existing)
+def test_missing_albums_lists_partials_first_with_present_count(monkeypatch, capsys):
+    """The missing-albums step lists a partially-present album (a collaboration
+    filed under another folder) ahead of the fully-missing ones and shows how
+    many tracks are already on disk. What counts as owned vs missing is the
+    engine's call — see test_discovery; this checks the terminal presentation."""
+    partial = AlbumGap(_qalbum("Black Sands", 11, 2010),
+                       Path("/library/Black Sands"),
+                       missing=[{}] * 8, present=[{}] * 3)
+    absent = AlbumGap(_qalbum("Migration", 12, 2017), None)
+    monkeypatch.setattr(artist_mode, "discover_fully_missing",
+                        lambda *a, **k: [partial, absent])
 
     args = SimpleNamespace(prefer_hires=False, include_comps=True,
                            include_singles=True, dry_run=True, yes=False)
-
     run_artist_missing_albums("Bonobo", {}, args, "tok",
-                              seed_artist_id=99, prefetched_catalog=catalog)
+                              artist_id=99, prefetched_catalog=[])
 
     out = capsys.readouterr().out
-    assert "The Keeper" not in out
-    assert "Black Sands" in out
     assert "3/11" in out
-
-
-def test_resolve_artist_prefers_canonical_over_bare_name_twin(monkeypatch):
-    """Qobuz lists a bare 'Beatles' (covers/interviews/bootlegs) beside the
-    real 'The Beatles'; a raw string match grabs the twin because 'The ' costs
-    it similarity. Resolve must ignore the leading article and, on a tie, take
-    the deeper catalog — the canonical artist."""
-    from qobuz_librarian.web import flows
-    monkeypatch.setattr(flows, "_resolve_cache", {})
-    candidates = [
-        {"name": "The Beatles", "id": 26390, "albums_count": 529},
-        {"name": "Beatles", "id": 28257527, "albums_count": 273},
-        {"name": "The Beatles Revival Band", "id": 972325, "albums_count": 10},
-    ]
-    monkeypatch.setattr(flows, "search_artists", lambda *a, **k: candidates)
-    assert flows.resolve_artist("beatles", "tok") == (26390, "The Beatles")
-
-
-def test_resolve_artist_uses_cache_and_skips_the_search(monkeypatch):
-    """A cached artist resolves without hitting the search API — the re-scan
-    speed win. (Misses aren't cached, so they re-try each scan.)"""
-    from qobuz_librarian.web import flows
-    monkeypatch.setattr(flows, "_resolve_cache", {"the who": [45964, "The Who"]})
-    def _boom(*a, **k):
-        raise AssertionError("search_artists must not run on a cache hit")
-    monkeypatch.setattr(flows, "search_artists", _boom)
-    assert flows.resolve_artist("the who", "tok") == (45964, "The Who")
+    # The partially-present album is listed first (a lower pick number).
+    assert out.index("Black Sands") < out.index("Migration")

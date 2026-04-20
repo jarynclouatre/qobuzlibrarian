@@ -461,14 +461,15 @@ def run_walk_queued_mode(args, token):
                             args, token, shared_queue=shared_queue,
                             save_callback=_save_now,
                         )
-                        (_, owned_bare_titles, seen_album_ids,
-                         seed_id, prefetched_catalog) = gap_fill_result
+                        (_, owned_titles, handled_ids, resolved_dirs,
+                         artist_id, prefetched_catalog) = gap_fill_result
                         if not args.no_catalog:
                             run_artist_missing_albums(
-                                artist_query, owned_bare_titles,
+                                artist_query, owned_titles,
                                 args, token,
-                                seed_artist_id=seed_id,
-                                seen_album_ids=seen_album_ids,
+                                artist_id=artist_id,
+                                handled_ids=handled_ids,
+                                resolved_dirs=resolved_dirs,
                                 prefetched_catalog=prefetched_catalog,
                                 shared_queue=shared_queue,
                             )

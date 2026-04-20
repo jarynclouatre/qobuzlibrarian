@@ -1,5 +1,4 @@
 from qobuz_librarian.library import hidden
-from qobuz_librarian.web import flows
 
 
 def test_fingerprint_unifies_editions_and_ignores_year():
@@ -42,29 +41,3 @@ def test_load_tolerates_a_corrupt_file(monkeypatch, tmp_path):
     assert hidden.load() == {"missing": {}, "upgrade": {}}
 
 
-def _stub_catalog(monkeypatch, album, existing, missing, present):
-    monkeypatch.setattr(flows, "get_artist_albums", lambda *a, **k: ([album], 1))
-    monkeypatch.setattr(flows, "dedup_album_versions", lambda c, **k: [(album, 1)])
-    monkeypatch.setattr(flows, "filter_compilation_albums", lambda p, n: p)
-    monkeypatch.setattr(flows, "filter_short_releases", lambda p, m: p)
-    monkeypatch.setattr(flows, "find_existing_tracks", lambda alb: (existing, None))
-    monkeypatch.setattr(flows, "compute_missing", lambda qt, ex: (missing, present))
-
-
-def test_missing_albums_drops_zero_overlap_false_match(monkeypatch):
-    track = {"title": "t1"}
-    album = {"id": "a1", "title": "Dummy", "tracks": {"items": [track]}}
-    # Files on disk, but none match the resolved album → wrong folder, not a gap.
-    _stub_catalog(monkeypatch, album, existing=[{"title": "x"}],
-                  missing=[track], present=[])
-    assert list(flows._missing_albums("id", "Portishead", "tok")) == []
-
-
-def test_missing_albums_honours_the_hidden_store(monkeypatch):
-    album = {"id": "a1", "title": "Dummy", "tracks": {"items": []}}
-    _stub_catalog(monkeypatch, album, existing=[], missing=[], present=[])
-    store = {"missing": {hidden.album_fingerprint("Portishead", "Dummy"): {}},
-             "upgrade": {}}
-    assert list(flows._missing_albums("id", "Portishead", "tok", hidden=store)) == []
-    # Same scan with no store surfaces the fully-missing album.
-    assert list(flows._missing_albums("id", "Portishead", "tok")) == [album]

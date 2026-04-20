@@ -15,13 +15,13 @@ from qobuz_librarian.library.catalog import (
     find_album_dir_filesystem,
     maybe_remove_empty_dir,
 )
+from qobuz_librarian.library.discovery import resolve_artist_dir
 from qobuz_librarian.library.scanner import (
     clear_scan_caches,
     list_artist_album_dirs,
     list_library_artists,
     read_album_dir,
 )
-from qobuz_librarian.modes.artist import resolve_artist_dir
 from qobuz_librarian.queue.builder import _build_queue_item
 from qobuz_librarian.queue.executor import _execute_download_queue
 from qobuz_librarian.repair_log import append_repair_log, scan_dir_for_isrc_repairs

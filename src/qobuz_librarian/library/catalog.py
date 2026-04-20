@@ -652,22 +652,6 @@ def filter_short_releases(catalog_pairs, min_tracks=None):
     return kept
 
 
-def filter_seen_album_ids(catalog_pairs, seen_ids):
-    """Drop catalog entries whose Qobuz album ID was already touched in
-    gap-fill (matched, upgraded, or skipped). Bulletproofs against the
-    edge case where a gap-fill upgrade leaves a folder name that the
-    fuzzy-owned filter doesn't match."""
-    if not seen_ids:
-        return list(catalog_pairs)
-    kept = []
-    for album, n_versions in catalog_pairs:
-        aid = album.get("id")
-        if aid is not None and aid in seen_ids:
-            continue
-        kept.append((album, n_versions))
-    return kept
-
-
 def dedup_album_versions(albums, prefer_hires=False):
     """Collapse multiple editions of the same album into one canonical entry.
 

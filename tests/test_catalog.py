@@ -20,7 +20,6 @@ from qobuz_librarian.library.catalog import (
     dedup_album_versions,
     filter_compilation_albums,
     filter_owned_albums,
-    filter_seen_album_ids,
     filter_short_releases,
     find_album_dir_filesystem,
     find_extras_in_existing,
@@ -173,13 +172,10 @@ def test_dedup_album_versions_picks_standard_over_bloated_deluxe():
     assert dedup_album_versions(pairs, prefer_hires=False)[0][0]["tracks_count"] == 12
 
 
-def test_filter_short_releases_and_seen_ids():
+def test_filter_short_releases():
     short_and_full = [({"title": "EP", "tracks_count": 2}, 1),
                        ({"title": "Album", "tracks_count": 10}, 1)]
     assert [a["title"] for a, _ in filter_short_releases(short_and_full, min_tracks=4)] == ["Album"]
-
-    pairs = [({"id": "111"}, 1), ({"id": "222"}, 1)]
-    assert [a["id"] for a, _ in filter_seen_album_ids(pairs, {"111"})] == ["222"]
 
 
 def test_filter_owned_albums_doesnt_swallow_sequels_or_distinct_years():

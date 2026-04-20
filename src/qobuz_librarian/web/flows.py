@@ -6,35 +6,30 @@ candidates to the job, and execution runs over the candidates the user kept.
 """
 import argparse
 import json
-import re
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from qobuz_librarian import config as cfg
 from qobuz_librarian.api.auth import AuthLost
-from qobuz_librarian.api.search import (
-    get_album,
-    get_artist_albums,
-    search_artists,
-)
+from qobuz_librarian.api.search import get_album
 from qobuz_librarian.library import hidden as hidden_mod
 from qobuz_librarian.library.catalog import (
     album_quality_label,
     album_year,
-    compute_missing,
-    dedup_album_versions,
-    filter_compilation_albums,
-    filter_short_releases,
-    find_existing_tracks,
     find_qobuz_album_for_dir,
+)
+from qobuz_librarian.library.discovery import (
+    DiscoveryOpts,
+    find_missing_for_artist,
+    flush_resolve_cache,
 )
 from qobuz_librarian.library.scanner import (
     clear_scan_caches,
     list_artist_album_dirs,
     list_library_artists,
 )
-from qobuz_librarian.library.tags import VA_NORMALIZED, normalize, similarity
+from qobuz_librarian.library.tags import VA_NORMALIZED, normalize
 from qobuz_librarian.ui_cli.errors import plural
 from qobuz_librarian.ui_cli.logging import log
 
@@ -63,161 +58,6 @@ def build_args():
     )
 
 
-_LEADING_ARTICLE_RE = re.compile(r"^(?:the|a|an)\s+", re.IGNORECASE)
-
-
-def _strip_leading_article(name):
-    """Drop a leading 'the/a/an ' so 'The Beatles' compares equal to a bare
-    'Beatles'. Left unchanged if stripping would empty it."""
-    return _LEADING_ARTICLE_RE.sub("", name or "", count=1) or name
-
-
-# Persistent artist-resolution cache (folder name → matched Qobuz artist).
-# Resolution is deterministic and artist IDs are stable, so a re-scan skips the
-# artist-search call for every artist already matched — the slow half of a
-# library scan. Misses are NOT cached (re-tried each scan, in case the artist
-# later appears on Qobuz). Bump the version if resolve_artist's matching logic
-# changes so stale matches drop; delete the file to force a full re-resolve.
-_RESOLVE_CACHE_VERSION = 1
-_resolve_cache = None
-_resolve_cache_dirty = False
-
-
-def _load_resolve_cache() -> dict:
-    global _resolve_cache
-    if _resolve_cache is None:
-        _resolve_cache = {}
-        try:
-            raw = json.loads((cfg.DATA_DIR / ".artist_resolve_cache.json")
-                             .read_text(encoding="utf-8"))
-            if raw.get("version") == _RESOLVE_CACHE_VERSION:
-                _resolve_cache = raw.get("entries") or {}
-        except (OSError, ValueError):
-            pass
-    return _resolve_cache
-
-
-def flush_resolve_cache():
-    """Persist the resolution cache to disk, only if it gained entries."""
-    global _resolve_cache_dirty
-    if not _resolve_cache_dirty or _resolve_cache is None:
-        return
-    import os
-    import tempfile
-    path = cfg.DATA_DIR / ".artist_resolve_cache.json"
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        payload = json.dumps({"version": _RESOLVE_CACHE_VERSION,
-                              "entries": _resolve_cache})
-        fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=".arcache.")
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(payload)
-        os.replace(tmp, path)
-        _resolve_cache_dirty = False
-    except OSError:
-        pass
-
-
-def resolve_artist(query, token):
-    """Return (artist_id, artist_name) for the best match, or (None, None).
-
-    Qobuz lists the canonical artist ('The Beatles') next to bare-name twins
-    ('Beatles') that aggregate covers, interviews and bootlegs. A raw string
-    match favours the twin — it has no 'The ' to cost it similarity — so
-    compare with the leading article stripped and, among equally close names,
-    take the one with the deepest catalog: the real artist's, not the twin's.
-
-    Matched artists are cached to disk so a re-scan skips the search call;
-    flush_resolve_cache() persists new matches.
-    """
-    global _resolve_cache_dirty
-    cache = _load_resolve_cache()
-    hit = cache.get(query)
-    if hit is not None:
-        return hit[0], hit[1]
-    try:
-        results = search_artists(query, token, limit=cfg.ARTIST_LOOKUP_LIMIT)
-    except AuthLost:
-        raise
-    except Exception as e:
-        log.info(f"  artist search failed for '{query}': {e}")
-        return None, None
-    q = _strip_leading_article(query)
-
-    def match_score(a):
-        return similarity(_strip_leading_article(a.get("name", "")), q)
-
-    qualifying = [a for a in results if match_score(a) >= cfg.ARTIST_NAME_THRESH]
-    if not qualifying:
-        return None, None
-    best = max(qualifying,
-               key=lambda a: (match_score(a), a.get("albums_count") or 0))
-    aid, aname = best.get("id"), best.get("name")
-    cache[query] = [aid, aname]
-    _resolve_cache_dirty = True
-    return aid, aname
-
-
-def _missing_albums(artist_id, artist_name, token, partial_only=False,
-                    hidden=None):
-    """Yield Qobuz album dicts that need attention — either entirely
-    absent from the library, or present on disk with track-level gaps.
-    Partial albums get a `_partial_missing_count` key set on the dict
-    so the candidate detail can show 'gap-fill: N missing'.
-
-    With partial_only, fully-missing albums are skipped — only on-disk
-    albums with track gaps are yielded (the album-fill use case).
-
-    `hidden` is a preloaded hidden-store (library.hidden.load()) supplied by
-    the bulk library walk so dismissed albums are skipped. The single-artist
-    Artist scan passes None — typing a name overrides the memory.
-    """
-    catalog, total = get_artist_albums(artist_id, token,
-                                       limit=cfg.ARTIST_CATALOG_LIMIT)
-    if total and total > len(catalog):
-        log.info(f"  Qobuz lists {total} albums; scanning the first "
-                 f"{len(catalog)}.")
-    pairs = dedup_album_versions(catalog, prefer_hires=cfg.PREFER_HIRES)
-    pairs = filter_compilation_albums(pairs, artist_name)
-    pairs = filter_short_releases(pairs, cfg.MISSING_ALBUMS_MIN_TRACKS)
-    for album, _n_versions in pairs:
-        if hidden is not None and hidden_mod.is_hidden(
-                hidden_mod.SCOPE_MISSING, artist_name, album.get("title"), hidden):
-            continue
-        existing, _album_dir = find_existing_tracks(album)
-        if not existing:
-            if not partial_only:
-                yield album
-            continue
-        # On-disk: check for track gaps. process_album re-derives the
-        # gap when the user approves, so we don't need to thread the
-        # missing set through the candidate — just count it for the UI.
-        qobuz_tracks = (album.get("tracks") or {}).get("items") or []
-        if not qobuz_tracks:
-            # get_artist_albums returns tracks_count but not the track list,
-            # so the gap check would be dead without materializing it. Only
-            # paid for on-disk albums (fully-missing ones short-circuit above).
-            try:
-                full = get_album(album.get("id"), token)
-            except AuthLost:
-                raise
-            except Exception:
-                full = None
-            qobuz_tracks = ((full or {}).get("tracks") or {}).get("items") or []
-        if not qobuz_tracks:
-            continue
-        missing, present = compute_missing(qobuz_tracks, existing)
-        if not present:
-            # Zero track overlap: the folder fuzz-resolved to the wrong album.
-            # Yielding it would offer to download a whole album over a folder
-            # that only looks similarly named. A real collaboration filed
-            # elsewhere overlaps on tracks, so this only drops false matches.
-            continue
-        if missing:
-            album["_partial_missing_count"] = len(missing)
-            yield album
-
-
 def _add_album_candidate(job, album, artist_name, selected=True):
     year = album_year(album)
     partial_n = album.get("_partial_missing_count")
@@ -238,6 +78,14 @@ def _add_album_candidate(job, album, artist_name, selected=True):
         selected=selected,
     )
 
+
+def _add_gap_candidate(job, gap, artist_name, selected=False):
+    """Turn an engine AlbumGap into a review candidate. A partial gap carries
+    its missing-track count so the detail reads 'gap-fill: N missing'."""
+    album = gap.qobuz_album
+    if gap.on_disk_dir is not None:
+        album = {**album, "_partial_missing_count": gap.missing_count}
+    _add_album_candidate(job, album, artist_name, selected=selected)
 
 
 def _record_last_scan():
@@ -336,36 +184,35 @@ def dismiss_albums(job, artist, keep_cids, scope=hidden_mod.SCOPE_MISSING):
 def scan_artist(job, query, token):
     clear_scan_caches()
     log.info(f"Resolving artist '{query}'…")
-    artist_id, artist_name = resolve_artist(query, token)
-    if not artist_id:
+    # No hidden filter: asking for an artist by name is a deliberate request to
+    # see everything, dismissed albums included.
+    result = find_missing_for_artist(
+        query, token=token, opts=DiscoveryOpts(prefer_hires=cfg.PREFER_HIRES))
+    if not result.artist_id:
         log.info(f"  No confident Qobuz match for '{query}'.")
         job.summary = (f"No Qobuz match for “{query}”. Check the spelling, or "
                        "try the artist's exact name as Qobuz lists it.")
         return
-    log.info(f"  Matched: {artist_name}. Scanning catalog for gaps…")
-    n = 0
-    for album in _missing_albums(artist_id, artist_name, token):
+    log.info(f"  Matched: {result.artist_name}. Scanning catalog for gaps…")
+    for gap in result.gaps:
         # Unticked by default — even a single artist can have dozens of albums,
-        # so don't let one click queue the lot. No hidden filter applies here:
-        # asking for an artist by name is a deliberate request to see everything.
-        _add_album_candidate(job, album, artist_name, selected=False)
-        n += 1
-    log.info(f"  {plural(n, 'missing album')} found for {artist_name}.")
+        # so don't let one click queue the lot.
+        _add_gap_candidate(job, gap, result.artist_name, selected=False)
+    log.info(f"  {plural(len(result.gaps), 'missing album')} found for "
+             f"{result.artist_name}.")
     flush_resolve_cache()
     _record_last_scan()
 
 
 def _scan_library_artist(artist_dir, token, partial_only, hidden):
-    """Worker: resolve one artist and collect its missing albums. Runs in a
-    pool thread (its own HTTP session); returns plain data so the caller adds
-    candidates serially — keeping job.candidates single-writer."""
-    name = artist_dir.name
-    artist_id, artist_name = resolve_artist(name, token)
-    if not artist_id:
-        return name, None, []
-    albums = list(_missing_albums(artist_id, artist_name, token,
-                                  partial_only=partial_only, hidden=hidden))
-    return name, artist_name, albums
+    """Worker: find one artist's gaps. Runs in a pool thread (its own HTTP
+    session); returns plain data so the caller adds candidates serially —
+    keeping job.candidates single-writer."""
+    result = find_missing_for_artist(
+        artist_dir.name, token=token,
+        opts=DiscoveryOpts(prefer_hires=cfg.PREFER_HIRES),
+        artist_dir=artist_dir, hidden=hidden, want_missing=not partial_only)
+    return artist_dir.name, result.artist_name, result.gaps
 
 
 def scan_library(job, token, partial_only=False):
@@ -402,7 +249,7 @@ def scan_library(job, token, partial_only=False):
                 break
             done += 1
             try:
-                name, artist_name, albums = fut.result()
+                name, artist_name, gaps = fut.result()
             except AuthLost:
                 for f in futures:
                     f.cancel()
@@ -412,20 +259,20 @@ def scan_library(job, token, partial_only=False):
                 job.push_progress("Scanning library", done, n, futures[fut].name,
                                   found=total)
                 continue
-            for album in albums:
+            for gap in gaps:
                 # Library is a discovery list — leave candidates unticked so a
                 # single click can't queue hundreds nobody reviewed.
-                _add_album_candidate(job, album, artist_name, selected=False)
+                _add_gap_candidate(job, gap, artist_name or name, selected=False)
                 total += 1
             # Add the albums before the progress tick so a hit lands the live
             # preview the same moment the running total moves.
-            hit = ({"artist": artist_name or name, "albums": len(albums)}
-                   if albums else None)
+            hit = ({"artist": artist_name or name, "albums": len(gaps)}
+                   if gaps else None)
             job.push_progress("Scanning library", done, n, artist_name or name,
                               found=total, hit=hit)
-            if albums:
+            if gaps:
                 tail = "with gaps" if partial_only else "to fill"
-                log.info(f"  {artist_name} — {plural(len(albums), 'album')} {tail}")
+                log.info(f"  {artist_name} — {plural(len(gaps), 'album')} {tail}")
     flush_resolve_cache()
     _record_last_scan()
     if not job.cancel_requested:

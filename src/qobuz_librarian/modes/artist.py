@@ -4,43 +4,40 @@
            download the missing tracks of each.
   Step 2 — Missing albums: list everything on Qobuz by this artist you
            don't have, and offer to download.
+
+The matching itself — which folder is which Qobuz edition, what's missing,
+what's a false match — lives in library.discovery, the one engine the web
+scans share. This module is the terminal face: prompts, sibling cleanup, the
+two-step presentation.
 """
-import re
 import shutil
 import time
 
 from qobuz_librarian import config as cfg
 from qobuz_librarian.api.auth import AuthLost, QobuzError
-from qobuz_librarian.api.search import get_album, get_artist_albums, search_artists
+from qobuz_librarian.api.search import get_album, get_artist_albums
 from qobuz_librarian.integrations.compress import HAVE_DOWNSAMPLE
 from qobuz_librarian.library.catalog import (
     _count_audio_files_in,
     album_quality_label,
     album_year,
-    compute_missing,
-    dedup_album_versions,
-    filter_compilation_albums,
-    filter_owned_albums,
-    filter_seen_album_ids,
-    filter_short_releases,
-    find_album_dir_filesystem,
-    find_existing_tracks,
     find_expanded_edition,
     find_extras_in_existing,
-    find_qobuz_album_for_dir,
-    is_lossless_album,
     match_dir_to_catalog,
+)
+from qobuz_librarian.library.discovery import (
+    DiscoveryOpts,
+    discover_fully_missing,
+    match_album_dir,
+    owned_album_titles,
+    resolve_artist,
+    resolve_artist_dir,
 )
 from qobuz_librarian.library.scanner import (
     clear_scan_caches,
     list_artist_album_dirs,
 )
-from qobuz_librarian.library.tags import (
-    VA_NORMALIZED,
-    normalize,
-    similarity,
-    strip_album_decorations,
-)
+from qobuz_librarian.library.tags import VA_NORMALIZED, normalize
 from qobuz_librarian.modes.process import (
     detect_sibling_album_groups,
     pick_canonical_sibling,
@@ -61,87 +58,54 @@ from qobuz_librarian.ui_cli.prompts import (
 )
 
 
-def resolve_artist_dir(artist_query):
-    """Fuzzy-find an artist's directory in MUSIC_ROOT.
-    Returns Path or None. Handles 'The X' / 'X' equivalence."""
-    from qobuz_librarian.library.scanner import list_library_artists
-    if not artist_query:
-        return None
-    candidates = list_library_artists()
-    if not candidates:
-        return None
-
-    target = normalize(artist_query)
-    if not target:
-        return None
-
-    # Exact normalized match
-    for d in candidates:
-        if normalize(d.name) == target:
-            return d
-
-    # 'The X' / 'X' equivalence
-    target_alt = target[3:] if target.startswith("the") else "the" + target
-    for d in candidates:
-        if normalize(d.name) == target_alt:
-            return d
-
-    # Fuzzy fallback (try both raw and 'the'-stripped)
-    def base(s):
-        return s[4:] if s.lower().startswith("the ") else s
-    best, best_score = None, 0.0
-    for d in candidates:
-        s = max(similarity(d.name, artist_query),
-                similarity(base(d.name), base(artist_query)))
-        if s > best_score:
-            best, best_score = d, s
-    if best and best_score >= cfg.FUZZY_DIR_THRESH:
-        return best
-    return None
+def _downsample_note(album):
+    """' → will downsample to Xkhz' when the hi-res master will be reduced, else
+    ''. Qobuz sampling rate is kHz (44.1, 96.0); >=1000 means it's already Hz."""
+    if not (cfg.DOWNSAMPLE_HIRES_ENABLED and HAVE_DOWNSAMPLE):
+        return ""
+    sr = album.get("maximum_sampling_rate") or 0
+    sr_hz = int(round(sr)) if sr >= 1000 else int(round(sr * 1000))
+    target_hz = downsample_target_rate(sr_hz)
+    if target_hz < sr_hz:
+        return f"  → will downsample to {target_hz / 1000:g}kHz"
+    return ""
 
 
 def run_artist_gap_fill(artist_name, artist_dir, args, token, *,
                       shared_queue=None, flush_callback=None,
                       skip_predicate=None, save_callback=None):
-    """Walk every album dir under artist_dir, query Qobuz, prompt to fill gaps.
+    """Walk every album dir under artist_dir, match each to Qobuz, prompt to
+    fill gaps. The matching is library.discovery.match_album_dir; this function
+    is the prompting + sibling cleanup around it.
 
-    Returns (results, owned_bare_titles, seen_album_ids, seed_artist_id, catalog).
-    seed_artist_id is the Qobuz artist_id captured from the first successful
-    per-album match; the missing-albums step uses it to skip a redundant
-    artist/search. seen_album_ids is the set of Qobuz album IDs touched in
-    gap-fill — the missing-albums step uses it to filter so an upgraded
-    album can't reappear as "missing".
+    Returns (results, owned_titles, handled_ids, resolved_dirs, artist_id,
+    catalog). The last four are the hand-off the missing-albums step needs so an
+    album already matched to a folder here isn't re-offered as missing.
 
-    flush_callback (optional, used by album fill walk): a zero-arg callable. When supplied,
-    the per-album prompt gains a 'd' option that calls flush_callback() to
-    download whatever is currently in shared_queue, then resumes scanning
-    the next album. shared_queue must also be supplied for this to do
-    anything useful — flush_callback is responsible for clearing it.
+    flush_callback (album fill walk): a zero-arg callable. When supplied, the
+    per-album prompt gains a 'd' option that downloads whatever is currently in
+    shared_queue, then resumes scanning. shared_queue must also be supplied.
 
-    skip_predicate (optional, used by album fill walk): callable taking an album Path,
-    returning True to skip that album completely (no Qobuz query, no
-    prompt, no result append). Album fill walk uses this to honour its per-album
-    seen file so previously-decided albums aren't re-walked when the
-    artist has mixed seen/unseen state.
+    skip_predicate (album fill walk): callable taking an album Path, returning
+    True to skip it entirely (no Qobuz query, no prompt, no result) — honours
+    the per-album seen file.
 
-    save_callback (optional, modes 4 & 5): zero-arg callable invoked
-    after this artist's queue items have been added to shared_queue,
-    so the caller can persist the updated queue to disk for crash
-    recovery. Cheap, but only fires once per artist (not per album).
+    save_callback (modes 4 & 5): zero-arg callable invoked after this artist's
+    queue items are added to shared_queue, so the caller can persist the queue
+    for crash recovery. Fires once per artist, not per album.
     """
     album_dirs = list_artist_album_dirs(artist_dir)
     if not album_dirs:
         log.info(fmt(C.YELLOW, f"  ⚠  No album folders found under {artist_dir}."))
-        return [], set(), set(), None, []
+        return [], {}, set(), set(), None, []
 
-    # Detect sibling folders (same bare title) before any downloads.
     sibling_choices = {}  # picked_dir -> [siblings to delete after fill]
 
     def _delete_siblings_of_complete(picked):
         # Only for an already-complete pick: no download runs, so the executor
-        # never sees this folder and won't clean its siblings. When an album
-        # IS downloaded, the executor deletes the siblings itself, gated on a
-        # clean result (no failed or lossy tracks) — don't second-guess it here.
+        # never sees this folder and won't clean its siblings. When an album IS
+        # downloaded, the executor deletes the siblings itself, gated on a clean
+        # result (no failed or lossy tracks) — don't second-guess it here.
         for sib in sibling_choices.get(picked, []):
             if not sib.exists():
                 continue
@@ -153,36 +117,31 @@ def run_artist_gap_fill(artist_name, artist_dir, args, token, *,
                     f"    ⚠  Couldn't remove {sib.name}: {e}."))
         sibling_choices[picked] = []
 
-    # Catalog pre-fetch moved here so quality labels are available
-    # when the user picks between sibling folders.
-    artist_id = None
-    catalog = []
+    # Resolve the artist + pre-fetch the catalog. The catalog feeds both the
+    # sibling quality labels and the per-folder match (zero search-API cost when
+    # the folder's album is in it).
     vlog("  Resolving artist + pre-fetching catalog …")
-    try:
-        artists = search_artists(artist_name, token, limit=cfg.ARTIST_LOOKUP_LIMIT)
-    except QobuzError as e:
-        log.info(fmt(C.YELLOW, f"  ⚠  artist/search failed ({e}); per-folder fallback."))
-        artists = []
-    if artists:
-        best = max(artists, key=lambda a: similarity(a.get("name", ""), artist_name))
-        if similarity(best.get("name", ""), artist_name) >= cfg.ARTIST_NAME_THRESH:
-            artist_id = best.get("id")
-            try:
-                catalog, qobuz_total = get_artist_albums(
-                    artist_id, token, limit=cfg.ARTIST_CATALOG_LIMIT)
-                vlog(f"  Pre-fetched {len(catalog)} catalog entries (artist_id={artist_id}).")
-                if qobuz_total is not None and qobuz_total > len(catalog):
-                    log.info(fmt(C.YELLOW,
-                        f"  ⚠  Qobuz reports {qobuz_total} albums; only fetched "
-                        f"{len(catalog)}. Folders past the limit will fall back to search."))
-            except QobuzError as e:
+    artist_id, resolved_name = resolve_artist(artist_name, token)
+    if resolved_name:
+        artist_name = resolved_name
+    catalog = []
+    if artist_id is not None:
+        try:
+            catalog, qobuz_total = get_artist_albums(
+                artist_id, token, limit=cfg.ARTIST_CATALOG_LIMIT)
+            vlog(f"  Pre-fetched {len(catalog)} catalog entries (artist_id={artist_id}).")
+            if qobuz_total is not None and qobuz_total > len(catalog):
                 log.info(fmt(C.YELLOW,
-                    f"  ⚠  catalog pre-fetch failed ({e}); per-folder fallback."))
-                catalog = []
-        else:
+                    f"  ⚠  Qobuz reports {qobuz_total} albums; only fetched "
+                    f"{len(catalog)}. Folders past the limit will fall back to search."))
+        except QobuzError as e:
             log.info(fmt(C.YELLOW,
-                f"  ⚠  best Qobuz artist match {best.get('name')!r} doesn't match "
-                f"{artist_name!r} strongly; per-folder fallback."))
+                f"  ⚠  catalog pre-fetch failed ({e}); per-folder fallback."))
+            catalog = []
+    else:
+        log.info(fmt(C.YELLOW,
+            f"  ⚠  No confident Qobuz artist match for {artist_name!r}; "
+            "per-folder fallback."))
 
     sibling_groups = detect_sibling_album_groups(album_dirs)
     if sibling_groups:
@@ -235,8 +194,8 @@ def run_artist_gap_fill(artist_name, artist_dir, args, token, *,
                     skip_set.add(d)
                 continue
             others = [d for d in dirs if d is not picked]
-            # Under --yes, pick but DO NOT enqueue siblings for
-            # delete-after-fill; matches docstring's --yes contract.
+            # Under --yes, pick but DO NOT enqueue siblings for delete-after-fill;
+            # matches the docstring's --yes contract.
             sibling_choices[picked] = [] if yes_skip_delete else others
             for d in others:
                 skip_set.add(d)
@@ -245,43 +204,31 @@ def run_artist_gap_fill(artist_name, artist_dir, args, token, *,
             log.info(fmt(C.GRAY,
                 f"  → {len(album_dirs)} folder(s) to scan."))
 
-    # Pre-populate owned_bare_titles from ALL album dirs upfront.
-    # owned_bare_titles: {normalized_bare_title: set_of_int_years}.
-    owned_bare_titles = {}
-    for _ad in album_dirs:
-        _tkey = normalize(strip_album_decorations(_ad.name))
-        if not _tkey:
-            continue
-        _ym = re.search(r"\((\d{4})\)", _ad.name) or re.search(r"\b(19\d{2}|20\d{2})\b", _ad.name)
-        _yr = int(_ym.group(1)) if _ym else None
-        owned_bare_titles.setdefault(_tkey, set()).add(_yr)
-    seen_album_ids = set()  # Qobuz IDs touched in gap-fill; excluded from missing-albums step
+    # Folder bare-titles seed the owned set the missing-albums step reads, so a
+    # catalog album already on disk isn't re-offered.
+    owned_titles = owned_album_titles(album_dirs)
+    handled_ids = set()     # Qobuz ids matched here; the missing step skips them
+    resolved_dirs = set()   # folders matched here, so a different edition of the
+                            # same album doesn't re-surface them as missing
 
     section(f"Step 1: Gap fill — {len(album_dirs)} album(s) for {artist_name}")
     vlog("  For each, querying Qobuz and offering to fill missing tracks.")
     vlog("  Press 's' at any prompt to stop the scan.")
 
     results = []
-    seed_artist_id = artist_id
     stopped_early = False
-    # Typing 'a' at any gap-fill prompt auto-confirms the rest
-    # of THIS artist's prompts. Scoped local — does not bleed into step 2
-    # or the next artist in a walk.
+    # 'a' at any gap-fill prompt auto-confirms the rest of THIS artist's albums.
+    # Scoped local — doesn't bleed into step 2 or the next artist in a walk.
     auto_yes_rest = False
-    # Collect download decisions here, run them as a batch
-    # AFTER the prompting loop completes (so user can walk away).
-    queue = []
-
-    # If AuthLost fires mid-loop, stash it here, finish
-    # the post-loop hand-off so the artist's accumulated `queue` items
-    # reach shared_queue, then re-raise.
+    queue = []  # download decisions, run as a batch after the prompting loop
+    # AuthLost mid-loop: stash it, finish the hand-off so the artist's queue
+    # reaches shared_queue, then re-raise.
     pending_auth_lost = None
 
     for i, ad in enumerate(album_dirs, 1):
         if stopped_early:
             break
 
-        # Album fill walk: skip albums already in the album-walk seen file.
         if skip_predicate is not None:
             try:
                 if skip_predicate(ad):
@@ -294,55 +241,41 @@ def run_artist_gap_fill(artist_name, artist_dir, args, token, *,
         log.info(fmt(C.BOLD + C.WHITE, f"  {label} {truncate(ad.name, 55)}"))
 
         try:
-            album = find_qobuz_album_for_dir(ad, artist_name, token,
-                                             prefer_hires=args.prefer_hires,
-                                             catalog=catalog,
-                                             target_dir=ad)
+            m = match_album_dir(ad, artist_name, token,
+                                catalog=catalog, prefer_hires=args.prefer_hires)
         except AuthLost as _e_auth:
             pending_auth_lost = _e_auth
             break
         time.sleep(cfg.ARTIST_API_DELAY)
 
-        # Sibling-pick fallback. Picked folder failed to match —
-        # prompt to swap in each alternate from its sibling group in turn.
-        fallback_ran = False
-        if album is None and ad in sibling_choices:
-            fallback_ran = True
-            log.info(fmt(C.YELLOW,
-                f"    ⚠  No Qobuz match for {ad.name}."))
+        # Sibling-pick fallback. The picked folder failed to match — offer each
+        # alternate from its group in turn.
+        if m.status == "no_match" and ad in sibling_choices:
+            log.info(fmt(C.YELLOW, f"    ⚠  No Qobuz match for {ad.name}."))
             fallback_queue = list(sibling_choices[ad])
             original_ad = ad
             while fallback_queue:
                 next_try = fallback_queue.pop(0)
-                if not confirm(
-                        f"    Try sibling {next_try.name} instead?",
-                        default_yes=True, auto_yes=args.yes):
-                    log.info(fmt(C.GRAY,
-                        "    Skipping the rest of this group."))
+                if not confirm(f"    Try sibling {next_try.name} instead?",
+                               default_yes=True, auto_yes=args.yes):
+                    log.info(fmt(C.GRAY, "    Skipping the rest of this group."))
                     break
                 log.info(fmt(C.GRAY, f"    Trying {next_try.name} …"))
                 try:
-                    album = find_qobuz_album_for_dir(
-                        next_try, artist_name, token,
-                        prefer_hires=args.prefer_hires,
-                        catalog=catalog,
-                        target_dir=next_try)
+                    m = match_album_dir(next_try, artist_name, token,
+                                        catalog=catalog, prefer_hires=args.prefer_hires)
                 except AuthLost as _e_auth_sib:
                     pending_auth_lost = _e_auth_sib
-                    album = None
+                    m = None
                     break
                 time.sleep(cfg.ARTIST_API_DELAY)
-                if album is not None:
-                    all_in_group = (sibling_choices[original_ad]
-                                    + [original_ad])
-                    new_others = [d for d in all_in_group
-                                  if d is not next_try]
-                    sibling_choices[next_try] = new_others
-                    if original_ad in sibling_choices:
-                        del sibling_choices[original_ad]
+                if m.status != "no_match":
+                    all_in_group = sibling_choices[original_ad] + [original_ad]
+                    sibling_choices[next_try] = [d for d in all_in_group
+                                                 if d is not next_try]
+                    sibling_choices.pop(original_ad, None)
                     ad = next_try
-                    log.info(fmt(C.GREEN,
-                        f"    ✓  Switched to {ad.name}."))
+                    log.info(fmt(C.GREEN, f"    ✓  Switched to {ad.name}."))
                     break
                 log.info(fmt(C.YELLOW,
                     f"    ⚠  No Qobuz match for {next_try.name} either."))
@@ -350,79 +283,58 @@ def run_artist_gap_fill(artist_name, artist_dir, args, token, *,
         if pending_auth_lost is not None:
             break
 
-        if album is None:
-            if not fallback_ran:
-                log.info(fmt(C.YELLOW, "    ⚠  No confident Qobuz match for this folder. Skipping."))
+        if m is None or m.status == "no_match":
+            log.info(fmt(C.YELLOW, "    ⚠  No confident Qobuz match for this folder. Skipping."))
             results.append({"dir": ad, "result": "no_qobuz_match"})
             continue
 
-        # GUARDRAIL: verify the matched Qobuz album's predicted on-disk path
-        # actually points back at THIS dir.
-        from qobuz_librarian.library.catalog import _paths_equal
-        predicted = find_album_dir_filesystem(album)
-        if predicted is None or not _paths_equal(predicted, ad):
-            pred_name = predicted.name if predicted else "no on-disk match"
+        if m.status == "predicted_path_mismatch":
+            pred = (m.qobuz_album or {}).get("title") or "?"
             log.info(fmt(C.YELLOW,
-                f"    ⚠  Qobuz match resolves to a different folder ({pred_name}). "
+                f"    ⚠  Qobuz match resolves to a different folder ({pred}). "
                 f"Likely false match — skipping to avoid duplication."))
             results.append({"dir": ad, "result": "predicted_path_mismatch",
-                            "qobuz_title": album.get("title") or "?"})
+                            "qobuz_title": pred})
             continue
 
-        # Capture artist_id for the missing-albums step
-        if seed_artist_id is None:
-            seed_artist_id = ((album.get("artist") or {}).get("id"))
-
-        # Mark this Qobuz album's normalized bare title as owned.
-        _tkey = normalize(strip_album_decorations(album.get("title", "")))
-        if _tkey:
-            _yr_str = album_year(album)
-            try:
-                _yr = int(_yr_str) if _yr_str else None
-            except ValueError:
-                _yr = None
-            owned_bare_titles.setdefault(_tkey, set()).add(_yr)
+        album = m.qobuz_album
         if album.get("id") is not None:
-            seen_album_ids.add(album["id"])
-
+            handled_ids.add(album["id"])
+        resolved_dirs.add(str(ad))
         qobuz_tracks = (album.get("tracks") or {}).get("items") or []
-        if not qobuz_tracks:
+        n_total = len(qobuz_tracks)
+
+        if m.status == "no_tracks":
             log.info(fmt(C.YELLOW, "    ⚠  Qobuz returned no tracks. Skipping."))
             results.append({"dir": ad, "result": "no_tracks"})
             continue
 
-        # Quick check: complete AND at-or-above Qobuz quality → short-circuit.
-        # `predicted` was just resolved above; reuse it so find_existing_tracks
-        # doesn't repeat the cached-subdir scan + fuzzy fallback on this album.
-        existing, _ = find_existing_tracks(album, album_dir=predicted)
-        missing, present = compute_missing(qobuz_tracks, existing)
-        n_total = len(qobuz_tracks)
-
-        # GUARDRAIL: zero-overlap false-match.
-        if existing and not present:
+        if m.status == "false_match":
             log.info(fmt(C.YELLOW,
                 f"    ⚠  Qobuz match has 0 track overlap with this folder "
-                f"({len(existing)} on disk, none matched). "
+                f"({len(m.existing)} on disk, none matched). "
                 f"Likely false match — skipping to avoid duplication."))
             results.append({"dir": ad, "result": "false_match",
                             "qobuz_title": album.get("title") or "?",
-                            "n_existing": len(existing),
-                            "n_qobuz": n_total})
+                            "n_existing": len(m.existing), "n_qobuz": n_total})
             continue
+
+        existing, missing, present = m.existing, m.missing, m.present
 
         extra_albums = []
         has_extras = False
-        if existing and not getattr(args, "no_upgrade", False):
+        if existing and not getattr(args, "no_upgrade", False) and not missing:
             qual = compare_album_quality(existing, album)
             if qual["classification"] in ("all_lower", "mixed_below"):
                 extra_albums = find_extras_in_existing(qobuz_tracks, existing)
-                if extra_albums:
-                    has_extras = True
+                has_extras = bool(extra_albums)
 
-        # Artist mode: complete is complete. Upgrade prompts removed.
-        if not missing:
+        # Artist mode: complete is complete. No upgrade prompts beyond the
+        # expanded-edition offer below.
+        if m.status == "complete":
             if has_extras:
-                # Higher quality but bonus tracks would be lost. Look for expanded edition.
+                # Higher quality but bonus tracks would be lost. Look for an
+                # expanded edition that covers them.
                 _cands = find_expanded_edition(album, ad, existing, token, args)
                 _exp, _exp_extras = prompt_edition_pick(
                     album, len(extra_albums), _cands, existing, args, label_prefix="    ")
@@ -448,7 +360,7 @@ def run_artist_gap_fill(artist_name, artist_dir, args, token, *,
             _delete_siblings_of_complete(ad)
             continue
 
-        # Artist mode is gap-fill only — no upgrade prompts.
+        # Partial — offer to fill the gap.
         _extras_sfx = f" + {len(extra_albums)} local-only" if has_extras else ""
         log.info(fmt(C.YELLOW,
             f"    {len(present)}/{n_total} present{_extras_sfx} — {len(missing)} missing"))
@@ -458,15 +370,9 @@ def run_artist_gap_fill(artist_name, artist_dir, args, token, *,
                 f"      {str(_tn).rjust(2)}. {truncate(_mt.get('title') or '?', 56)}"))
         if len(missing) > 8:
             log.info(fmt(C.GRAY, f"      … and {len(missing) - 8} more"))
-        _compress_note = ""
-        if cfg.DOWNSAMPLE_HIRES_ENABLED and HAVE_DOWNSAMPLE:
-            _sr = album.get("maximum_sampling_rate") or 0
-            _sr_hz = int(round(_sr)) if _sr >= 1000 else int(round(_sr * 1000))
-            _target_hz = downsample_target_rate(_sr_hz)
-            if _target_hz < _sr_hz:
-                _compress_note = f"  → will downsample to {_target_hz / 1000:g}kHz"
         log.info(fmt(C.GRAY,
-            f"    Qobuz: {album_year(album) or '?'} • {album_quality_label(album)}{_compress_note}"))
+            f"    Qobuz: {album_year(album) or '?'} • {album_quality_label(album)}"
+            f"{_downsample_note(album)}"))
 
         if args.dry_run:
             log.info(fmt(C.GRAY, "    --dry-run: would prompt to download here"))
@@ -518,7 +424,7 @@ def run_artist_gap_fill(artist_name, artist_dir, args, token, *,
             siblings_to_delete=sibling_choices.get(ad, []),
         ))
 
-    # Shared_queue mode — accumulate into it and let the caller flush.
+    # Shared_queue mode — accumulate and let the caller flush.
     if shared_queue is not None:
         shared_queue.extend(queue)
         if save_callback is not None and queue:
@@ -527,8 +433,8 @@ def run_artist_gap_fill(artist_name, artist_dir, args, token, *,
             except Exception as _sce:
                 vlog(f"  save_callback raised: {_sce}")
     elif queue and pending_auth_lost is None:
-        # The executor deletes each item's chosen siblings itself once the
-        # fill lands cleanly, so there's nothing to clean up here.
+        # The executor deletes each item's chosen siblings itself once the fill
+        # lands cleanly, so there's nothing to clean up here.
         queue_results, drained = _execute_download_queue(queue, args, token)
         results.extend(queue_results)
         if not drained:
@@ -536,48 +442,34 @@ def run_artist_gap_fill(artist_name, artist_dir, args, token, *,
                 "  ⚠  Some albums couldn't be downloaded — kept to retry; "
                 "rerun to try them again."))
 
-    # Re-raise deferred AuthLost after hand-off completes.
     if pending_auth_lost is not None:
         raise pending_auth_lost
 
-    return results, owned_bare_titles, seen_album_ids, seed_artist_id, catalog
+    return results, owned_titles, handled_ids, resolved_dirs, artist_id, catalog
 
 
-def run_artist_missing_albums(artist_name, owned_bare_titles, args, token,
-                      seed_artist_id=None, seen_album_ids=None,
+def run_artist_missing_albums(artist_name, owned_titles, args, token,
+                      artist_id=None, handled_ids=None, resolved_dirs=None,
                       prefetched_catalog=None, *, shared_queue=None):
-    """Show artist's full Qobuz catalog with the user's already-owned albums
-    filtered out, dedup multiple editions, prompt to download some.
-
-    Returns count of albums downloaded.
+    """List the artist's full Qobuz catalog with already-owned albums filtered
+    out, prompt to download some. The matching is discovery.discover_fully_missing;
+    this is the numbered-list presentation around it. Returns count downloaded
+    (or queued, in shared_queue mode).
     """
     section(f"Step 2: Missing albums — by {artist_name}, not yet in your library")
 
-    # Resolve artist_id. Prefer a seed captured during gap-fill.
-    artist_id = seed_artist_id
     if artist_id is None:
         log.info(fmt(C.GRAY, "  Looking up artist on Qobuz …"))
-        try:
-            artists = search_artists(artist_name, token, limit=cfg.ARTIST_LOOKUP_LIMIT)
-        except QobuzError as e:
-            log.info(fmt(C.YELLOW, f"  ⚠  Qobuz artist search failed: {e}."))
-            return 0
-        if not artists:
-            log.info(fmt(C.YELLOW, "  ⚠  Couldn't find this artist on Qobuz."))
-            return 0
-        best = max(artists, key=lambda a: similarity(a.get("name", ""), artist_name))
-        if similarity(best.get("name", ""), artist_name) < cfg.ARTIST_NAME_THRESH:
+        artist_id, resolved_name = resolve_artist(artist_name, token)
+        if artist_id is None:
             log.info(fmt(C.YELLOW,
-                f"  ⚠  Best Qobuz artist match is {best.get('name')!r}, "
-                f"which doesn't strongly match {artist_name!r}. Skipping step 2."))
+                f"  ⚠  Couldn't find {artist_name!r} on Qobuz. Skipping step 2."))
             return 0
-        artist_id = best.get("id")
-        log.info(fmt(C.GRAY,
-            f"  Matched Qobuz artist: {best.get('name')!r} (id {artist_id})"))
-    else:
-        vlog(f"  using seed artist_id={artist_id} from gap-fill")
+        if resolved_name:
+            artist_name = resolved_name
+        log.info(fmt(C.GRAY, f"  Matched Qobuz artist: {artist_name!r} (id {artist_id})"))
 
-    if prefetched_catalog:
+    if prefetched_catalog is not None:
         catalog = prefetched_catalog
         vlog(f"  Reusing catalog from gap-fill ({len(catalog)} entries) — no refetch.")
     else:
@@ -588,110 +480,50 @@ def run_artist_missing_albums(artist_name, owned_bare_titles, args, token,
         except QobuzError as e:
             log.info(fmt(C.YELLOW, f"  ⚠  Couldn't fetch artist catalog: {e}."))
             return 0
-        vlog(f"  Qobuz returned {len(catalog)} catalog entries (pre-dedup)")
         if qobuz_total is not None and qobuz_total > len(catalog):
             log.info(fmt(C.YELLOW,
                 f"  ⚠  Qobuz reports {qobuz_total} total albums; only fetched "
                 f"{len(catalog)} (limit={cfg.ARTIST_CATALOG_LIMIT}). Some entries omitted."))
 
-    catalog = [a for a in catalog if is_lossless_album(a)]
-    pairs = dedup_album_versions(catalog, prefer_hires=args.prefer_hires)
-    n_after_dedup = len(pairs)
+    opts = DiscoveryOpts(prefer_hires=args.prefer_hires,
+                         include_comps=args.include_comps,
+                         include_singles=getattr(args, "include_singles", False))
+    gaps = discover_fully_missing(
+        artist_name, catalog, opts,
+        handled_ids=handled_ids or set(),
+        resolved_dirs=resolved_dirs or set(),
+        owned_titles=owned_titles or {}, token=token)
 
-    if not args.include_comps:
-        pairs = filter_compilation_albums(pairs, artist_name)
-    n_after_comp = len(pairs)
+    # Partially-present albums (a collaboration filed elsewhere) list first.
+    partials = [g for g in gaps if g.on_disk_dir is not None]
+    fully = [g for g in gaps if g.on_disk_dir is None]
+    ordered = partials + fully
+    n_partial = len(partials)
 
-    if not getattr(args, "include_singles", False):
-        pairs = filter_short_releases(pairs, cfg.MISSING_ALBUMS_MIN_TRACKS)
-    n_after_singles = len(pairs)
-
-    pairs = filter_seen_album_ids(pairs, seen_album_ids or set())
-    n_after_seen = len(pairs)
-
-    pairs = filter_owned_albums(pairs, owned_bare_titles)
-
-    vlog(f"  After dedup: {n_after_dedup} unique; after comp filter: {n_after_comp}; "
-         f"after singles filter: {n_after_singles}; after seen: {n_after_seen}; "
-         f"after owned filter: {len(pairs)}")
-
-    # Cross-check remaining candidates for partial ownership.
-    def _partial_check(album):
-        existing, album_dir = find_existing_tracks(album)
-        if not existing or album_dir is None:
-            return []
-        # Year sanity check.
-        folder_yr = None
-        ym = (re.search(r"\((\d{4})\)", album_dir.name)
-              or re.search(r"\b(19\d{2}|20\d{2})\b", album_dir.name))
-        if ym:
-            try:
-                folder_yr = int(ym.group(1))
-            except ValueError:
-                folder_yr = None
-        album_yr_str = album_year(album)
-        try:
-            album_yr = int(album_yr_str) if album_yr_str else None
-        except ValueError:
-            album_yr = None
-        # 3-year window: an "Album (2005)" folder can legitimately match a
-        # 2003 remaster or a 2008 deluxe edition (Qobuz often reports the
-        # most recent re-release year). Beyond ±3 years it's almost always
-        # a different album that happens to share a title.
-        if (folder_yr is not None and album_yr is not None
-                and abs(folder_yr - album_yr) > 3):
-            return []
-        return existing
-
-    pairs_partial = []
-    pairs_missing = []
-    n_owned_elsewhere = 0
-    for album, n_versions in pairs:
-        found = _partial_check(album)
-        if not found:
-            pairs_missing.append((album, n_versions))
-            continue
-        n_total = album.get("tracks_count") or "?"
-        n_have = len(found)
-        if isinstance(n_total, int):
-            n_have = min(n_have, n_total)
-            if n_have >= n_total:
-                # Every track is already on disk, just under a different
-                # folder (a collaboration filed under both artists), so it's
-                # fully owned — don't offer it for download.
-                n_owned_elsewhere += 1
-                continue
-        pairs_partial.append((album, n_versions, n_have, n_total))
-
-    n_partial = len(pairs_partial)
-    vlog(f"  Partial-ownership check: {n_partial} partial, {len(pairs_missing)} fully missing, "
-         f"{n_owned_elsewhere} fully owned elsewhere")
-
-    pairs = [(a, nv) for a, nv, _, _ in pairs_partial] + pairs_missing
-
-    if not pairs:
+    if not ordered:
         log.info(fmt(C.GREEN, "\n  ✓  No new albums to suggest. You're caught up!\n"))
         return 0
 
     print()
-    header = f"  {len(pairs)} album(s) you don't have"
+    header = f"  {len(ordered)} album(s) you don't have"
     if n_partial:
         header += f"  ({n_partial} partially present — listed first)"
     log.info(fmt(C.BOLD + C.WHITE, header + ":"))
     print()
-    for i, (a, n_versions) in enumerate(pairs, 1):
+    for i, gap in enumerate(ordered, 1):
+        a = gap.qobuz_album
         title  = a.get("title") or "?"
         year   = album_year(a) or "?"
         tracks = a.get("tracks_count") or "?"
         track_word = "track" if tracks == 1 else "tracks"
         qual   = album_quality_label(a)
-        suffix = f" ({n_versions} editions)" if n_versions > 1 else ""
 
         line1 = (f"  {fmt(C.BOLD, str(i).rjust(3))}.  "
                  f"{fmt(C.WHITE, truncate(title, 55))}")
-        line2 = f"        {fmt(C.GRAY, f'{year} • {tracks} {track_word} • {qual}')}{fmt(C.GRAY, suffix)}"
-        if i - 1 < n_partial:
-            _, _, n_have, n_tot = pairs_partial[i - 1]
+        line2 = f"        {fmt(C.GRAY, f'{year} • {tracks} {track_word} • {qual}')}"
+        if gap.on_disk_dir is not None:
+            n_have = len(gap.present)
+            n_tot = n_have + len(gap.missing)
             line2 += fmt(C.YELLOW, f"  ← {n_have}/{n_tot} tracks already present")
         print(line1)
         print(line2)
@@ -707,22 +539,20 @@ def run_artist_missing_albums(artist_name, owned_bare_titles, args, token,
             "  Pick numbers to download (e.g. 1,3,5-7 / a=all / blank=skip): ")).strip()
     except EOFError:
         raw = ""
-    picks = parse_number_list(raw, len(pairs))
+    picks = parse_number_list(raw, len(ordered))
     if not picks:
         return 0
 
-    # Shared_queue mode — queue instead of processing immediately.
     if shared_queue is not None:
         log.info(fmt(C.GRAY,
             f"  Queuing {plural(len(picks), 'album')}; fetching track lists …"))
         n_queued = 0
         for i, idx in enumerate(picks, 1):
-            chosen, _ = pairs[idx - 1]
+            chosen = ordered[idx - 1].qobuz_album
             try:
                 full = get_album(chosen["id"], token)
             except QobuzError as e:
-                log.info(fmt(C.YELLOW,
-                    f"    ⚠  Couldn't fetch: {e}. Skipping."))
+                log.info(fmt(C.YELLOW, f"    ⚠  Couldn't fetch: {e}. Skipping."))
                 continue
             full_tracks = (full.get("tracks") or {}).get("items") or []
             shared_queue.append(_build_queue_item(
@@ -746,7 +576,7 @@ def run_artist_missing_albums(artist_name, owned_bare_titles, args, token,
     n_done = 0
     try:
         for i, idx in enumerate(picks, 1):
-            chosen, _ = pairs[idx - 1]
+            chosen = ordered[idx - 1].qobuz_album
             label = f"[new {i}/{len(picks)}]"
             print()
             log.info(fmt(C.BOLD + C.WHITE, f"  {label} {truncate(chosen.get('title') or '?', 55)}"))
@@ -771,7 +601,7 @@ def run_artist_missing_albums(artist_name, owned_bare_titles, args, token,
 
 
 def run_artist_mode(artist_name, args, token):
-    """Top-level artist mode entry point. Returns nothing; runs both phases."""
+    """Top-level artist mode entry point. Runs both phases."""
     clear_scan_caches()
     banner(f"Artist mode — {artist_name}")
 
@@ -783,8 +613,8 @@ def run_artist_mode(artist_name, args, token):
         return
 
     # --consolidate inside artist mode would prompt per album (a LOT on a
-    # 30-album scan). Auto-disabled here; saved/restored so a one-shot
-    # artist run doesn't bleed back into later album-mode runs.
+    # 30-album scan). Auto-disabled here; saved/restored so a one-shot artist
+    # run doesn't bleed back into later album-mode runs.
     saved_consolidate = args.consolidate
     if args.consolidate:
         args.consolidate = False
@@ -800,8 +630,8 @@ def run_artist_mode(artist_name, args, token):
             return
         vlog(f"  Library: {artist_dir}")
 
-        gap_fill_results, owned_bare_titles, seen_album_ids, seed_id, prefetched_catalog = run_artist_gap_fill(
-            artist_name, artist_dir, args, token)
+        (gap_fill_results, owned_titles, handled_ids, resolved_dirs,
+         artist_id, catalog) = run_artist_gap_fill(artist_name, artist_dir, args, token)
 
         n_complete   = sum(1 for r in gap_fill_results if r.get("result") == "already_complete")
         n_filled     = sum(1 for r in gap_fill_results
@@ -862,10 +692,10 @@ def run_artist_mode(artist_name, args, token):
             return
         print()
 
-        n_added = run_artist_missing_albums(artist_name, owned_bare_titles, args, token,
-                                    seed_artist_id=seed_id,
-                                    seen_album_ids=seen_album_ids,
-                                    prefetched_catalog=prefetched_catalog)
+        n_added = run_artist_missing_albums(artist_name, owned_titles, args, token,
+                                    artist_id=artist_id, handled_ids=handled_ids,
+                                    resolved_dirs=resolved_dirs,
+                                    prefetched_catalog=catalog)
         if n_added:
             log.info(fmt(C.GREEN, f"\n  ✓  Added {n_added} new album(s) for {artist_name}.\n"))
     finally:

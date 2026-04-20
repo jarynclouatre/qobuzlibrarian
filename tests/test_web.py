@@ -530,62 +530,11 @@ def test_lyric_retry_submits_job_and_redirects(client, monkeypatch):
     assert r.headers["location"].startswith("/jobs/")
 
 
-# ── _missing_albums surfaces partial-album fill ─────────
+# ── gap-fill candidate detail ─────────
 
-class TestMissingAlbumsSurfacesPartialAlbums:
-    # A partly-downloaded album (a folder on disk with track gaps) must show
-    # up as a gap-fill candidate, alongside albums missing entirely.
-
-    def _qobuz_tracks(self, isrc_prefix, n):
-        return {"items": [{"isrc": f"{isrc_prefix}{i}", "track_number": i + 1}
-                          for i in range(n)]}
-
-    def test_yields_partial_and_missing_skips_complete(self, monkeypatch):
-        from qobuz_librarian.web import flows
-
-        albums = [
-            {"id": 1, "title": "Missing", "tracks_count": 10,
-             "tracks": self._qobuz_tracks("A", 10)},
-            {"id": 2, "title": "Partial", "tracks_count": 10,
-             "tracks": self._qobuz_tracks("B", 10)},
-            {"id": 3, "title": "Complete", "tracks_count": 5,
-             "tracks": self._qobuz_tracks("C", 5)},
-        ]
-
-        def fake_existing(album):
-            aid = album.get("id")
-            if aid == 1:
-                return [], None
-            if aid == 2:
-                return [{"isrc": f"B{i}", "tracknumber": i + 1}
-                        for i in range(5)], "/dir2"
-            return [{"isrc": f"C{i}", "tracknumber": i + 1}
-                    for i in range(5)], "/dir3"
-
-        def fake_missing(qobuz_tracks, existing):
-            have = {t["isrc"] for t in existing}
-            miss = [qt for qt in qobuz_tracks if qt["isrc"] not in have]
-            pres = [qt for qt in qobuz_tracks if qt["isrc"] in have]
-            return miss, pres
-
-        monkeypatch.setattr(flows, "get_artist_albums",
-                            lambda *a, **k: (albums, 3))
-        monkeypatch.setattr(flows, "dedup_album_versions",
-                            lambda catalog, **k: [(a, 1) for a in catalog])
-        monkeypatch.setattr(flows, "filter_compilation_albums",
-                            lambda pairs, name: pairs)
-        monkeypatch.setattr(flows, "filter_short_releases",
-                            lambda pairs, n: pairs)
-        monkeypatch.setattr(flows, "find_existing_tracks", fake_existing)
-        monkeypatch.setattr(flows, "compute_missing", fake_missing)
-
-        yielded = list(flows._missing_albums("aid", "Artist", "tok"))
-        ids = [a["id"] for a in yielded]
-        assert 1 in ids
-        assert 2 in ids
-        assert 3 not in ids
-        partial = next(a for a in yielded if a["id"] == 2)
-        assert partial.get("_partial_missing_count") == 5
+class TestGapCandidateDetail:
+    # A partly-downloaded album surfaces as a gap-fill candidate; the engine's
+    # split of partial vs fully-missing is covered in test_discovery.
 
     def test_candidate_detail_marks_gap_fill(self, monkeypatch):
         from qobuz_librarian.web import flows
@@ -1449,7 +1398,7 @@ def test_scan_library_propagates_authlost_so_job_fails(monkeypatch, tmp_path):
 
     def _authlost(*a, **k):
         raise AuthLost("token expired")
-    monkeypatch.setattr(flows, "resolve_artist", _authlost)
+    monkeypatch.setattr(flows, "find_missing_for_artist", _authlost)
 
     job = jm.Job(title="lib scan")
     with pytest.raises(AuthLost):
@@ -1953,42 +1902,6 @@ def test_download_complete_album_is_blocked(client, monkeypatch):
     assert "already own" in r.text.lower()
     assert not [j for j in list(jm.registry._jobs.values())
                 if getattr(j, "album_id", None) == "done1"]
-
-
-# ── library partial-fill mode filters to on-disk gaps ──────────────────────────
-
-def test_missing_albums_partial_only_skips_fully_missing(monkeypatch):
-    from pathlib import Path
-
-    from qobuz_librarian.web import flows
-    absent = {"id": "absent", "title": "Not Owned", "tracks_count": 2}
-    partial = {"id": "partial", "title": "Owned With Gap", "tracks_count": 3}
-    full = {"id": "partial", "title": "Owned With Gap",
-            "tracks": {"items": [{"id": 1}, {"id": 2}, {"id": 3}]}}
-
-    monkeypatch.setattr(flows, "get_artist_albums",
-                        lambda *a, **k: ([absent, partial], 2))
-    monkeypatch.setattr(flows, "dedup_album_versions",
-                        lambda c, **k: [(absent, 1), (partial, 1)])
-    monkeypatch.setattr(flows, "filter_compilation_albums", lambda p, n: p)
-    monkeypatch.setattr(flows, "filter_short_releases", lambda p, m: p)
-
-    def fake_existing(album):
-        if album["id"] == "partial":
-            return ([{"id": 1}], Path("/music/A/Owned With Gap"))
-        return ([], None)
-
-    monkeypatch.setattr(flows, "find_existing_tracks", fake_existing)
-    monkeypatch.setattr(flows, "get_album", lambda _i, _t: full)
-    monkeypatch.setattr(flows, "compute_missing",
-                        lambda q, e: ([{"id": 2}, {"id": 3}], [{"id": 1}]))
-
-    partial_out = list(flows._missing_albums("aid", "Artist", "tok",
-                                             partial_only=True))
-    assert [a["id"] for a in partial_out] == ["partial"]
-
-    both_out = list(flows._missing_albums("aid", "Artist", "tok"))
-    assert {a["id"] for a in both_out} == {"absent", "partial"}
 
 
 def test_settings_save_rejects_out_of_enum_quality(tmp_path, monkeypatch):
