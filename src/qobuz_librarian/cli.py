@@ -579,8 +579,11 @@ def _maybe_drop_privileges():
     bypasses the entrypoint and runs as root, so files the CLI downloads land
     root-owned while web-created ones match PUID — and the web process (running
     as PUID) then can't repair/upgrade a CLI-fetched album. Dropping here keeps
-    both writers consistent. No-op when not root, when PUID/PGID are unset or
-    non-numeric, or when gosu isn't on PATH.
+    both writers consistent. No-op when not root, when PUID/PGID are
+    non-numeric, or when gosu isn't on PATH. Inside a container an unset
+    PUID/PGID means 1000:1000 — the entrypoint's default — so a bare
+    `docker run` with no `-e PUID` still lands CLI-fetched files under the
+    same owner the web process uses; outside one, unset means "leave me be".
     """
     import os
     import shutil
@@ -589,7 +592,7 @@ def _maybe_drop_privileges():
         return
     puid = (os.environ.get("PUID") or "").strip()
     pgid = (os.environ.get("PGID") or "").strip()
-    if not puid and not pgid:
+    if not puid and not pgid and not _in_container():
         return
     puid = puid or "1000"
     pgid = pgid or "1000"
