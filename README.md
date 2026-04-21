@@ -52,13 +52,12 @@ smaller files instead? Drop to CD lossless or 320 kbps with one setting (see
 
 **Get music, without re-downloading what you own.** Point it at an album,
 an artist, or your whole library and it fills the gaps. It compares Qobuz
-against your files with a four-layer match so it won't grab duplicates of
+against your files with a three-layer match so it won't grab duplicates of
 tracks you already have under slightly different names:
 
 1. ISRC (exact recording identity)
-2. MusicBrainz track ID
-3. disc number + title
-4. edition-stripped title (so "(Remastered)" / "(Deluxe)" don't cause dupes)
+2. disc number + title
+3. edition-stripped title (so "(Remastered)" / "(Deluxe)" don't cause dupes)
 
 **Best available quality by default.** New downloads come in at the highest
 quality Qobuz offers for that release. Already have an album in a lower quality? The
@@ -89,9 +88,10 @@ lyrics are fetched automatically (when `LYRICS_ENABLED` is on; default).
 
 A single Docker image bundles streamrip, beets, and ffmpeg — no extra
 containers. The web UI is the primary interface; the CLI runs the same engine
-for scripting and unattended runs. Paths and ports come from environment
-variables, behaviour from the Settings page. The bundled tools' full config
-files live in a persistent volume, so you can change anything they support.
+for hands-on interactive runs, scripting, and unattended jobs. Paths and ports
+come from environment variables, behaviour from the Settings page. The bundled
+tools' full config files live in a persistent volume, so you can change
+anything they support.
 
 ## How you use it
 
@@ -111,10 +111,19 @@ changed until you do.
 | **Queue**   | Live progress, jobs awaiting review, and download history           |
 | **Settings**| Qobuz credentials and behaviour toggles (applied without a restart) |
 
-The CLI runs the same engine. Launch with no arguments for an
-interactive menu (Search · Artist · Library walk · Album gaps ·
-Repair · Upgrade · Migrate), or pass flags for unattended runs — `--help`
-lists them all.
+On the **Library** and **Upgrade** scans you can also *dismiss* albums you've
+decided against — they're remembered and skipped on future scans, so a large
+library can be triaged over days without re-reviewing the same things; restore
+any of them from the **Hidden** view. The single-artist **Artist** scan never
+hides anything, since typing a name is a deliberate request to see everything.
+
+The CLI runs the **same matching engine**, so it finds exactly the same missing
+albums and track gaps the web does — it just works through them differently.
+Instead of parking a checklist you review all at once, it walks you album by
+album with yes/no prompts (skip, queue, fill, stop), which suits hands-on,
+power-user runs. Launch with no arguments for the menu (Search · Artist ·
+Library walk · Album gaps · Repair · Upgrade · Migrate), or pass flags for
+unattended runs — `--help` lists them all.
 
 **Web app and CLI take turns.** They share one download lock, so only one
 can run at a time. To use the CLI without stopping the container, open
