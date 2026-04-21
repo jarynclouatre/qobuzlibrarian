@@ -1165,6 +1165,50 @@ def prompt_and_migrate_multi_artist_folder(album, args):
 
 # ── Qobuz catalog matching ────────────────────────────────────────────────────
 
+_DIR_YEAR_PAREN_RE = re.compile(r"\((\d{4})\)")
+_DIR_YEAR_BARE_RE = re.compile(r"\b(19\d{2}|20\d{2})\b")
+
+
+def _dir_year(name):
+    """The release year embedded in an album folder name, or None. Prefers a
+    parenthesised '(2013)' over a bare in-title year."""
+    m = _DIR_YEAR_PAREN_RE.search(name) or _DIR_YEAR_BARE_RE.search(name)
+    return int(m.group(1)) if m else None
+
+
+def _year_proximity_bonus(dir_year, album):
+    """Score nudge when a catalog album's year sits near the folder's: +0.10
+    exact, +0.05 within a year, else 0. Breaks ties between two same-titled
+    releases (a reissue, an annual live set) that score equally on title."""
+    if dir_year is None:
+        return 0.0
+    ry_str = album_year(album)
+    try:
+        ry = int(ry_str) if ry_str else None
+    except ValueError:
+        ry = None
+    if ry is None:
+        return 0.0
+    if ry == dir_year:
+        return 0.10
+    if abs(ry - dir_year) <= 1:
+        return 0.05
+    return 0.0
+
+
+def _sort_by_match(candidates, prefer_hires):
+    """Sort (score, year_bonus, album) tuples best-first in place: combined
+    score descending, then resolution descending when prefer_hires."""
+    if prefer_hires:
+        candidates.sort(key=lambda x: (
+            -(x[0] + x[1]),
+            -(x[2].get("maximum_bit_depth") or 0),
+            -(x[2].get("maximum_sampling_rate") or 0),
+        ))
+    else:
+        candidates.sort(key=lambda x: -(x[0] + x[1]))
+
+
 def _catalog_candidates_for_dir(album_dir, catalog, artist_name, prefer_hires=False):
     """All catalog entries scoring above ARTIST_DIR_MATCH_THRESH for
     album_dir, sorted best-first (similarity + year-proximity bonus, lossless
@@ -1175,9 +1219,7 @@ def _catalog_candidates_for_dir(album_dir, catalog, artist_name, prefer_hires=Fa
         return []
     bare = strip_album_decorations(album_dir.name)
     bare_softened = bare.replace("_", " ").replace("  ", " ").strip()
-    _ym = (re.search(r"\((\d{4})\)", album_dir.name)
-           or re.search(r"\b(19\d{2}|20\d{2})\b", album_dir.name))
-    dir_year = int(_ym.group(1)) if _ym else None
+    dir_year = _dir_year(album_dir.name)
 
     candidates = []
     for r in catalog:
@@ -1190,30 +1232,11 @@ def _catalog_candidates_for_dir(album_dir, catalog, artist_name, prefer_hires=Fa
         s1 = similarity(r_bare, bare)
         s2 = similarity(r_bare, bare_softened) if bare_softened and bare_softened != bare else 0.0
         score = max(s1, s2)
-        year_bonus = 0.0
-        if dir_year is not None:
-            ry_str = album_year(r)
-            try:
-                ry = int(ry_str) if ry_str else None
-            except ValueError:
-                ry = None
-            if ry is not None:
-                if ry == dir_year:
-                    year_bonus = 0.10
-                elif abs(ry - dir_year) <= 1:
-                    year_bonus = 0.05
-        candidates.append((score, year_bonus, r))
+        candidates.append((score, _year_proximity_bonus(dir_year, r), r))
 
     if not candidates:
         return []
-    if prefer_hires:
-        candidates.sort(key=lambda x: (
-            -(x[0] + x[1]),
-            -((x[2].get("maximum_bit_depth") or 0)),
-            -((x[2].get("maximum_sampling_rate") or 0)),
-        ))
-    else:
-        candidates.sort(key=lambda x: -(x[0] + x[1]))
+    _sort_by_match(candidates, prefer_hires)
     return [r for (s, _, r) in candidates if s >= config.ARTIST_DIR_MATCH_THRESH]
 
 
@@ -1242,10 +1265,7 @@ def _pick_best_target_dir_match(scored_cands, target_dir):
     n_disk = _count_audio_files_in(target_dir)
     resolving = []
     for score, cand in scored_cands:
-        try:
-            predicted = find_album_dir_filesystem(cand)
-        except Exception:
-            predicted = None
+        predicted = find_album_dir_filesystem(cand)
         if predicted is not None and _paths_equal(predicted, target_dir):
             resolving.append((score, cand))
     if not resolving:
@@ -1361,10 +1381,9 @@ def find_qobuz_album_for_dir(album_dir: Path, artist_name: str, token,
     if not results:
         return None
 
-    # Year extracted from dir name for the same self-titled-tie reason as
+    # Year from dir name for the same self-titled-tie reason as
     # match_dir_to_catalog. See that function for the rationale.
-    _ym = re.search(r"\((\d{4})\)", album_dir.name) or re.search(r"\b(19\d{2}|20\d{2})\b", album_dir.name)
-    dir_year = int(_ym.group(1)) if _ym else None
+    dir_year = _dir_year(album_dir.name)
 
     # Filter to lossless + matching artist
     candidates = []
@@ -1376,36 +1395,14 @@ def find_qobuz_album_for_dir(album_dir: Path, artist_name: str, token,
             continue
         r_bare = strip_album_decorations(r.get("title", ""))
         score = similarity(r_bare, bare)
-        # Year-proximity bonus: at most +0.10 (exact) or +0.05 (within 1 yr).
-        year_bonus = 0.0
-        if dir_year is not None:
-            ry_str = album_year(r)
-            try:
-                ry = int(ry_str) if ry_str else None
-            except ValueError:
-                ry = None
-            if ry is not None:
-                if ry == dir_year:
-                    year_bonus = 0.10
-                elif abs(ry - dir_year) <= 1:
-                    year_bonus = 0.05
-        candidates.append((score, year_bonus, r))
+        candidates.append((score, _year_proximity_bonus(dir_year, r), r))
 
     if not candidates:
         vlog(f"    no candidates after artist+lossless filter for {album_dir.name!r}")
         return None
 
-    # Tie-break by year-proximity, then quality if --prefer-hires
-    if prefer_hires:
-        candidates.sort(key=lambda x: (
-            -(x[0] + x[1]),
-            -((x[2].get("maximum_bit_depth") or 0)),
-            -((x[2].get("maximum_sampling_rate") or 0)),
-        ))
-    else:
-        candidates.sort(key=lambda x: -(x[0] + x[1]))
-
-    best_score, best_year_bonus, best = candidates[0]
+    _sort_by_match(candidates, prefer_hires)
+    best_score, _best_year_bonus, best = candidates[0]
     if best_score < config.ARTIST_DIR_MATCH_THRESH:
         vlog(f"    best Qobuz match {best.get('title')!r} scored {best_score:.2f} — under threshold")
         return None
