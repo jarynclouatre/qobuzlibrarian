@@ -1,7 +1,10 @@
 # Seeded into /config/streamrip/ on first run. Schema + [misc].version
 # track the bundled streamrip (2.2.0) so streamrip never triggers its
 # interactive config migration. Credentials + downloads.folder are
-# (re)written at runtime from env vars or the web Settings page.
+# (re)written at runtime from env vars or the web Settings page. On first
+# auth streamrip also scrapes Qobuz's app_id + secrets and writes them back
+# here, so treat /config/streamrip/ as secret-bearing at rest (the container
+# ships this file 0600).
 #
 # This file mirrors streamrip's full upstream template, which includes
 # sections for [tidal]/[deezer]/[soundcloud]/[youtube]. qobuz-librarian
@@ -154,9 +157,6 @@ embed_size = "large"
 # If this is set to a value > 0, max(width, height) of the embedded art will be set to this value in pixels
 # Proportions of the image will remain the same
 embed_max_width = -1
-# Heads-up: on first auth streamrip scrapes Qobuz's app_id + secrets
-# pair and writes them back into this file. Treat /config/streamrip/
-# as secret-bearing at rest (the container ships it 0600 by default).
 # Save the cover image at the highest quality as a separate jpg file
 save_artwork = true
 # If this is set to a value > 0, max(width, height) of the saved art will be set to this value in pixels
