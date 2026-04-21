@@ -74,7 +74,7 @@ def _load_resolve_cache() -> dict:
     if _resolve_cache is None:
         _resolve_cache = {}
         try:
-            raw = json.loads((cfg.DATA_DIR / ".artist_resolve_cache.json")
+            raw = json.loads(cfg.ARTIST_RESOLVE_CACHE_FILE
                              .read_text(encoding="utf-8"))
             if raw.get("version") == _RESOLVE_CACHE_VERSION:
                 _resolve_cache = raw.get("entries") or {}
@@ -88,7 +88,7 @@ def flush_resolve_cache():
     global _resolve_cache_dirty
     if not _resolve_cache_dirty or _resolve_cache is None:
         return
-    path = cfg.DATA_DIR / ".artist_resolve_cache.json"
+    path = cfg.ARTIST_RESOLVE_CACHE_FILE
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         payload = json.dumps({"version": _RESOLVE_CACHE_VERSION,

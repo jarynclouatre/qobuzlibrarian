@@ -20,3 +20,10 @@ def test_env_bool_empty_string_means_unset(monkeypatch):
     # default", not silently flip the flag off.
     monkeypatch.setenv("PREFER_HIRES", "")
     assert cfg._env_bool("PREFER_HIRES", True) is True
+
+
+def test_env_int_min_floors_a_sub_minimum_count(monkeypatch):
+    # A 0 or negative worker count would crash the thread-pool constructor at
+    # import time; clamp to the floor so a typo can't take down the web app.
+    monkeypatch.setenv("SSE_MAX_WORKERS", "0")
+    assert cfg._env_int_min("SSE_MAX_WORKERS", 16, 1) == 1

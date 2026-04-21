@@ -68,6 +68,20 @@ def _env_path(key, default: Path) -> Path:
     return Path(val) if val else default
 
 
+def _env_int_min(key, default: int, minimum: int) -> int:
+    """An int env value floored at `minimum`.
+
+    Worker / thread-pool counts must be at least 1: a 0 or negative override
+    (a typo, or a `${VAR:-}` that resolved oddly) otherwise crashes the pool
+    constructor at startup. Clamp loudly so the cause shows up in the logs.
+    """
+    val = _env(key, default)
+    if val < minimum:
+        _warn(f"{key}={val!r} is below the minimum of {minimum}; using {minimum}.")
+        return minimum
+    return val
+
+
 # ── Auth — direct env-var override (no streamrip config file needed) ──────────
 # Set these in compose.yaml or the Settings page writes them to the config file.
 QOBUZ_USER_AUTH_TOKEN = os.environ.get("QOBUZ_USER_AUTH_TOKEN", "")
@@ -182,6 +196,9 @@ HIDDEN_FILE          = DATA_DIR / ".qobuz_hidden.json"
 # Fingerprints surfaced by the last completed library walk, per mode, so a
 # re-run can badge albums that weren't there before ("new since last scan").
 SCAN_SEEN_FILE       = DATA_DIR / ".qobuz_scan_seen.json"
+# Artist name → resolved Qobuz artist id, cached so repeat scans skip the
+# search round-trip. See library/discovery.py.
+ARTIST_RESOLVE_CACHE_FILE = DATA_DIR / ".artist_resolve_cache.json"
 # lyric_fetch's per-track state file. Defaults inside lyric_fetch.py put
 # it next to that script — which means /app/.lyric_fetch_state.json in the
 # container. After a PUID/PGID drop, /app is root-owned and not writable,
@@ -282,7 +299,7 @@ ARTIST_API_DELAY = _env("ARTIST_API_DELAY", 0.0)
 # session, so this is real parallelism; kept modest so the request rate stays
 # polite (the 429 retry/back-off in api/client is the backstop). 1 restores
 # the old sequential behaviour.
-ARTIST_SCAN_WORKERS = _env("ARTIST_SCAN_WORKERS", 4)
+ARTIST_SCAN_WORKERS = _env_int_min("ARTIST_SCAN_WORKERS", 4, 1)
 
 # Cache get_album() responses on disk (DATA_DIR/album_cache.db). An album's track
 # list is immutable, so this turns the per-owned-album fetch — the dominant cost
@@ -321,7 +338,7 @@ WEB_TEST_AUTH_TIMEOUT = _env("QL_WEB_TEST_AUTH_TIMEOUT", 8.0)
 JOB_LOG_CAP          = _env("JOB_LOG_CAP",          5000)
 JOB_LOG_REPLAY_TAIL  = _env("JOB_LOG_REPLAY_TAIL",  500)
 POST_JOB_HOOK_TIMEOUT = _env("POST_JOB_HOOK_TIMEOUT", 10)
-SSE_MAX_WORKERS      = _env("SSE_MAX_WORKERS",      16)
+SSE_MAX_WORKERS      = _env_int_min("SSE_MAX_WORKERS", 16, 1)
 SSE_HEARTBEAT_TICKS  = _env("SSE_HEARTBEAT_TICKS",  30)
 
 # ── Fuzzy-match thresholds ────────────────────────────────────────────────────
