@@ -378,7 +378,11 @@ def restore_upgrade_backup(backup_path: Path, original_path: Path) -> bool:
         shutil.move(str(backup_path), str(original_path))
         return True
     except (OSError, shutil.Error) as e:
-        log.info(fmt(C.RED, f"  ✗  Restore failed: {e}."))
+        log.info(fmt(C.RED,
+            f"  ✗  Restore failed: {e}.\n"
+            f"     Backup is preserved at: {backup_path}\n"
+            f"     Manual restore: rm -rf {original_path!s} && "
+            f"mv {backup_path!s} {original_path!s}"))
         return False
 
 
