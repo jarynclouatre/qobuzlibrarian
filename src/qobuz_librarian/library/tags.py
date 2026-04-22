@@ -10,9 +10,25 @@ from difflib import SequenceMatcher
 from functools import lru_cache
 
 # ── Path sanitization ─────────────────────────────────────────────────────────
-_BEETS_BAD_CHARS_RE = re.compile(r'[\\/<>:"?*|\x00-\x1f]')
 _NORMALIZE_RE       = re.compile(r"[^a-z0-9]+")
 _WHITESPACE_RUN_RE  = re.compile(r"\s+")
+
+# beets' own default `replace` rules (its config_default.yaml), in the order it
+# applies them. Running a name through these gives the exact folder/file beets
+# would write — predicted_album_paths and the migrate placement both depend on
+# that equivalence, so a name like "...And Justice for All" resolves instead of
+# looking missing.
+_BEETS_REPLACEMENTS = (
+    (re.compile(r'[<>:?*|]'), "_"),
+    (re.compile(r'"'),        "_"),
+    (re.compile(r"[\\/]"),    "_"),
+    (re.compile(r"^\."),      "_"),
+    (re.compile(r"\.$"),      "_"),
+    (re.compile(r"[\x00-\x1f]"), "_"),
+    (re.compile(r"^-"),       "_"),
+    (re.compile(r"\s+$"),     ""),
+    (re.compile(r"^\s+"),     ""),
+)
 
 
 def clean_qobuz_string(s):
@@ -50,16 +66,16 @@ VA_NORMALIZED = frozenset({"variousartists", "various", "va"})
 
 @lru_cache(maxsize=2048)
 def beets_sanitize(s):
-    """Sanitize a string for use as a beets folder/file name component.
+    """Sanitize a string into the path component beets would write for it.
 
-    Replaces chars beets rejects, strips leading dashes and trailing dots.
+    A leading or trailing dot becomes ``_`` (not dropped) and a leading dash
+    becomes ``_``, matching beets exactly — anything less mis-predicts the
+    on-disk folder for names like "...And Justice for All".
     """
     if not s:
         return ""
-    s = _BEETS_BAD_CHARS_RE.sub("_", s)
-    s = s.strip().rstrip(".")
-    if s.startswith("-"):
-        s = "_" + s[1:]
+    for rx, repl in _BEETS_REPLACEMENTS:
+        s = rx.sub(repl, s)
     return s
 
 

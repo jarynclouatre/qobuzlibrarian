@@ -29,10 +29,14 @@ def test_normalize_folds_accents_and_drops_cjk():
     assert normalize("最好") == ""
 
 
-def test_beets_sanitize_replaces_path_unsafe_chars():
+def test_beets_sanitize_matches_beets_on_disk_names():
     assert beets_sanitize("AC/DC") == "AC_DC"
     assert beets_sanitize("hello:world") == "hello_world"
-    assert beets_sanitize("Artist.") == "Artist"
+    # Leading/trailing dots turn into _ (not dropped) exactly as beets writes
+    # them, so a folder like "...And Justice for All" resolves on a scan
+    # instead of being reported missing and re-downloaded.
+    assert beets_sanitize("...And Justice for All") == "_..And Justice for All"
+    assert beets_sanitize("Artist.") == "Artist_"
 
 
 def test_similarity_empty_both_does_not_score_1():
