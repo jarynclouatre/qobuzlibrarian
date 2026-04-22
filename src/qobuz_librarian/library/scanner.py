@@ -2,9 +2,10 @@
 
 Things worth knowing if you edit this:
 
-- `list_library_artists` and `list_artist_album_dirs` skip dot-folders.
-  Without this, hidden dirs like `.Trash` or `.DS_Store/` get treated
-  as artists and break later matching.
+- `list_library_artists` and `list_artist_album_dirs` skip dot-folders and
+  folders with no audio in their tree. Without this, hidden dirs like
+  `.Trash` and leftover empty folders get treated as content and break
+  later matching.
 - `list_library_artists` also excludes `STAGING_DIR` so in-progress
   downloads never get scanned as if they were library content.
 - `read_album_dir` walks per-disc subdirs (`CD1/`, `CD2/`) but never
@@ -230,20 +231,34 @@ def list_library_artists():
 def list_artist_album_dirs(artist_dir: Path):
     """Album subdirectories under an artist dir, sorted by name.
 
-    Skips hidden dot-folders (.Trash, .DS_Store-style, etc.).
+    Skips hidden dot-folders (.Trash, .DS_Store-style, etc.) and folders with
+    no audio anywhere in their tree. An empty album folder owns nothing to
+    match, upgrade or repair, and resolving one by its name alone only yields a
+    confusing "0 present" result; this mirrors list_library_artists, which
+    drops empty artist dirs for the same reason. A short notice names anything
+    skipped so the user can hand-clean leftover folders.
     """
     if not artist_dir.exists():
         return []
     albums = []
+    empties = []
     try:
         for d in sorted(artist_dir.iterdir(), key=lambda p: p.name.lower()):
             if not d.is_dir():
                 continue
             if d.name.startswith("."):          # skip hidden dirs (.Trash, .DS_Store/, etc.)
                 continue
+            if not _has_audio_anywhere(d):
+                empties.append(d.name)
+                continue
             albums.append(d)
     except OSError as e:
         vlog(f"list_artist_album_dirs: {e}")
+    if empties:
+        names = ", ".join(empties[:5])
+        more = f" (+{len(empties) - 5} more)" if len(empties) > 5 else ""
+        log.info(f"  · {artist_dir.name}: skipping {len(empties)} empty album "
+                 f"folder(s): {names}{more}.")
     return albums
 
 

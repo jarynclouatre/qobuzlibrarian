@@ -42,13 +42,18 @@ def test_list_library_artists_empty_when_root_missing(tmp_path):
         assert list_library_artists() == []
 
 
-def test_list_artist_album_dirs_excludes_dot_folders(tmp_path):
-    (tmp_path / "OK Computer (1997)").mkdir()
-    (tmp_path / "Kid A (2000)").mkdir()
+def test_list_artist_album_dirs_excludes_dot_and_empty_folders(tmp_path):
+    for album in ("OK Computer (1997)", "Kid A (2000)"):
+        d = tmp_path / album
+        d.mkdir()
+        (d / "01.flac").write_bytes(b"audio")
     (tmp_path / ".DS_Store_dir").mkdir()
+    (tmp_path / "Abandoned Download").mkdir()              # no audio → skipped
+    art_only = tmp_path / "Art Only"
+    art_only.mkdir()
+    (art_only / "cover.jpg").write_bytes(b"img")           # art only → skipped
     names = [d.name for d in list_artist_album_dirs(tmp_path)]
-    assert "OK Computer (1997)" in names and "Kid A (2000)" in names
-    assert ".DS_Store_dir" not in names
+    assert names == ["Kid A (2000)", "OK Computer (1997)"]
 
 
 def test_read_album_dir_filename_fallback_and_mutagen_meta(tmp_path):
