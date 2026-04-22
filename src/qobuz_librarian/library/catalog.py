@@ -34,6 +34,7 @@ from qobuz_librarian.library.scanner import (
 )
 from qobuz_librarian.library.tags import (
     beets_sanitize,
+    differs_by_album_variant,
     normalize,
     similarity,
     strip_album_decorations,
@@ -616,6 +617,13 @@ def filter_owned_albums(catalog_pairs, owned_bare_titles):
         owned_fuzzy = False
         for owned, owned_years in owned_bare_titles.items():
             if not owned or not (key.startswith(owned) or owned.startswith(key)):
+                continue
+            # The extra text on the longer title is what one release has and
+            # the other doesn't. If it's a distinct-release marker (live,
+            # acoustic, remix, …) these are different albums, so the prefix
+            # match mustn't hide a studio album behind an owned live one.
+            shorter, longer = sorted((key, owned), key=len)
+            if differs_by_album_variant(shorter, longer):
                 continue
             if similarity(key, owned) < config.CONSOLIDATE_THRESH:
                 continue

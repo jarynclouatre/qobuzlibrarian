@@ -66,6 +66,18 @@ def test_strip_album_decorations_handles_year_prefixed_folders():
     assert strip_album_decorations("Cassadaga: A Companion") == "Cassadaga: A Companion"
 
 
+def test_strip_album_decorations_keeps_parenthesized_distinct_releases():
+    # A live / acoustic / remix record is a different release, not a fancier
+    # edition, so the bracketed marker stays attached and never collapses onto
+    # the studio album (matching the colon form and strip_edition_suffix).
+    assert strip_album_decorations("Wasting Light (Live)") == "Wasting Light (Live)"
+    assert strip_album_decorations("MTV Unplugged (Acoustic)") == "MTV Unplugged (Acoustic)"
+    # The trailing year still strips, but the marker survives the same call.
+    assert strip_album_decorations("Album (Live) (2018)") == "Album (Live)"
+    # A genuine edition tag in the same shape still goes.
+    assert strip_album_decorations("Album (Deluxe) (2018)") == "Album"
+
+
 def test_strip_album_decorations_keeps_a_bare_year_title():
     # If you don't guard the year-prefix strip, "1989" or "2112" gets eaten —
     # and owning the album "1989" would never suppress "1989 (Deluxe)" in the

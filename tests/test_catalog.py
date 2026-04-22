@@ -194,6 +194,12 @@ def test_filter_owned_albums_doesnt_swallow_sequels_or_distinct_years():
     pairs = [({"title": "Revolver", "release_date_original": "1966"}, 1)]
     assert filter_owned_albums(pairs, {"revolver": [None]}) == []
 
+    # Owning only the live record must NOT hide the studio album behind it —
+    # the prefix-fuzzy match has to recognise '(Live)' as a distinct release.
+    pairs = [({"title": "Wasting Light", "release_date_original": "2011"}, 1)]
+    assert [a["title"] for a, _ in
+            filter_owned_albums(pairs, {"wastinglightlive": [2019]})] == ["Wasting Light"]
+
 
 def test_filter_compilation_albums():
     by = lambda title, artist, comp=False: ({"title": title, "artist": {"name": artist},

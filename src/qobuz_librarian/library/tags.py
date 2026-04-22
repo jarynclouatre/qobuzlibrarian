@@ -169,8 +169,7 @@ def strip_edition_suffix(title):
 
 
 # ── Album-name decoration stripping ──────────────────────────────────────────
-_YEAR_PAREN_RE     = re.compile(r"\s*\([^)]*\d{4}[^)]*\)\s*$")
-_TRAILING_PAREN_RE = re.compile(r"\s*\([^)]*\)\s*$")
+_YEAR_PAREN_RE = re.compile(r"\s*\([^)]*\d{4}[^)]*\)\s*$")
 # Leading-year forms from alternate beets path templates, e.g.
 # `[$year] $album/` produces "[1971] Hunky Dory"; `$year - $album/`
 # produces "1971 - Hunky Dory". A bare year requires a dash separator so a
@@ -200,6 +199,50 @@ _EDITION_TAIL_RE = re.compile(
     re.IGNORECASE,
 )
 
+# The same distinct-release markers, applied to the parenthesized form: a
+# trailing '(Live)' / '(Acoustic)' / '(Demos)' is a different record, not an
+# edition, so it's never stripped — mirroring the colon/dash exclusions above
+# and strip_edition_suffix on track titles. Without this a live or acoustic
+# album collapses onto the studio one and gets hidden from the missing scan.
+_ALBUM_VARIANT_RE = re.compile(
+    r"\b(?:live|unplugged|acoustic|demos?|instrumental|"
+    r"remix(?:ed|es)?|b[\s-]?sides?|rarities|companion|sessions?)\b",
+    re.IGNORECASE,
+)
+
+
+def _strip_trailing_paren_tag(s):
+    """Drop a trailing parenthesized edition tag, unless its contents mark a
+    distinct release (live/acoustic/remix/...), which stays attached."""
+    m = _TRAILING_PAREN_CAPTURE_RE.search(s)
+    if not m or _ALBUM_VARIANT_RE.search(m.group(1)):
+        return s
+    return s[: m.start()].strip()
+
+
+# Normalized forms of the markers above, for callers comparing already-
+# normalized bare titles where normalize() has dropped the spaces that
+# _ALBUM_VARIANT_RE's word boundaries rely on. Keep in step with it.
+_ALBUM_VARIANT_TOKENS = (
+    "live", "unplugged", "acoustic", "demos", "demo", "instrumental",
+    "remixes", "remixed", "remix", "bsides", "rarities", "companion",
+    "sessions", "session",
+)
+
+
+def differs_by_album_variant(shorter, longer):
+    """True when normalized bare title ``longer`` is ``shorter`` plus a trailing
+    distinct-release marker (live/acoustic/remix/...).
+
+    Lets a prefix-based owned check tell 'Album' from 'Album (Live)' once both
+    have been normalized to bare alphanumerics, so a live or acoustic record
+    isn't mistaken for an un-stripped edition of the studio album.
+    """
+    if not longer.startswith(shorter):
+        return False
+    suffix = longer[len(shorter):]
+    return any(suffix.startswith(tok) for tok in _ALBUM_VARIANT_TOKENS)
+
 
 @lru_cache(maxsize=2048)
 def strip_album_decorations(name):
@@ -214,10 +257,11 @@ def strip_album_decorations(name):
       'Revolver - 2022 Remaster'  → 'Revolver'
       'Album: 50th Anniversary Edition' → 'Album'
 
-    Deliberately NOT stripped (these are distinct releases):
+    Deliberately NOT stripped (these are distinct releases), in either the
+    parenthesized or colon/dash form:
       'Cassadaga: A Companion'  (companion EP — different recordings)
-      'Album: Live in Tokyo'    (live album)
-      'Album: B-Sides'          (rarities)
+      'Album: Live in Tokyo' / 'Album (Live)'   (live album)
+      'Album: B-Sides' / 'Greatest Hits (Acoustic)'  (rarities / acoustic set)
 
     Iterates up to 8 times so combined decorations like
     'Foo: Deluxe Edition (2023)' fully strip in a single call.
@@ -226,9 +270,7 @@ def strip_album_decorations(name):
     for _ in range(8):
         new = _LEADING_YEAR_RE.sub("", s).strip()
         if new == s:
-            new = _YEAR_PAREN_RE.sub("", s).strip()
-        if new == s:
-            new = _TRAILING_PAREN_RE.sub("", s).strip()
+            new = _strip_trailing_paren_tag(s)
         if new == s:
             new = _EDITION_TAIL_RE.sub("", s).strip()
         if new == s or not new:
