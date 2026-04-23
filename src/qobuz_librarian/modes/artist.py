@@ -321,20 +321,17 @@ def run_artist_gap_fill(artist_name, artist_dir, args, token, *,
 
         existing, missing, present = m.existing, m.missing, m.present
 
-        extra_albums = []
-        has_extras = False
-        if existing and not getattr(args, "no_upgrade", False) and not missing:
-            qual = compare_album_quality(existing, album)
-            if qual["classification"] in ("all_lower", "mixed_below"):
-                extra_albums = find_extras_in_existing(qobuz_tracks, existing)
-                has_extras = bool(extra_albums)
-
-        # Artist mode: complete is complete. No upgrade prompts beyond the
-        # expanded-edition offer below.
+        # Artist mode: complete is complete. The one nuance is a complete album
+        # where Qobuz is higher quality but our copy carries bonus tracks — offer
+        # an expanded edition that keeps them rather than a wipe-and-replace.
         if m.status == "complete":
+            has_extras = False
+            if existing and not getattr(args, "no_upgrade", False):
+                qual = compare_album_quality(existing, album)
+                if qual["classification"] in ("all_lower", "mixed_below"):
+                    extra_albums = find_extras_in_existing(qobuz_tracks, existing)
+                    has_extras = bool(extra_albums)
             if has_extras:
-                # Higher quality but bonus tracks would be lost. Look for an
-                # expanded edition that covers them.
                 _cands = find_expanded_edition(album, ad, existing, token, args)
                 _exp, _exp_extras = prompt_edition_pick(
                     album, len(extra_albums), _cands, existing, args, label_prefix="    ")
@@ -361,9 +358,8 @@ def run_artist_gap_fill(artist_name, artist_dir, args, token, *,
             continue
 
         # Partial — offer to fill the gap.
-        _extras_sfx = f" + {len(extra_albums)} local-only" if has_extras else ""
         log.info(fmt(C.YELLOW,
-            f"    {len(present)}/{n_total} present{_extras_sfx} — {len(missing)} missing"))
+            f"    {len(present)}/{n_total} present — {len(missing)} missing"))
         for _mt in missing[:8]:
             _tn = _mt.get("track_number") or "?"
             log.info(fmt(C.GRAY,
