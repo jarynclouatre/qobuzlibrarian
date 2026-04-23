@@ -375,6 +375,22 @@ def test_predicted_album_paths_covers_common_beets_path_templates(monkeypatch):
     assert "/music/David Bowie/Hunky Dory" in paths
 
 
+def test_predicted_album_paths_keeps_live_distinct_from_studio_folder(monkeypatch):
+    # A live release must not predict the studio album's bare folder. If it did,
+    # a missing live album would resolve into the owned studio folder and get
+    # skipped — worst when the two share a release year.
+    from qobuz_librarian import config as cfg
+    monkeypatch.setattr(cfg, "MUSIC_ROOT", Path("/music"))
+    monkeypatch.setattr("qobuz_librarian.library.catalog._find_multi_artist_dirs",
+                        lambda *a, **k: [])
+    album = {"title": "Black Sands (Live)", "artist": {"name": "Bonobo"},
+             "release_date_original": "2010-01-01"}
+    names = {p.name for p in predicted_album_paths(album)}
+    assert "Black Sands (Live) (2010)" in names
+    assert "Black Sands (2010)" not in names
+    assert "Black Sands" not in names
+
+
 # ── find_expanded_edition: ranking is the gnarly bit ──────────────────────
 
 def _exp_album(album_id, bd, sr, tracks):

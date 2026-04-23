@@ -213,8 +213,13 @@ def predicted_album_paths(qobuz_album):
     if yr:
         years.append(yr)
 
+    # Also look under the de-editioned title, in case the user's folder drops
+    # the tag ('Album (Deluxe)' → also 'Album'). A distinct-release marker —
+    # '(Live)', '(Acoustic)', a remix/demos/sessions set — is not an edition
+    # tag and stays attached, so a live album never predicts (and then hides
+    # behind) the studio album's bare folder.
     bare_titles = [title]
-    stripped = re.sub(r"\s*\([^)]*\)\s*$", "", title).strip()
+    stripped = strip_album_decorations(title)
     if stripped and stripped != title:
         bare_titles.append(stripped)
 
