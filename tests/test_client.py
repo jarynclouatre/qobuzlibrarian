@@ -4,7 +4,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 import requests
 
-from qobuz_librarian.api.auth import AuthLost, QobuzError
+from qobuz_librarian.api.auth import AuthLost, QobuzError, QobuzUnavailable
 from qobuz_librarian.api.client import qobuz_get
 
 
@@ -18,8 +18,9 @@ def _response(status_code=200, json_data=None, text=""):
 
 
 def test_qobuz_get_maps_status_codes():
-    # 200 → parsed JSON; 401 → AuthLost (so creds get torn down); network
-    # failure → QobuzError (retryable / surfaced as a friendly message).
+    # 200 → parsed JSON; 401 → AuthLost (so creds get torn down); a network
+    # failure that outlasts the retries → QobuzUnavailable, the "service is down,
+    # retry later" signal that callers must not mistake for a genuine no-match.
     with patch("qobuz_librarian.api.client._get_session") as sess:
         sess.return_value.get.return_value = _response(200, {"albums": {"items": []}})
         assert qobuz_get("album/search", {"query": "x"}, "tok") == {"albums": {"items": []}}
@@ -29,12 +30,14 @@ def test_qobuz_get_maps_status_codes():
             qobuz_get("album/search", {}, "bad")
     with patch("qobuz_librarian.api.client._get_session") as sess:
         sess.return_value.get.side_effect = requests.RequestException("timeout")
-        with pytest.raises(QobuzError):
+        with pytest.raises(QobuzUnavailable):
             qobuz_get("album/search", {}, "tok")
 
 
 def test_qobuz_get_retries_429_but_not_404():
-    # 429 backs off and retries; a 404 is terminal and must not be retried.
+    # 429 backs off and retries; a 404 is a definitive answer (QobuzError, the
+    # caller may read it as "no such album") and must not be retried. A 429 that
+    # never clears is transient → QobuzUnavailable, not QobuzError.
     with patch("qobuz_librarian.api.client._get_session") as sess:
         sess.return_value.get.side_effect = [_response(429), _response(429),
                                              _response(200, {"ok": True})]
@@ -44,6 +47,11 @@ def test_qobuz_get_retries_429_but_not_404():
         with pytest.raises(QobuzError):
             qobuz_get("album/get", {"album_id": "nope"}, "tok")
         assert sess.return_value.get.call_count == 1
+    with patch("qobuz_librarian.api.client._get_session") as sess:
+        sess.return_value.get.return_value = _response(429)
+        with pytest.raises(QobuzUnavailable):
+            qobuz_get("album/search", {}, "tok")
+        assert not isinstance(QobuzUnavailable(), QobuzError)  # distinct signals
 
 
 def test_qobuz_get_gives_up_when_the_deadline_is_spent():
@@ -54,7 +62,7 @@ def test_qobuz_get_gives_up_when_the_deadline_is_spent():
     with patch("qobuz_librarian.api.client._get_session") as sess:
         sess.return_value.get.return_value = _response(503)
         with request_deadline(0.5):
-            with pytest.raises(QobuzError):
+            with pytest.raises(QobuzUnavailable):
                 qobuz_get("album/search", {}, "tok")
         assert sess.return_value.get.call_count == 1
 

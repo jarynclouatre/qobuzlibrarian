@@ -412,11 +412,18 @@ def _friendly_job_error(exc, fallback: str) -> str:
 
     The raw error text remains in job.log_lines for the expandable log;
     job.error is what the red banner shows."""
-    from qobuz_librarian.api.auth import AuthLost, NoCredsError, QobuzError
+    from qobuz_librarian.api.auth import (
+        AuthLost,
+        NoCredsError,
+        QobuzError,
+        QobuzUnavailable,
+    )
     if isinstance(exc, NoCredsError):
         return "No Qobuz credentials set — visit Settings."
     if isinstance(exc, AuthLost):
         return "Token is expired or invalid — update it in Settings."
+    if isinstance(exc, QobuzUnavailable):
+        return "Qobuz is temporarily unavailable (network or rate limit) — try again shortly."
     if isinstance(exc, QobuzError):
         return "Couldn't reach the Qobuz API — check the container's network."
     if isinstance(exc, FileNotFoundError):

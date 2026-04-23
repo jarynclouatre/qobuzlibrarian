@@ -7,6 +7,7 @@ from qobuz_librarian.api.auth import (
     AuthLost,
     CatalogMiss,
     QobuzError,
+    QobuzUnavailable,
     friendly_qobuz_error,
 )
 from qobuz_librarian.api.search import get_album, search_albums
@@ -160,6 +161,8 @@ def _interactive_album_action(album, args, token, album_queue, flush_queue):
                 die(fmt(C.RED, auth_lost_msg("mid-album")), EXIT_AUTH)
     except AuthLost:
         die(fmt(C.RED, auth_lost_msg("mid-album")), EXIT_AUTH)
+    except QobuzUnavailable as e:
+        log.info(fmt(C.YELLOW, f"\n⚠  Qobuz is temporarily unavailable: {e}\n"))
     except QobuzError as e:
         log.info(fmt(C.RED, f"\n✗  Qobuz API error: {friendly_qobuz_error(e)}.\n"))
 
@@ -201,6 +204,14 @@ def run_album_mode(args, token, *, query_args=None, loop=False):
                 args.query = saved_query
                 if not loop:
                     return
+                continue
+            except QobuzUnavailable as e:
+                log.info(fmt(C.YELLOW, f"\n⚠  Qobuz is temporarily unavailable: {e}\n"))
+                args.query = saved_query
+                # One-shot: let it propagate so the run exits 4 (retry later).
+                # In the menu loop: back to the query prompt to try again.
+                if not loop:
+                    raise
                 continue
             except QobuzError as e:
                 cleaned = friendly_qobuz_error(e)

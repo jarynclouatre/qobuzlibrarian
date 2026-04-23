@@ -22,6 +22,16 @@ class Aborted(Exception):     pass
 class QobuzError(Exception):  pass
 
 
+# Qobuz reached its retry ceiling without a usable answer — the network is
+# down, the request timed out, or the API is rate-limiting / 5xx-ing. Distinct
+# from QobuzError (a definitive answer like 404/bad-body) so callers can tell
+# "service is down, retry later" apart from "Qobuz says no such album". Like
+# AuthLost it's an abort signal: it propagates past the per-item handlers that
+# swallow QobuzError, so a blip mid-scan stops the scan cleanly instead of
+# being recorded as a genuine no-match.
+class QobuzUnavailable(Exception): pass
+
+
 # A hook the web layer registers in its lifespan so the dashboard's
 # "saved token isn't authenticating" banner reflects the most recent API call,
 # not just the startup probe. Lives here (not in client.py) so callers can

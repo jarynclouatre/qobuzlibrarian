@@ -4,7 +4,7 @@ import re
 import sys
 
 from qobuz_librarian import config as cfg
-from qobuz_librarian.api.auth import AuthLost
+from qobuz_librarian.api.auth import AuthLost, QobuzUnavailable
 from qobuz_librarian.library.scanner import (
     clear_scan_caches,
     list_artist_album_dirs,
@@ -313,7 +313,9 @@ def run_album_walk_mode(args, token):
                     f"{cfg.PENDING_QUEUE_FILE.name}; resume next launch."))
                 interrupted = True
                 break
-            except AuthLost:
+            except (AuthLost, QobuzUnavailable):
+                # Queue is already persisted via save_callback; let it propagate
+                # so the run exits with the right status and message.
                 raise
     finally:
         args.consolidate = saved_consolidate
@@ -526,9 +528,9 @@ def run_walk_queued_mode(args, token):
             i += 1
     finally:
         args.consolidate = saved_consolidate
-        if shared_queue and isinstance(sys.exc_info()[1], AuthLost):
-            # Unwinding on a lost token: a flush would only re-raise over the
-            # original auth error, so keep the queue for next launch instead.
+        if shared_queue and isinstance(sys.exc_info()[1], (AuthLost, QobuzUnavailable)):
+            # Unwinding on a lost token or an unreachable API: a flush would only
+            # fail again over the original error, so keep the queue for next launch.
             save_pending_queue(shared_queue, mode="walk_queue")
             log.info(fmt(C.GRAY,
                 f"  Queue retained — persisted to "

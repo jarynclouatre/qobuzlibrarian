@@ -14,7 +14,7 @@ import shutil
 import time
 
 from qobuz_librarian import config as cfg
-from qobuz_librarian.api.auth import AuthLost, QobuzError
+from qobuz_librarian.api.auth import AuthLost, QobuzError, QobuzUnavailable
 from qobuz_librarian.api.search import get_album, get_artist_albums
 from qobuz_librarian.integrations.compress import HAVE_DOWNSAMPLE
 from qobuz_librarian.library.catalog import (
@@ -221,9 +221,10 @@ def run_artist_gap_fill(artist_name, artist_dir, args, token, *,
     # Scoped local — doesn't bleed into step 2 or the next artist in a walk.
     auto_yes_rest = False
     queue = []  # download decisions, run as a batch after the prompting loop
-    # AuthLost mid-loop: stash it, finish the hand-off so the artist's queue
-    # reaches shared_queue, then re-raise.
-    pending_auth_lost = None
+    # AuthLost / QobuzUnavailable mid-loop: stash it, finish the hand-off so the
+    # artist's queue reaches shared_queue, then re-raise. Both mean "can't keep
+    # scanning" — a lost token or an unreachable API — so they stop the same way.
+    pending_stop = None
 
     for i, ad in enumerate(album_dirs, 1):
         if stopped_early:
@@ -243,8 +244,8 @@ def run_artist_gap_fill(artist_name, artist_dir, args, token, *,
         try:
             m = match_album_dir(ad, artist_name, token,
                                 catalog=catalog, prefer_hires=args.prefer_hires)
-        except AuthLost as _e_auth:
-            pending_auth_lost = _e_auth
+        except (AuthLost, QobuzUnavailable) as _e_stop:
+            pending_stop = _e_stop
             break
         time.sleep(cfg.ARTIST_API_DELAY)
 
@@ -264,8 +265,8 @@ def run_artist_gap_fill(artist_name, artist_dir, args, token, *,
                 try:
                     m = match_album_dir(next_try, artist_name, token,
                                         catalog=catalog, prefer_hires=args.prefer_hires)
-                except AuthLost as _e_auth_sib:
-                    pending_auth_lost = _e_auth_sib
+                except (AuthLost, QobuzUnavailable) as _e_stop_sib:
+                    pending_stop = _e_stop_sib
                     m = None
                     break
                 time.sleep(cfg.ARTIST_API_DELAY)
@@ -280,7 +281,7 @@ def run_artist_gap_fill(artist_name, artist_dir, args, token, *,
                 log.info(fmt(C.YELLOW,
                     f"    ⚠  No Qobuz match for {next_try.name} either."))
 
-        if pending_auth_lost is not None:
+        if pending_stop is not None:
             break
 
         if m is None or m.status == "no_match":
@@ -332,7 +333,11 @@ def run_artist_gap_fill(artist_name, artist_dir, args, token, *,
                     extra_albums = find_extras_in_existing(qobuz_tracks, existing)
                     has_extras = bool(extra_albums)
             if has_extras:
-                _cands = find_expanded_edition(album, ad, existing, token, args)
+                try:
+                    _cands = find_expanded_edition(album, ad, existing, token, args)
+                except (AuthLost, QobuzUnavailable) as _e_stop_exp:
+                    pending_stop = _e_stop_exp
+                    break
                 _exp, _exp_extras = prompt_edition_pick(
                     album, len(extra_albums), _cands, existing, args, label_prefix="    ")
                 if _exp is not None:
@@ -428,7 +433,7 @@ def run_artist_gap_fill(artist_name, artist_dir, args, token, *,
                 save_callback()
             except Exception as _sce:
                 vlog(f"  save_callback raised: {_sce}")
-    elif queue and pending_auth_lost is None:
+    elif queue and pending_stop is None:
         # The executor deletes each item's chosen siblings itself once the fill
         # lands cleanly, so there's nothing to clean up here.
         queue_results, drained = _execute_download_queue(queue, args, token)
@@ -438,8 +443,8 @@ def run_artist_gap_fill(artist_name, artist_dir, args, token, *,
                 "  ⚠  Some albums couldn't be downloaded — kept to retry; "
                 "rerun to try them again."))
 
-    if pending_auth_lost is not None:
-        raise pending_auth_lost
+    if pending_stop is not None:
+        raise pending_stop
 
     return results, owned_titles, handled_ids, resolved_dirs, artist_id, catalog
 

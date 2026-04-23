@@ -11,7 +11,12 @@ from contextlib import contextmanager
 import requests
 
 from qobuz_librarian import config
-from qobuz_librarian.api.auth import AuthLost, QobuzError, notify_auth_state
+from qobuz_librarian.api.auth import (
+    AuthLost,
+    QobuzError,
+    QobuzUnavailable,
+    notify_auth_state,
+)
 from qobuz_librarian.ui_cli.colors import C, fmt
 from qobuz_librarian.ui_cli.logging import log, vlog
 
@@ -146,15 +151,16 @@ def qobuz_get(endpoint, params, token):
     for attempt in range(1, _MAX_ATTEMPTS + 1):
         timeout = _attempt_timeout()
         if timeout is None:
-            raise QobuzError(f"the Qobuz API timed out (while calling {endpoint})")
+            raise QobuzUnavailable(
+                f"the Qobuz API timed out (while calling {endpoint}) — try again later")
         try:
             r = _get_session().get(url, params=params, headers=headers,
                                    timeout=timeout)
         except requests.RequestException as e:
             wait = _retry_delay(attempt, min(2 ** (attempt - 1), 8))
             if wait is None:
-                raise QobuzError(
-                    f"{_net_reason(e)} (while calling {endpoint})") from e
+                raise QobuzUnavailable(
+                    f"{_net_reason(e)} (while calling {endpoint}) — try again later") from e
             vlog(f"{endpoint}: network error ({e}); retry {attempt}/{_MAX_ATTEMPTS} in {wait}s")
             _retry_sleep(wait)
             continue
@@ -167,7 +173,7 @@ def qobuz_get(endpoint, params, token):
             _ra = _retry_after(r)
             wait = _retry_delay(attempt, _ra if _ra is not None else min(2 ** (attempt - 1), 8))
             if wait is None:
-                raise QobuzError(
+                raise QobuzUnavailable(
                     f"Qobuz API kept returning HTTP {r.status_code} after "
                     f"{attempt} attempt(s) (while calling {endpoint}) — "
                     f"rate-limited or a temporary outage; try again later.")

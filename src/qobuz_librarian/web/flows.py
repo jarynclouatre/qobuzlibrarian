@@ -11,7 +11,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from qobuz_librarian import config as cfg
-from qobuz_librarian.api.auth import AuthLost
+from qobuz_librarian.api.auth import AuthLost, QobuzUnavailable
 from qobuz_librarian.api.search import get_album
 from qobuz_librarian.library import hidden as hidden_mod
 from qobuz_librarian.library.catalog import (
@@ -250,7 +250,10 @@ def scan_library(job, token, partial_only=False):
             done += 1
             try:
                 name, artist_name, gaps = fut.result()
-            except AuthLost:
+            except (AuthLost, QobuzUnavailable):
+                # A lost token or an unreachable API isn't a per-artist hiccup —
+                # cancel the rest and fail the scan rather than silently report a
+                # partial library as the full picture.
                 for f in futures:
                     f.cancel()
                 raise
@@ -385,7 +388,7 @@ def scan_upgrades(job, token):
             name = futures[fut].name
             try:
                 name, cands = fut.result()
-            except AuthLost:
+            except (AuthLost, QobuzUnavailable):
                 for f in futures:
                     f.cancel()
                 raise
@@ -502,7 +505,7 @@ def scan_repairs(job, token):
                 return
             try:
                 scan = scan_dir_for_isrc_repairs(album_dir, token, deep=False)
-            except AuthLost:
+            except (AuthLost, QobuzUnavailable):
                 raise
             except Exception as e:
                 log.info(f"    skipped {album_dir.name}: {e}")

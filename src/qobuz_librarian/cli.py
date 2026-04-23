@@ -9,7 +9,12 @@ import subprocess
 
 from qobuz_librarian import config as cfg
 from qobuz_librarian import run_lock
-from qobuz_librarian.api.auth import AuthLost, NoCredsError, load_qobuz_token
+from qobuz_librarian.api.auth import (
+    AuthLost,
+    NoCredsError,
+    QobuzUnavailable,
+    load_qobuz_token,
+)
 from qobuz_librarian.integrations.lyrics import _prune_lyric_state_orphans
 from qobuz_librarian.integrations.rip import HAVE_MUTAGEN
 from qobuz_librarian.library.backup import cleanup_old_upgrade_backups
@@ -23,6 +28,7 @@ from qobuz_librarian.ui_cli.errors import (
     EXIT_CONFIG,
     EXIT_GENERAL,
     EXIT_LOCK_BUSY,
+    EXIT_TRANSIENT,
     die,
 )
 from qobuz_librarian.ui_cli.logging import attach_file_handler, log, set_quiet, set_verbose, vlog
@@ -619,6 +625,11 @@ def _entry():
             die(fmt(C.RED,
                 "\n✗  Auth lost. Re-authenticate: Settings page in the web UI, "
                 "or set QOBUZ_USER_AUTH_TOKEN in your environment.\n"), EXIT_AUTH)
+        except QobuzUnavailable as e:
+            die(fmt(C.YELLOW,
+                f"\n⚠  Qobuz is temporarily unavailable — {e}\n"
+                "   Nothing was lost; any queued work was saved. Re-run when it's "
+                "back.\n"), EXIT_TRANSIENT)
     finally:
         _check_staging_occupied()
 

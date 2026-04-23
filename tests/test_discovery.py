@@ -243,6 +243,31 @@ def test_unmatched_folder_is_reported_for_diagnosis(monkeypatch, tmp_path, beatl
     assert [d.name for d in res.unmatched_dirs] == ["Some Bootleg Nobody Has (2003)"]
 
 
+def test_transient_api_error_aborts_the_scan_instead_of_burying_a_folder(
+        monkeypatch, tmp_path, beatles_search):
+    # A transient Qobuz failure while matching an owned folder must propagate,
+    # not collapse into a "no match / nothing missing" verdict — otherwise an
+    # outage silently buries albums the next scan would never re-check.
+    from qobuz_librarian.api.auth import QobuzUnavailable
+
+    full = _album("a1", "Abbey Road", "The Beatles", 1969,
+                  [_qt(f"t{i}", f"ISRC{i}") for i in range(10)])
+
+    class Flaky(FakeQobuz):
+        def get_album(self, album_id, token):
+            raise QobuzUnavailable("the Qobuz API timed out — try again later")
+
+    _library(monkeypatch, tmp_path,
+             {"The Beatles": {"Abbey Road (1969)":
+                              [_et(f"t{i}", f"ISRC{i}") for i in range(6)]}})
+    Flaky(artists=beatles_search, catalog=[full]).install(monkeypatch)
+
+    with pytest.raises(QobuzUnavailable):
+        find_missing_for_artist(
+            "The Beatles", token="tok", opts=DiscoveryOpts(prefer_hires=True),
+            artist_dir=tmp_path / "The Beatles")
+
+
 # ── Filters & options ────────────────────────────────────────────────────────────
 
 def test_hidden_store_filters_bulk_walk_but_not_single_artist(monkeypatch, tmp_path, beatles_search):

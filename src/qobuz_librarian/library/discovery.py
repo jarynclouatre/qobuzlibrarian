@@ -26,7 +26,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from qobuz_librarian import config as cfg
-from qobuz_librarian.api.auth import AuthLost, QobuzError
+from qobuz_librarian.api.auth import AuthLost, QobuzError, QobuzUnavailable
 from qobuz_librarian.api.search import get_album, get_artist_albums, search_artists
 from qobuz_librarian.library import hidden as hidden_mod
 from qobuz_librarian.library.catalog import (
@@ -121,7 +121,7 @@ def resolve_artist(query, token):
         return hit[0], hit[1]
     try:
         results = search_artists(query, token, limit=cfg.ARTIST_LOOKUP_LIMIT)
-    except AuthLost:
+    except (AuthLost, QobuzUnavailable):
         raise
     except Exception as e:
         log.info(f"  artist search failed for '{query}': {e}")
