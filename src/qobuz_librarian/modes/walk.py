@@ -64,15 +64,19 @@ def _atomic_append(path, header_lines, entry):
     os.replace(tmp, path)
 
 
-def record_walk_seen(artist_name):
+def record_walk_seen(artist_name, seen=None):
     """Append a decided artist to the walk seen file (creates with header).
 
-    Skip if already recorded (normalized) so the file
-    doesn't grow unbounded across re-walks of the same library.
+    Skip if already recorded (normalized) so the file doesn't grow unbounded
+    across re-walks. ``seen``, when given, is the caller's in-memory set: it's
+    used for the dedup check and updated on success, sparing a full re-read of
+    the file on every record during a walk.
     """
     try:
         cfg.WALK_SEEN_FILE.parent.mkdir(parents=True, exist_ok=True)
-        if normalize(artist_name) in load_walk_seen():
+        key = normalize(artist_name)
+        known = seen if seen is not None else load_walk_seen()
+        if key in known:
             return
         _atomic_append(
             cfg.WALK_SEEN_FILE,
@@ -85,6 +89,8 @@ def record_walk_seen(artist_name):
             ],
             entry=artist_name + "\n",
         )
+        if seen is not None:
+            seen.add(key)
     except OSError as e:
         log.info(fmt(C.YELLOW, f"  ⚠  Couldn't write {cfg.WALK_SEEN_FILE.name}: {e}."))
 
@@ -125,11 +131,18 @@ def load_album_walk_seen():
     return seen
 
 
-def record_album_walk_seen(artist_name, album_name):
-    """Append a decided 'Artist | Album' entry to the album-walk seen file."""
+def record_album_walk_seen(artist_name, album_name, seen=None):
+    """Append a decided 'Artist | Album' entry to the album-walk seen file.
+
+    ``seen``, when given, is the caller's in-memory set of album keys: used for
+    the dedup check and updated on success, so the per-album record on a long
+    walk doesn't re-read the whole file each time.
+    """
     try:
         cfg.ALBUM_WALK_SEEN_FILE.parent.mkdir(parents=True, exist_ok=True)
-        if _album_seen_key(artist_name, album_name) in load_album_walk_seen():
+        key = _album_seen_key(artist_name, album_name)
+        known = seen if seen is not None else load_album_walk_seen()
+        if key in known:
             return
         _atomic_append(
             cfg.ALBUM_WALK_SEEN_FILE,
@@ -144,12 +157,24 @@ def record_album_walk_seen(artist_name, album_name):
             ],
             entry=f"{artist_name} | {album_name}\n",
         )
+        if seen is not None:
+            seen.add(key)
     except OSError as e:
         log.info(fmt(C.YELLOW,
             f"  ⚠  Couldn't write {cfg.ALBUM_WALK_SEEN_FILE.name}: {e}."))
 
 
 # ── Album fill walk ───────────────────────────────────────────────────
+
+# Outcomes that settle an album for the album-fill walk: it's done, or the user
+# said no, or Qobuz couldn't place the folder (recorded so it stops nagging on
+# every walk). 'user_stopped' is deliberately absent — pressing 's' bails out of
+# the walk, it isn't a decision about the album that happened to be on screen.
+_ALBUM_WALK_DECIDED = {
+    "already_complete", "user_skipped",
+    "no_qobuz_match", "no_tracks", "false_match", "predicted_path_mismatch",
+}
+
 
 def run_album_walk_mode(args, token):
     """Album fill walk: scan every album under every artist and
@@ -262,19 +287,16 @@ def run_album_walk_mode(args, token):
                     skip_predicate=_seen_pred,
                     save_callback=_save_now,
                 )
-                _RECORDABLE_RESULTS = {
-                    "already_complete", "user_skipped", "user_stopped",
-                    "no_qobuz_match", "no_tracks", "false_match",
-                    "predicted_path_mismatch",
-                }
+                stopped = False
                 for r in (gap_fill_result[0] if gap_fill_result else []):
                     _ad = r.get("dir")
                     _result = r.get("result")
                     if _ad is None or _result == "dry_run":
                         continue
-                    if _result in _RECORDABLE_RESULTS:
-                        record_album_walk_seen(artist_query, _ad.name)
-                        seen.add(_album_seen_key(artist_query, _ad.name))
+                    if _result == "user_stopped":
+                        stopped = True
+                    if _result in _ALBUM_WALK_DECIDED:
+                        record_album_walk_seen(artist_query, _ad.name, seen)
                     if _result == "already_complete":
                         n_albums_complete += 1
                     elif _result in ("user_skipped", "user_stopped"):
@@ -282,6 +304,9 @@ def run_album_walk_mode(args, token):
                     else:
                         n_albums_unmatched += 1
                 n_artists_scanned += 1
+                if stopped:
+                    log.info(fmt(C.GRAY, "  Stopping the album walk."))
+                    break
             except KeyboardInterrupt:
                 log.info(fmt(C.GRAY,
                     "\n  Walk interrupted — queue is persisted to "
@@ -497,7 +522,7 @@ def run_walk_queued_mode(args, token):
                 continue
 
             if decided:
-                record_walk_seen(d.name)
+                record_walk_seen(d.name, seen)
             i += 1
     finally:
         args.consolidate = saved_consolidate

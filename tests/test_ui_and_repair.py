@@ -684,6 +684,45 @@ def test_album_walk_filter_is_a_substring_match(monkeypatch):
     assert sorted(seen) == ["Albert Collins", "Beatles", "David Bowie", "Radiohead"]
 
 
+def test_album_walk_stop_halts_the_walk_without_burying_the_album(tmp_path, monkeypatch):
+    # 's' at an album prompt means "I'm done for now", not "dismiss this album".
+    # It must stop the whole walk and leave the album on screen un-recorded, so
+    # the next walk re-offers it.
+    from types import SimpleNamespace
+
+    from qobuz_librarian.modes import walk
+
+    f = tmp_path / "album_walk_seen.txt"
+    monkeypatch.setattr("qobuz_librarian.config.ALBUM_WALK_SEEN_FILE", f)
+
+    def _fake_artist(name):
+        p = MagicMock(spec=Path)
+        p.name = name
+        return p
+
+    monkeypatch.setattr(walk, "list_library_artists",
+                        lambda: [_fake_artist(n) for n in ["Abba", "Beatles", "Cream"]])
+    monkeypatch.setattr(walk, "list_artist_album_dirs", lambda d: [])
+    monkeypatch.setattr(walk, "clear_scan_caches", lambda: None)
+    monkeypatch.setattr(walk, "save_pending_queue", lambda *a, **k: None)
+
+    scanned = []
+
+    def _fake_gap_fill(artist_query, *_a, **_k):
+        scanned.append(artist_query)
+        stopped_dir = SimpleNamespace(name="Arrival")
+        return [{"dir": stopped_dir, "result": "user_stopped"}], {}, set(), set(), None, []
+
+    monkeypatch.setattr(walk, "run_artist_gap_fill", _fake_gap_fill)
+
+    args = SimpleNamespace(consolidate=False, yes=False, dry_run=False)
+    with patch("builtins.input", side_effect=[""]):
+        walk.run_album_walk_mode(args, "tok")
+
+    assert scanned == ["Abba"]            # stopped before reaching Beatles/Cream
+    assert load_album_walk_seen() == set()  # the stopped-on album was not buried
+
+
 # ── Scan-report-repair classifications ──────────────────────────────────
 
 def _call_scan_report(tmp_path, monkeypatch, *, repair_result=None,
