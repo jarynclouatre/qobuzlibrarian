@@ -8,15 +8,14 @@ SQLite lookup turns a re-scan of an unchanged library from minutes of round-trip
 into milliseconds.
 
 SQLite (not one big JSON) so a few thousand albums are written incrementally and
-read by id without rewriting the whole file, and so the web scan's parallel
-workers can each open their own connection. Set ``ALBUM_CACHE_ENABLED=false`` to
-turn it off; delete the db file to force a full refresh.
+read by id without rewriting the whole file, and so a scan's parallel workers can
+each hold their own connection. Set ``ALBUM_CACHE_ENABLED=false`` to turn it off;
+delete the db file to force a full refresh.
 """
 import json
 import sqlite3
 import threading
 import time
-from contextlib import closing
 from pathlib import Path
 
 from qobuz_librarian import config as cfg
@@ -24,14 +23,11 @@ from qobuz_librarian.ui_cli.logging import vlog
 
 _init_lock = threading.Lock()
 _initialized = False
+_local = threading.local()
 
 
 def _db_path() -> Path:
     return Path(str(cfg.DATA_DIR)) / "album_cache.db"
-
-
-def _connect() -> sqlite3.Connection:
-    return sqlite3.connect(str(_db_path()), timeout=5)
 
 
 def _is_corrupt_error(e: sqlite3.Error) -> bool:
@@ -77,7 +73,8 @@ def _ensure() -> bool:
             return False
         for attempt in (1, 2):
             try:
-                with closing(_connect()) as conn:
+                conn = sqlite3.connect(str(_db_path()), timeout=5)
+                try:
                     conn.execute("PRAGMA journal_mode=WAL")
                     conn.execute(
                         "CREATE TABLE IF NOT EXISTS albums "
@@ -88,6 +85,8 @@ def _ensure() -> bool:
                         "CREATE TABLE IF NOT EXISTS catalogs "
                         "(key TEXT PRIMARY KEY, payload TEXT NOT NULL, fetched_at REAL)")
                     conn.commit()
+                finally:
+                    conn.close()
                 _initialized = True
                 return True
             except sqlite3.Error as e:
@@ -101,14 +100,29 @@ def _ensure() -> bool:
         return False
 
 
+def _conn() -> sqlite3.Connection:
+    """Connection scoped to the calling thread.
+
+    A scan looks up one cached album per owned album; opening a fresh connection
+    per lookup costs many times the lookup it's meant to make cheap, so each
+    thread keeps one (SQLite connections can't be shared across threads).
+    synchronous is dropped to NORMAL — the cache is derived data, so a row lost
+    to an OS crash is just refetched from Qobuz on the next scan.
+    """
+    conn = getattr(_local, "conn", None)
+    if conn is None:
+        conn = sqlite3.connect(str(_db_path()), timeout=5)
+        conn.execute("PRAGMA synchronous=NORMAL")
+        _local.conn = conn
+    return conn
+
+
 def get(album_id) -> dict | None:
     if not album_id or not _ensure():
         return None
     try:
-        with closing(_connect()) as conn:
-            row = conn.execute(
-                "SELECT payload FROM albums WHERE id = ?", (str(album_id),)
-            ).fetchone()
+        row = _conn().execute(
+            "SELECT payload FROM albums WHERE id = ?", (str(album_id),)).fetchone()
     except sqlite3.Error as e:
         vlog(f"album cache read failed: {e}")
         return None
@@ -128,11 +142,11 @@ def put(album_id, payload) -> None:
     except (TypeError, ValueError):
         return
     try:
-        with closing(_connect()) as conn:
-            conn.execute(
-                "INSERT OR REPLACE INTO albums (id, payload, fetched_at) "
-                "VALUES (?, ?, ?)", (str(album_id), data, time.time()))
-            conn.commit()
+        conn = _conn()
+        conn.execute(
+            "INSERT OR REPLACE INTO albums (id, payload, fetched_at) "
+            "VALUES (?, ?, ?)", (str(album_id), data, time.time()))
+        conn.commit()
     except sqlite3.Error as e:
         vlog(f"album cache write failed: {e}")
 
@@ -145,10 +159,9 @@ def get_catalog(key, ttl_seconds) -> dict | None:
     if not key or ttl_seconds <= 0 or not _ensure():
         return None
     try:
-        with closing(_connect()) as conn:
-            row = conn.execute(
-                "SELECT payload, fetched_at FROM catalogs WHERE key = ?",
-                (str(key),)).fetchone()
+        row = _conn().execute(
+            "SELECT payload, fetched_at FROM catalogs WHERE key = ?",
+            (str(key),)).fetchone()
     except sqlite3.Error as e:
         vlog(f"catalog cache read failed: {e}")
         return None
@@ -168,15 +181,19 @@ def put_catalog(key, payload) -> None:
     except (TypeError, ValueError):
         return
     try:
-        with closing(_connect()) as conn:
-            conn.execute(
-                "INSERT OR REPLACE INTO catalogs (key, payload, fetched_at) "
-                "VALUES (?, ?, ?)", (str(key), data, time.time()))
-            conn.commit()
+        conn = _conn()
+        conn.execute(
+            "INSERT OR REPLACE INTO catalogs (key, payload, fetched_at) "
+            "VALUES (?, ?, ?)", (str(key), data, time.time()))
+        conn.commit()
     except sqlite3.Error as e:
         vlog(f"catalog cache write failed: {e}")
 
 
 def _reset_for_tests() -> None:
     global _initialized
+    conn = getattr(_local, "conn", None)
+    if conn is not None:
+        conn.close()
+        _local.conn = None
     _initialized = False
