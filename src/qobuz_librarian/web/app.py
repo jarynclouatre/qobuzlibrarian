@@ -113,11 +113,12 @@ def _resume_migration(job, args):
 # the rebound function reads the current token rather than baking in the
 # (possibly-rotated) one from the prior session.
 _RESUME_EXECUTE: dict = {
-    "album":     _resume_album_download,
-    "library":   _resume_album_download,
-    "upgrade":   _resume_upgrade,
-    "repair":    _resume_repair,
-    "migration": _resume_migration,
+    "album":        _resume_album_download,
+    "library":      _resume_album_download,
+    "new_releases": _resume_album_download,
+    "upgrade":      _resume_upgrade,
+    "repair":       _resume_repair,
+    "migration":    _resume_migration,
 }
 
 
@@ -917,6 +918,17 @@ async def library_scan(request: Request, mode: str = Form("missing_albums")):
         return _no_creds_response(request)
     from qobuz_librarian.web import flows
     mode_norm = (mode or "").strip().lower()
+    if mode_norm == "new_releases":
+        job = job_mgr.Job(title="New-release check")
+        # Its own kind so the review screen pre-ticks the (already-curated) new
+        # releases and labels the surface accordingly; same album executor.
+        job.execute_kind = "new_releases"
+        job_mgr.submit_scan(
+            job,
+            lambda j: flows.scan_new_releases(j, _get_token()),
+            lambda j, chosen: flows.execute_albums(j, chosen, _get_token()),
+        )
+        return RedirectResponse(url=f"/jobs/{job.id}", status_code=303)
     partial_only = mode_norm == "partial_fill"
     title = "Library album-fill scan" if partial_only else "Library gap scan"
     job = job_mgr.Job(title=title)

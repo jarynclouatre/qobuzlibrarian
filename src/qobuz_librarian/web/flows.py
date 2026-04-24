@@ -14,6 +14,7 @@ from qobuz_librarian import config as cfg
 from qobuz_librarian.api.auth import AuthLost, QobuzUnavailable
 from qobuz_librarian.api.search import get_album
 from qobuz_librarian.library import hidden as hidden_mod
+from qobuz_librarian.library import new_releases as new_releases_mod
 from qobuz_librarian.library.catalog import (
     album_quality_label,
     album_year,
@@ -22,6 +23,7 @@ from qobuz_librarian.library.catalog import (
 from qobuz_librarian.library.discovery import (
     DiscoveryOpts,
     find_missing_for_artist,
+    find_new_releases_for_artist,
     flush_resolve_cache,
 )
 from qobuz_librarian.library.scanner import (
@@ -58,7 +60,7 @@ def build_args():
     )
 
 
-def _add_album_candidate(job, album, artist_name, selected=True):
+def _add_album_candidate(job, album, artist_name, selected=True, is_new=False):
     year = album_year(album)
     partial_n = album.get("_partial_missing_count")
     if partial_n:
@@ -69,23 +71,26 @@ def _add_album_candidate(job, album, artist_name, selected=True):
         tc = album.get('tracks_count') or '?'
         detail = (f"{year or '?'} · {album_quality_label(album)} · "
                   f"{tc} track{'s' if tc != 1 else ''}")
+    payload = {"album_id": album.get("id"), "year": year}
+    if is_new:
+        payload["is_new"] = True
     job.add_candidate(
         kind="album",
         title=album.get("title") or "?",
         artist=artist_name,
         detail=detail,
-        payload={"album_id": album.get("id"), "year": year},
+        payload=payload,
         selected=selected,
     )
 
 
-def _add_gap_candidate(job, gap, artist_name, selected=False):
+def _add_gap_candidate(job, gap, artist_name, selected=False, is_new=False):
     """Turn an engine AlbumGap into a review candidate. A partial gap carries
     its missing-track count so the detail reads 'gap-fill: N missing'."""
     album = gap.qobuz_album
     if gap.on_disk_dir is not None:
         album = {**album, "_partial_missing_count": gap.missing_count}
-    _add_album_candidate(job, album, artist_name, selected=selected)
+    _add_album_candidate(job, album, artist_name, selected=selected, is_new=is_new)
 
 
 def _record_last_scan():
@@ -284,6 +289,79 @@ def scan_library(job, token, partial_only=False):
         log.info(f"Done. {plural(total, 'album')} with track gaps across the library.")
     else:
         log.info(f"Done. {plural(total, 'missing album')} across the library.")
+
+
+def scan_new_releases(job, token):
+    """Surface albums that appeared in library artists' Qobuz catalogs since the
+    last check and that the user doesn't own or hasn't hidden — pre-ticked, ready
+    to download. Cheap (one catalog call per artist, no track fetches), so it's
+    the quick "what's new" pass rather than the full gap scan."""
+    clear_scan_caches()
+    artists = list_library_artists()
+    if not artists:
+        log.info("No artist folders found under MUSIC_ROOT.")
+        log.info("  Expected layout: $MUSIC_ROOT/<Artist>/<Album (Year)>/<track>.flac")
+        return
+    state = new_releases_mod.load()
+    seen = state.get("seen") or {}
+    hidden = hidden_mod.load()
+    opts = DiscoveryOpts(prefer_hires=cfg.PREFER_HIRES)
+    log.info(f"Checking {plural(len(artists), 'artist')} for new releases…")
+    total = 0
+    done = 0
+    n = len(artists)
+    workers = max(1, int(cfg.ARTIST_SCAN_WORKERS))
+    updated = dict(seen)
+    with ThreadPoolExecutor(max_workers=workers,
+                            thread_name_prefix="newrel") as ex:
+        futures = {ex.submit(find_new_releases_for_artist, ad.name, token=token,
+                             opts=opts, seen_by_id=seen, hidden=hidden,
+                             artist_dir=ad): ad
+                   for ad in artists}
+        for fut in as_completed(futures):
+            if job.cancel_requested:
+                for f in futures:
+                    f.cancel()
+                log.info("Cancelled — stopping check.")
+                break
+            done += 1
+            try:
+                result = fut.result()
+            except (AuthLost, QobuzUnavailable):
+                for f in futures:
+                    f.cancel()
+                raise
+            except Exception as e:
+                log.info(f"    skipped {futures[fut].name}: {e}")
+                job.push_progress("Checking for new releases", done, n,
+                                  futures[fut].name, found=total)
+                continue
+            if result.artist_id:
+                updated[result.artist_id] = result.current_ids
+            for gap in result.new_gaps:
+                _add_gap_candidate(job, gap, result.artist_name,
+                                   selected=True, is_new=True)
+                total += 1
+            hit = ({"artist": result.artist_name, "albums": len(result.new_gaps)}
+                   if result.new_gaps else None)
+            job.push_progress("Checking for new releases", done, n,
+                              result.artist_name or futures[fut].name,
+                              found=total, hit=hit)
+            if result.new_gaps:
+                log.info(f"  {result.artist_name} — "
+                         f"{plural(len(result.new_gaps), 'new release')}")
+    flush_resolve_cache()
+    if not job.cancel_requested:
+        new_releases_mod.mark_run(updated)
+    if total:
+        log.info(f"Done. {plural(total, 'new release')} across the library.")
+    elif not seen:
+        job.summary = ("First check — recorded what each artist has now. "
+                       "From here, new releases will show up here.")
+        log.info("Baseline recorded — future checks will flag new releases.")
+    else:
+        job.summary = "No new releases since your last check."
+        log.info("No new releases since your last check.")
 
 
 # ── Execute ───────────────────────────────────────────────────────────────────

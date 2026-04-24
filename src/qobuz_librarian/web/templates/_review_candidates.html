@@ -1,5 +1,5 @@
 <div id="review-candidates">
-  {% set triage = job.execute_kind in ('library', 'upgrade') %}
+  {% set triage = job.execute_kind in ('library', 'upgrade', 'new_releases') %}
   {% set preselected = job.execute_kind in ('repair', 'migration') %}
   {% set _groups = job.candidates | groupby('artist') %}
   {% set _n = job.candidates | length %}
@@ -7,7 +7,8 @@
        class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between mb-3{% if not job.candidates %} hidden{% endif %}">
     <p class="text-base-content/70">
       <span data-summary-count>{{ _n }} album{% if _n != 1 %}s{% endif %} across {{ _groups | length }} artist{% if _groups | length != 1 %}s{% endif %}</span> —
-      {% if triage %}tick the albums you want, or hide an artist you don't.
+      {% if job.execute_kind == 'new_releases' %}new since your last check and pre-ticked — untick any you don't want, or hide one to stop it resurfacing.
+      {% elif triage %}tick the albums you want, or hide an artist you don't.
       {% elif preselected %}everything's selected by default; untick anything to skip.
       {% else %}tick the albums you want.{% endif %}
     </p>
