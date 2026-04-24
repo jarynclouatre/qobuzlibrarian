@@ -113,11 +113,13 @@ def find_qobuz_track_by_isrc(isrc, token):
     query (case-folded, hyphens stripped) before declaring a hit, so
     "exact match" actually means it.
 
-    Returns None for: empty input, a soft/transient API error (QobuzError),
-    no hit, or only soft hits. An expired token (AuthLost) is NOT swallowed —
-    it propagates so the run aborts cleanly to re-auth rather than mislabelling
-    every track as "no ISRC match". Caller decides what to do with None (skip,
-    fall back to title match, or prompt the user).
+    Returns None for: empty input, a definitive API error (QobuzError — a 4xx
+    or an unparseable body, read as "nothing usable here"), no hit, or only
+    near-misses. AuthLost and QobuzUnavailable are NOT swallowed: both are abort
+    signals (not QobuzError) and propagate, so an expired token or a Qobuz outage
+    stops the run cleanly instead of mislabelling every track as "no ISRC match".
+    Caller decides what to do with None (skip, fall back to title match, or
+    prompt the user).
     """
     if not isrc:
         return None

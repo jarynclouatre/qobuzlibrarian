@@ -827,9 +827,17 @@ async def queue_download(request: Request, album_id: str = Form(""),
                 f'<div class="alert alert-error" data-flash>{msg}</div>')
         return RedirectResponse(url="/settings?error=creds", status_code=303)
     except Exception as e:
-        from qobuz_librarian.api.auth import AuthLost, QobuzError, friendly_qobuz_error
+        from qobuz_librarian.api.auth import (
+            AuthLost,
+            QobuzError,
+            QobuzUnavailable,
+            friendly_qobuz_error,
+        )
         if isinstance(e, asyncio.TimeoutError):
             user_msg = "Timed out reaching the Qobuz API — try again."
+        elif isinstance(e, QobuzUnavailable):
+            user_msg = ("Qobuz is temporarily unavailable (network or rate "
+                        "limit) — try again shortly.")
         elif isinstance(e, AuthLost):
             user_msg = "Token is expired or invalid — update it in Settings."
         elif isinstance(e, QobuzError):

@@ -303,6 +303,26 @@ def test_download_qobuzerror_branch_uses_generic_message(client, monkeypatch):
     assert "alert-error" in r.text
 
 
+def test_download_transient_branch_says_try_again(client, monkeypatch):
+    # A Qobuz outage while resolving the album must read as "temporarily
+    # unavailable, try again" — not the generic "check your token", which would
+    # send the user chasing a credential problem that doesn't exist.
+    import qobuz_librarian.api.search as search_mod
+    import qobuz_librarian.web.app as app_mod
+    from qobuz_librarian.api.auth import QobuzUnavailable
+    monkeypatch.setattr(app_mod, "_get_token", lambda: "tok")
+
+    def unavailable(_id, _token):
+        raise QobuzUnavailable("couldn't reach the Qobuz API")
+    monkeypatch.setattr(search_mod, "get_album", unavailable)
+    r = client.post("/download", data={"album_id": "x"},
+                    headers={"HX-Request": "true"})
+    assert r.status_code == 200
+    assert "alert-error" in r.text
+    assert "temporarily unavailable" in r.text.lower()
+    assert "token" not in r.text.lower()
+
+
 def test_search_result_id_is_html_escaped(client, monkeypatch):
     import qobuz_librarian.api.search as search_mod
     import qobuz_librarian.library.catalog as cat
