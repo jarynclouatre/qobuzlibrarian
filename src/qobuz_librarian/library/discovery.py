@@ -388,7 +388,8 @@ def discover_fully_missing(artist_name, catalog, opts, *, hidden=None,
 
 
 def find_missing_for_artist(query, *, token, opts=None, artist_dir=None,
-                            hidden=None, want_missing=True, skip_dir=None):
+                            hidden=None, want_missing=True, skip_dir=None,
+                            fresh=False):
     """Find what's missing for one artist.
 
     query        — artist name (or folder name) used to resolve the Qobuz artist.
@@ -400,6 +401,8 @@ def find_missing_for_artist(query, *, token, opts=None, artist_dir=None,
                    missing albums); the album-fill walk uses this.
     skip_dir     — optional predicate(Path) -> bool; folders it accepts are left
                    unmatched (the album-fill walk skips already-decided albums).
+    fresh        — bypass the catalog cache so an explicit single-artist scan
+                   sees just-released albums; the bulk walk leaves it off.
     """
     opts = opts or DiscoveryOpts()
     artist_id, artist_name = resolve_artist(query, token)
@@ -409,7 +412,7 @@ def find_missing_for_artist(query, *, token, opts=None, artist_dir=None,
         artist_dir = resolve_artist_dir(query)
 
     catalog, total = get_artist_albums(artist_id, token,
-                                       limit=cfg.ARTIST_CATALOG_LIMIT)
+                                       limit=cfg.ARTIST_CATALOG_LIMIT, fresh=fresh)
     truncated = bool(total and total > len(catalog))
     if truncated:
         log.info(f"  Qobuz lists {total} albums; scanning the first "
@@ -467,8 +470,10 @@ def find_new_releases_for_artist(query, *, token, opts=None, seen_by_id=None,
     if artist_dir is None:
         artist_dir = resolve_artist_dir(query)
 
+    # Always fresh: stale catalog data would mean missing the very release this
+    # check exists to find. The fetch refreshes the shared cache as a side effect.
     catalog, _total = get_artist_albums(artist_id, token,
-                                        limit=cfg.ARTIST_CATALOG_LIMIT)
+                                        limit=cfg.ARTIST_CATALOG_LIMIT, fresh=True)
     lossless = [a for a in catalog if is_lossless_album(a)]
     current_ids = [str(a["id"]) for a in lossless if a.get("id") is not None]
 

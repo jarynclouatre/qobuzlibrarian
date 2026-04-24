@@ -61,7 +61,7 @@ class FakeQobuz:
     def search_artists(self, query, token, limit=5):
         return self._artists
 
-    def get_artist_albums(self, artist_id, token, limit=500):
+    def get_artist_albums(self, artist_id, token, limit=500, fresh=False):
         return list(self._catalog), self._total
 
     def get_album(self, album_id, token):

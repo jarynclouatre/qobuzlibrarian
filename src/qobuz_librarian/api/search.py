@@ -138,15 +138,21 @@ def find_qobuz_track_by_isrc(isrc, token):
 
 
 # ── Artist discography (paginated) ────────────────────────────────────────────
-def get_artist_albums(artist_id, token, limit=None):
+def get_artist_albums(artist_id, token, limit=None, fresh=False):
     """Return (items, qobuz_total) for an artist's full discography.
-    Items are search-shaped (no tracks); call get_album() for those."""
+    Items are search-shaped (no tracks); call get_album() for those.
+
+    fresh=True skips the catalog cache read and fetches from Qobuz — the
+    new-release check needs current data, and refreshing the cache as a side
+    effect keeps later gap scans both fast and up to date. The result is always
+    written back to the cache regardless."""
     limit = limit if limit is not None else config.ARTIST_CATALOG_LIMIT
     from qobuz_librarian.api import album_cache
     cache_key = f"{artist_id}:{limit}"
-    cached = album_cache.get_catalog(cache_key, config.ARTIST_CATALOG_CACHE_TTL)
-    if cached is not None:
-        return cached.get("items") or [], cached.get("total")
+    if not fresh:
+        cached = album_cache.get_catalog(cache_key, config.ARTIST_CATALOG_CACHE_TTL)
+        if cached is not None:
+            return cached.get("items") or [], cached.get("total")
     items = []
     offset = 0
     qobuz_total = None
