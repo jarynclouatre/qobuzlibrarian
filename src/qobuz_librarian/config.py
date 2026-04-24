@@ -196,6 +196,10 @@ HIDDEN_FILE          = DATA_DIR / ".qobuz_hidden.json"
 # Fingerprints surfaced by the last completed library walk, per mode, so a
 # re-run can badge albums that weren't there before ("new since last scan").
 SCAN_SEEN_FILE       = DATA_DIR / ".qobuz_scan_seen.json"
+# Per-artist snapshot of the Qobuz catalog (album ids) at the last new-release
+# check, plus when it ran — the new-release quickscan diffs against this to
+# surface only what's appeared since. See library/new_releases.py.
+NEW_RELEASE_STATE_FILE = DATA_DIR / ".qobuz_new_releases.json"
 # Artist name → resolved Qobuz artist id, cached so repeat scans skip the
 # search round-trip. See library/discovery.py.
 ARTIST_RESOLVE_CACHE_FILE = DATA_DIR / ".artist_resolve_cache.json"

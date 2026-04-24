@@ -14,7 +14,11 @@ import pytest
 from qobuz_librarian import config as cfg
 from qobuz_librarian.library import catalog as cat
 from qobuz_librarian.library import discovery
-from qobuz_librarian.library.discovery import DiscoveryOpts, find_missing_for_artist
+from qobuz_librarian.library.discovery import (
+    DiscoveryOpts,
+    find_missing_for_artist,
+    find_new_releases_for_artist,
+)
 from qobuz_librarian.library.scanner import clear_scan_caches
 
 # ── Fixture library + fake Qobuz ────────────────────────────────────────────────
@@ -307,6 +311,47 @@ def test_want_missing_false_yields_only_owned_gaps(monkeypatch, tmp_path, beatle
 
     assert _titles(res.gaps) == ["Abbey Road"]
     assert all(g.on_disk_dir is not None for g in res.gaps)
+
+
+# ── New-release quickscan ─────────────────────────────────────────────────────
+
+def test_new_releases_surface_only_what_appeared_since_the_baseline(
+        monkeypatch, tmp_path):
+    # resolve_artist hands back an int id (as Qobuz does) but the baseline is
+    # persisted as JSON, so it comes back string-keyed — the engine must match
+    # the two or it re-baselines forever and never surfaces anything.
+    owned = _album(101, "Ocean Eyes", "Billie Eilish", 2016,
+                   [_qt(f"o{i}", f"ISRCO{i}") for i in range(4)])
+    old = _album(202, "Happier Than Ever", "Billie Eilish", 2021,
+                 [_qt(f"h{i}", f"ISRCH{i}") for i in range(16)])
+    fresh = _album(303, "Hit Me Hard And Soft", "Billie Eilish", 2024,
+                   [_qt(f"s{i}", f"ISRCS{i}") for i in range(10)])
+    _library(monkeypatch, tmp_path,
+             {"Billie Eilish": {"Ocean Eyes (2016)":
+                                [_et(f"o{i}", f"ISRCO{i}") for i in range(4)]}})
+    FakeQobuz(artists=[{"name": "Billie Eilish", "id": 2867335}],
+              catalog=[owned, old, fresh]).install(monkeypatch)
+    monkeypatch.setattr(discovery, "_resolve_cache", {})
+    ad = tmp_path / "Billie Eilish"
+    opts = DiscoveryOpts(prefer_hires=True)
+
+    first = find_new_releases_for_artist("Billie Eilish", token="tok", opts=opts,
+                                         seen_by_id=None, artist_dir=ad)
+    assert first.new_gaps == []                       # first check only baselines
+    assert set(first.current_ids) == {"101", "202", "303"}
+
+    # A later check that already knew the old catalog (string-keyed, as stored)
+    # surfaces only the unowned album that's new since — not the owned one, not
+    # the one it had already seen.
+    later = find_new_releases_for_artist(
+        "Billie Eilish", token="tok", opts=opts,
+        seen_by_id={str(first.artist_id): ["101", "202"]}, artist_dir=ad)
+    assert _titles(later.new_gaps) == ["Hit Me Hard And Soft"]
+
+    caught_up = find_new_releases_for_artist(
+        "Billie Eilish", token="tok", opts=opts,
+        seen_by_id={str(first.artist_id): first.current_ids}, artist_dir=ad)
+    assert caught_up.new_gaps == []
 
 
 def test_resolution_uses_deepest_catalog_over_bare_name_twin(monkeypatch, tmp_path):

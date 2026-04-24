@@ -224,6 +224,17 @@ class DiscoveryResult:
         return [g for g in self.gaps if g.on_disk_dir is None]
 
 
+@dataclass
+class NewReleaseResult:
+    """find_new_releases_for_artist's answer: the fully-missing albums new since
+    the last check, plus this run's full lossless catalog id set (current_ids),
+    which the caller stores as the next baseline."""
+    artist_id: str | None
+    artist_name: str | None
+    new_gaps: list = field(default_factory=list)
+    current_ids: list = field(default_factory=list)
+
+
 _YEAR_RE_PAREN = re.compile(r"\((\d{4})\)")
 _YEAR_RE_BARE = re.compile(r"\b(19\d{2}|20\d{2})\b")
 
@@ -325,12 +336,15 @@ def match_album_dir(album_dir, artist_name, token, *, catalog, prefer_hires):
 
 def discover_fully_missing(artist_name, catalog, opts, *, hidden=None,
                            handled_ids=frozenset(), resolved_dirs=frozenset(),
-                           owned_titles=None, token=None):
+                           owned_titles=None, token=None, quick=False):
     """Catalog albums the owned-album pass didn't account for: fully-missing
     releases, plus a collaboration filed under another artist's folder that
     still has track gaps. Shared by the CLI missing-albums step and the web
     scan. handled_ids / resolved_dirs / owned_titles come from the owned pass so
     an album already matched to a folder isn't re-offered as missing.
+
+    quick=True is the new-release path: only fully-missing albums are returned
+    and no track lists are fetched, so the cost stays at the catalog list alone.
     """
     owned_titles = owned_titles or {}
     gaps = []
@@ -355,6 +369,11 @@ def discover_fully_missing(artist_name, catalog, opts, *, hidden=None,
             if _owned_by_name(owned_titles, album):
                 continue
             gaps.append(AlbumGap(album, None))
+            continue
+        if quick:
+            # New-release check: a catalog entry that resolves to a folder the
+            # user already has (even partially) isn't new — skip it without the
+            # track-list fetch the partial-gap path below would do.
             continue
         # Resolves to a folder the owned pass didn't walk (a collaboration filed
         # under a second artist). Offer only the genuine gap, never a re-download
@@ -421,6 +440,52 @@ def find_missing_for_artist(query, *, token, opts=None, artist_dir=None,
          f"{len(result.complete)} complete, {len(result.unmatched_dirs)} unmatched, "
          f"{len(result.skipped)} skipped")
     return result
+
+
+def find_new_releases_for_artist(query, *, token, opts=None, seen_by_id=None,
+                                 hidden=None, artist_dir=None):
+    """Albums new to this artist's Qobuz catalog since the last check that the
+    user doesn't own and hasn't hidden — the cheap "what's new" path.
+
+    Unlike find_missing_for_artist this skips the owned-folder matching pass and
+    never fetches track lists (a fully-missing album is read straight off the
+    catalog list), so the cost is about one Qobuz call per artist.
+
+    seen_by_id maps artist_id → the catalog album ids known at the last check.
+    The first time an artist is seen its baseline is recorded and nothing is
+    surfaced, so the back catalogue isn't dumped as "new". current_ids is always
+    this run's full lossless id set, for the caller to store as the next baseline.
+    """
+    opts = opts or DiscoveryOpts()
+    artist_id, artist_name = resolve_artist(query, token)
+    if not artist_id:
+        return NewReleaseResult(None, None)
+    # The baseline is persisted as JSON (string keys), so key everything by a
+    # string id — otherwise an int id from resolve never matches the reloaded
+    # snapshot and every run silently re-baselines instead of diffing.
+    artist_id = str(artist_id)
+    if artist_dir is None:
+        artist_dir = resolve_artist_dir(query)
+
+    catalog, _total = get_artist_albums(artist_id, token,
+                                        limit=cfg.ARTIST_CATALOG_LIMIT)
+    lossless = [a for a in catalog if is_lossless_album(a)]
+    current_ids = [str(a["id"]) for a in lossless if a.get("id") is not None]
+
+    seen = (seen_by_id or {}).get(artist_id)
+    if seen is None:
+        return NewReleaseResult(artist_id, artist_name, [], current_ids)
+
+    seen_set = set(seen)
+    fresh = [a for a in lossless if str(a.get("id")) not in seen_set]
+    if not fresh:
+        return NewReleaseResult(artist_id, artist_name, [], current_ids)
+
+    album_dirs = list_artist_album_dirs(artist_dir) if artist_dir else []
+    new_gaps = discover_fully_missing(
+        artist_name, fresh, opts, hidden=hidden,
+        owned_titles=owned_album_titles(album_dirs), token=token, quick=True)
+    return NewReleaseResult(artist_id, artist_name, new_gaps, current_ids)
 
 
 def classify_owned_match(result, m, hidden, artist_name,
