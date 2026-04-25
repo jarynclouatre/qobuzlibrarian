@@ -322,6 +322,13 @@ FLAC_CACHE_ENABLED = _env_bool("FLAC_CACHE_ENABLED", True)
 # ALBUM_CACHE_ENABLED.
 ARTIST_CATALOG_CACHE_TTL = _env("ARTIST_CATALOG_CACHE_TTL", 7 * 86400)
 
+# How often (seconds) the dashboard quietly runs the new-release check when you
+# open the app, so new albums surface on their own. Throttled to this interval
+# and skipped while anything's already scanning; it only ever parks a review
+# list (never auto-downloads). 0 turns the automatic check off — the manual
+# "Check for new releases" buttons still work.
+NEW_RELEASE_CHECK_INTERVAL = _env("NEW_RELEASE_CHECK_INTERVAL", 86400)
+
 # Per-request budgets for the web UI's Qobuz API calls (album/search/track
 # fetches and the Settings token check). A slow Qobuz response shouldn't
 # park a worker thread for minutes — the user gets a clear timeout instead.

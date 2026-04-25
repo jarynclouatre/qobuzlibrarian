@@ -98,11 +98,18 @@ TEXT_FIELDS = [
      "regardless, so this only trades gap-scan speed against how current its "
      "album lists are.",
      "enum", ["86400", "259200", "604800", "2592000"], ""),
+    ("NEW_RELEASE_CHECK_INTERVAL", "Auto-check for new releases",
+     "When you open the app and it's been at least this long since the last "
+     "check (and nothing's already scanning), it quietly looks for new releases "
+     "in the background and shows them on the dashboard to review. It never "
+     "downloads on its own. Off = only the manual buttons.",
+     "enum", ["0", "21600", "43200", "86400", "604800"], ""),
 ]
 TEXT_KEYS = [k for k, *_ in TEXT_FIELDS]
 
 # Enum fields whose value is an int on cfg (the form/JSON carry strings).
-_INT_ENUM_KEYS = {"STREAMRIP_QUALITY", "ARTIST_CATALOG_CACHE_TTL"}
+_INT_ENUM_KEYS = {"STREAMRIP_QUALITY", "ARTIST_CATALOG_CACHE_TTL",
+                  "NEW_RELEASE_CHECK_INTERVAL"}
 
 # Friendlier dropdown text for enum values whose bare value isn't self-explaining;
 # falls back to the raw value for anything not listed.
@@ -119,12 +126,30 @@ ENUM_OPTION_LABELS = {
         "604800": "7 days (default)",
         "2592000": "30 days",
     },
+    "NEW_RELEASE_CHECK_INTERVAL": {
+        "0": "Off",
+        "21600": "Every 6 hours",
+        "43200": "Every 12 hours",
+        "86400": "Daily (default)",
+        "604800": "Weekly",
+    },
 }
 
 
 def _list_to_str(v) -> str:
     if isinstance(v, list):
         return ",".join(v)
+    return str(v or "")
+
+
+def _field_str(v, kind) -> str:
+    """Stringify a setting for the form/template. int-valued enums keep 0 as
+    "0" (a real choice, e.g. the auto-check's Off) rather than collapsing it to
+    the empty string the `v or ""` shortcut would produce."""
+    if kind == "list":
+        return _list_to_str(v)
+    if isinstance(v, int) and not isinstance(v, bool):
+        return str(v)
     return str(v or "")
 
 
@@ -169,16 +194,14 @@ def current() -> dict:
                 or getattr(cfg, "COMPRESS_ENABLED", False)
             )
         for key, _, _, kind, _, _ in TEXT_FIELDS:
-            v = getattr(cfg, key, "")
-            out[key] = _list_to_str(v) if kind == "list" else str(v or "")
+            out[key] = _field_str(getattr(cfg, key, ""), kind)
         if _pending_apply:
             for k in BEHAVIOR_KEYS:
                 if k in _pending_apply:
                     out[k] = bool(_pending_apply[k])
             for key, _, _, kind, _, _ in TEXT_FIELDS:
                 if key in _pending_apply:
-                    v = _pending_apply[key]
-                    out[key] = _list_to_str(v) if kind == "list" else str(v or "")
+                    out[key] = _field_str(_pending_apply[key], kind)
     return out
 
 
