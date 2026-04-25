@@ -859,10 +859,14 @@ async def queue_download(request: Request, album_id: str = Form(""),
 
 
 @app.get("/artist", response_class=HTMLResponse)
-async def artist_page(request: Request, error: str = ""):
+async def artist_page(request: Request, error: str = "", artist: str = ""):
     creds_ok = bool(_read_creds().get("auth_token"))
+    # `artist` pre-fills the box (e.g. the Hidden view's "check for new releases"
+    # link). Strip angle brackets/NULs so it can't break out of the value attr.
+    prefill = "".join(c for c in artist if c not in "<>\x00").strip()[:200]
     return _tr(request, "artist.html", {
         "creds_ok": creds_ok, "error": error[:200], "page": "artist",
+        "prefill": prefill,
     })
 
 

@@ -19,6 +19,7 @@ from qobuz_librarian.library.catalog import (
     album_quality_label,
     album_year,
     find_qobuz_album_for_dir,
+    is_lossless_album,
 )
 from qobuz_librarian.library.discovery import (
     DiscoveryOpts,
@@ -189,22 +190,39 @@ def dismiss_albums(job, artist, keep_cids, scope=hidden_mod.SCOPE_MISSING):
 def scan_artist(job, query, token):
     clear_scan_caches()
     log.info(f"Resolving artist '{query}'…")
-    # No hidden filter: asking for an artist by name is a deliberate request to
-    # see everything, dismissed albums included.
+    # Fresh: an explicit single-artist scan should see just-released albums, not
+    # a week-old cached catalog. No hidden filter — asking for an artist by name
+    # is a deliberate request to see everything, dismissed albums included.
+    seen = new_releases_mod.load().get("seen") or {}
     result = find_missing_for_artist(
-        query, token=token, opts=DiscoveryOpts(prefer_hires=cfg.PREFER_HIRES))
+        query, token=token, opts=DiscoveryOpts(prefer_hires=cfg.PREFER_HIRES),
+        fresh=True)
     if not result.artist_id:
         log.info(f"  No confident Qobuz match for '{query}'.")
         job.summary = (f"No Qobuz match for “{query}”. Check the spelling, or "
                        "try the artist's exact name as Qobuz lists it.")
         return
     log.info(f"  Matched: {result.artist_name}. Scanning catalog for gaps…")
+    # Flag (and pre-tick) albums new since the last time this artist was checked,
+    # sharing the baseline with the library-wide new-release check. The rest stay
+    # unticked — one artist can have dozens of albums, so don't queue the lot.
+    aid = str(result.artist_id)
+    baseline = seen.get(aid)
+    known = set(baseline or [])
+    n_new = 0
     for gap in result.gaps:
-        # Unticked by default — even a single artist can have dozens of albums,
-        # so don't let one click queue the lot.
-        _add_gap_candidate(job, gap, result.artist_name, selected=False)
-    log.info(f"  {plural(len(result.gaps), 'missing album')} found for "
-             f"{result.artist_name}.")
+        is_new = baseline is not None and str(gap.qobuz_album.get("id")) not in known
+        if is_new:
+            n_new += 1
+        _add_gap_candidate(job, gap, result.artist_name,
+                           selected=is_new, is_new=is_new)
+    current_ids = [str(a["id"]) for a in result.catalog
+                   if is_lossless_album(a) and a.get("id") is not None]
+    new_releases_mod.record_artist_seen(aid, current_ids)
+    msg = f"  {plural(len(result.gaps), 'missing album')} found for {result.artist_name}"
+    if n_new:
+        msg += f" — {n_new} new since your last check, pre-ticked"
+    log.info(msg + ".")
     flush_resolve_cache()
     _record_last_scan()
 

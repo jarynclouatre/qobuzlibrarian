@@ -64,6 +64,14 @@ quality Qobuz offers for that release. Already have an album in a lower quality?
 **Upgrade** mode finds everything Qobuz can now serve better and re-rips just
 those.
 
+**Catch new releases, without going looking.** A *Check for new releases* pass —
+across your whole library, or one artist at a time — compares each artist's
+current Qobuz catalogue against what you've already seen and surfaces only what's
+genuinely new and you don't own, pre-ticked and ready to download. It reads the
+catalogue listing alone (no per-track fetches), so it's quick — roughly one Qobuz
+call per artist. Your normal gap scans keep their catalogue cache for speed; this
+check is the always-fresh path, and it refreshes that cache as it runs.
+
 **Clean import.** beets handles tagging and cover art; files land in your
 library in one move so a scanner never sees a half-processed state. Synced
 lyrics are fetched automatically (when `LYRICS_ENABLED` is on; default).
@@ -103,8 +111,8 @@ changed until you do.
 | Page        | What it does                                                       |
 |-------------|--------------------------------------------------------------------|
 | **Search**  | Find an album by name or Qobuz URL and download it                  |
-| **Artist**  | Scan one artist's discography, pick which missing albums to get     |
-| **Library** | Scan every artist for missing albums across your whole library      |
+| **Artist**  | Scan one artist's discography (always fresh; new releases flagged + pre-ticked), pick which to get |
+| **Library** | Scan every artist for missing albums — or just *check for new releases* across the whole library |
 | **Upgrade** | Find albums Qobuz can serve at higher quality, choose what to re-rip |
 | **Repair**  | Find truncated/partial FLACs (ISRC-verified), choose what to refill |
 | **Migrate** | One-time: reorganise an existing library into the layout (copies, never touches originals) |
@@ -116,6 +124,11 @@ decided against — they're remembered and skipped on future scans, so a large
 library can be triaged over days without re-reviewing the same things; restore
 any of them from the **Hidden** view. The single-artist **Artist** scan never
 hides anything, since typing a name is a deliberate request to see everything.
+
+Dismissing is per *album*, not per artist, so a brand-new release by an artist
+whose back catalogue you've already triaged still surfaces — the *Check for new
+releases* pass (or the per-artist link in the **Hidden** view) brings it up
+without un-hiding everything you dismissed.
 
 The CLI runs the **same matching engine**, so it finds exactly the same missing
 albums and track gaps the web does — it just works through them differently.

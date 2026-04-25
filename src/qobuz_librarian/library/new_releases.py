@@ -49,3 +49,12 @@ def last_run() -> float | None:
 def mark_run(seen, when=None) -> None:
     """Persist the updated per-artist catalog snapshot and the run time."""
     save({"seen": seen, "last_run": when if when is not None else time.time()})
+
+
+def record_artist_seen(artist_id, album_ids) -> None:
+    """Update one artist's baseline without touching last_run (that's the
+    whole-library check's throttle). Used by the per-artist Artist-page scan so
+    its new-release flagging shares the same baseline as the library check."""
+    state = load()
+    state.setdefault("seen", {})[str(artist_id)] = list(album_ids)
+    save(state)

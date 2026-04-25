@@ -31,16 +31,21 @@
 
   <div class="space-y-2 mb-4">
     {% for g in groups %}
-    <label class="block bg-base-200 border border-base-300/70 rounded-lg shadow-sm px-3 py-2.5 cursor-pointer transition-colors hover:border-base-300">
+    <div class="block bg-base-200 border border-base-300/70 rounded-lg shadow-sm px-3 py-2.5 transition-colors hover:border-base-300">
       <span class="flex items-center gap-3">
-        <input type="checkbox" class="checkbox checkbox-sm ha" name="artist" value="{{ g.artist }}">
-        <span class="font-medium flex-1 min-w-0 truncate">{{ g.artist }}</span>
+        <label class="flex items-center gap-3 flex-1 min-w-0 cursor-pointer">
+          <input type="checkbox" class="checkbox checkbox-sm ha" name="artist" value="{{ g.artist }}">
+          <span class="font-medium flex-1 min-w-0 truncate">{{ g.artist }}</span>
+        </label>
         <span class="text-base-content/50 text-sm shrink-0">{{ g.albums | length }} {{ noun }}{% if g.albums | length != 1 %}s{% endif %}</span>
+        {% if not is_upgrade %}
+        <a href="/artist?artist={{ g.artist | urlencode }}" class="link link-hover text-xs shrink-0">Check for new releases</a>
+        {% endif %}
       </span>
       <span class="block pl-8 pt-1 text-xs text-base-content/40">
         {% for a in g.albums %}{{ a.title }}{% if a.year %} ({{ a.year }}){% endif %}{% if not loop.last %} · {% endif %}{% endfor %}
       </span>
-    </label>
+    </div>
     {% endfor %}
   </div>
 
