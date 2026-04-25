@@ -275,11 +275,12 @@ the mount sources. `compose.yaml` maps them to the container-side names
 (`MUSIC_ROOT`, `STAGING_DIR`, etc.) the app reads.
 
 Behaviour toggles (prefer hi-res master selection, consolidate folders,
-multi-artist migration, upgrades-during-walks, compression) can be changed
-live on the **Settings** page — no restart — or set as defaults in
-`compose.yaml`. Tuning knobs (search limits, timeouts, fuzzy-match
-thresholds) are environment variables in `compose.yaml`; each ships with a
-working default you can override.
+multi-artist migration, upgrades-during-walks, downsampling) plus the download
+quality, lyrics/artwork options, beets paths, and how long album lists stay
+cached (`ARTIST_CATALOG_CACHE_TTL`) can all be changed live on the **Settings**
+page — no restart — or set as defaults in `compose.yaml`. Tuning knobs (search
+limits, timeouts, fuzzy-match thresholds) are environment variables in
+`compose.yaml`; each ships with a working default you can override.
 
 Advanced thresholds (fuzzy-match cutoffs, retention windows,
 `POST_JOB_HOOK`) live in the `compose.yaml` env block; see

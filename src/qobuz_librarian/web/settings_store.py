@@ -92,8 +92,17 @@ TEXT_FIELDS = [
      "(seeded with fetchart only). Examples: lastgenre, replaygain, "
      "scrub, edit.",
      "list", None, "fetchart,lastgenre,replaygain"),
+    ("ARTIST_CATALOG_CACHE_TTL", "Album-list freshness",
+     "How long the library and artist gap scans reuse a fetched discography "
+     "before asking Qobuz again. The new-release check always fetches fresh "
+     "regardless, so this only trades gap-scan speed against how current its "
+     "album lists are.",
+     "enum", ["86400", "259200", "604800", "2592000"], ""),
 ]
 TEXT_KEYS = [k for k, *_ in TEXT_FIELDS]
+
+# Enum fields whose value is an int on cfg (the form/JSON carry strings).
+_INT_ENUM_KEYS = {"STREAMRIP_QUALITY", "ARTIST_CATALOG_CACHE_TTL"}
 
 # Friendlier dropdown text for enum values whose bare value isn't self-explaining;
 # falls back to the raw value for anything not listed.
@@ -103,6 +112,12 @@ ENUM_OPTION_LABELS = {
         "3": "24-bit ≤96 kHz",
         "2": "16-bit / 44.1 kHz",
         "1": "320 kbps MP3",
+    },
+    "ARTIST_CATALOG_CACHE_TTL": {
+        "86400": "1 day",
+        "259200": "3 days",
+        "604800": "7 days (default)",
+        "2592000": "30 days",
     },
 }
 
@@ -197,10 +212,9 @@ def _apply(values: dict):
             v = str(raw or "").strip().lower()
             if choices and v not in choices:
                 continue  # ignore garbage, keep current
-            # STREAMRIP_QUALITY is sourced from the env loader as int —
-            # keep the type stable so cfg.STREAMRIP_QUALITY is always int,
-            # not str on the post-save path.
-            if key == "STREAMRIP_QUALITY":
+            # A few enums are ints on cfg (quality tier, cache seconds) — keep
+            # the type stable so cfg.* stays int, not str, on the post-save path.
+            if key in _INT_ENUM_KEYS:
                 try:
                     setattr(cfg, key, int(v))
                 except ValueError:
