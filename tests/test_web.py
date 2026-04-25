@@ -1461,6 +1461,9 @@ def test_dashboard_does_not_double_surface_awaiting_review(client, monkeypatch):
     import qobuz_librarian.web.app as webapp
     monkeypatch.setattr(webapp.job_mgr, "registry", jm.JobRegistry())
     monkeypatch.setattr(webapp, "_read_creds", lambda: {"auth_token": "tok"})
+    # This is about queued/review surfacing, not the auto new-release check —
+    # keep that from firing (and queueing a job) on the dashboard load.
+    monkeypatch.setattr(webapp.cfg, "NEW_RELEASE_CHECK_INTERVAL", 0)
 
     review_job = jm.Job(title="Scan A", status=jm.JobStatus.AWAITING_REVIEW)
     jm.registry.add(review_job)
@@ -1473,6 +1476,49 @@ def test_dashboard_does_not_double_surface_awaiting_review(client, monkeypatch):
         assert "Waiting for your review" in r.text
     finally:
         _remove_job(review_job)
+
+
+def test_auto_new_release_check_fires_only_when_due_and_idle(monkeypatch):
+    import qobuz_librarian.web.app as webapp
+    from qobuz_librarian.library import new_releases
+    monkeypatch.setattr(webapp, "_read_creds", lambda: {"auth_token": "tok"})
+    monkeypatch.setattr(webapp, "_CLI_MODE", False)
+    monkeypatch.setattr(webapp, "_LOCK_BUSY_PID", None)
+    monkeypatch.setattr(webapp.cfg, "NEW_RELEASE_CHECK_INTERVAL", 3600)
+    monkeypatch.setattr(webapp.job_mgr, "registry", jm.JobRegistry())
+    fired = []
+    monkeypatch.setattr(webapp, "_start_new_release_check", lambda: fired.append(1))
+
+    # Never checked and nothing running → fires.
+    monkeypatch.setattr(new_releases, "last_run", lambda: None)
+    webapp._maybe_auto_check_new_releases()
+    assert len(fired) == 1
+
+    # Checked moments ago → throttled.
+    monkeypatch.setattr(new_releases, "last_run", lambda: time.time())
+    webapp._maybe_auto_check_new_releases()
+    assert len(fired) == 1
+
+    # Due again, but a scan is actively running → skipped.
+    monkeypatch.setattr(new_releases, "last_run", lambda: 0)
+    busy = jm.Job(title="busy", status=jm.JobStatus.SCANNING)
+    jm.registry.add(busy)
+    webapp._maybe_auto_check_new_releases()
+    assert len(fired) == 1
+    busy.status = jm.JobStatus.DONE
+
+    # An earlier new-release list still awaiting review → don't stack another.
+    pending = jm.Job(title="New-release check", status=jm.JobStatus.AWAITING_REVIEW)
+    pending.execute_kind = "new_releases"
+    jm.registry.add(pending)
+    webapp._maybe_auto_check_new_releases()
+    assert len(fired) == 1
+    pending.status = jm.JobStatus.DONE
+
+    # Turned off entirely → never fires, even when due.
+    monkeypatch.setattr(webapp.cfg, "NEW_RELEASE_CHECK_INTERVAL", 0)
+    webapp._maybe_auto_check_new_releases()
+    assert len(fired) == 1
 
 
 def test_empty_search_renders_instructional_hint(client, monkeypatch):

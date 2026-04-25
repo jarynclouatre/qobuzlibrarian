@@ -72,6 +72,23 @@
 </div>
 {% endif %}
 
+{% if new_release_review %}
+<!-- The automatic (or manual) new-release check found albums you don't own and
+     parked them for review. Surfaced up front so new releases come to you. -->
+<div class="alert alert-success mb-6 flex-wrap gap-2">
+  <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 shrink-0" fill="none"
+       viewBox="0 0 24 24" stroke="currentColor">
+    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+          d="M9 18V6l10-2v12M9 18a2 2 0 1 1-4 0 2 2 0 0 1 4 0zm10-2a2 2 0 1 1-4 0 2 2 0 0 1 4 0z"/>
+  </svg>
+  <span>
+    <strong>{{ new_release_review.count }} new release{{ 's' if new_release_review.count != 1 }}</strong>
+    by artists in your library — ready to review and download.
+  </span>
+  <a href="/jobs/{{ new_release_review.id }}" class="btn btn-sm btn-success ml-auto">Review</a>
+</div>
+{% endif %}
+
 <!-- Hero + search -->
 <section class="text-center pt-6 pb-8">
   <img src="/static/icon.png" alt="" class="h-16 w-16 rounded-2xl mx-auto mb-4 shadow-lg">
@@ -166,13 +183,15 @@
 </div>
 {% endif %}
 
-<!-- Scans waiting for your review -->
-{% if review %}
+<!-- Scans waiting for your review (new-release checks have their own banner
+     above, so they're excluded here to avoid listing them twice). -->
+{% set other_review = review | rejectattr('execute_kind', 'equalto', 'new_releases') | list %}
+{% if other_review %}
 <div class="card bg-base-200 border border-info shadow mb-6">
   <div class="card-body">
     <h2 class="card-title text-info text-base">Waiting for your review</h2>
     <div class="space-y-2 mt-1">
-      {% for job in review %}
+      {% for job in other_review %}
       <div class="flex items-center justify-between gap-3">
         <div class="min-w-0">
           <p class="font-medium truncate">{% if job.artist %}{{ job.artist }} — {% endif %}{{ job.title }}</p>

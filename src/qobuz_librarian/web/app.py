@@ -3,6 +3,7 @@ import asyncio
 import concurrent.futures
 import html
 import threading
+import time
 import urllib.parse
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -533,6 +534,53 @@ async def dashboard_head():
     return Response(status_code=200)
 
 
+def _start_new_release_check():
+    """Submit a whole-library new-release check and return the job. Shared by
+    the manual Library-page option and the automatic dashboard trigger."""
+    from qobuz_librarian.web import flows
+    job = job_mgr.Job(title="New-release check")
+    job.execute_kind = "new_releases"
+    job_mgr.submit_scan(
+        job,
+        lambda j: flows.scan_new_releases(j, _get_token()),
+        lambda j, chosen: flows.execute_albums(j, chosen, _get_token()),
+    )
+    return job
+
+
+def _new_release_review():
+    """The awaiting-review new-release check for the dashboard badge, if any."""
+    for j in job_mgr.registry.awaiting_review():
+        if getattr(j, "execute_kind", "") == "new_releases":
+            return {"id": j.id, "count": len(j.candidates)}
+    return None
+
+
+def _maybe_auto_check_new_releases():
+    """Quietly run the new-release check on dashboard load when it's due.
+
+    Read-only — it only parks a review list, never downloads — so it's safe to
+    fire from a GET. Skipped when the check is off, creds are missing, the CLI
+    holds the lock, another job is actively working, a new-release list is
+    already awaiting review, or the interval hasn't elapsed.
+    """
+    if cfg.NEW_RELEASE_CHECK_INTERVAL <= 0 or _CLI_MODE or _LOCK_BUSY_PID is not None:
+        return
+    if not _read_creds().get("auth_token"):
+        return
+    active = job_mgr.registry.pending_and_running()
+    working = any(j.status != job_mgr.JobStatus.AWAITING_REVIEW for j in active)
+    pending_check = any(getattr(j, "execute_kind", "") == "new_releases"
+                        for j in active)
+    if working or pending_check:
+        return
+    from qobuz_librarian.library import new_releases
+    last = new_releases.last_run()
+    if last is not None and (time.time() - last) < cfg.NEW_RELEASE_CHECK_INTERVAL:
+        return
+    _start_new_release_check()
+
+
 @app.get("/", response_class=HTMLResponse)
 async def dashboard(request: Request):
     from qobuz_librarian import config as _cfg
@@ -546,7 +594,11 @@ async def dashboard(request: Request):
     def _gather_disk_state():
         from qobuz_librarian.integrations.lyrics import load_lyric_retry
         from qobuz_librarian.ui_cli.prompts import _read_fetch_log
+        # Reads the last-run stamp and may submit the background check, so it
+        # runs here (off the event loop) alongside the other disk work.
+        _maybe_auto_check_new_releases()
         return {
+            "new_release_review": _new_release_review(),
             # tail-only read so a long-running install with a multi-MB fetch log
             # doesn't slurp the whole file on every dashboard load.
             "recent": list(reversed(_read_fetch_log(limit_tail=8))),
@@ -923,15 +975,9 @@ async def library_scan(request: Request, mode: str = Form("missing_albums")):
     from qobuz_librarian.web import flows
     mode_norm = (mode or "").strip().lower()
     if mode_norm == "new_releases":
-        job = job_mgr.Job(title="New-release check")
-        # Its own kind so the review screen pre-ticks the (already-curated) new
-        # releases and labels the surface accordingly; same album executor.
-        job.execute_kind = "new_releases"
-        job_mgr.submit_scan(
-            job,
-            lambda j: flows.scan_new_releases(j, _get_token()),
-            lambda j, chosen: flows.execute_albums(j, chosen, _get_token()),
-        )
+        # Same job the dashboard auto-check submits; its own execute_kind so the
+        # review screen pre-ticks the new releases and labels the surface.
+        job = _start_new_release_check()
         return RedirectResponse(url=f"/jobs/{job.id}", status_code=303)
     partial_only = mode_norm == "partial_fill"
     title = "Library album-fill scan" if partial_only else "Library gap scan"

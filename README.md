@@ -72,6 +72,13 @@ catalogue listing alone (no per-track fetches), so it's quick — roughly one Qo
 call per artist. Your normal gap scans keep their catalogue cache for speed; this
 check is the always-fresh path, and it refreshes that cache as it runs.
 
+By default it also runs **on its own**: open the app, and if it's been a day
+since the last look (and nothing else is scanning) it quietly checks in the
+background and shows any new releases on the dashboard — so they come to you
+instead of you remembering to look. It only ever parks a review list; nothing
+downloads without your say-so. Change the interval, or turn the automatic check
+off, on the Settings page.
+
 **Clean import.** beets handles tagging and cover art; files land in your
 library in one move so a scanner never sees a half-processed state. Synced
 lyrics are fetched automatically (when `LYRICS_ENABLED` is on; default).
@@ -276,8 +283,9 @@ the mount sources. `compose.yaml` maps them to the container-side names
 
 Behaviour toggles (prefer hi-res master selection, consolidate folders,
 multi-artist migration, upgrades-during-walks, downsampling) plus the download
-quality, lyrics/artwork options, beets paths, and how long album lists stay
-cached (`ARTIST_CATALOG_CACHE_TTL`) can all be changed live on the **Settings**
+quality, lyrics/artwork options, beets paths, how long album lists stay cached
+(`ARTIST_CATALOG_CACHE_TTL`), and how often it auto-checks for new releases
+(`NEW_RELEASE_CHECK_INTERVAL`) can all be changed live on the **Settings**
 page — no restart — or set as defaults in `compose.yaml`. Tuning knobs (search
 limits, timeouts, fuzzy-match thresholds) are environment variables in
 `compose.yaml`; each ships with a working default you can override.
