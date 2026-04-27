@@ -73,7 +73,7 @@ def _downsample_note(album):
 
 def run_artist_gap_fill(artist_name, artist_dir, args, token, *,
                       shared_queue=None, flush_callback=None,
-                      skip_predicate=None, save_callback=None):
+                      skip_predicate=None, save_callback=None, fresh=False):
     """Walk every album dir under artist_dir, match each to Qobuz, prompt to
     fill gaps. The matching is library.discovery.match_album_dir; this function
     is the prompting + sibling cleanup around it.
@@ -128,7 +128,7 @@ def run_artist_gap_fill(artist_name, artist_dir, args, token, *,
     if artist_id is not None:
         try:
             catalog, qobuz_total = get_artist_albums(
-                artist_id, token, limit=cfg.ARTIST_CATALOG_LIMIT)
+                artist_id, token, limit=cfg.ARTIST_CATALOG_LIMIT, fresh=fresh)
             vlog(f"  Pre-fetched {len(catalog)} catalog entries (artist_id={artist_id}).")
             if qobuz_total is not None and qobuz_total > len(catalog):
                 log.info(fmt(C.YELLOW,
@@ -451,7 +451,7 @@ def run_artist_gap_fill(artist_name, artist_dir, args, token, *,
 
 def run_artist_missing_albums(artist_name, owned_titles, args, token,
                       artist_id=None, handled_ids=None, resolved_dirs=None,
-                      prefetched_catalog=None, *, shared_queue=None):
+                      prefetched_catalog=None, *, shared_queue=None, fresh=False):
     """List the artist's full Qobuz catalog with already-owned albums filtered
     out, prompt to download some. The matching is discovery.discover_fully_missing;
     this is the numbered-list presentation around it. Returns count downloaded
@@ -477,7 +477,8 @@ def run_artist_missing_albums(artist_name, owned_titles, args, token,
         vlog(f"  Fetching catalog (limit {cfg.ARTIST_CATALOG_LIMIT}) …")
         try:
             catalog, qobuz_total = get_artist_albums(artist_id, token,
-                                                     limit=cfg.ARTIST_CATALOG_LIMIT)
+                                                     limit=cfg.ARTIST_CATALOG_LIMIT,
+                                                     fresh=fresh)
         except QobuzError as e:
             log.info(fmt(C.YELLOW, f"  ⚠  Couldn't fetch artist catalog: {e}."))
             return 0
@@ -627,12 +628,16 @@ def run_artist_mode(artist_name, args, token):
             log.info(fmt(C.YELLOW, f"\n  ⚠  No matching artist directory in {cfg.MUSIC_ROOT}."))
             if confirm("\n  Continue anyway and just look for albums by this artist on Qobuz?",
                        default_yes=False, auto_yes=args.yes):
-                run_artist_missing_albums(artist_name, {}, args, token)
+                run_artist_missing_albums(artist_name, {}, args, token, fresh=True)
             return
         vlog(f"  Library: {artist_dir}")
 
+        # fresh=True: an explicit single-artist run should see just-released
+        # albums, matching the web Artist page. (The library walk reuses these
+        # functions without it, so the bulk path keeps its cached catalog.)
         (gap_fill_results, owned_titles, handled_ids, resolved_dirs,
-         artist_id, catalog) = run_artist_gap_fill(artist_name, artist_dir, args, token)
+         artist_id, catalog) = run_artist_gap_fill(artist_name, artist_dir, args, token,
+                                                   fresh=True)
 
         n_complete   = sum(1 for r in gap_fill_results if r.get("result") == "already_complete")
         n_filled     = sum(1 for r in gap_fill_results
