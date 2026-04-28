@@ -556,29 +556,41 @@ def _new_release_review():
     return None
 
 
+_auto_check_lock = threading.Lock()
+
+
 def _maybe_auto_check_new_releases():
     """Quietly run the new-release check on dashboard load when it's due.
 
     Read-only — it only parks a review list, never downloads — so it's safe to
-    fire from a GET. Skipped when the check is off, creds are missing, the CLI
-    holds the lock, another job is actively working, a new-release list is
-    already awaiting review, or the interval hasn't elapsed.
+    fire from a GET. Skipped when the check is off, the token is missing or
+    known-bad, the CLI holds the lock, another job is actively working, a
+    new-release list is already awaiting review, or the interval hasn't elapsed.
     """
     if cfg.NEW_RELEASE_CHECK_INTERVAL <= 0 or _CLI_MODE or _LOCK_BUSY_PID is not None:
         return
-    if not _read_creds().get("auth_token"):
-        return
-    active = job_mgr.registry.pending_and_running()
-    working = any(j.status != job_mgr.JobStatus.AWAITING_REVIEW for j in active)
-    pending_check = any(getattr(j, "execute_kind", "") == "new_releases"
-                        for j in active)
-    if working or pending_check:
+    # Don't bother (or thrash) when there's no token, or one we already know
+    # Qobuz is rejecting — it would just fail on the first call every load.
+    if _TOKEN_VALID is False or not _read_creds().get("auth_token"):
         return
     from qobuz_librarian.library import new_releases
-    last = new_releases.last_run()
-    if last is not None and (time.time() - last) < cfg.NEW_RELEASE_CHECK_INTERVAL:
-        return
-    _start_new_release_check()
+    # Serialise the check-and-submit so two concurrent dashboard loads can't
+    # both pass the gate and queue the check twice.
+    with _auto_check_lock:
+        active = job_mgr.registry.pending_and_running()
+        working = any(j.status != job_mgr.JobStatus.AWAITING_REVIEW for j in active)
+        pending_check = any(getattr(j, "execute_kind", "") == "new_releases"
+                            for j in active)
+        if working or pending_check:
+            return
+        last = new_releases.last_run()
+        if last is not None and (time.time() - last) < cfg.NEW_RELEASE_CHECK_INTERVAL:
+            return
+        # Stamp the attempt before submitting: the scan only advances the stamp
+        # on a clean finish, so without this a failed/cancelled run would re-fire
+        # on every load.
+        new_releases.touch_run()
+        _start_new_release_check()
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -1214,7 +1226,7 @@ async def job_approve(request: Request, job_id: str):
 # Scan kinds that get the paced-triage surface (unticked, hideable, live-fill).
 # Both share one review screen; they differ only in which hidden-store scope a
 # dismiss writes — missing-album for the gap scan, upgrade for the upgrade scan.
-_TRIAGE_KINDS = ("library", "upgrade")
+_TRIAGE_KINDS = ("library", "upgrade", "new_releases")
 
 
 def _hide_scope(execute_kind):

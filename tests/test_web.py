@@ -968,6 +968,27 @@ def test_library_hide_then_restore_round_trip(client, monkeypatch, tmp_path):
         _remove_job(job)
 
 
+def test_new_release_hide_writes_missing_scope(client, monkeypatch, tmp_path):
+    # A "new releases" review offers the per-artist Hide action; it must actually
+    # dismiss into the missing scope — it was a silent no-op when new_releases
+    # wasn't in _TRIAGE_KINDS — so a release you reject stops resurfacing.
+    from qobuz_librarian.library import hidden
+    monkeypatch.setattr("qobuz_librarian.config.HIDDEN_FILE", tmp_path / "h.json")
+
+    job = _inject_job(jm.JobStatus.AWAITING_REVIEW)
+    job.execute_kind = "new_releases"
+    job.add_candidate(kind="album", title="Hit Me Hard And Soft",
+                      artist="Billie Eilish", payload={"year": "2024"}, selected=True)
+    try:
+        r = client.post(f"/jobs/{job.id}/hide", data={"artist": "Billie Eilish"})
+        assert r.status_code == 200
+        assert hidden.is_hidden(hidden.SCOPE_MISSING, "Billie Eilish",
+                                "Hit Me Hard And Soft", hidden.load())
+        assert not job.candidates
+    finally:
+        _remove_job(job)
+
+
 def test_candidate_ids_stay_unique_after_a_drop():
     """A live scan appends while a hide drops candidates; ids must never be
     reused, or the dropped album's cid would later point at a different one."""
@@ -1461,9 +1482,6 @@ def test_dashboard_does_not_double_surface_awaiting_review(client, monkeypatch):
     import qobuz_librarian.web.app as webapp
     monkeypatch.setattr(webapp.job_mgr, "registry", jm.JobRegistry())
     monkeypatch.setattr(webapp, "_read_creds", lambda: {"auth_token": "tok"})
-    # This is about queued/review surfacing, not the auto new-release check —
-    # keep that from firing (and queueing a job) on the dashboard load.
-    monkeypatch.setattr(webapp.cfg, "NEW_RELEASE_CHECK_INTERVAL", 0)
 
     review_job = jm.Job(title="Scan A", status=jm.JobStatus.AWAITING_REVIEW)
     jm.registry.add(review_job)
@@ -1484,8 +1502,10 @@ def test_auto_new_release_check_fires_only_when_due_and_idle(monkeypatch):
     monkeypatch.setattr(webapp, "_read_creds", lambda: {"auth_token": "tok"})
     monkeypatch.setattr(webapp, "_CLI_MODE", False)
     monkeypatch.setattr(webapp, "_LOCK_BUSY_PID", None)
+    monkeypatch.setattr(webapp, "_TOKEN_VALID", None)
     monkeypatch.setattr(webapp.cfg, "NEW_RELEASE_CHECK_INTERVAL", 3600)
     monkeypatch.setattr(webapp.job_mgr, "registry", jm.JobRegistry())
+    monkeypatch.setattr(new_releases, "touch_run", lambda: None)
     fired = []
     monkeypatch.setattr(webapp, "_start_new_release_check", lambda: fired.append(1))
 
@@ -1514,6 +1534,12 @@ def test_auto_new_release_check_fires_only_when_due_and_idle(monkeypatch):
     webapp._maybe_auto_check_new_releases()
     assert len(fired) == 1
     pending.status = jm.JobStatus.DONE
+
+    # A token Qobuz is already rejecting → don't fire (it would fail every load).
+    monkeypatch.setattr(webapp, "_TOKEN_VALID", False)
+    webapp._maybe_auto_check_new_releases()
+    assert len(fired) == 1
+    monkeypatch.setattr(webapp, "_TOKEN_VALID", None)
 
     # Turned off entirely → never fires, even when due.
     monkeypatch.setattr(webapp.cfg, "NEW_RELEASE_CHECK_INTERVAL", 0)

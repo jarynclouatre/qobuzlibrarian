@@ -53,7 +53,7 @@
         <button type="submit" formaction="/jobs/{{ job.id }}/cancel" class="btn btn-ghost">Cancel</button>
         {% if job.execute_kind == 'upgrade' %}
         <a href="/upgrade/hidden" class="btn btn-ghost btn-sm sm:ml-auto">Hidden upgrades</a>
-        {% elif job.execute_kind == 'library' %}
+        {% elif job.execute_kind in ('library', 'new_releases') %}
         <a href="/library/hidden" class="btn btn-ghost btn-sm sm:ml-auto">Hidden albums</a>
         {% endif %}
       </div>

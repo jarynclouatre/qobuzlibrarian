@@ -329,7 +329,10 @@ def scan_new_releases(job, token):
     done = 0
     n = len(artists)
     workers = max(1, int(cfg.ARTIST_SCAN_WORKERS))
-    updated = dict(seen)
+    # Built fresh from this run's artists (not carried over from `seen`), so a
+    # clean sweep drops baselines for artists no longer in the library. A
+    # transiently-skipped artist just re-baselines next run, like a first check.
+    current_seen = {}
     with ThreadPoolExecutor(max_workers=workers,
                             thread_name_prefix="newrel") as ex:
         futures = {ex.submit(find_new_releases_for_artist, ad.name, token=token,
@@ -355,7 +358,7 @@ def scan_new_releases(job, token):
                                   futures[fut].name, found=total)
                 continue
             if result.artist_id:
-                updated[result.artist_id] = result.current_ids
+                current_seen[result.artist_id] = result.current_ids
             for gap in result.new_gaps:
                 _add_gap_candidate(job, gap, result.artist_name,
                                    selected=True, is_new=True)
@@ -370,7 +373,7 @@ def scan_new_releases(job, token):
                          f"{plural(len(result.new_gaps), 'new release')}")
     flush_resolve_cache()
     if not job.cancel_requested:
-        new_releases_mod.mark_run(updated)
+        new_releases_mod.mark_run(current_seen)
     if total:
         log.info(f"Done. {plural(total, 'new release')} across the library.")
     elif not seen:

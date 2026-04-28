@@ -183,9 +183,10 @@
 </div>
 {% endif %}
 
-<!-- Scans waiting for your review (new-release checks have their own banner
-     above, so they're excluded here to avoid listing them twice). -->
-{% set other_review = review | rejectattr('execute_kind', 'equalto', 'new_releases') | list %}
+<!-- Scans waiting for your review. Only the one new-release check shown in the
+     banner above is excluded (by id), so a second one can't go unlisted. -->
+{% set _banner_id = new_release_review.id if new_release_review else '' %}
+{% set other_review = review | rejectattr('id', 'equalto', _banner_id) | list %}
 {% if other_review %}
 <div class="card bg-base-200 border border-info shadow mb-6">
   <div class="card-body">

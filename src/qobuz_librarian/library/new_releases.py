@@ -51,6 +51,16 @@ def mark_run(seen, when=None) -> None:
     save({"seen": seen, "last_run": when if when is not None else time.time()})
 
 
+def touch_run(when=None) -> None:
+    """Record that a check was attempted (updates last_run only, keeps the
+    baseline). Called when the auto-check submits, so a run that fails or is
+    cancelled doesn't re-fire on every dashboard load until one happens to
+    succeed."""
+    state = load()
+    state["last_run"] = float(when) if when is not None else time.time()
+    save(state)
+
+
 def record_artist_seen(artist_id, album_ids) -> None:
     """Update one artist's baseline without touching last_run (that's the
     whole-library check's throttle). Used by the per-artist Artist-page scan so
