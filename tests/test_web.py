@@ -968,6 +968,21 @@ def test_library_hide_then_restore_round_trip(client, monkeypatch, tmp_path):
         _remove_job(job)
 
 
+def test_new_release_baseline_survives_a_check_run(tmp_path, monkeypatch):
+    # A completed library scan seeds the baseline; a later check (mark_run) must
+    # keep baseline_complete set — otherwise the auto-check would gate itself off
+    # again right after its first run.
+    import qobuz_librarian.config as cfg
+    from qobuz_librarian.library import new_releases
+    monkeypatch.setattr(cfg, "NEW_RELEASE_STATE_FILE", tmp_path / "nr.json")
+    assert not new_releases.is_baseline_complete()
+    new_releases.seed_baseline({"art1": ["a", "b"]})
+    assert new_releases.is_baseline_complete()
+    new_releases.mark_run({"art1": ["a", "b", "c"]})
+    assert new_releases.is_baseline_complete()
+    assert new_releases.load()["seen"]["art1"] == ["a", "b", "c"]
+
+
 def test_new_release_hide_writes_missing_scope(client, monkeypatch, tmp_path):
     # A "new releases" review offers the per-artist Hide action; it must actually
     # dismiss into the missing scope — it was a silent no-op when new_releases
@@ -1506,6 +1521,7 @@ def test_auto_new_release_check_fires_only_when_due_and_idle(monkeypatch):
     monkeypatch.setattr(webapp.cfg, "NEW_RELEASE_CHECK_INTERVAL", 3600)
     monkeypatch.setattr(webapp.job_mgr, "registry", jm.JobRegistry())
     monkeypatch.setattr(new_releases, "touch_run", lambda: None)
+    monkeypatch.setattr(new_releases, "is_baseline_complete", lambda: True)
     fired = []
     monkeypatch.setattr(webapp, "_start_new_release_check", lambda: fired.append(1))
 
@@ -1540,6 +1556,12 @@ def test_auto_new_release_check_fires_only_when_due_and_idle(monkeypatch):
     webapp._maybe_auto_check_new_releases()
     assert len(fired) == 1
     monkeypatch.setattr(webapp, "_TOKEN_VALID", None)
+
+    # No baseline yet (no full library scan) → dormant, even when due.
+    monkeypatch.setattr(new_releases, "is_baseline_complete", lambda: False)
+    webapp._maybe_auto_check_new_releases()
+    assert len(fired) == 1
+    monkeypatch.setattr(new_releases, "is_baseline_complete", lambda: True)
 
     # Turned off entirely → never fires, even when due.
     monkeypatch.setattr(webapp.cfg, "NEW_RELEASE_CHECK_INTERVAL", 0)

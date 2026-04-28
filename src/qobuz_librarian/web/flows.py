@@ -230,12 +230,17 @@ def scan_artist(job, query, token):
 def _scan_library_artist(artist_dir, token, partial_only, hidden):
     """Worker: find one artist's gaps. Runs in a pool thread (its own HTTP
     session); returns plain data so the caller adds candidates serially —
-    keeping job.candidates single-writer."""
+    keeping job.candidates single-writer. Also returns the artist's id and its
+    lossless catalog ids so the caller can seed the new-release baseline (the
+    discography is already fetched here)."""
     result = find_missing_for_artist(
         artist_dir.name, token=token,
         opts=DiscoveryOpts(prefer_hires=cfg.PREFER_HIRES),
         artist_dir=artist_dir, hidden=hidden, want_missing=not partial_only)
-    return artist_dir.name, result.artist_name, result.gaps
+    artist_id = str(result.artist_id) if result.artist_id else None
+    catalog_ids = [str(a["id"]) for a in result.catalog
+                   if is_lossless_album(a) and a.get("id") is not None]
+    return artist_dir.name, result.artist_name, result.gaps, artist_id, catalog_ids
 
 
 def scan_library(job, token, partial_only=False):
@@ -256,6 +261,9 @@ def scan_library(job, token, partial_only=False):
     done = 0
     n = len(artists)
     workers = max(1, int(cfg.ARTIST_SCAN_WORKERS))
+    # Catalog snapshot per artist, used to seed the new-release baseline once the
+    # whole library has been crawled cleanly (see below).
+    baseline_seen = {}
     # Resolve/scan artists in parallel (each worker has its own HTTP session),
     # but collect results and write candidates on this one thread so the
     # candidate list and progress stay single-writer.
@@ -272,7 +280,7 @@ def scan_library(job, token, partial_only=False):
                 break
             done += 1
             try:
-                name, artist_name, gaps = fut.result()
+                name, artist_name, gaps, artist_id, catalog_ids = fut.result()
             except (AuthLost, QobuzUnavailable):
                 # A lost token or an unreachable API isn't a per-artist hiccup —
                 # cancel the rest and fail the scan rather than silently report a
@@ -285,6 +293,8 @@ def scan_library(job, token, partial_only=False):
                 job.push_progress("Scanning library", done, n, futures[fut].name,
                                   found=total)
                 continue
+            if artist_id:
+                baseline_seen[artist_id] = catalog_ids
             for gap in gaps:
                 # Library is a discovery list — leave candidates unticked so a
                 # single click can't queue hundreds nobody reviewed.
@@ -303,6 +313,10 @@ def scan_library(job, token, partial_only=False):
     _record_last_scan()
     if not job.cancel_requested:
         _flag_new_since_last_scan(job, "partial" if partial_only else "missing")
+        # The crawl reached every artist cleanly (no cancel, no AuthLost/outage
+        # abort) — capture the catalog snapshot as the new-release baseline and
+        # mark it ready, so the daily check can start diffing against it.
+        new_releases_mod.seed_baseline(baseline_seen)
     if partial_only:
         log.info(f"Done. {plural(total, 'album')} with track gaps across the library.")
     else:

@@ -13,9 +13,10 @@ from qobuz_librarian import config as cfg
 
 
 def load() -> dict:
-    """Return ``{"last_run": float|None, "seen": {artist_id: [album_id, …]}}``,
-    tolerating a missing or corrupt file with an empty baseline."""
-    base = {"last_run": None, "seen": {}}
+    """Return ``{"last_run": float|None, "seen": {artist_id: [album_id, …]},
+    "baseline_complete": bool}``, tolerating a missing or corrupt file with an
+    empty baseline."""
+    base = {"last_run": None, "seen": {}, "baseline_complete": False}
     try:
         data = json.loads(cfg.NEW_RELEASE_STATE_FILE.read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -28,6 +29,7 @@ def load() -> dict:
     lr = data.get("last_run")
     if isinstance(lr, (int, float)):
         base["last_run"] = float(lr)
+    base["baseline_complete"] = bool(data.get("baseline_complete"))
     return base
 
 
@@ -47,8 +49,29 @@ def last_run() -> float | None:
 
 
 def mark_run(seen, when=None) -> None:
-    """Persist the updated per-artist catalog snapshot and the run time."""
-    save({"seen": seen, "last_run": when if when is not None else time.time()})
+    """Persist the updated per-artist catalog snapshot and the run time, keeping
+    the baseline_complete flag (load-update-save, not a fresh dict)."""
+    state = load()
+    state["seen"] = seen
+    state["last_run"] = when if when is not None else time.time()
+    save(state)
+
+
+def is_baseline_complete() -> bool:
+    """True once a full library scan has established the baseline. The automatic
+    new-release check stays dormant until then — so it never crawls to an empty
+    baseline (surfacing nothing) or activates off a partial scan."""
+    return bool(load().get("baseline_complete"))
+
+
+def seed_baseline(seen) -> None:
+    """Record the per-artist catalog snapshot from a cleanly-completed library
+    scan and mark the baseline ready. The scan already fetched every discography,
+    so this captures "what exists now" for free; the daily check diffs against it."""
+    state = load()
+    state["seen"] = {str(k): list(v) for k, v in (seen or {}).items()}
+    state["baseline_complete"] = True
+    save(state)
 
 
 def touch_run(when=None) -> None:

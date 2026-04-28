@@ -574,6 +574,11 @@ def _maybe_auto_check_new_releases():
     if _TOKEN_VALID is False or not _read_creds().get("auth_token"):
         return
     from qobuz_librarian.library import new_releases
+    # Only after a full library scan has established the baseline — otherwise the
+    # check would crawl every artist just to record a starting point and surface
+    # nothing. A completed library scan seeds it (flows.scan_library).
+    if not new_releases.is_baseline_complete():
+        return
     # Serialise the check-and-submit so two concurrent dashboard loads can't
     # both pass the gate and queue the check twice.
     with _auto_check_lock:
