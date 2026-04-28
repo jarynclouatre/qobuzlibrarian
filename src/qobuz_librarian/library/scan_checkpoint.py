@@ -1,4 +1,4 @@
-"""Progress checkpoint for a resumable library scan.
+"""Progress checkpoints for resumable library scans.
 
 A full-library scan can take a while; if it's interrupted (the container stops,
 the box loses power) the work shouldn't be thrown away. As the scan finishes each
@@ -6,53 +6,69 @@ artist it records progress here — which artists are done, the albums found so 
 and the per-artist catalog snapshot for the new-release baseline. The next start
 reads this and continues from where it left off rather than re-crawling.
 
-The checkpoint is written only while a scan is mid-flight: a clean finish or a
-deliberate cancel clears it, so its mere presence means "an unfinished scan is
-waiting to resume."
+Progress is kept per scan **kind** ("missing" / "partial") in one file, so an
+interrupted partial-fill scan isn't wiped when a missing-albums scan completes,
+and vice-versa. A clean finish or a deliberate cancel clears that kind's entry;
+a kind's presence means "an unfinished scan of that kind is waiting to resume."
 """
 import json
 import time
 
 from qobuz_librarian import config as cfg
 
+_KINDS = ("missing", "partial")
 
-def load() -> dict | None:
-    """The in-progress scan's checkpoint, or None if there's nothing to resume.
 
-    Shape: ``{"kind": "missing"|"partial", "scanned": [folder_name, …],
-    "candidates": [candidate_dict, …], "seen": {artist_id: [album_id, …]}}``.
-    """
+def _read() -> dict:
     try:
         data = json.loads(cfg.SCAN_CHECKPOINT_FILE.read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        return None
-    if not isinstance(data, dict) or data.get("kind") not in ("missing", "partial"):
-        return None
-    data.setdefault("scanned", [])
-    data.setdefault("candidates", [])
-    data.setdefault("seen", {})
-    return data
+        return {}
+    return data if isinstance(data, dict) else {}
 
 
-def save(kind, scanned, candidates, seen) -> None:
-    payload = {
-        "kind": kind,
-        "scanned": sorted(scanned),
-        "candidates": candidates,
-        "seen": seen,
-        "ts": time.time(),
-    }
+def _write(data) -> None:
     try:
         cfg.SCAN_CHECKPOINT_FILE.parent.mkdir(parents=True, exist_ok=True)
         tmp = cfg.SCAN_CHECKPOINT_FILE.with_suffix(
             cfg.SCAN_CHECKPOINT_FILE.suffix + ".tmp")
-        tmp.write_text(json.dumps(payload), encoding="utf-8")
+        tmp.write_text(json.dumps(data), encoding="utf-8")
         tmp.replace(cfg.SCAN_CHECKPOINT_FILE)
     except OSError:
         pass
 
 
-def clear() -> None:
+def load(kind) -> dict | None:
+    """This kind's checkpoint, or None. Shape: ``{"scanned": [folder_name, …],
+    "candidates": [candidate_dict, …], "seen": {artist_id: [album_id, …]}}``."""
+    cp = _read().get(kind)
+    if not isinstance(cp, dict):
+        return None
+    cp.setdefault("scanned", [])
+    cp.setdefault("candidates", [])
+    cp.setdefault("seen", {})
+    return cp
+
+
+def save(kind, scanned, candidates, seen) -> None:
+    data = _read()
+    data[kind] = {
+        "scanned": sorted(scanned),
+        "candidates": candidates,
+        "seen": seen,
+        "ts": time.time(),
+    }
+    _write(data)
+
+
+def clear(kind) -> None:
+    data = _read()
+    if kind not in data:
+        return
+    del data[kind]
+    if data:
+        _write(data)
+        return
     try:
         cfg.SCAN_CHECKPOINT_FILE.unlink()
     except FileNotFoundError:
@@ -62,9 +78,12 @@ def clear() -> None:
 
 
 def pending() -> dict | None:
-    """A summary of an unfinished scan for the dashboard, or None. Returns
+    """A summary of any unfinished scan for the dashboard, or None — missing
+    takes precedence (it's the kind the first-run auto-scan runs). Returns
     ``{"kind", "done"}`` where done is how many artists are already scanned."""
-    cp = load()
-    if cp is None:
-        return None
-    return {"kind": cp["kind"], "done": len(cp["scanned"])}
+    data = _read()
+    for kind in _KINDS:
+        cp = data.get(kind)
+        if isinstance(cp, dict):
+            return {"kind": kind, "done": len(cp.get("scanned", []))}
+    return None

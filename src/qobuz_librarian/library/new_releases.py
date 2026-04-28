@@ -26,7 +26,11 @@ def load() -> dict:
         return base
     seen = data.get("seen")
     if isinstance(seen, dict):
-        base["seen"] = {str(k): v for k, v in seen.items() if isinstance(v, list)}
+        # Normalise both keys and album ids to str here, at the one read point,
+        # so the diff in find_new_releases_for_artist (which compares str ids)
+        # can't be fooled into treating everything as "new" by an int id.
+        base["seen"] = {str(k): [str(x) for x in v]
+                        for k, v in seen.items() if isinstance(v, list)}
     lr = data.get("last_run")
     if isinstance(lr, (int, float)):
         base["last_run"] = float(lr)
@@ -50,12 +54,16 @@ def last_run() -> float | None:
     return load().get("last_run")
 
 
-def mark_run(seen, when=None) -> None:
+def mark_run(seen, when=None, complete=False) -> None:
     """Persist the updated per-artist catalog snapshot and the run time, keeping
-    the baseline_complete flag (load-update-save, not a fresh dict)."""
+    the other fields (load-update-save, not a fresh dict). complete=True also
+    marks the baseline ready — a full new-release check crawls every artist, so
+    a clean one establishes the baseline just like a library scan does."""
     state = load()
     state["seen"] = seen
     state["last_run"] = when if when is not None else time.time()
+    if complete:
+        state["baseline_complete"] = True
     save(state)
 
 

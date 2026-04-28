@@ -1024,20 +1024,38 @@ def test_auto_first_scan_starts_once_then_only_resumes(monkeypatch):
     assert started == [False, False]
 
 
-def test_scan_checkpoint_round_trip(tmp_path, monkeypatch):
+def test_scan_checkpoint_round_trip_and_kinds_coexist(tmp_path, monkeypatch):
     import qobuz_librarian.config as cfg
     from qobuz_librarian.library import scan_checkpoint
     monkeypatch.setattr(cfg, "SCAN_CHECKPOINT_FILE", tmp_path / "cp.json")
-    assert scan_checkpoint.load() is None and scan_checkpoint.pending() is None
+    assert scan_checkpoint.load("missing") is None and scan_checkpoint.pending() is None
     scan_checkpoint.save("missing", {"Beta", "Alpha"},
                          [{"kind": "album", "title": "X", "artist": "Alpha"}],
                          {"a1": ["id1"]})
-    cp = scan_checkpoint.load()
-    assert cp["kind"] == "missing" and cp["scanned"] == ["Alpha", "Beta"]
-    assert cp["seen"] == {"a1": ["id1"]} and len(cp["candidates"]) == 1
+    cp = scan_checkpoint.load("missing")
+    assert cp["scanned"] == ["Alpha", "Beta"] and cp["seen"] == {"a1": ["id1"]}
+    assert len(cp["candidates"]) == 1
     assert scan_checkpoint.pending() == {"kind": "missing", "done": 2}
-    scan_checkpoint.clear()
-    assert scan_checkpoint.load() is None and scan_checkpoint.pending() is None
+    # A partial checkpoint coexists; clearing one kind leaves the other intact —
+    # a completed missing scan must not wipe an interrupted partial one.
+    scan_checkpoint.save("partial", {"Gamma"}, [], {})
+    scan_checkpoint.clear("missing")
+    assert scan_checkpoint.load("missing") is None
+    assert scan_checkpoint.load("partial") is not None
+    assert scan_checkpoint.pending() == {"kind": "partial", "done": 1}
+    scan_checkpoint.clear("partial")
+    assert scan_checkpoint.pending() is None
+
+
+def test_new_release_check_establishes_baseline(tmp_path, monkeypatch):
+    # A full new-release check (mark_run complete=True) establishes the baseline,
+    # so a manual check before any library scan unlocks the daily auto-check.
+    import qobuz_librarian.config as cfg
+    from qobuz_librarian.library import new_releases
+    monkeypatch.setattr(cfg, "NEW_RELEASE_STATE_FILE", tmp_path / "nr.json")
+    assert not new_releases.is_baseline_complete()
+    new_releases.mark_run({"art1": ["a"]}, complete=True)
+    assert new_releases.is_baseline_complete()
 
 
 def test_new_release_hide_writes_missing_scope(client, monkeypatch, tmp_path):

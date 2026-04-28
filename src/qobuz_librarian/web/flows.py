@@ -263,10 +263,10 @@ def scan_library(job, token, partial_only=False):
         log.info("  Check that QL_MUSIC_DIR in your .env points at the right place.")
         return
     kind = "partial" if partial_only else "missing"
-    # Resume an interrupted scan of the same kind: skip the artists already done
-    # and restore the albums they turned up, so we continue rather than restart.
-    cp = scan_checkpoint.load()
-    resuming = bool(cp and cp["kind"] == kind)
+    # Resume an interrupted scan of this kind: skip the artists already done and
+    # restore the albums they turned up, so we continue rather than restart.
+    cp = scan_checkpoint.load(kind)
+    resuming = cp is not None
     scanned = set(cp["scanned"]) if resuming else set()
     baseline_seen = dict(cp["seen"]) if resuming else {}
     total = 0
@@ -340,18 +340,21 @@ def scan_library(job, token, partial_only=False):
             if since_save >= _CHECKPOINT_EVERY:
                 since_save = 0
                 scan_checkpoint.save(kind, scanned, job.candidates, baseline_seen)
-    completed = not job.cancel_requested
+    # Reached here only without an AuthLost/outage abort (that re-raises out
+    # above, leaving the checkpoint for resume and not seeding the baseline).
     flush_resolve_cache()
     _record_last_scan()
     if job.cancel_requested:
-        # Deliberate stop — discard progress so it isn't auto-resumed.
-        scan_checkpoint.clear()
-    elif completed:
+        # Deliberate stop — discard this kind's progress so it isn't auto-resumed.
+        scan_checkpoint.clear(kind)
+    else:
         _flag_new_since_last_scan(job, kind)
-        # The crawl reached every artist cleanly — capture the catalog snapshot as
-        # the new-release baseline, mark it ready, and clear the checkpoint.
-        new_releases_mod.seed_baseline(baseline_seen)
-        scan_checkpoint.clear()
+        # The crawl reached every artist cleanly — establish the new-release
+        # baseline from the catalog snapshot (only the first time; the daily
+        # check keeps it fresh after), and clear this kind's checkpoint.
+        if not new_releases_mod.is_baseline_complete():
+            new_releases_mod.seed_baseline(baseline_seen)
+        scan_checkpoint.clear(kind)
     if partial_only:
         log.info(f"Done. {plural(total, 'album')} with track gaps across the library.")
     else:
@@ -422,7 +425,9 @@ def scan_new_releases(job, token):
                          f"{plural(len(result.new_gaps), 'new release')}")
     flush_resolve_cache()
     if not job.cancel_requested:
-        new_releases_mod.mark_run(current_seen)
+        # A clean check crawled every artist, so it establishes the baseline too
+        # (matters when the user runs this manually before any library scan).
+        new_releases_mod.mark_run(current_seen, complete=True)
     if total:
         log.info(f"Done. {plural(total, 'new release')} across the library.")
     elif not seen:
