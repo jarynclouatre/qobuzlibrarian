@@ -381,9 +381,9 @@ def scan_new_releases(job, token):
     done = 0
     n = len(artists)
     workers = max(1, int(cfg.ARTIST_SCAN_WORKERS))
-    # Built fresh from this run's artists (not carried over from `seen`), so a
-    # clean sweep drops baselines for artists no longer in the library. A
-    # transiently-skipped artist just re-baselines next run, like a first check.
+    # This run's reached artists; merged over the prior baseline at the end (so a
+    # run where some/all artists errored can't wipe their baselines and re-surface
+    # everything — only artists actually reached get their snapshot refreshed).
     current_seen = {}
     with ThreadPoolExecutor(max_workers=workers,
                             thread_name_prefix="newrel") as ex:
@@ -425,9 +425,11 @@ def scan_new_releases(job, token):
                          f"{plural(len(result.new_gaps), 'new release')}")
     flush_resolve_cache()
     if not job.cancel_requested:
-        # A clean check crawled every artist, so it establishes the baseline too
-        # (matters when the user runs this manually before any library scan).
-        new_releases_mod.mark_run(current_seen, complete=True)
+        # Merge over the prior baseline, don't replace it: an artist that errored
+        # this run keeps its old entry (a bad run can't wipe the baseline), while
+        # reached artists get refreshed. A clean check crawled every artist, so it
+        # establishes the baseline too (a manual check before any library scan).
+        new_releases_mod.mark_run({**seen, **current_seen}, complete=True)
     if total:
         log.info(f"Done. {plural(total, 'new release')} across the library.")
     elif not seen:
