@@ -529,6 +529,11 @@ default — bump `MISSING_ALBUMS_MIN_TRACKS` in `compose.yaml` (or pass
 
 ## What it will and won't touch on its own
 
+- It **does** scan on its own — but only to *show* you things. On first launch
+  it runs a one-time library scan (off with `AUTO_LIBRARY_SCAN=false`), and after
+  that it periodically checks for new releases (interval in Settings; off via
+  `NEW_RELEASE_CHECK_INTERVAL`). Both only read Qobuz and park a review list on the
+  dashboard — **nothing downloads or changes a file until you approve it.**
 - It **never** deletes a track during gap-fill. A bare gap-fill only adds
   missing tracks; the Upgrade walk is the only path that replaces files,
   and it backs them up first (see `UPGRADE_BACKUP_RETENTION_DAYS`).

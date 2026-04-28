@@ -121,6 +121,19 @@ services:
       # Move "Primary, Other/<album>" into "Primary/<album>" after import.
       MIGRATE_MULTI_ARTIST: "false"
 
+      # ── New releases ──────────────────────────────────────────────────────
+      # First launch auto-runs a library scan — it lists your missing albums
+      # AND establishes the new-release baseline (resuming if interrupted).
+      # "false" skips the automatic scan; a manual library scan still seeds it.
+      AUTO_LIBRARY_SCAN: "true"
+      # Auto-check for new releases by your library's artists this often
+      # (seconds), surfaced on the dashboard once the baseline's set. 0 = off.
+      # Also tunable on the Settings page.
+      NEW_RELEASE_CHECK_INTERVAL: "86400"
+      # How long (seconds) a gap scan reuses a fetched discography before
+      # re-fetching. The new-release check always fetches fresh regardless.
+      ARTIST_CATALOG_CACHE_TTL: "604800"
+
       # ── Optional features (off by default) ────────────────────────────────
       # Offer quality upgrades during ordinary gap-fill walks. The explicit
       # Upgrade walk works regardless of this; this only affects normal walks.
