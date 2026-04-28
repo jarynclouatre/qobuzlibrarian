@@ -39,9 +39,14 @@ def _isolate_data_dir():
     cfg.CAPPED_FILE          = tmp_root / ".qobuz_upgrade_capped.json"
     cfg.HIDDEN_FILE          = tmp_root / ".qobuz_hidden.json"
     cfg.SCAN_SEEN_FILE       = tmp_root / ".qobuz_scan_seen.json"
+    cfg.NEW_RELEASE_STATE_FILE = tmp_root / ".qobuz_new_releases.json"
     cfg.LYRIC_FETCH_STATE_FILE = tmp_root / ".lyric_fetch_state.json"
     cfg.WEB_AUTH_FILE        = tmp_root / ".qobuz_web_auth.json"
     cfg.LOCK_FILE            = tmp_root / "qobuz_librarian.lock"
+    # The dashboard auto-runs the new-release check when it's due; off by default
+    # for the suite so unrelated GET / tests don't fire a real background scan.
+    # The dedicated auto-check test flips it on with monkeypatch.
+    cfg.NEW_RELEASE_CHECK_INTERVAL = 0
     # Keep the persistent caches out of the deterministic suite — tests that
     # mock qobuz_get / build fixture FLACs expect a fresh read each time. Each
     # cache's own test re-enables it.
@@ -53,15 +58,23 @@ def _isolate_data_dir():
     from qobuz_librarian.web import job_persistence
     job_persistence._disabled = True
 
-    prior_web_auth = os.environ.get("WEB_AUTH")
+    # Set the matching env vars too, so a test that importlib.reload(cfg) (to
+    # exercise env parsing) recomputes these into the temp dir / off, rather than
+    # reverting to the real HOME paths and a live auto-check for the rest of the
+    # session.
+    prior_env = {k: os.environ.get(k) for k in
+                 ("WEB_AUTH", "DATA_DIR", "NEW_RELEASE_CHECK_INTERVAL")}
     os.environ["WEB_AUTH"] = "none"
+    os.environ["DATA_DIR"] = str(tmp_root)
+    os.environ["NEW_RELEASE_CHECK_INTERVAL"] = "0"
 
     yield
 
-    if prior_web_auth is None:
-        os.environ.pop("WEB_AUTH", None)
-    else:
-        os.environ["WEB_AUTH"] = prior_web_auth
+    for k, v in prior_env.items():
+        if v is None:
+            os.environ.pop(k, None)
+        else:
+            os.environ[k] = v
     # Clean up the session tempdir, best-effort. The lock file may still
     # be held briefly by a TestClient lifespan that's tearing down;
     # ignore_errors=True keeps the test exit clean either way.
