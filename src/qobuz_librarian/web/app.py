@@ -598,10 +598,25 @@ def _maybe_auto_check_new_releases():
         _start_new_release_check()
 
 
+def _active_library_scan():
+    """A library scan that's already pending/crawling, or None."""
+    for j in job_mgr.registry.pending_and_running():
+        if (getattr(j, "execute_kind", "") == "library"
+                and j.status.value in ("pending", "scanning")):
+            return j
+    return None
+
+
 def _start_library_scan(partial_only=False):
     """Submit a library scan and return the job. Shared by the Library page and
     the automatic first-run/resume trigger. scan_library resumes from a matching
-    checkpoint on its own, so this is the same call whether starting or resuming."""
+    checkpoint on its own, so this is the same call whether starting or resuming.
+
+    Deduped: if a library scan is already crawling, return it instead of stacking
+    a second one (the manual button and the auto trigger can both land here)."""
+    existing = _active_library_scan()
+    if existing is not None:
+        return existing
     from qobuz_librarian.web import flows
     title = "Library album-fill scan" if partial_only else "Library gap scan"
     job = job_mgr.Job(title=title)
@@ -665,10 +680,11 @@ async def dashboard(request: Request):
         return {
             "new_release_review": _new_release_review(),
             # First-run setup banner: shown until a full library scan has seeded
-            # the new-release baseline. setup_scanning = that scan is running now.
+            # the new-release baseline. setup_scanning = a library scan is now
+            # pending/running — re-queried here (not from the pre-trigger
+            # active_jobs) so the scan the auto-trigger just submitted shows.
             "baseline_complete": new_releases.is_baseline_complete(),
-            "setup_scanning": any(getattr(j, "execute_kind", "") == "library"
-                                  for j in active_jobs),
+            "setup_scanning": _active_library_scan() is not None,
             "scan_resumable": scan_checkpoint.pending() is not None,
             # tail-only read so a long-running install with a multi-MB fetch log
             # doesn't slurp the whole file on every dashboard load.
