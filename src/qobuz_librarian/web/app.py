@@ -534,18 +534,39 @@ async def dashboard_head():
     return Response(status_code=200)
 
 
+# Reentrant so the auto-triggers (which hold it) can call the _start_* helpers
+# below (which re-acquire it). It makes every "is one already queued? → submit"
+# check-and-submit atomic across both the manual POST and the dashboard auto
+# path, so a manual click landing alongside an auto-trigger can't stack two.
+_auto_check_lock = threading.RLock()
+
+
+def _existing_new_release_check():
+    """An active or awaiting-review new-release check, or None — so a second one
+    isn't stacked on top of one already queued or waiting for review."""
+    for j in job_mgr.registry.pending_and_running():  # ACTIVE incl awaiting_review
+        if getattr(j, "execute_kind", "") == "new_releases":
+            return j
+    return None
+
+
 def _start_new_release_check():
-    """Submit a whole-library new-release check and return the job. Shared by
-    the manual Library-page option and the automatic dashboard trigger."""
-    from qobuz_librarian.web import flows
-    job = job_mgr.Job(title="New-release check")
-    job.execute_kind = "new_releases"
-    job_mgr.submit_scan(
-        job,
-        lambda j: flows.scan_new_releases(j, _get_token()),
-        lambda j, chosen: flows.execute_albums(j, chosen, _get_token()),
-    )
-    return job
+    """Submit a whole-library new-release check and return the job (or the one
+    already queued). Shared by the manual Library-page option and the automatic
+    dashboard trigger."""
+    with _auto_check_lock:
+        existing = _existing_new_release_check()
+        if existing is not None:
+            return existing
+        from qobuz_librarian.web import flows
+        job = job_mgr.Job(title="New-release check")
+        job.execute_kind = "new_releases"
+        job_mgr.submit_scan(
+            job,
+            lambda j: flows.scan_new_releases(j, _get_token()),
+            lambda j, chosen: flows.execute_albums(j, chosen, _get_token()),
+        )
+        return job
 
 
 def _new_release_review():
@@ -554,9 +575,6 @@ def _new_release_review():
         if getattr(j, "execute_kind", "") == "new_releases":
             return {"id": j.id, "count": len(j.candidates)}
     return None
-
-
-_auto_check_lock = threading.Lock()
 
 
 def _maybe_auto_check_new_releases():
@@ -612,21 +630,23 @@ def _start_library_scan(partial_only=False):
     the automatic first-run/resume trigger. scan_library resumes from a matching
     checkpoint on its own, so this is the same call whether starting or resuming.
 
-    Deduped: if a library scan is already crawling, return it instead of stacking
-    a second one (the manual button and the auto trigger can both land here)."""
-    existing = _active_library_scan()
-    if existing is not None:
-        return existing
-    from qobuz_librarian.web import flows
-    title = "Library album-fill scan" if partial_only else "Library gap scan"
-    job = job_mgr.Job(title=title)
-    job.execute_kind = "library"
-    job_mgr.submit_scan(
-        job,
-        lambda j: flows.scan_library(j, _get_token(), partial_only=partial_only),
-        lambda j, chosen: flows.execute_albums(j, chosen, _get_token()),
-    )
-    return job
+    Deduped under the lock: if a library scan is already crawling, return it
+    instead of stacking a second one (the manual button and the auto trigger can
+    both land here at once)."""
+    with _auto_check_lock:
+        existing = _active_library_scan()
+        if existing is not None:
+            return existing
+        from qobuz_librarian.web import flows
+        title = "Library album-fill scan" if partial_only else "Library gap scan"
+        job = job_mgr.Job(title=title)
+        job.execute_kind = "library"
+        job_mgr.submit_scan(
+            job,
+            lambda j: flows.scan_library(j, _get_token(), partial_only=partial_only),
+            lambda j, chosen: flows.execute_albums(j, chosen, _get_token()),
+        )
+        return job
 
 
 def _maybe_auto_first_scan():

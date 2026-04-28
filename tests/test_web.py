@@ -1024,6 +1024,27 @@ def test_auto_first_scan_starts_once_then_only_resumes(monkeypatch):
     assert started == [False, False]
 
 
+def test_start_scan_helpers_dedupe_against_an_active_one(monkeypatch):
+    # The manual POST and the dashboard auto-trigger both land in these helpers;
+    # neither may stack a second scan on one already queued/running.
+    import qobuz_librarian.web.app as webapp
+    monkeypatch.setattr(webapp.job_mgr, "registry", jm.JobRegistry())
+
+    lib = jm.Job(title="lib")
+    lib.execute_kind = "library"
+    lib.status = jm.JobStatus.SCANNING
+    jm.registry.add(lib)
+    assert webapp._start_library_scan() is lib
+    assert len(jm.registry.all()) == 1
+
+    nr = jm.Job(title="nr")
+    nr.execute_kind = "new_releases"
+    nr.status = jm.JobStatus.AWAITING_REVIEW
+    jm.registry.add(nr)
+    assert webapp._start_new_release_check() is nr
+    assert len(jm.registry.all()) == 2
+
+
 def test_scan_checkpoint_round_trip_and_kinds_coexist(tmp_path, monkeypatch):
     import qobuz_librarian.config as cfg
     from qobuz_librarian.library import scan_checkpoint
