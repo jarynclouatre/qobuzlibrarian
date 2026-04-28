@@ -983,6 +983,63 @@ def test_new_release_baseline_survives_a_check_run(tmp_path, monkeypatch):
     assert new_releases.load()["seen"]["art1"] == ["a", "b", "c"]
 
 
+def test_auto_first_scan_starts_once_then_only_resumes(monkeypatch):
+    import qobuz_librarian.web.app as webapp
+    from qobuz_librarian.library import new_releases, scan_checkpoint
+    monkeypatch.setattr(webapp, "_read_creds", lambda: {"auth_token": "tok"})
+    monkeypatch.setattr(webapp, "_CLI_MODE", False)
+    monkeypatch.setattr(webapp, "_LOCK_BUSY_PID", None)
+    monkeypatch.setattr(webapp, "_TOKEN_VALID", None)
+    monkeypatch.setattr(webapp.cfg, "AUTO_LIBRARY_SCAN", True)
+    monkeypatch.setattr(webapp.job_mgr, "registry", jm.JobRegistry())
+    monkeypatch.setattr(new_releases, "note_auto_scan_attempted", lambda: None)
+    started = []
+    monkeypatch.setattr(webapp, "_start_library_scan",
+                        lambda partial_only=False: started.append(partial_only))
+
+    monkeypatch.setattr(new_releases, "is_baseline_complete", lambda: False)
+    monkeypatch.setattr(new_releases, "auto_scan_attempted", lambda: False)
+    monkeypatch.setattr(scan_checkpoint, "pending", lambda: None)
+    # No baseline, no checkpoint, not yet attempted → start a fresh scan once.
+    webapp._maybe_auto_first_scan()
+    assert started == [False]
+
+    # Already attempted, still no checkpoint → don't relaunch (no nagging).
+    monkeypatch.setattr(new_releases, "auto_scan_attempted", lambda: True)
+    webapp._maybe_auto_first_scan()
+    assert started == [False]
+
+    # An interrupted scan left a checkpoint → resume it, even though attempted.
+    monkeypatch.setattr(scan_checkpoint, "pending",
+                        lambda: {"kind": "missing", "done": 4})
+    webapp._maybe_auto_first_scan()
+    assert started == [False, False]
+
+    # Baseline already complete, or the feature is off → never starts.
+    monkeypatch.setattr(new_releases, "is_baseline_complete", lambda: True)
+    webapp._maybe_auto_first_scan()
+    monkeypatch.setattr(new_releases, "is_baseline_complete", lambda: False)
+    monkeypatch.setattr(webapp.cfg, "AUTO_LIBRARY_SCAN", False)
+    webapp._maybe_auto_first_scan()
+    assert started == [False, False]
+
+
+def test_scan_checkpoint_round_trip(tmp_path, monkeypatch):
+    import qobuz_librarian.config as cfg
+    from qobuz_librarian.library import scan_checkpoint
+    monkeypatch.setattr(cfg, "SCAN_CHECKPOINT_FILE", tmp_path / "cp.json")
+    assert scan_checkpoint.load() is None and scan_checkpoint.pending() is None
+    scan_checkpoint.save("missing", {"Beta", "Alpha"},
+                         [{"kind": "album", "title": "X", "artist": "Alpha"}],
+                         {"a1": ["id1"]})
+    cp = scan_checkpoint.load()
+    assert cp["kind"] == "missing" and cp["scanned"] == ["Alpha", "Beta"]
+    assert cp["seen"] == {"a1": ["id1"]} and len(cp["candidates"]) == 1
+    assert scan_checkpoint.pending() == {"kind": "missing", "done": 2}
+    scan_checkpoint.clear()
+    assert scan_checkpoint.load() is None and scan_checkpoint.pending() is None
+
+
 def test_new_release_hide_writes_missing_scope(client, monkeypatch, tmp_path):
     # A "new releases" review offers the per-artist Hide action; it must actually
     # dismiss into the missing scope — it was a silent no-op when new_releases

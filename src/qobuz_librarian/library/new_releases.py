@@ -14,9 +14,10 @@ from qobuz_librarian import config as cfg
 
 def load() -> dict:
     """Return ``{"last_run": float|None, "seen": {artist_id: [album_id, …]},
-    "baseline_complete": bool}``, tolerating a missing or corrupt file with an
-    empty baseline."""
-    base = {"last_run": None, "seen": {}, "baseline_complete": False}
+    "baseline_complete": bool, "auto_scan_attempted": bool}``, tolerating a
+    missing or corrupt file with an empty baseline."""
+    base = {"last_run": None, "seen": {}, "baseline_complete": False,
+            "auto_scan_attempted": False}
     try:
         data = json.loads(cfg.NEW_RELEASE_STATE_FILE.read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -30,6 +31,7 @@ def load() -> dict:
     if isinstance(lr, (int, float)):
         base["last_run"] = float(lr)
     base["baseline_complete"] = bool(data.get("baseline_complete"))
+    base["auto_scan_attempted"] = bool(data.get("auto_scan_attempted"))
     return base
 
 
@@ -71,6 +73,19 @@ def seed_baseline(seen) -> None:
     state = load()
     state["seen"] = {str(k): list(v) for k, v in (seen or {}).items()}
     state["baseline_complete"] = True
+    save(state)
+
+
+def auto_scan_attempted() -> bool:
+    return bool(load().get("auto_scan_attempted"))
+
+
+def note_auto_scan_attempted() -> None:
+    """Remember that the first-run library scan was auto-started, so a fresh one
+    isn't relaunched on every load if the user cancels it. (An interrupted scan
+    leaves a checkpoint and is auto-resumed regardless of this flag.)"""
+    state = load()
+    state["auto_scan_attempted"] = True
     save(state)
 
 

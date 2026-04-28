@@ -40,13 +40,15 @@ def _isolate_data_dir():
     cfg.HIDDEN_FILE          = tmp_root / ".qobuz_hidden.json"
     cfg.SCAN_SEEN_FILE       = tmp_root / ".qobuz_scan_seen.json"
     cfg.NEW_RELEASE_STATE_FILE = tmp_root / ".qobuz_new_releases.json"
+    cfg.SCAN_CHECKPOINT_FILE = tmp_root / ".qobuz_scan_checkpoint.json"
     cfg.LYRIC_FETCH_STATE_FILE = tmp_root / ".lyric_fetch_state.json"
     cfg.WEB_AUTH_FILE        = tmp_root / ".qobuz_web_auth.json"
     cfg.LOCK_FILE            = tmp_root / "qobuz_librarian.lock"
-    # The dashboard auto-runs the new-release check when it's due; off by default
-    # for the suite so unrelated GET / tests don't fire a real background scan.
-    # The dedicated auto-check test flips it on with monkeypatch.
+    # The dashboard auto-runs the new-release check (when due) and the first-run
+    # library scan; both off for the suite so unrelated GET / tests don't fire a
+    # real background scan. The dedicated tests flip them on with monkeypatch.
     cfg.NEW_RELEASE_CHECK_INTERVAL = 0
+    cfg.AUTO_LIBRARY_SCAN = False
     # Keep the persistent caches out of the deterministic suite — tests that
     # mock qobuz_get / build fixture FLACs expect a fresh read each time. Each
     # cache's own test re-enables it.
@@ -63,10 +65,12 @@ def _isolate_data_dir():
     # reverting to the real HOME paths and a live auto-check for the rest of the
     # session.
     prior_env = {k: os.environ.get(k) for k in
-                 ("WEB_AUTH", "DATA_DIR", "NEW_RELEASE_CHECK_INTERVAL")}
+                 ("WEB_AUTH", "DATA_DIR", "NEW_RELEASE_CHECK_INTERVAL",
+                  "AUTO_LIBRARY_SCAN")}
     os.environ["WEB_AUTH"] = "none"
     os.environ["DATA_DIR"] = str(tmp_root)
     os.environ["NEW_RELEASE_CHECK_INTERVAL"] = "0"
+    os.environ["AUTO_LIBRARY_SCAN"] = "false"
 
     yield
 

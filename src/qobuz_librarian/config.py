@@ -200,6 +200,10 @@ SCAN_SEEN_FILE       = DATA_DIR / ".qobuz_scan_seen.json"
 # check, plus when it ran — the new-release quickscan diffs against this to
 # surface only what's appeared since. See library/new_releases.py.
 NEW_RELEASE_STATE_FILE = DATA_DIR / ".qobuz_new_releases.json"
+# Progress for a resumable library scan (artists already done + albums found), so
+# an interrupted full scan continues instead of restarting. Cleared on a clean
+# finish or a deliberate cancel. See library/scan_checkpoint.py.
+SCAN_CHECKPOINT_FILE = DATA_DIR / ".qobuz_scan_checkpoint.json"
 # Artist name → resolved Qobuz artist id, cached so repeat scans skip the
 # search round-trip. See library/discovery.py.
 ARTIST_RESOLVE_CACHE_FILE = DATA_DIR / ".artist_resolve_cache.json"
@@ -328,6 +332,11 @@ ARTIST_CATALOG_CACHE_TTL = _env("ARTIST_CATALOG_CACHE_TTL", 7 * 86400)
 # list (never auto-downloads). 0 turns the automatic check off — the manual
 # "Check for new releases" buttons still work.
 NEW_RELEASE_CHECK_INTERVAL = _env("NEW_RELEASE_CHECK_INTERVAL", 86400)
+
+# Auto-start a library scan on first run — and resume an interrupted one — so the
+# new-release baseline gets established without the user remembering to scan. Off
+# disables only the automatic start; a manual library scan still seeds it.
+AUTO_LIBRARY_SCAN = _env_bool("AUTO_LIBRARY_SCAN", True)
 
 # Per-request budgets for the web UI's Qobuz API calls (album/search/track
 # fetches and the Settings token check). A slow Qobuz response shouldn't

@@ -598,6 +598,51 @@ def _maybe_auto_check_new_releases():
         _start_new_release_check()
 
 
+def _start_library_scan(partial_only=False):
+    """Submit a library scan and return the job. Shared by the Library page and
+    the automatic first-run/resume trigger. scan_library resumes from a matching
+    checkpoint on its own, so this is the same call whether starting or resuming."""
+    from qobuz_librarian.web import flows
+    title = "Library album-fill scan" if partial_only else "Library gap scan"
+    job = job_mgr.Job(title=title)
+    job.execute_kind = "library"
+    job_mgr.submit_scan(
+        job,
+        lambda j: flows.scan_library(j, _get_token(), partial_only=partial_only),
+        lambda j, chosen: flows.execute_albums(j, chosen, _get_token()),
+    )
+    return job
+
+
+def _maybe_auto_first_scan():
+    """On first run, auto-start a library scan so the new-release baseline gets
+    established (and missing albums surface); also resume an interrupted one.
+
+    A fresh first scan is started once (so cancelling it doesn't relaunch it on
+    every load); an interrupted scan leaves a checkpoint and is resumed whenever
+    the app is idle, driving it to completion across restarts. Off via
+    AUTO_LIBRARY_SCAN — a manual scan still resumes the checkpoint and seeds the
+    baseline.
+    """
+    if not cfg.AUTO_LIBRARY_SCAN or _CLI_MODE or _LOCK_BUSY_PID is not None:
+        return
+    if _TOKEN_VALID is False or not _read_creds().get("auth_token"):
+        return
+    from qobuz_librarian.library import new_releases, scan_checkpoint
+    if new_releases.is_baseline_complete():
+        return
+    with _auto_check_lock:
+        if any(j.status != job_mgr.JobStatus.AWAITING_REVIEW
+               for j in job_mgr.registry.pending_and_running()):
+            return  # something already working
+        cp = scan_checkpoint.pending()
+        if cp is not None:
+            _start_library_scan(partial_only=(cp["kind"] == "partial"))
+        elif not new_releases.auto_scan_attempted():
+            new_releases.note_auto_scan_attempted()
+            _start_library_scan()
+
+
 @app.get("/", response_class=HTMLResponse)
 async def dashboard(request: Request):
     from qobuz_librarian import config as _cfg
@@ -611,8 +656,10 @@ async def dashboard(request: Request):
     def _gather_disk_state():
         from qobuz_librarian.integrations.lyrics import load_lyric_retry
         from qobuz_librarian.ui_cli.prompts import _read_fetch_log
-        # Reads the last-run stamp and may submit the background check, so it
-        # runs here (off the event loop) alongside the other disk work.
+        # These read state files and may submit a background job, so they run
+        # here (off the event loop) alongside the other disk work. First-scan
+        # first (establishes the baseline); the check is gated on that baseline.
+        _maybe_auto_first_scan()
         _maybe_auto_check_new_releases()
         return {
             "new_release_review": _new_release_review(),
@@ -989,25 +1036,16 @@ async def library_scan(request: Request, mode: str = Form("missing_albums")):
         _get_token()
     except (SystemExit, NoCredsError):
         return _no_creds_response(request)
-    from qobuz_librarian.web import flows
     mode_norm = (mode or "").strip().lower()
     if mode_norm == "new_releases":
         # Same job the dashboard auto-check submits; its own execute_kind so the
         # review screen pre-ticks the new releases and labels the surface.
         job = _start_new_release_check()
         return RedirectResponse(url=f"/jobs/{job.id}", status_code=303)
-    partial_only = mode_norm == "partial_fill"
-    title = "Library album-fill scan" if partial_only else "Library gap scan"
-    job = job_mgr.Job(title=title)
-    # "library" (not "album") so the review screen knows this is the paced
-    # triage surface: candidates start unticked and each artist gets a hide
-    # action. Both kinds run the same album executor (see _RESUME_EXECUTE).
-    job.execute_kind = "library"
-    job_mgr.submit_scan(
-        job,
-        lambda j: flows.scan_library(j, _get_token(), partial_only=partial_only),
-        lambda j, chosen: flows.execute_albums(j, chosen, _get_token()),
-    )
+    # "library" (not "album") so the review screen knows this is the paced triage
+    # surface; both modes run the same album executor and resume from a matching
+    # checkpoint if one's waiting (see _start_library_scan / scan_library).
+    job = _start_library_scan(partial_only=(mode_norm == "partial_fill"))
     return RedirectResponse(url=f"/jobs/{job.id}", status_code=303)
 
 

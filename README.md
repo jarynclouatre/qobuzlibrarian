@@ -72,12 +72,15 @@ catalogue listing alone (no per-track fetches), so it's quick — roughly one Qo
 call per artist. Your normal gap scans keep their catalogue cache for speed; this
 check is the always-fresh path, and it refreshes that cache as it runs.
 
-By default it also runs **on its own**: open the app, and if it's been a day
-since the last look (and nothing else is scanning) it quietly checks in the
-background and shows any new releases on the dashboard — so they come to you
-instead of you remembering to look. It only ever parks a review list; nothing
-downloads without your say-so. Change the interval, or turn the automatic check
-off, on the Settings page.
+By default it works on its own end to end. On first run it kicks off a **library
+scan** — which both shows your missing albums and establishes the new-release
+baseline (so there's never a second crawl). That scan **resumes from where it
+left off** if it's interrupted, and only the daily new-release check is unlocked
+once it has finished cleanly. From then on, opening the app quietly checks for
+new releases when a day has passed and surfaces them on the dashboard — so they
+come to you instead of you remembering to look. Nothing downloads without your
+say-so. Turn the first-run scan off with `AUTO_LIBRARY_SCAN=false`; change the
+check interval, or disable it, on the Settings page.
 
 **Clean import.** beets handles tagging and cover art; files land in your
 library in one move so a scanner never sees a half-processed state. Synced
@@ -286,7 +289,8 @@ multi-artist migration, upgrades-during-walks, downsampling) plus the download
 quality, lyrics/artwork options, beets paths, how long album lists stay cached
 (`ARTIST_CATALOG_CACHE_TTL`), and how often it auto-checks for new releases
 (`NEW_RELEASE_CHECK_INTERVAL`) can all be changed live on the **Settings**
-page — no restart — or set as defaults in `compose.yaml`. Tuning knobs (search
+page — no restart — or set as defaults in `compose.yaml`. The first-run library
+scan is on by default; set `AUTO_LIBRARY_SCAN=false` to skip it. Tuning knobs (search
 limits, timeouts, fuzzy-match thresholds) are environment variables in
 `compose.yaml`; each ships with a working default you can override.
 

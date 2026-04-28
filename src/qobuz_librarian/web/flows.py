@@ -15,6 +15,7 @@ from qobuz_librarian.api.auth import AuthLost, QobuzUnavailable
 from qobuz_librarian.api.search import get_album
 from qobuz_librarian.library import hidden as hidden_mod
 from qobuz_librarian.library import new_releases as new_releases_mod
+from qobuz_librarian.library import scan_checkpoint
 from qobuz_librarian.library.catalog import (
     album_quality_label,
     album_year,
@@ -83,6 +84,13 @@ def _add_album_candidate(job, album, artist_name, selected=True, is_new=False):
         payload=payload,
         selected=selected,
     )
+
+
+def _readd_candidate(job, c):
+    """Re-add a candidate restored from a scan checkpoint, with a fresh cid."""
+    job.add_candidate(kind=c.get("kind", "album"), title=c.get("title", "?"),
+                      artist=c.get("artist", ""), detail=c.get("detail", ""),
+                      payload=c.get("payload") or {}, selected=bool(c.get("selected")))
 
 
 def _add_gap_candidate(job, gap, artist_name, selected=False, is_new=False):
@@ -243,6 +251,9 @@ def _scan_library_artist(artist_dir, token, partial_only, hidden):
     return artist_dir.name, result.artist_name, result.gaps, artist_id, catalog_ids
 
 
+_CHECKPOINT_EVERY = 15  # artists between progress saves (resume granularity)
+
+
 def scan_library(job, token, partial_only=False):
     clear_scan_caches()
     artists = list_library_artists()
@@ -251,19 +262,31 @@ def scan_library(job, token, partial_only=False):
         log.info("  Expected layout: $MUSIC_ROOT/<Artist>/<Album (Year)>/<track>.flac")
         log.info("  Check that QL_MUSIC_DIR in your .env points at the right place.")
         return
+    kind = "partial" if partial_only else "missing"
+    # Resume an interrupted scan of the same kind: skip the artists already done
+    # and restore the albums they turned up, so we continue rather than restart.
+    cp = scan_checkpoint.load()
+    resuming = bool(cp and cp["kind"] == kind)
+    scanned = set(cp["scanned"]) if resuming else set()
+    baseline_seen = dict(cp["seen"]) if resuming else {}
+    total = 0
+    if resuming:
+        for c in cp["candidates"]:
+            _readd_candidate(job, c)
+            total += 1
+        log.info(f"Resuming — {len(scanned)} artist(s) already scanned, "
+                 f"{plural(total, 'album')} found so far.")
     target = "track gaps in owned albums" if partial_only else "missing albums"
     log.info(f"Scanning {plural(len(artists), 'library artist')} for {target}")
     # Snapshot the dismissed-album memory once so the parallel workers filter
     # against a single consistent view (a dismiss landing mid-scan is picked up
     # on the next run, not raced into this one).
     hidden = hidden_mod.load()
-    total = 0
-    done = 0
+    todo = [ad for ad in artists if ad.name not in scanned]
     n = len(artists)
+    done = len(scanned)
+    since_save = 0
     workers = max(1, int(cfg.ARTIST_SCAN_WORKERS))
-    # Catalog snapshot per artist, used to seed the new-release baseline once the
-    # whole library has been crawled cleanly (see below).
-    baseline_seen = {}
     # Resolve/scan artists in parallel (each worker has its own HTTP session),
     # but collect results and write candidates on this one thread so the
     # candidate list and progress stay single-writer.
@@ -271,7 +294,7 @@ def scan_library(job, token, partial_only=False):
                             thread_name_prefix="libscan") as ex:
         futures = {ex.submit(_scan_library_artist, ad, token, partial_only,
                              hidden): ad
-                   for ad in artists}
+                   for ad in todo}
         for fut in as_completed(futures):
             if job.cancel_requested:
                 for f in futures:
@@ -284,15 +307,19 @@ def scan_library(job, token, partial_only=False):
             except (AuthLost, QobuzUnavailable):
                 # A lost token or an unreachable API isn't a per-artist hiccup —
                 # cancel the rest and fail the scan rather than silently report a
-                # partial library as the full picture.
+                # partial library as the full picture. The checkpoint stays, so
+                # the scan resumes once the token/network is back.
                 for f in futures:
                     f.cancel()
                 raise
             except Exception as e:
+                # A per-artist failure (not auth/outage) is left unscanned so a
+                # resume retries it rather than baking in a transient miss.
                 log.info(f"    skipped {futures[fut].name}: {e}")
                 job.push_progress("Scanning library", done, n, futures[fut].name,
                                   found=total)
                 continue
+            scanned.add(name)
             if artist_id:
                 baseline_seen[artist_id] = catalog_ids
             for gap in gaps:
@@ -309,14 +336,22 @@ def scan_library(job, token, partial_only=False):
             if gaps:
                 tail = "with gaps" if partial_only else "to fill"
                 log.info(f"  {artist_name} — {plural(len(gaps), 'album')} {tail}")
+            since_save += 1
+            if since_save >= _CHECKPOINT_EVERY:
+                since_save = 0
+                scan_checkpoint.save(kind, scanned, job.candidates, baseline_seen)
+    completed = not job.cancel_requested
     flush_resolve_cache()
     _record_last_scan()
-    if not job.cancel_requested:
-        _flag_new_since_last_scan(job, "partial" if partial_only else "missing")
-        # The crawl reached every artist cleanly (no cancel, no AuthLost/outage
-        # abort) — capture the catalog snapshot as the new-release baseline and
-        # mark it ready, so the daily check can start diffing against it.
+    if job.cancel_requested:
+        # Deliberate stop — discard progress so it isn't auto-resumed.
+        scan_checkpoint.clear()
+    elif completed:
+        _flag_new_since_last_scan(job, kind)
+        # The crawl reached every artist cleanly — capture the catalog snapshot as
+        # the new-release baseline, mark it ready, and clear the checkpoint.
         new_releases_mod.seed_baseline(baseline_seen)
+        scan_checkpoint.clear()
     if partial_only:
         log.info(f"Done. {plural(total, 'album')} with track gaps across the library.")
     else:
