@@ -1796,27 +1796,41 @@ def test_persistence_restores_awaiting_review_with_candidates(monkeypatch):
     assert executed.get("ids") == ["abc"]
 
 
-def test_persistence_marks_inflight_jobs_failed_on_restore(monkeypatch):
-    """A RUNNING / SCANNING / PENDING job from before the restart comes back
-    as FAILED with a retry hint, not silently dropped."""
+def test_persistence_rebadges_inflight_jobs_on_restore(monkeypatch):
+    """In-flight jobs from before a restart come back sensibly: a running/pending
+    job as FAILED with a retry hint; a scan caught mid-crawl as the neutral
+    CANCELED with an 'interrupted' note (not an alarming red failure) — and a
+    library scan's note says it resumes."""
     from qobuz_librarian.web import job_persistence
 
     job_persistence._reset_for_tests()
     monkeypatch.setattr(job_persistence, "_disabled", False)
     job_persistence.init()
 
-    for status in (jm.JobStatus.RUNNING, jm.JobStatus.SCANNING,
-                   jm.JobStatus.PENDING):
+    for status in (jm.JobStatus.RUNNING, jm.JobStatus.PENDING):
         j = jm.Job(title=f"in-flight {status.value}")
         j.status = status
         job_persistence.persist(j)
+    generic = jm.Job(title="generic scan")
+    generic.status = jm.JobStatus.SCANNING
+    job_persistence.persist(generic)
+    libscan = jm.Job(title="library scan")
+    libscan.status = jm.JobStatus.SCANNING
+    libscan.execute_kind = "library"
+    job_persistence.persist(libscan)
 
     monkeypatch.setattr(jm, "registry", jm.JobRegistry())
     jm.restore_jobs({})
 
-    for job in jm.registry.all():
-        assert job.status == jm.JobStatus.FAILED
-        assert "Interrupted" in (job.error or "")
+    by_title = {j.title: j for j in jm.registry.all()}
+    for status in ("running", "pending"):
+        j = by_title[f"in-flight {status}"]
+        assert j.status == jm.JobStatus.FAILED and "Interrupted" in (j.error or "")
+    g = by_title["generic scan"]
+    assert g.status == jm.JobStatus.CANCELED and not g.error
+    assert "Interrupted" in (g.summary or "")
+    lib = by_title["library scan"]
+    assert lib.status == jm.JobStatus.CANCELED and "resumes" in (lib.summary or "")
 
 
 def test_persistence_unknown_execute_kind_fails_clean(monkeypatch):

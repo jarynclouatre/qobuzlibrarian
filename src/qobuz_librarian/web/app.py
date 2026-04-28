@@ -655,6 +655,7 @@ async def dashboard(request: Request):
     # every other request (health checks, SSE setup, search) while it blocks.
     def _gather_disk_state():
         from qobuz_librarian.integrations.lyrics import load_lyric_retry
+        from qobuz_librarian.library import new_releases, scan_checkpoint
         from qobuz_librarian.ui_cli.prompts import _read_fetch_log
         # These read state files and may submit a background job, so they run
         # here (off the event loop) alongside the other disk work. First-scan
@@ -663,6 +664,12 @@ async def dashboard(request: Request):
         _maybe_auto_check_new_releases()
         return {
             "new_release_review": _new_release_review(),
+            # First-run setup banner: shown until a full library scan has seeded
+            # the new-release baseline. setup_scanning = that scan is running now.
+            "baseline_complete": new_releases.is_baseline_complete(),
+            "setup_scanning": any(getattr(j, "execute_kind", "") == "library"
+                                  for j in active_jobs),
+            "scan_resumable": scan_checkpoint.pending() is not None,
             # tail-only read so a long-running install with a multi-MB fetch log
             # doesn't slurp the whole file on every dashboard load.
             "recent": list(reversed(_read_fetch_log(limit_tail=8))),

@@ -72,6 +72,34 @@
 </div>
 {% endif %}
 
+{% if creds_ok and not baseline_complete %}
+<!-- First-run setup: until a full library scan has seeded the new-release
+     baseline, frame what's happening rather than leaving the user guessing. -->
+<div class="alert alert-info mb-6 flex-wrap gap-2">
+  <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 shrink-0" fill="none"
+       viewBox="0 0 24 24" stroke="currentColor">
+    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+          d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 0 0-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 0 0 3.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 0 0 3.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 0 0-3.09 3.09zM18.259 8.715L18 9.75l-.259-1.035a3.375 3.375 0 0 0-2.456-2.456L14.25 6l1.035-.259a3.375 3.375 0 0 0 2.456-2.456L18 2.25l.259 1.035a3.375 3.375 0 0 0 2.456 2.456L21.75 6l-1.035.259a3.375 3.375 0 0 0-2.456 2.456z"/>
+  </svg>
+  <span>
+    {% if setup_scanning %}
+    <strong>Setting up your library…</strong> The first scan is running below — it
+    finds the albums you're missing and switches on new-release alerts.
+    {% else %}
+    <strong>One-time setup:</strong> a library scan finds your missing albums and
+    turns on new-release alerts for the artists you have.
+    {% endif %}
+  </span>
+  {% if not setup_scanning %}
+  <form action="/library" method="post" class="ml-auto">
+    <input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}">
+    <input type="hidden" name="mode" value="missing_albums">
+    <button type="submit" class="btn btn-sm btn-info">{% if scan_resumable %}Resume scan{% else %}Run library scan{% endif %}</button>
+  </form>
+  {% endif %}
+</div>
+{% endif %}
+
 {% if new_release_review %}
 <!-- The automatic (or manual) new-release check found albums you don't own and
      parked them for review. Surfaced up front so new releases come to you. -->

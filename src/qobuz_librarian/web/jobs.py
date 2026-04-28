@@ -722,11 +722,23 @@ def restore_jobs(execute_registry: dict) -> None:
             created_at=row.get("created_at") or time.time(),
             finished_at=row.get("finished_at"),
         )
-        if status in (JobStatus.PENDING, JobStatus.RUNNING,
-                      JobStatus.SCANNING):
+        if status in (JobStatus.PENDING, JobStatus.RUNNING):
             job.status = JobStatus.FAILED
             job.error = ("Interrupted by a container restart — submit this "
                          "job again to retry.")
+            job.finished_at = time.time()
+            interrupted += 1
+            job_persistence.persist(job)
+        elif status == JobStatus.SCANNING:
+            # A scan caught mid-crawl isn't a failure — record it as cancelled
+            # (neutral) with a note in the summary, not a red error. A library
+            # scan keeps a checkpoint and continues from where it stopped.
+            job.status = JobStatus.CANCELED
+            if job.execute_kind == "library":
+                job.summary = ("Interrupted by a restart — it resumes from where "
+                               "it left off the next time you open the app.")
+            else:
+                job.summary = "Interrupted by a restart — run the scan again to retry."
             job.finished_at = time.time()
             interrupted += 1
             job_persistence.persist(job)
