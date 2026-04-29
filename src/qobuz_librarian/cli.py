@@ -5,6 +5,7 @@ lazy-imported from qobuz_librarian.modes to keep startup fast.
 """
 import argparse
 import re
+import shutil
 import subprocess
 
 from qobuz_librarian import config as cfg
@@ -117,13 +118,18 @@ def check_rip():
             "(https://github.com/nathom/streamrip).")), EXIT_CONFIG)
 
 
-def check_ffprobe():
-    try:
-        subprocess.run(["ffprobe", "-version"], capture_output=True, timeout=5)
-    except FileNotFoundError:
-        die(fmt(C.RED, _missing_tool_hint(
-            "ffprobe", "Install ffmpeg via your package manager "
-            "(e.g. `apt install ffmpeg`, `brew install ffmpeg`).")), EXIT_CONFIG)
+def check_media_tools():
+    # flac verifies every downloaded track and metaflac reads its bit depth for
+    # the resample; ffmpeg does the hi-res downsample. Both ship together in the
+    # Docker image, so a miss means a broken setup rather than a config choice.
+    for tool, hint in (
+        ("flac", "Install the FLAC tools via your package manager "
+                 "(e.g. `apt install flac`, `brew install flac`)."),
+        ("ffmpeg", "Install ffmpeg via your package manager "
+                   "(e.g. `apt install ffmpeg`, `brew install ffmpeg`)."),
+    ):
+        if shutil.which(tool) is None:
+            die(fmt(C.RED, _missing_tool_hint(tool, hint)), EXIT_CONFIG)
 
 
 # ── Argument parsing ──────────────────────────────────────────────────────────
@@ -391,7 +397,7 @@ def main():
         return
 
     check_rip()
-    check_ffprobe()
+    check_media_tools()
 
     if not cfg.MUSIC_ROOT.exists() or not cfg.MUSIC_ROOT.is_dir():
         die(fmt(C.RED,

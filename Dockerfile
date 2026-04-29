@@ -81,12 +81,15 @@ LABEL org.opencontainers.image.description="Qobuz downloader + library maintenan
 LABEL org.opencontainers.image.source="https://github.com/jarynclouatre/qobuz-librarian"
 LABEL org.opencontainers.image.licenses="MIT"
 
-# ffmpeg: rip/compress (runtime). gosu: clean PUID/PGID drop.
-# procps: ps/top for operators debugging from inside the container.
+# ffmpeg: rip/compress (runtime). flac: `flac -t` integrity checks and
+# `metaflac` header reads — the reference tools verify frame CRCs and ignore
+# embedded cover art, which ffmpeg's decoder does not. gosu: clean PUID/PGID
+# drop. procps: ps/top for operators debugging from inside the container.
 # libchromaprint-tools: fpcalc, for the optional beets `chroma` (AcoustID)
 # plugin used to identify untagged files.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ffmpeg \
+        flac \
         gosu \
         procps \
         libchromaprint-tools \

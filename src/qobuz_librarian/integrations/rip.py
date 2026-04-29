@@ -1,7 +1,6 @@
 """Streamrip download wrapper and staging utilities.
 
 """
-import json
 import os
 import re
 import shutil
@@ -102,89 +101,66 @@ def _flac_signature(path: Path):
 
 # ── FLAC validation ───────────────────────────────────────────────────────────
 
+def flac_audio_ok(path):
+    """Verify a FLAC's audio with ``flac -t`` (decode + per-frame CRC check).
+
+    Returns True/False, or None when the flac tool isn't installed so the
+    caller can choose its own fallback. ``flac -t`` reads only the audio
+    stream — the embedded cover art streamrip always writes (sometimes the
+    oversized "original" Qobuz art) never enters the decode, so a track with
+    intact audio but a malformed picture isn't mistaken for a broken download.
+    The timeout caps a pathological hang without tripping on long tracks (FLAC
+    verifies far faster than real time)."""
+    if shutil.which("flac") is None:
+        return None
+    try:
+        proc = subprocess.run(
+            ["flac", "-t", "-s", str(path)],
+            capture_output=True, timeout=300, stdin=subprocess.DEVNULL)
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return None
+    return proc.returncode == 0
+
+
 def is_flac(path: Path) -> bool:
     """True when the file is a complete, decodable FLAC.
 
-    An interrupted streamrip download leaves a truncated file behind: it
-    keeps a valid FLAC header — including the header's *advertised*
-    duration — so a metadata probe is fooled into reporting the full
-    track length even though most of the audio frames are missing. Only
-    decoding the frames reveals the gap. Without catching it, partials
-    inflate n_ok, beets silently skips them on import, and the upgrade
-    flow declares a false success.
+    An interrupted streamrip download leaves a truncated file behind whose
+    header still advertises the full duration, so a metadata probe reports
+    the whole track length even though most audio frames are missing — only
+    verifying the frames exposes the gap. Without catching it, partials
+    inflate n_ok, beets silently skips them on import, and the upgrade flow
+    declares a false success.
 
-    The metadata probe still does the cheap work: confirm the stream is
-    really FLAC and carries audio, and (when ffprobe is unavailable) fall
-    back to a size heuristic. The decode pass is what guarantees the file
-    is whole."""
+    ``flac -t`` does that verification (every frame's CRC). When the flac tool
+    isn't installed we fall back to a size heuristic: a few seconds of FLAC
+    sits well above the floor, so anything smaller is almost certainly a
+    partial; larger files we can't verify, so we trust them."""
     try:
         if path.stat().st_size == 0:
             return False
     except OSError:
         return False
 
-    try:
-        probe = subprocess.run(
-            ["ffprobe", "-v", "error", "-select_streams", "a:0",
-             "-show_entries", "stream=codec_name:format=duration",
-             "-of", "json", str(path)],
-            capture_output=True, text=True, timeout=30,
-            stdin=subprocess.DEVNULL)
-    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
-        # No usable ffprobe: fall back to a size heuristic. A few seconds of
-        # FLAC sits well above 150 KB, so anything smaller is almost certainly
-        # a partial download. Larger files we can't verify — trust them.
-        try:
-            small = path.stat().st_size < _FLAC_TRUNCATION_FLOOR
-        except OSError:
-            small = True
-        if small:
+    ok = flac_audio_ok(path)
+    if ok is not None:
+        if not ok:
             log.info(fmt(C.YELLOW,
-                f"  ⚠  {path.name} suspiciously small and ffprobe unavailable; "
+                f"  ⚠  {path.name} won't decode cleanly (truncated/corrupt); "
                 "treating as broken."))
-            return False
-        log.info(fmt(C.YELLOW,
-            f"  ⚠  ffprobe unavailable for {path.name}; trusting .flac extension."))
-        return True
-    if probe.returncode != 0:
-        log.info(fmt(C.YELLOW,
-            f"  ⚠  ffprobe rejected {path.name} ({probe.stderr.strip()[:100]}); "
-            "treating as broken."))
-        return False
-    try:
-        data = json.loads(probe.stdout or "{}")
-    except json.JSONDecodeError:
-        data = {}
-    streams = data.get("streams") or []
-    if not streams or streams[0].get("codec_name", "").lower() != "flac":
-        return False
-    try:
-        duration = float((data.get("format") or {}).get("duration") or 0)
-    except (TypeError, ValueError):
-        duration = 0.0
-    if duration < 0.1:
-        log.info(fmt(C.YELLOW,
-            f"  ⚠  {path.name} carries no audio ({duration:.1f}s); treating as broken."))
-        return False
+        return ok
 
-    # Decode the audio to confirm every frame is present. ffmpeg still exits
-    # 0 on a truncated file but prints decode errors to stderr at the error
-    # level; a clean decode leaves it empty. The timeout caps a pathological
-    # hang without tripping on long tracks (FLAC decodes far faster than
-    # real time); on timeout or a missing ffmpeg we trust the probe rather
-    # than delete a file we couldn't fully check.
     try:
-        decode = subprocess.run(
-            ["ffmpeg", "-v", "error", "-nostdin", "-i", str(path), "-f", "null", "-"],
-            capture_output=True, text=True, timeout=300,
-            stdin=subprocess.DEVNULL)
-    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
-        return True
-    if decode.stderr.strip():
+        small = path.stat().st_size < _FLAC_TRUNCATION_FLOOR
+    except OSError:
+        small = True
+    if small:
         log.info(fmt(C.YELLOW,
-            f"  ⚠  {path.name} won't decode cleanly (truncated/corrupt); "
+            f"  ⚠  {path.name} suspiciously small and flac tool unavailable; "
             "treating as broken."))
         return False
+    log.info(fmt(C.YELLOW,
+        f"  ⚠  flac tool unavailable for {path.name}; trusting .flac extension."))
     return True
 
 

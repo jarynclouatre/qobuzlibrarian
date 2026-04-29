@@ -234,7 +234,14 @@ def _need_ffmpeg():
         pytest.skip("ffmpeg not available")
 
 
-def test_scan_dir_real_flac_decode_probe_catches_tail_truncation(tmp_path, _need_ffmpeg):
+@pytest.fixture
+def _need_flac():
+    import shutil
+    if shutil.which("flac") is None:
+        pytest.skip("flac not available")
+
+
+def test_scan_dir_real_flac_decode_probe_catches_tail_truncation(tmp_path, _need_ffmpeg, _need_flac):
     import subprocess
 
     from mutagen.flac import FLAC
@@ -260,7 +267,7 @@ def test_scan_dir_real_flac_decode_probe_catches_tail_truncation(tmp_path, _need
     assert r["verified_truncated"][0]["reason"] == "decode_failed"
 
 
-def test_scan_dir_real_flac_quiet_silence_not_flagged(tmp_path, _need_ffmpeg):
+def test_scan_dir_real_flac_quiet_silence_not_flagged(tmp_path, _need_ffmpeg, _need_flac):
     # Silence compresses below the byte-size gate, but the file is healthy.
     # The decode corroboration must keep it from being flagged.
     import subprocess

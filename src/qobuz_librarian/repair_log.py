@@ -13,12 +13,12 @@ Two non-obvious bits of behaviour worth preserving:
 import fcntl
 import os
 import shutil
-import subprocess
 import time
 from pathlib import Path
 
 from qobuz_librarian import config as cfg
 from qobuz_librarian.api.search import find_qobuz_track_by_isrc
+from qobuz_librarian.integrations.rip import flac_audio_ok
 from qobuz_librarian.library.scanner import read_album_dir
 from qobuz_librarian.ui_cli.colors import C, fmt
 from qobuz_librarian.ui_cli.logging import log
@@ -58,42 +58,22 @@ def _flac_metadata_size(path):
     except OSError:
         return 0
 
-# Walking every FLAC frame to verify CRCs costs a full read per file.
-# Worth it for an explicit repair scan: the cheap size+duration gates
-# can't see small tail-truncations (10 kB on a 100 MB file) or middle-zero
-# damage, which is exactly the failure mode interrupted-copy corruption
-# produces. ffmpeg is always available in the librarian's container
-# (downsample depends on it) so use that rather than the flac binary.
-_FLAC_DECODE_TIMEOUT_S = 300
+# Verifying every FLAC frame's CRC costs a full read per file. Worth it for an
+# explicit repair scan: the cheap size+duration gates can't see small tail-
+# truncations (10 kB on a 100 MB file) or middle-zero damage, which is exactly
+# the failure mode interrupted-copy corruption produces.
 
 
 def _flac_decode_ok(path):
-    """End-to-end FLAC decode probe. Returns False only when ffmpeg reports
-    a real decode error (frame-CRC mismatch, broken header, premature EOF).
-    A missing file, missing ffmpeg, or unrelated OS error returns True
-    so the scanner doesn't fabricate verified_truncated entries for
-    cases that are someone else's problem.
-
-    ffmpeg returns rc=0 even when its decoder logs `invalid residual` /
-    `Decoding error` on tail-truncated input, so the rc isn't reliable
-    on its own — the diagnostic is in stderr. With `-v error`, an intact
-    decode leaves stderr empty.
+    """End-to-end FLAC integrity probe via ``flac -t`` (frame-CRC + decode).
+    Returns False only on a real decode error (CRC mismatch, broken header,
+    premature EOF). A missing file or a missing flac tool returns True so the
+    scanner doesn't fabricate verified_truncated entries it can't stand behind.
     """
     if not path or not os.path.exists(path):
         return True
-    if shutil.which("ffmpeg") is None:
-        return True
-    try:
-        result = subprocess.run(
-            ["ffmpeg", "-v", "error", "-i", str(path), "-f", "null", "-"],
-            capture_output=True,
-            timeout=_FLAC_DECODE_TIMEOUT_S,
-        )
-    except (subprocess.TimeoutExpired, OSError):
-        return True
-    if result.returncode != 0:
-        return False
-    return not result.stderr.strip()
+    ok = flac_audio_ok(Path(path))
+    return True if ok is None else ok
 
 
 def scan_dir_for_isrc_repairs(album_dir, token,
@@ -194,7 +174,7 @@ def scan_dir_for_isrc_repairs(album_dir, token,
             # Qobuz didn't report a duration; the byte/duration gates can't run.
             # A decode probe is duration-independent, so still catch an
             # outright-corrupt file rather than passing it as ok. (No-op when
-            # ffmpeg is absent — _flac_decode_ok returns True.)
+            # the flac tool is absent — _flac_decode_ok returns True.)
             if path and not _flac_decode_ok(path):
                 report["verified_truncated"].append({
                     "path": path,
@@ -212,13 +192,13 @@ def scan_dir_for_isrc_repairs(album_dir, token,
 
         # Byte-size sanity gate against Qobuz's authoritative duration. Quiet /
         # ambient material legitimately compresses this small and decodes fine,
-        # so a decode probe vetoes the flag when ffmpeg is present. ``audio_size``
-        # excludes the metadata block so a multi-MB embedded picture doesn't
-        # mask a truncated audio stream.
+        # so a decode probe vetoes the flag when the flac tool is present.
+        # ``audio_size`` excludes the metadata block so a multi-MB embedded
+        # picture doesn't mask a truncated audio stream.
         if sample_rate > 0 and bits > 0 and audio_size > 0:
             expected_uncompressed = qdur * sample_rate * channels * (bits / 8)
             if (audio_size < expected_uncompressed * _BYTE_SIZE_TRUNCATED_RATIO
-                    and not (shutil.which("ffmpeg") is not None
+                    and not (shutil.which("flac") is not None
                              and path and _flac_decode_ok(path))):
                 report["verified_truncated"].append({
                     "path": path,

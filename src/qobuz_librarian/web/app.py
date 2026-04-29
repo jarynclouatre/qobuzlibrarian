@@ -229,8 +229,10 @@ async def _lifespan(_app: FastAPI):
         _log.warning("`rip` (streamrip) not found in PATH — downloads will fail")
     if not shutil.which("beet"):
         _log.warning("`beet` (beets) not found in PATH — imports will fail")
-    if not shutil.which("ffprobe"):
-        _log.warning("`ffprobe` not found — FLAC validation disabled")
+    if not shutil.which("flac"):
+        _log.warning("`flac` not found — FLAC integrity checks fall back to a size heuristic")
+    if not shutil.which("ffmpeg"):
+        _log.warning("`ffmpeg` not found — hi-res downsampling disabled")
     # Reload jobs from the prior session so an AWAITING_REVIEW scan's
     # candidates survive a container restart and queued/running downloads
     # don't silently vanish (they're rebadged FAILED with a retry hint).
@@ -1507,7 +1509,7 @@ def _diagnostics():
         checks.append({"label": "beets DB (BEETS_DB_PATH)", "ok": False,
                        "detail": f"{beets_db.parent} does not exist"})
 
-    for binary in ("rip", "beet", "ffprobe"):
+    for binary in ("rip", "beet", "ffmpeg", "flac"):
         found = _sh.which(binary)
         checks.append({"label": f"`{binary}` binary",
                        "ok": bool(found),

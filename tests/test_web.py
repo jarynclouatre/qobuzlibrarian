@@ -663,7 +663,7 @@ def test_diagnostics_reports_paths_and_binaries(tmp_path, monkeypatch):
     beets_row = by_label["beets DB (BEETS_DB_PATH)"]
     assert beets_row["ok"] is False and "does not exist" in beets_row["detail"]
     assert "`rip` binary" in by_label and "`beet` binary" in by_label
-    assert "`ffprobe` binary" in by_label
+    assert "`flac` binary" in by_label and "`ffmpeg` binary" in by_label
 
 
 def test_settings_empty_save_with_no_existing_creds_returns_error(client, monkeypatch):

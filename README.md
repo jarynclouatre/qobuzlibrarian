@@ -104,9 +104,9 @@ lyrics are fetched automatically (when `LYRICS_ENABLED` is on; default).
 
 ## How it ships
 
-A single Docker image bundles streamrip, beets, and ffmpeg — no extra
-containers. The web UI is the primary interface; the CLI runs the same engine
-for hands-on interactive runs, scripting, and unattended jobs. Paths and ports
+A single Docker image bundles streamrip, beets, ffmpeg, and the FLAC tools —
+no extra containers. The web UI is the primary interface; the CLI runs the
+same engine for hands-on interactive runs, scripting, and unattended jobs. Paths and ports
 come from environment variables, behaviour from the Settings page. The bundled
 tools' full config files live in a persistent volume, so you can change
 anything they support.
@@ -732,6 +732,8 @@ which are bundled into the Docker image:
   reading/writing. GPL-2.0-or-later.
 - **[FFmpeg](https://ffmpeg.org/)** — audio probing and transcoding.
   LGPL/GPL depending on build.
+- **[FLAC](https://xiph.org/flac/)** (Xiph.Org) — `flac -t` integrity
+  verification and `metaflac` header reads. BSD.
 
 Lyrics are sourced via [syncedlyrics](https://github.com/moehmeni/syncedlyrics)
 (LRCLIB, NetEase, Musixmatch). The web UI uses

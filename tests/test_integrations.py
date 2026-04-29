@@ -27,7 +27,7 @@ from qobuz_librarian.integrations.rip import (
 
 # ── rip: FLAC validation + lossy cleanup ──────────────────────────────────
 
-def test_is_flac_rejects_truncated_keeps_complete(tmp_path, _need_ffmpeg):
+def test_is_flac_rejects_truncated_keeps_complete(tmp_path, _need_ffmpeg, _need_flac):
     def _sine(path, seconds):
         subprocess.run(
             ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi",
@@ -36,7 +36,7 @@ def test_is_flac_rejects_truncated_keeps_complete(tmp_path, _need_ffmpeg):
             check=True)
 
     # A short but complete track is real audio — keep it even though it sits
-    # well under the size heuristic the no-ffprobe fallback uses.
+    # well under the size heuristic the no-flac fallback uses.
     short = tmp_path / "interlude.flac"
     _sine(short, 1.2)
     assert short.stat().st_size < _FLAC_TRUNCATION_FLOOR
@@ -54,6 +54,26 @@ def test_is_flac_rejects_truncated_keeps_complete(tmp_path, _need_ffmpeg):
     assert is_flac(tmp_path / "never-written.flac") is False
 
 
+def test_is_flac_keeps_track_with_corrupt_embedded_art(tmp_path, _need_ffmpeg, _need_flac):
+    # Streamrip embeds cover art on every track, and Qobuz's "original" art is
+    # occasionally malformed. The integrity check must verify only the audio: a
+    # track whose audio is intact but whose picture won't decode is a good
+    # download, not a broken one, and must never be deleted.
+    from mutagen.flac import FLAC, Picture
+    track = tmp_path / "track.flac"
+    subprocess.run(
+        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi",
+         "-i", "sine=frequency=440:sample_rate=44100:duration=2",
+         "-c:a", "flac", str(track)], check=True)
+    f = FLAC(str(track))
+    pic = Picture()
+    pic.type, pic.mime = 3, "image/png"
+    pic.data = b"\x89PNG\r\n\x1a\n" + b"\x00\x01\x02\x03" * 64  # truncated, undecodable
+    f.add_picture(pic)
+    f.save()
+    assert is_flac(track) is True
+
+
 def test_cleanup_lossy_sorts_flac_lossy_and_broken(tmp_path):
     good = tmp_path / "good.flac"
     good.write_bytes(b"\x00" * 200_000)
@@ -61,7 +81,7 @@ def test_cleanup_lossy_sorts_flac_lossy_and_broken(tmp_path):
     bad.write_bytes(b"\x00" * 200_000)
     mp3 = tmp_path / "track.mp3"
     mp3.write_bytes(b"\x00" * 1000)
-    # ffprobe/decode stubbed: the truncated FLAC fails the codec check.
+    # is_flac stubbed: only `good` verifies; the other FLAC is treated as broken.
     with patch("qobuz_librarian.integrations.rip.is_flac",
                side_effect=lambda p: p == good):
         kept, lossy, broken = cleanup_lossy([good, bad, mp3])
@@ -515,6 +535,13 @@ def _need_ffmpeg():
     import shutil
     if shutil.which("ffmpeg") is None:
         pytest.skip("ffmpeg not available")
+
+
+@pytest.fixture
+def _need_flac():
+    import shutil
+    if shutil.which("flac") is None:
+        pytest.skip("flac not available")
 
 
 def _make_silent_flac(path):
