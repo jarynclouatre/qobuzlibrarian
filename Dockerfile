@@ -142,7 +142,7 @@ ENV BEETSDIR=/config/beets
 # (uvicorn binds to all interfaces in that case, loopback included). A
 # user who pins WEB_HOST to a specific interface gets that hostname back.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-    CMD python -c "import urllib.request,os; h=os.environ.get('WEB_HOST','0.0.0.0'); h='127.0.0.1' if h=='0.0.0.0' else h; urllib.request.urlopen('http://'+h+':'+os.environ.get('WEB_PORT','8666')+'/healthz')" || exit 1
+    CMD python -c "import urllib.request,os; h=os.environ.get('WEB_HOST','0.0.0.0'); h='127.0.0.1' if h=='0.0.0.0' else h; urllib.request.urlopen('http://'+h+':'+os.environ.get('WEB_PORT','8666')+'/healthz', timeout=4)" || exit 1
 
 ENTRYPOINT ["/entrypoint.sh"]
 CMD ["web"]
