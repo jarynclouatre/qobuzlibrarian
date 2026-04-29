@@ -68,12 +68,14 @@ def _env_path(key, default: Path) -> Path:
     return Path(val) if val else default
 
 
-def _env_int_min(key, default: int, minimum: int) -> int:
-    """An int env value floored at `minimum`.
+def _env_num_min(key, default, minimum):
+    """A numeric env value floored at `minimum`, warning when it has to clamp.
 
-    Worker / thread-pool counts must be at least 1: a 0 or negative override
-    (a typo, or a `${VAR:-}` that resolved oddly) otherwise crashes the pool
-    constructor at startup. Clamp loudly so the cause shows up in the logs.
+    Two bad-override failure modes share this guard. A thread-pool size of 0 or
+    negative crashes the pool constructor at startup. A negative delay/cooldown
+    handed to time.sleep raises ValueError and takes down the worker thread, and
+    a negative subprocess timeout makes every download time out instantly. Clamp
+    loudly at the boundary so no consumer has to defend against it.
     """
     val = _env(key, default)
     if val < minimum:
@@ -279,12 +281,15 @@ SEARCH_LIMIT     = _env("SEARCH_LIMIT",     8)
 # the user-facing "Search page" depth and is unaffected.
 ARTIST_LOOKUP_LIMIT  = _env("ARTIST_LOOKUP_LIMIT",  5)
 CATALOG_SEARCH_LIMIT = _env("CATALOG_SEARCH_LIMIT", 12)
-RIP_TIMEOUT      = _env("RIP_TIMEOUT",      900)
-DELAY_BETWEEN    = _env("DELAY_BETWEEN",    1.0)
+# Per-album rip subprocess cap. 0 means no timeout (the rip runs until it
+# finishes or is cancelled); a stray negative folds to 0 rather than killing
+# every download the instant it starts.
+RIP_TIMEOUT      = _env_num_min("RIP_TIMEOUT", 900, 0)
+DELAY_BETWEEN    = _env_num_min("DELAY_BETWEEN", 1.0, 0.0)
 # Pause before the next queued album when Qobuz throttling was detected
 # in the last rip (vs the normal DELAY_BETWEEN). Tames the error-wave
 # pattern on multi-hundred-album queues. Set 0 to disable.
-RATE_LIMIT_COOLDOWN = _env("RATE_LIMIT_COOLDOWN", 30.0)
+RATE_LIMIT_COOLDOWN = _env_num_min("RATE_LIMIT_COOLDOWN", 30.0, 0.0)
 # INACTIVITY timeout for the beets import (seconds of *zero output*),
 # NOT a wall-clock cap: a slow-but-progressing import over R2 / a slow
 # NAS keeps printing beets progress, so it is never killed no matter how
@@ -297,17 +302,17 @@ BEETS_TIMEOUT    = _env("BEETS_TIMEOUT",    600)
 # After exhausting retries the album's staged folder is moved aside
 # (see BEETS_RETRY_DIR) so the rest of the queue keeps going.
 BEETS_MAX_ATTEMPTS = _env("BEETS_MAX_ATTEMPTS", 2)
-BEETS_RETRY_PAUSE  = _env("BEETS_RETRY_PAUSE",  30)
+BEETS_RETRY_PAUSE  = _env_num_min("BEETS_RETRY_PAUSE", 30, 0)
 BEETS_RETRY_DIR    = os.environ.get("BEETS_RETRY_DIR", ".beets_retry")
 # Per-album courtesy pause in the CLI walk. The 429 retry/backoff in
 # api/client is the real throttle backstop, so 0 is fine in practice.
 # Raise via env if Qobuz ever tightens its per-account rate limits.
-ARTIST_API_DELAY = _env("ARTIST_API_DELAY", 0.0)
+ARTIST_API_DELAY = _env_num_min("ARTIST_API_DELAY", 0.0, 0.0)
 # Concurrent artists during a library gap scan. Each worker has its own HTTP
 # session, so this is real parallelism; kept modest so the request rate stays
 # polite (the 429 retry/back-off in api/client is the backstop). 1 restores
 # the old sequential behaviour.
-ARTIST_SCAN_WORKERS = _env_int_min("ARTIST_SCAN_WORKERS", 4, 1)
+ARTIST_SCAN_WORKERS = _env_num_min("ARTIST_SCAN_WORKERS", 4, 1)
 
 # Cache get_album() responses on disk (DATA_DIR/album_cache.db). An album's track
 # list is immutable, so this turns the per-owned-album fetch — the dominant cost
@@ -358,7 +363,7 @@ WEB_TEST_AUTH_TIMEOUT = _env("QL_WEB_TEST_AUTH_TIMEOUT", 8.0)
 JOB_LOG_CAP          = _env("JOB_LOG_CAP",          5000)
 JOB_LOG_REPLAY_TAIL  = _env("JOB_LOG_REPLAY_TAIL",  500)
 POST_JOB_HOOK_TIMEOUT = _env("POST_JOB_HOOK_TIMEOUT", 10)
-SSE_MAX_WORKERS      = _env_int_min("SSE_MAX_WORKERS", 16, 1)
+SSE_MAX_WORKERS      = _env_num_min("SSE_MAX_WORKERS", 16, 1)
 SSE_HEARTBEAT_TICKS  = _env("SSE_HEARTBEAT_TICKS",  30)
 
 # ── Fuzzy-match thresholds ────────────────────────────────────────────────────

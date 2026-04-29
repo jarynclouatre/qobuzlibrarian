@@ -22,8 +22,15 @@ def test_env_bool_empty_string_means_unset(monkeypatch):
     assert cfg._env_bool("PREFER_HIRES", True) is True
 
 
-def test_env_int_min_floors_a_sub_minimum_count(monkeypatch):
+def test_env_num_min_floors_a_sub_minimum_count(monkeypatch):
     # A 0 or negative worker count would crash the thread-pool constructor at
     # import time; clamp to the floor so a typo can't take down the web app.
     monkeypatch.setenv("SSE_MAX_WORKERS", "0")
-    assert cfg._env_int_min("SSE_MAX_WORKERS", 16, 1) == 1
+    assert cfg._env_num_min("SSE_MAX_WORKERS", 16, 1) == 1
+
+
+def test_env_num_min_clamps_a_negative_delay_to_zero(monkeypatch):
+    # A negative delay reaches time.sleep, which raises ValueError and kills the
+    # worker thread mid-scan. Flooring at 0 keeps a fat-fingered value harmless.
+    monkeypatch.setenv("ARTIST_API_DELAY", "-1")
+    assert cfg._env_num_min("ARTIST_API_DELAY", 0.0, 0.0) == 0.0
