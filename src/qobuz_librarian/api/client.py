@@ -190,6 +190,13 @@ def qobuz_get(endpoint, params, token):
             _retry_sleep(wait)
             continue
         if r.status_code != 200:
+            # A 4xx other than the 401 handled above still means Qobuz
+            # authenticated the request before answering — "no such album", a
+            # bad query, a lapsed subscription — so the token itself is good.
+            # Clear a stale auth-lost banner just as a 200 would; only the 401
+            # path (and a 5xx, which may never have reached auth) leaves it set.
+            if 400 <= r.status_code < 500:
+                notify_auth_state(True)
             raise QobuzError(f"HTTP {r.status_code} from {endpoint}: {r.text[:200]}")
         # A 200 means Qobuz accepted the token. Report that so the web
         # dashboard's auth banner recovers from an earlier transient 401
