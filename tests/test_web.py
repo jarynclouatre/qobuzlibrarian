@@ -779,12 +779,28 @@ def test_web_fetch_timeout_honors_env_var(monkeypatch):
     import importlib
 
     import qobuz_librarian.config as cfg_mod
-    monkeypatch.setenv("QL_WEB_FETCH_TIMEOUT", "0.001")
-    monkeypatch.setenv("QL_WEB_TEST_AUTH_TIMEOUT", "0.002")
+    monkeypatch.setenv("QL_WEB_FETCH_TIMEOUT", "20")
+    monkeypatch.setenv("QL_WEB_TEST_AUTH_TIMEOUT", "5")
     reloaded = importlib.reload(cfg_mod)
     try:
-        assert reloaded.WEB_FETCH_TIMEOUT == 0.001
-        assert reloaded.WEB_TEST_AUTH_TIMEOUT == 0.002
+        assert reloaded.WEB_FETCH_TIMEOUT == 20.0
+        assert reloaded.WEB_TEST_AUTH_TIMEOUT == 5.0
+    finally:
+        importlib.reload(cfg_mod)
+
+
+def test_web_fetch_timeout_floored_against_bad_override(monkeypatch):
+    # A zero/negative budget would make every web Qobuz call give up before it
+    # started (the deadline is already spent) — clamp it instead of bricking.
+    import importlib
+
+    import qobuz_librarian.config as cfg_mod
+    monkeypatch.setenv("QL_WEB_FETCH_TIMEOUT", "-5")
+    monkeypatch.setenv("QL_WEB_TEST_AUTH_TIMEOUT", "0")
+    reloaded = importlib.reload(cfg_mod)
+    try:
+        assert reloaded.WEB_FETCH_TIMEOUT >= 1.0
+        assert reloaded.WEB_TEST_AUTH_TIMEOUT >= 1.0
     finally:
         importlib.reload(cfg_mod)
 

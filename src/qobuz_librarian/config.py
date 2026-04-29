@@ -346,8 +346,8 @@ AUTO_LIBRARY_SCAN = _env_bool("AUTO_LIBRARY_SCAN", True)
 # Per-request budgets for the web UI's Qobuz API calls (album/search/track
 # fetches and the Settings token check). A slow Qobuz response shouldn't
 # park a worker thread for minutes — the user gets a clear timeout instead.
-WEB_FETCH_TIMEOUT     = _env("QL_WEB_FETCH_TIMEOUT",     12.0)
-WEB_TEST_AUTH_TIMEOUT = _env("QL_WEB_TEST_AUTH_TIMEOUT", 8.0)
+WEB_FETCH_TIMEOUT     = _env_num_min("QL_WEB_FETCH_TIMEOUT",     12.0, 1.0)
+WEB_TEST_AUTH_TIMEOUT = _env_num_min("QL_WEB_TEST_AUTH_TIMEOUT", 8.0,  1.0)
 
 # Web job log + SSE tunables. Defaults match the literals these replaced.
 # JOB_LOG_CAP is the per-job line ceiling; very long artist walks
