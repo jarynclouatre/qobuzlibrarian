@@ -74,6 +74,31 @@ def test_get_artist_albums_paginates_and_stops_early():
     assert len(items) == 50
 
 
+def test_get_artist_albums_does_not_cache_a_short_fetch(tmp_path, monkeypatch):
+    import qobuz_librarian.config as cfg
+    from qobuz_librarian.api import album_cache, search
+    monkeypatch.setattr(cfg, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(cfg, "ALBUM_CACHE_ENABLED", True)
+    monkeypatch.setattr(cfg, "ARTIST_CATALOG_CACHE_TTL", 3600)
+    album_cache._reset_for_tests()
+    try:
+        # Qobuz says the artist has 105 albums but hands back 100 and then an
+        # empty page — a transient short read. The 100 we got are returned for
+        # this run, but caching them would hide the other 5 for the whole TTL,
+        # so the next call must re-fetch rather than trust the truncated list.
+        page1 = {"albums": {"items": [{"id": i} for i in range(100)], "total": 105}}
+        empty = {"albums": {"items": []}}
+        with patch("qobuz_librarian.api.search.qobuz_get", side_effect=[page1, empty]):
+            items, total = search.get_artist_albums("ART_SHORT", "tok", limit=500)
+        assert len(items) == 100 and total == 105
+        full = {"albums": {"items": [{"id": i} for i in range(105)], "total": 105}}
+        with patch("qobuz_librarian.api.search.qobuz_get", return_value=full) as gg:
+            items2, _ = search.get_artist_albums("ART_SHORT", "tok", limit=500)
+        assert gg.called and len(items2) == 105
+    finally:
+        album_cache._reset_for_tests()
+
+
 def test_get_album_cached_by_id(tmp_path, monkeypatch):
     import qobuz_librarian.config as cfg
     from qobuz_librarian.api import album_cache, search

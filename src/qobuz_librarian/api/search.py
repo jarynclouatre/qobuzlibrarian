@@ -182,5 +182,15 @@ def get_artist_albums(artist_id, token, limit=None, fresh=False):
             break
         if qobuz_total is not None and len(items) >= qobuz_total:
             break
-    album_cache.put_catalog(cache_key, {"items": items, "total": qobuz_total})
+    # Only persist a discography we believe is whole. The catalog cache lives
+    # for weeks, so an entry that fell short because Qobuz handed back a short
+    # or empty page mid-pagination would keep hiding that artist's missing and
+    # new albums until it expired. If we got fewer than Qobuz's own total
+    # without hitting our own limit, treat the result as incomplete: it's fine
+    # for this run, but the next scan should re-fetch rather than trust it.
+    complete = (qobuz_total is None
+                or len(items) >= qobuz_total
+                or len(items) >= limit)
+    if complete:
+        album_cache.put_catalog(cache_key, {"items": items, "total": qobuz_total})
     return items, qobuz_total
