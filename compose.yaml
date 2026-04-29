@@ -40,6 +40,12 @@ services:
       # use the Settings page in the web UI. Empty = use the Settings page.
       QOBUZ_USER_AUTH_TOKEN: "${QOBUZ_USER_AUTH_TOKEN:-}"
       QOBUZ_USER_ID:         "${QOBUZ_USER_ID:-}"
+      # To keep the token out of the container environment (and `docker
+      # inspect`), point this at a file holding just the token — e.g. a Docker
+      # secret — instead of setting QOBUZ_USER_AUTH_TOKEN above:
+      #   QOBUZ_USER_AUTH_TOKEN_FILE: /run/secrets/qobuz_token
+      # (add the matching `secrets:` block + a top-level `secrets:` definition).
+      QOBUZ_USER_AUTH_TOKEN_FILE: "${QOBUZ_USER_AUTH_TOKEN_FILE:-}"
 
       # ── Paths ─────────────────────────────────────────────────────────────
       MUSIC_ROOT:           /music

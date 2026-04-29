@@ -255,6 +255,11 @@ Paste it into the Auth Token field on the Settings page; "User ID / Email"
 takes either your account email or the numeric Qobuz user id. Credentials
 stay in the container's config volume and are never sent anywhere but Qobuz.
 
+To set the token without putting it in the environment (where `docker inspect`
+would show it), point `QOBUZ_USER_AUTH_TOKEN_FILE` at a file holding just the
+token — a [Docker secret](https://docs.docker.com/engine/swarm/secrets/) or a
+read-only bind mount — instead of setting `QOBUZ_USER_AUTH_TOKEN`.
+
 ### Building from source
 
 ```bash

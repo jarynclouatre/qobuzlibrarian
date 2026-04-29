@@ -84,9 +84,33 @@ def _env_num_min(key, default, minimum):
     return val
 
 
+def _resolve_secret(key: str) -> str:
+    """Value of `key`, or — when it's unset — the contents of the file named by
+    `{key}_FILE`. The file form lets Docker/Compose secrets supply the token
+    without it showing up in `docker inspect` or a process listing. The resolved
+    value is written back to the environment so the handful of places that read
+    os.environ[key] directly agree with the config global."""
+    val = os.environ.get(key, "").strip()
+    if val:
+        return val
+    path = os.environ.get(f"{key}_FILE", "").strip()
+    if not path:
+        return ""
+    try:
+        val = Path(path).read_text(encoding="utf-8").strip()
+    except OSError as e:
+        _warn(f"{key}_FILE={path!r} couldn't be read ({e}); ignoring it.")
+        return ""
+    if val:
+        os.environ[key] = val
+    return val
+
+
 # ── Auth — direct env-var override (no streamrip config file needed) ──────────
 # Set these in compose.yaml or the Settings page writes them to the config file.
-QOBUZ_USER_AUTH_TOKEN = os.environ.get("QOBUZ_USER_AUTH_TOKEN", "")
+# QOBUZ_USER_AUTH_TOKEN_FILE points at a file holding the token instead (Docker
+# secrets), keeping it out of the container's environment.
+QOBUZ_USER_AUTH_TOKEN = _resolve_secret("QOBUZ_USER_AUTH_TOKEN")
 QOBUZ_USER_ID         = os.environ.get("QOBUZ_USER_ID", "")
 
 # ── Paths ─────────────────────────────────────────────────────────────────────

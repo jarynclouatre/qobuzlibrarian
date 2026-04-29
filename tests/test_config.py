@@ -1,5 +1,7 @@
 """Env-var validation: a bad value falls back loudly instead of surfacing
 later as an opaque download/lyrics failure."""
+import os
+
 import qobuz_librarian.config as cfg
 
 
@@ -34,3 +36,25 @@ def test_env_num_min_clamps_a_negative_delay_to_zero(monkeypatch):
     # worker thread mid-scan. Flooring at 0 keeps a fat-fingered value harmless.
     monkeypatch.setenv("ARTIST_API_DELAY", "-1")
     assert cfg._env_num_min("ARTIST_API_DELAY", 0.0, 0.0) == 0.0
+
+
+def test_resolve_secret_reads_token_from_a_file(monkeypatch, tmp_path):
+    # Docker-secret style: the token lives in a file, not the environment, so
+    # it stays out of `docker inspect`. The trailing newline a file carries must
+    # be stripped, and the value published back so direct os.environ readers agree.
+    # Empty (compose's `${VAR:-}`) means "unset" to the resolver, and lets
+    # monkeypatch own the key so its write-back doesn't leak into later tests.
+    monkeypatch.setenv("QOBUZ_USER_AUTH_TOKEN", "")
+    token_file = tmp_path / "qobuz_token"
+    token_file.write_text("tok-from-file\n")
+    monkeypatch.setenv("QOBUZ_USER_AUTH_TOKEN_FILE", str(token_file))
+    assert cfg._resolve_secret("QOBUZ_USER_AUTH_TOKEN") == "tok-from-file"
+    assert os.environ["QOBUZ_USER_AUTH_TOKEN"] == "tok-from-file"
+
+
+def test_resolve_secret_prefers_a_set_env_var_over_the_file(monkeypatch, tmp_path):
+    token_file = tmp_path / "qobuz_token"
+    token_file.write_text("from-file")
+    monkeypatch.setenv("QOBUZ_USER_AUTH_TOKEN", "from-env")
+    monkeypatch.setenv("QOBUZ_USER_AUTH_TOKEN_FILE", str(token_file))
+    assert cfg._resolve_secret("QOBUZ_USER_AUTH_TOKEN") == "from-env"
