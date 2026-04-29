@@ -1080,15 +1080,21 @@ async def library_scan(request: Request, mode: str = Form("missing_albums")):
     except (SystemExit, NoCredsError):
         return _no_creds_response(request)
     mode_norm = (mode or "").strip().lower()
+    # Run the submit off the event loop: it takes _auto_check_lock, which the
+    # dashboard auto-triggers can hold across small data-volume reads, and the
+    # loop shouldn't block on a (possibly NAS) mount — same reason the dashboard
+    # does its disk work in an executor.
+    loop = asyncio.get_running_loop()
     if mode_norm == "new_releases":
         # Same job the dashboard auto-check submits; its own execute_kind so the
         # review screen pre-ticks the new releases and labels the surface.
-        job = _start_new_release_check()
+        job = await loop.run_in_executor(None, _start_new_release_check)
         return RedirectResponse(url=f"/jobs/{job.id}", status_code=303)
     # "library" (not "album") so the review screen knows this is the paced triage
     # surface; both modes run the same album executor and resume from a matching
     # checkpoint if one's waiting (see _start_library_scan / scan_library).
-    job = _start_library_scan(partial_only=(mode_norm == "partial_fill"))
+    job = await loop.run_in_executor(
+        None, lambda: _start_library_scan(partial_only=(mode_norm == "partial_fill")))
     return RedirectResponse(url=f"/jobs/{job.id}", status_code=303)
 
 
