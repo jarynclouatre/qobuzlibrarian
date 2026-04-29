@@ -516,12 +516,15 @@ Edit `/config/beets/config.yaml` and the changes apply on the next import
 
 ## First scan on a big library
 
-A library-wide scan does one Qobuz API call per artist directory, with a
-small pause between calls (`ARTIST_API_DELAY`, default 0.4 s). ~2000
-artists is roughly 13 minutes before the review screen opens. Library
-walks log progress line by line; nothing is downloaded until you approve
-the review. It's a scan-once-then-review flow rather than a daemon — re-run
-it whenever you've added music, not on a schedule.
+A library-wide scan does roughly one Qobuz API call per artist directory
+(cached on re-scans, so repeats are mostly free), fanned out across a few
+artists at once (`ARTIST_SCAN_WORKERS`, default 4). There's no artificial
+pause between calls by default (`ARTIST_API_DELAY`, default 0 s) — Qobuz's
+own rate limit is handled by automatic retry/back-off, so raise the delay
+only if you get throttled. How long the first scan takes depends on your
+artist count and connection; library walks log progress line by line and
+nothing is downloaded until you approve the review. It's a scan-then-review
+flow rather than a daemon — re-run it whenever you've added music.
 
 Singles and very short EPs are hidden from the missing-albums step by
 default — bump `MISSING_ALBUMS_MIN_TRACKS` in `compose.yaml` (or pass
