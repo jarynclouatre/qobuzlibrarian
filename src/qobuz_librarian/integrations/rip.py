@@ -429,7 +429,8 @@ def cleanup_lossy(new_files):
 
 # Known non-audio artifacts that streamrip leaves in STAGING_DIR between runs.
 # These inflate the leftover count and can trigger the --yes abort threshold.
-_RESIDUE_EXTS  = {".jpg", ".jpeg", ".png", ".gif", ".json", ".log", ".toml"}
+# .pdf covers booklets left behind by an older config (downloads are off now).
+_RESIDUE_EXTS  = {".jpg", ".jpeg", ".png", ".gif", ".json", ".log", ".toml", ".pdf"}
 _RESIDUE_NAMES = {"cover", "albumartwork", "artwork"}
 
 

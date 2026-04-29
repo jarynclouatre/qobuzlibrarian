@@ -37,6 +37,8 @@ def test_streamrip_default_toml_uses_valid_placeholders_and_flags():
     assert cfg["database"]["downloads_enabled"] is False
     # Without this, gap-fill walks collapse multi-album fills into one folder.
     assert cfg["filepaths"]["add_singles_to_folder"] is True
+    # Booklets aren't imported anywhere, so fetching them just clutters staging.
+    assert cfg["qobuz"]["download_booklets"] is False
 
 
 def _run_entrypoint_head(tmp_path, env_extra, *, capture=False):
@@ -65,6 +67,8 @@ def test_entrypoint_normalises_a_stale_config_volume(tmp_path):
     # Older configs with downloads_enabled=true / add_singles_to_folder=false
     # must be flipped to match the current librarian invariants on every start.
     cfg = _make_config(tmp_path,
+        "[qobuz]\n"
+        "download_booklets = true\n"
         "[database]\n"
         "downloads_enabled = true\n"
         "failed_downloads_enabled = true\n"
@@ -77,6 +81,7 @@ def test_entrypoint_normalises_a_stale_config_volume(tmp_path):
     out = (cfg / "streamrip" / "config.toml").read_text()
     assert "downloads_enabled = false" in out and "\ndownloads_enabled = true" not in out
     assert "add_singles_to_folder = true" in out and "add_singles_to_folder = false" not in out
+    assert "download_booklets = false" in out and "download_booklets = true" not in out
     # Unrelated keys are left alone.
     assert "failed_downloads_enabled = true" in out
 

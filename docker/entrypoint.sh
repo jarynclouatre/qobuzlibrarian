@@ -47,6 +47,14 @@ if grep -q '^add_singles_to_folder = false' "$STREAMRIP_DIR/config.toml" 2>/dev/
         "$STREAMRIP_DIR/config.toml"
     echo "[init] Set streamrip add_singles_to_folder=true (was false)."
 fi
+#   download_booklets=false — the librarian imports audio only; a fetched
+#     booklet PDF never lands in the library, just clutters /staging and
+#     inflates the leftover count that can abort a --yes run.
+if grep -q '^download_booklets = true' "$STREAMRIP_DIR/config.toml" 2>/dev/null; then
+    sed -i 's/^download_booklets = true/download_booklets = false/' \
+        "$STREAMRIP_DIR/config.toml"
+    echo "[init] Set streamrip download_booklets=false (was true)."
+fi
 
 # The streamrip config holds the Qobuz token once creds are set. The web/env
 # write path lands 0600 (atomic mkstemp+replace); the seeded default arrives
