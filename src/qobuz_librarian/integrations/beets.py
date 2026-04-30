@@ -726,7 +726,7 @@ def staging_preflight(args):
     except EOFError:
         r = "2"
     if r == "1":
-        from qobuz_librarian.integrations.compress import (
+        from qobuz_librarian.integrations.downsample_engine import (
             HAVE_DOWNSAMPLE,
             downsample_dir,
         )

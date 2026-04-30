@@ -15,7 +15,7 @@ from qobuz_librarian.integrations.beets import (
     beets_import_albums,
     staging_preflight,
 )
-from qobuz_librarian.integrations.compress import HAVE_DOWNSAMPLE, downsample_dir
+from qobuz_librarian.integrations.downsample_engine import HAVE_DOWNSAMPLE, downsample_dir
 from qobuz_librarian.integrations.lyrics import (
     _record_post_import_lyric_retry,
     _resolve_signatures_to_paths,

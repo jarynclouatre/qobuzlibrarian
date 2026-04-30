@@ -1,7 +1,8 @@
-"""Downsample engine: find high-sample-rate FLACs and resample them down.
+"""ffmpeg resampling engine for the downsample feature.
 
-Imported through integrations/compress.py — `compress_dir` resamples a tree in
-place, `scan_dir_for_hires` reports what would shrink without touching anything.
+`downsample_dir` resamples a tree's high-rate FLACs in place; `scan_dir_for_hires`
+reports what would shrink without touching anything. The higher-level discovery
+(grouping into per-album review candidates) lives in library/downsample.py.
 
 Targets (preserves integer-ratio family for clean math):
   88.2 / 176.4 / 352.8 kHz  →  44.1 kHz
@@ -15,10 +16,16 @@ Quality settings:
   - FLAC compression level 5 (default — lossless, fast encode).
 """
 import os
+import shutil
 import subprocess
 import tempfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
+
+# Downsampling needs ffmpeg to resample. Gate on it so a checkout without the
+# binary skips the step cleanly instead of failing per-album at run time; in the
+# image ffmpeg is a pinned dependency, so this is always True there.
+HAVE_DOWNSAMPLE = shutil.which("ffmpeg") is not None
 
 MUSIC_ROOT       = Path(os.environ.get("MUSIC_ROOT", "/music"))
 # 1024 is enough to clear large ID3v2 preambles on the rare track that has one.
@@ -176,7 +183,7 @@ def scan_dir_for_hires(directory):
     "n_flac": int}``. ``audio_size`` is the file minus its metadata/art (which
     don't shrink), so a saving estimate scaled off it isn't inflated by a big
     embedded cover. The downsample scan uses this to build review candidates;
-    compress_dir runs the same probe before it resamples.
+    downsample_dir runs the same probe before it resamples.
     """
     directory = Path(directory)
     hires = []
@@ -296,7 +303,7 @@ def sweep_stale_encodes(directory):
     """Delete orphaned resample temps under `directory`, returning the count.
 
     A temp only survives the resample_one finally-cleanup if the process was
-    hard-killed (OOM/power loss/SIGKILL) mid-encode. compress_dir never runs
+    hard-killed (OOM/power loss/SIGKILL) mid-encode. downsample_dir never runs
     concurrently against the same tree — the web path holds the staging lock,
     the CLI is single-threaded — so any temp present here is a dead orphan, not
     an encode in flight. Left alone they hide from the library scanner (dot
@@ -312,7 +319,7 @@ def sweep_stale_encodes(directory):
     return removed
 
 
-def compress_dir(directory, *, verbose=True, base_dir=None, log=print):
+def downsample_dir(directory, *, verbose=True, base_dir=None, log=print):
     """Resample any high-sample-rate FLACs inside `directory` (recursive).
 
     Probes each file's sample rate, resamples the ones above CD rate, and
@@ -350,7 +357,7 @@ def compress_dir(directory, *, verbose=True, base_dir=None, log=print):
         return {"resampled": 0, "errors": 0, "saved_bytes": 0}
 
     if verbose:
-        log(f"  ⇳ compress: {len(candidates)} file(s) in {directory.name}")
+        log(f"  ⇳ downsample: {len(candidates)} file(s) in {directory.name}")
 
     saved_total = 0
     errors = 0
@@ -370,7 +377,7 @@ def compress_dir(directory, *, verbose=True, base_dir=None, log=print):
                 saved_total += saved
 
     if verbose and resampled:
-        log(f"  ✓ compress: {resampled} resampled, "
+        log(f"  ✓ downsample: {resampled} resampled, "
             f"saved {human(saved_total)}")
 
     return {"resampled": resampled,

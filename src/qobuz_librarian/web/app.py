@@ -1181,7 +1181,7 @@ async def upgrade_scan(request: Request):
 
 @app.get("/downsample", response_class=HTMLResponse)
 async def downsample_page(request: Request):
-    from qobuz_librarian.integrations.compress import HAVE_DOWNSAMPLE
+    from qobuz_librarian.integrations.downsample_engine import HAVE_DOWNSAMPLE
     from qobuz_librarian.library import hidden as hidden_mod
     return _tr(request, "downsample.html", {
         "page": "downsample",

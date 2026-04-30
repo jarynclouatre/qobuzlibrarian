@@ -16,7 +16,7 @@ import time
 from qobuz_librarian import config as cfg
 from qobuz_librarian.api.auth import AuthLost, QobuzError, QobuzUnavailable
 from qobuz_librarian.api.search import get_album, get_artist_albums
-from qobuz_librarian.integrations.compress import HAVE_DOWNSAMPLE
+from qobuz_librarian.integrations.downsample_engine import HAVE_DOWNSAMPLE
 from qobuz_librarian.library.catalog import (
     _count_audio_files_in,
     album_quality_label,

@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 from qobuz_librarian import config as cfg
 from qobuz_librarian.api.auth import AuthLost, QobuzError
 from qobuz_librarian.api.search import get_artist_albums, search_artists
-from qobuz_librarian.integrations.compress import HAVE_DOWNSAMPLE
+from qobuz_librarian.integrations.downsample_engine import HAVE_DOWNSAMPLE
 from qobuz_librarian.library.catalog import (
     album_quality_label,
     compute_missing,

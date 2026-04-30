@@ -8,7 +8,7 @@ disk, so it runs without credentials.
 from dataclasses import dataclass
 from pathlib import Path
 
-from qobuz_librarian.integrations.compress import (
+from qobuz_librarian.integrations.downsample_engine import (
     HAVE_DOWNSAMPLE,
     scan_dir_for_hires,
 )
@@ -47,10 +47,10 @@ def scan_artist_for_downsample(artist_dir: Path):
     """High-rate albums under one artist folder, as review candidates.
 
     Mirrors quality.decision.scan_artist_for_upgrades' per-artist shape so the
-    CLI walk and the web fan-out drive it the same way. Returns [] when the
-    downsample script isn't available.
+    CLI walk and the web fan-out drive it the same way. Returns [] when ffmpeg
+    isn't available to resample.
     """
-    if not HAVE_DOWNSAMPLE or scan_dir_for_hires is None:
+    if not HAVE_DOWNSAMPLE:
         return []
     artist = artist_dir.name
     out = []

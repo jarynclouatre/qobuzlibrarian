@@ -705,10 +705,10 @@ def execute_downsamples(job, chosen):
     resample_one), so a bad encode can't destroy a master that has no
     re-download fallback.
     """
-    from qobuz_librarian.integrations.compress import HAVE_DOWNSAMPLE, downsample_dir
+    from qobuz_librarian.integrations.downsample_engine import HAVE_DOWNSAMPLE, downsample_dir
     from qobuz_librarian.web.jobs import staging_lock
 
-    if not HAVE_DOWNSAMPLE or downsample_dir is None:
+    if not HAVE_DOWNSAMPLE:
         job.error = "Downsampling isn't available on this server."
         return
     shrunk = 0

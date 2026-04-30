@@ -7,7 +7,7 @@ file is decode-verified before it replaces anything.
 """
 import sys
 
-from qobuz_librarian.integrations.compress import HAVE_DOWNSAMPLE, downsample_dir
+from qobuz_librarian.integrations.downsample_engine import HAVE_DOWNSAMPLE, downsample_dir
 from qobuz_librarian.library.downsample import scan_artist_for_downsample
 from qobuz_librarian.library.scanner import clear_scan_caches, list_library_artists
 from qobuz_librarian.ui_cli.colors import C, banner, fmt, format_size, truncate
@@ -27,9 +27,9 @@ def run_downsample_walk_mode(args):
     clear_scan_caches()
     banner("Downsample — shrink hi-res library files to CD rate")
 
-    if not HAVE_DOWNSAMPLE or downsample_dir is None:
+    if not HAVE_DOWNSAMPLE:
         log.info(fmt(C.YELLOW,
-            "  ⚠  Downsampling isn't available (the resample helper is missing)."))
+            "  ⚠  Downsampling isn't available (ffmpeg not found)."))
         return
 
     all_artists = list_library_artists()
