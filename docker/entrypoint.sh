@@ -31,30 +31,36 @@ fi
 
 # Enforce the streamrip settings the librarian depends on, every boot. These
 # aren't user-tunable (there's no UI for them) and the /config volume persists
-# across image rebuilds, so a config written by an older build must be brought
-# into line rather than left stale.
+# across image rebuilds, so a config written by an older build is brought into
+# line rather than left stale. Best-effort: a read-only /config leaves the
+# value alone and the writability check below explains why.
 #   downloads_enabled=false  — its downloads.db otherwise blocks re-download of
-#     any track the user removed by hand. ^anchor avoids failed_downloads_enabled.
+#     any track the user removed by hand. The ^anchor in the key match leaves
+#     failed_downloads_enabled untouched.
 #   add_singles_to_folder=true — per-track gap-fill must land each track in its
 #     own folder, or beets routes multiple albums into one on-disk folder.
-if grep -q '^downloads_enabled = true' "$STREAMRIP_DIR/config.toml" 2>/dev/null; then
-    sed -i 's/^downloads_enabled = true/downloads_enabled = false/' \
-        "$STREAMRIP_DIR/config.toml"
-    echo "[init] Set streamrip downloads_enabled=false (was true)."
-fi
-if grep -q '^add_singles_to_folder = false' "$STREAMRIP_DIR/config.toml" 2>/dev/null; then
-    sed -i 's/^add_singles_to_folder = false/add_singles_to_folder = true/' \
-        "$STREAMRIP_DIR/config.toml"
-    echo "[init] Set streamrip add_singles_to_folder=true (was false)."
-fi
 #   download_booklets=false — the librarian imports audio only; a fetched
 #     booklet PDF never lands in the library, just clutters /staging and
 #     inflates the leftover count that can abort a --yes run.
-if grep -q '^download_booklets = true' "$STREAMRIP_DIR/config.toml" 2>/dev/null; then
-    sed -i 's/^download_booklets = true/download_booklets = false/' \
-        "$STREAMRIP_DIR/config.toml"
-    echo "[init] Set streamrip download_booklets=false (was true)."
-fi
+#   check_for_updates=false — streamrip is pinned into the image, so its
+#     "a new version is available" notice can't be acted on; turning it off
+#     also drops a PyPI request from every download.
+enforce_streamrip() {
+    local key="$1" want="$2" cfg="$STREAMRIP_DIR/config.toml" cur
+    cur=$(sed -n "s/^${key} = \(.*\)/\1/p" "$cfg" 2>/dev/null)
+    if [ -z "$cur" ] || [ "$cur" = "$want" ]; then
+        return 0
+    fi
+    if sed -i "s/^${key} = .*/${key} = ${want}/" "$cfg" 2>/dev/null; then
+        echo "[init] Set streamrip ${key}=${want} (was ${cur})."
+    else
+        echo "[warn] couldn't set streamrip ${key}=${want} — mount /config read-write." >&2
+    fi
+}
+enforce_streamrip downloads_enabled false
+enforce_streamrip add_singles_to_folder true
+enforce_streamrip download_booklets false
+enforce_streamrip check_for_updates false
 
 # The streamrip config holds the Qobuz token once creds are set. The web/env
 # write path lands 0600 (atomic mkstemp+replace); the seeded default arrives
