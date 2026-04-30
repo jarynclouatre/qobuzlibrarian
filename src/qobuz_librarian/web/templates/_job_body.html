@@ -88,10 +88,27 @@
       let scanDone = !scanning;
 
       function plural(n, w) { return n + ' ' + w + (n === 1 ? '' : 's'); }
+      function fmtBytes(n) {
+        n = Number(n) || 0;
+        const units = ['B', 'KB', 'MB', 'GB'];
+        for (const u of units) {
+          if (n < 1024) return (u === 'B' ? Math.floor(n) : n.toFixed(1)) + u;
+          n /= 1024;
+        }
+        return n.toFixed(1) + 'TB';
+      }
+      const dsTotal = document.querySelector('[data-downsample-total]');
       function refresh() {
         const checked = form.querySelectorAll('.cb:checked').length;
         if (countEl) countEl.textContent = checked ? ' ' + checked : '';
         if (submit) submit.disabled = !scanDone || checked === 0;
+        if (dsTotal) {
+          let bytes = 0;
+          form.querySelectorAll('.cb:checked').forEach(function (cb) {
+            bytes += parseInt(cb.dataset.saving || '0', 10) || 0;
+          });
+          dsTotal.textContent = bytes > 0 ? ' · ~' + fmtBytes(bytes) + ' reclaimable' : '';
+        }
         form.querySelectorAll('[data-hide]').forEach(function (btn) {
           const det = btn.closest('details');
           const lbl = btn.querySelector('[data-hide-label]');

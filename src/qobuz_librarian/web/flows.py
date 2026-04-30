@@ -683,7 +683,7 @@ def scan_downsamples(job):
                 title=c.title,
                 artist=name,
                 detail=c.detail,
-                payload={"album_dir": str(c.album_dir)},
+                payload={"album_dir": str(c.album_dir), "est_saving": c.est_saving},
                 selected=False,
             )
             total += 1

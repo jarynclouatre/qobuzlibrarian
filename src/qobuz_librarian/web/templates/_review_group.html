@@ -25,7 +25,8 @@
     {% for c in items %}
     <label class="flex items-center gap-3 px-3 py-2 bg-base-100 border border-base-300/40 rounded-lg cursor-pointer transition-colors hover:border-base-content/20">
       <input type="checkbox" class="checkbox checkbox-sm cb" name="cid"
-             value="{{ c.cid }}" data-seq="{{ c.seq }}" {% if c.selected %}checked{% endif %}>
+             value="{{ c.cid }}" data-seq="{{ c.seq }}"
+             data-saving="{{ c.payload.est_saving or 0 }}" {% if c.selected %}checked{% endif %}>
       <span class="flex-1 min-w-0">
         <span class="font-medium">{{ c.title }}</span>{% if c.payload.is_new %}
         <span class="badge badge-primary badge-xs align-middle ml-1">new</span>{% endif %}

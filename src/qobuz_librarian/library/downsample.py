@@ -29,8 +29,7 @@ class DownsampleCandidate:
     n_flac: int           # all FLACs in the folder
     source_rates: list    # sorted unique source sample rates (Hz)
     target_rates: list    # sorted unique target sample rates (Hz)
-    bytes_hires: int      # total size of the high-rate files
-    est_saving: int       # rough bytes reclaimable (rate-ratio estimate)
+    est_saving: int       # estimated bytes reclaimable (audio scaled by the rate cut)
 
     @property
     def rate_label(self):
@@ -60,10 +59,12 @@ def scan_artist_for_downsample(artist_dir: Path):
         hires = info["hires"]
         if not hires:
             continue
-        # The estimate scales each file by its rate cut (96→48 ≈ half the audio
-        # data); metadata and embedded art don't shrink, so it reads a touch
-        # high — hence the "~" everywhere it's shown.
-        est = sum(int(h["size"] * (1 - h["target"] / h["sr"])) for h in hires)
+        # Scale each file's audio portion by its rate cut (96→48 ≈ half the
+        # samples, so ≈ half the audio bytes). audio_size already excludes the
+        # metadata and embedded art that don't shrink, so the total isn't
+        # inflated by a big cover — still an estimate (FLAC doesn't compress
+        # exactly linearly with rate), hence the "~" wherever it's shown.
+        est = sum(int(h["audio_size"] * (1 - h["target"] / h["sr"])) for h in hires)
         out.append(DownsampleCandidate(
             album_dir=album_dir,
             artist=artist,
@@ -72,7 +73,6 @@ def scan_artist_for_downsample(artist_dir: Path):
             n_flac=info["n_flac"],
             source_rates=sorted({h["sr"] for h in hires}),
             target_rates=sorted({h["target"] for h in hires}),
-            bytes_hires=sum(h["size"] for h in hires),
             est_saving=est,
         ))
     return out

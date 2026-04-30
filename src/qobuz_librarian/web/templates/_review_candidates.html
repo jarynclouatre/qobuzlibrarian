@@ -11,7 +11,7 @@
     <p class="text-base-content/70">
       <span data-summary-count>{{ _n }} album{% if _n != 1 %}s{% endif %} across {{ _groups | length }} artist{% if _groups | length != 1 %}s{% endif %}</span> —
       {% if job.execute_kind == 'new_releases' %}new since your last check and pre-ticked — untick any you don't want, or hide one to stop it resurfacing.
-      {% elif job.execute_kind == 'downsample' %}tick the albums to shrink to CD rate, or hide one to keep it hi-res. Nothing's selected — this can't be undone.
+      {% elif job.execute_kind == 'downsample' %}tick the albums to shrink to CD rate, or hide one to keep it hi-res.<span data-downsample-total class="font-semibold ml-1"></span>
       {% elif triage %}tick the albums you want, or hide an artist you don't.
       {% elif preselected %}everything's selected by default; untick anything to skip.
       {% else %}tick the albums you want.{% endif %}

@@ -193,14 +193,39 @@ def target_rate(sr):
     return None
 
 
+def _flac_audio_offset(path):
+    """Byte offset of the first audio frame (the fLaC marker plus every metadata
+    block). Lets a caller separate the audio stream from metadata/embedded art,
+    which don't shrink on resample. Returns 0 when the file isn't a plain FLAC or
+    the header is unreadable, so the caller falls back to the whole-file size."""
+    try:
+        with open(path, "rb") as fh:
+            if fh.read(4) != b"fLaC":
+                return 0
+            offset = 4
+            while True:
+                header = fh.read(4)
+                if len(header) < 4:
+                    return 0
+                is_last = bool(header[0] & 0x80)
+                offset += 4 + int.from_bytes(header[1:4], "big")
+                fh.seek(offset)
+                if is_last:
+                    return offset
+    except OSError:
+        return 0
+
+
 def scan_dir_for_hires(directory, *, base_dir=None):
     """List the high-sample-rate FLACs under `directory` (recursive) that the
     resampler would shrink — without touching anything.
 
-    Returns ``{"hires": [{"path", "sr", "target", "size"}], "n_flac": int}``.
-    The downsample scan uses this to build review candidates; compress_dir runs
-    the same probe before it resamples. ``base_dir`` is accepted for signature
-    symmetry with the resample helpers and is otherwise unused here.
+    Returns ``{"hires": [{"path", "sr", "target", "size", "audio_size"}],
+    "n_flac": int}``. ``audio_size`` is the file minus its metadata/art (which
+    don't shrink), so a saving estimate scaled off it isn't inflated by a big
+    embedded cover. The downsample scan uses this to build review candidates;
+    compress_dir runs the same probe before it resamples. ``base_dir`` is
+    accepted for signature symmetry with the resample helpers, unused here.
     """
     directory = Path(directory)
     hires = []
@@ -219,7 +244,10 @@ def scan_dir_for_hires(directory, *, base_dir=None):
             size = p.stat().st_size
         except OSError:
             continue
-        hires.append({"path": str(p), "sr": sr, "target": rate, "size": size})
+        offset = _flac_audio_offset(p)
+        audio_size = max(0, size - offset) if offset else size
+        hires.append({"path": str(p), "sr": sr, "target": rate,
+                      "size": size, "audio_size": audio_size})
     return {"hires": hires, "n_flac": n_flac}
 
 
