@@ -1,13 +1,13 @@
 """Multi-provider lyrics fetcher.
 
-Used by the import pipeline to write synced (or plain) lyrics into FLAC tags
-or sidecar files, and runnable standalone over an existing library.
+The engine behind the import-time lyric hook and the library lyrics pass:
+writes synced (or plain) lyrics into FLAC tags or .lrc sidecars.
 
   • Tries synced lyrics from each provider; rejects results whose timing
     doesn't fit the track length.
   • Falls back to plain lyrics across the providers; only writes plain
     lyrics when the track has no existing lyrics at all.
-  • Per-run circuit breaker disables a provider after three consecutive
+  • Per-run circuit breaker disables a provider after several consecutive
     connection-style failures.
   • State file tracks per-file status so subsequent passes only re-check
     tracks worth re-checking.

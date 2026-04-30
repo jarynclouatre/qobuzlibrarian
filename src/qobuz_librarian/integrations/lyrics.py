@@ -3,36 +3,18 @@
 """
 import json
 import os
-import sys as _sys
 from datetime import datetime
 from pathlib import Path
 
 from qobuz_librarian import config as cfg
+from qobuz_librarian.integrations import lyric_fetch
 from qobuz_librarian.ui_cli.colors import C, fmt
 from qobuz_librarian.ui_cli.logging import log, report_progress, vlog
 
-# lyric_fetch.py is a bundled script. In Docker it lives at /app/lyric_fetch.py
-# (entrypoint runs uvicorn with /app as the working dir, so it's importable);
-# in a dev checkout it's at <repo>/scripts/lyric_fetch.py and not on sys.path
-# unless we add it. Probe both before falling back to disabled.
-HAVE_LYRIC_FETCH = False
-lyric_fetch = None  # type: ignore
-
-_LYRIC_CANDIDATES = []
-if os.environ.get("QL_IN_CONTAINER"):
-    _LYRIC_CANDIDATES.append(Path("/app"))
-_LYRIC_CANDIDATES.append(Path(__file__).resolve().parents[3] / "scripts")
-for _dir in _LYRIC_CANDIDATES:
-    if (_dir / "lyric_fetch.py").exists():
-        if str(_dir) not in _sys.path:
-            _sys.path.insert(0, str(_dir))
-        try:
-            import lyric_fetch  # type: ignore  # noqa: F401
-            HAVE_LYRIC_FETCH = True
-            break
-        except Exception:
-            lyric_fetch = None  # type: ignore
-            continue
+# Lyric tag I/O needs mutagen; provider fetching additionally needs syncedlyrics
+# (tracked separately as lyric_fetch.AVAILABLE). Gate on mutagen alone so the
+# embed/sidecar paths still run when only the provider library is missing.
+HAVE_LYRIC_FETCH = lyric_fetch.FLAC is not None
 
 
 # ── Lyric hook ────────────────────────────────────────────────────────────────

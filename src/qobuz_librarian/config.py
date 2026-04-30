@@ -233,11 +233,10 @@ SCAN_CHECKPOINT_FILE = DATA_DIR / ".qobuz_scan_checkpoint.json"
 # Artist name → resolved Qobuz artist id, cached so repeat scans skip the
 # search round-trip. See library/discovery.py.
 ARTIST_RESOLVE_CACHE_FILE = DATA_DIR / ".artist_resolve_cache.json"
-# lyric_fetch's per-track state file. Defaults inside lyric_fetch.py put
-# it next to that script — which means /app/.lyric_fetch_state.json in the
-# container. After a PUID/PGID drop, /app is root-owned and not writable,
-# so the state file can't be saved and "provider-unavailable" retries
-# silently never resume. Routing it into DATA_DIR fixes that.
+# lyric_fetch's per-track state file. Its in-module default sits beside the
+# module file (under /app in the image), which isn't writable after a PUID/PGID
+# drop — the state couldn't be saved and "provider-unavailable" retries would
+# silently never resume. DATA_DIR is the persistent, writable volume, route here.
 LYRIC_FETCH_STATE_FILE = DATA_DIR / ".lyric_fetch_state.json"
 # Web UI login: username + password hash + session secret, written 0600
 # (it holds a credential). Lives in DATA_DIR with the rest of the state so

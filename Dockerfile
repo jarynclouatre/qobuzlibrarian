@@ -96,9 +96,6 @@ COPY --from=builder --chown=appuser:appuser /opt/venv /opt/venv
 
 WORKDIR /app
 
-# lyric_fetch ships next to /app (discovered by a parent-walk probe).
-COPY --chown=appuser:appuser scripts/lyric_fetch.py ./lyric_fetch.py
-
 # Source kept at /app/src so the editable install from the builder resolves.
 COPY --chown=appuser:appuser pyproject.toml ./
 COPY --chown=appuser:appuser src/ ./src/

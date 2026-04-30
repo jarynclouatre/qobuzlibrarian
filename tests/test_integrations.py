@@ -225,10 +225,9 @@ def test_resolve_signatures_to_paths_matches_on_signature(tmp_path):
 
 
 def test_write_lyrics_persists_and_clears_legacy_tag():
-    import importlib
-    importlib.import_module("qobuz_librarian.integrations.lyrics")
-    import lyric_fetch
     from mutagen.flac import VCFLACDict
+
+    from qobuz_librarian.integrations import lyric_fetch
 
     class FakeFLAC:
         def __init__(self):
