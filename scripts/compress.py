@@ -143,15 +143,35 @@ def read_local_bit_depth(path: Path) -> int:
         return 0
 
 
-def probe(rel: str):
-    """Read first PROBE_BYTES from MUSIC_ROOT, return (rel, sample_rate)."""
+def read_sample_rate(path: Path) -> int:
+    """Sample rate of a local FLAC. The 1 KB header byte-parse settles the
+    common case in a single read; metaflac backstops files whose STREAMINFO
+    sits past the probe window (a leading ID3 tag would do it), so a hi-res
+    file isn't silently dropped from the resample set. Returns 0 on failure.
+
+    Inverse of read_local_bit_depth: this is the bulk path (one read per file
+    across the whole library), so the cheap byte read leads and the subprocess
+    is the exception, not the rule."""
     try:
-        with open(MUSIC_ROOT / rel, "rb") as f:
+        with open(path, "rb") as f:
             data = f.read(PROBE_BYTES)
         sr, _ = parse_flac_info(data)
-        return rel, sr
     except OSError:
-        return rel, 0
+        return 0
+    if sr:
+        return sr
+    try:
+        out = subprocess.run(
+            ["metaflac", "--show-sample-rate", str(path)],
+            capture_output=True, text=True, timeout=10).stdout.strip()
+        return int(out) if out else 0
+    except (FileNotFoundError, OSError, subprocess.TimeoutExpired, ValueError):
+        return 0
+
+
+def probe(rel: str):
+    """Read a library file's sample rate, returning (rel, sample_rate)."""
+    return rel, read_sample_rate(MUSIC_ROOT / rel)
 
 
 def discover():
@@ -283,12 +303,7 @@ def compress_dir(directory, *, verbose=True, base_dir=None, log=print):
                 continue
             candidates.append((rel, sr, rate))
             continue
-        try:
-            with open(p, "rb") as f:
-                data = f.read(PROBE_BYTES)
-            sr, _ = parse_flac_info(data)
-        except OSError:
-            continue
+        sr = read_sample_rate(p)
         # Record what we just learned so future calls don't re-probe.
         if sr > 0 and _use_cache:
             CACHE[rel] = sr
