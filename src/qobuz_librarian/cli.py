@@ -185,6 +185,10 @@ def parse_args():
     p.add_argument("--upgrade-walk", action="store_true",
                    help="Scan every artist for quality upgrades. Per-artist "
                         "confirm (enter=yes), auto-advance.")
+    p.add_argument("--downsample-walk", action="store_true",
+                   help="Scan the library for hi-res files and shrink them to "
+                        "CD rate in place (per-artist confirm; --dry-run lists "
+                        "only). Local — no Qobuz login needed.")
     p.add_argument("--no-catalog",   action="store_true",
                    help="Artist mode: skip step 2 (don't show missing albums)")
     p.add_argument("--include-comps", action="store_true",
@@ -334,6 +338,12 @@ def parse_args():
     # artist mode — confusing in a script. Reject it.
     if args.artist is not None and not args.artist.strip():
         p.error("--artist needs an artist name")
+    # --downsample-walk is its own whole-library mode and dispatches before the
+    # other modes; pairing it with one would silently drop the other.
+    if args.downsample_walk and (args.artist or args.query or args.upgrade_walk
+                                 or args.reset_walk_seen):
+        p.error("--downsample-walk runs on its own — drop the other "
+                "artist/query/upgrade-walk arguments")
     return args
 
 
@@ -403,6 +413,14 @@ def main():
         die(fmt(C.RED,
             f"\n✗  MUSIC_ROOT missing or inaccessible: {cfg.MUSIC_ROOT}\n"
             "   Refusing to proceed.\n"), EXIT_CONFIG)
+
+    # Downsample walk is local-only — it reads hi-res files off disk and
+    # resamples them in place, never touching Qobuz. Dispatch here, before the
+    # credential load, so it runs on a box with no token configured.
+    if args.downsample_walk:
+        from qobuz_librarian.modes.downsample import run_downsample_walk_mode
+        run_downsample_walk_mode(args)
+        return
 
     from qobuz_librarian.api.auth import verify_streamrip_downloads_folder
     verify_streamrip_downloads_folder()
@@ -567,6 +585,9 @@ def main():
         elif mode == Mode.MIGRATE:
             from qobuz_librarian.modes.migrate import run_migrate_mode
             run_migrate_mode(args)
+        elif mode == Mode.DOWNSAMPLE:
+            from qobuz_librarian.modes.downsample import run_downsample_walk_mode
+            run_downsample_walk_mode(args)
 
 
 def _check_staging_occupied():

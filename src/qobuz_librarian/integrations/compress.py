@@ -1,14 +1,14 @@
 """Downsample-hook wrapper.
 
-The script that does the actual work is shipped as `compress.py` for
-historical reasons — the feature itself is hi-res downsampling, not
-lossless compression. In the Docker image the script lives at
-/app/compress.py; in a dev checkout it's at <repo>/scripts/compress.py.
-We probe both.
+The script that does the work is named `compress.py` though the feature is
+hi-res downsampling, not lossless compression. In the Docker image it lives at
+/app/compress.py; in a dev checkout it's at <repo>/scripts/compress.py. We probe
+both.
 
-Imported best-effort: if the script can't be found, the downsample step
-is silently skipped rather than aborting the pipeline. HAVE_DOWNSAMPLE
-is the gate the rest of the app checks.
+Imported best-effort: if the script can't be found, the downsample step is
+silently skipped rather than aborting the pipeline. HAVE_DOWNSAMPLE is the gate
+the rest of the app checks; downsample_dir resamples a tree, scan_dir_for_hires
+finds the candidates without touching anything.
 """
 import os
 import sys
@@ -16,6 +16,7 @@ from pathlib import Path
 
 HAVE_DOWNSAMPLE = False
 downsample_dir = None  # type: ignore
+scan_dir_for_hires = None  # type: ignore
 
 # Probe likely script locations in priority order:
 #   1. /app  — Dockerfile COPYs compress.py here (container only).
@@ -32,8 +33,10 @@ for _dir in _candidates:
             sys.path.insert(0, str(_dir))
         try:
             from compress import compress_dir as downsample_dir  # type: ignore[import]
+            from compress import scan_dir_for_hires  # type: ignore[import]
             HAVE_DOWNSAMPLE = True
             break
         except Exception:
             downsample_dir = None  # type: ignore
+            scan_dir_for_hires = None  # type: ignore
             continue

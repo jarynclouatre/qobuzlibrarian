@@ -15,6 +15,7 @@ class Mode(str, Enum):
     ALBUM_REPAIR  = "album_repair"
     UPGRADE       = "upgrade"
     MIGRATE       = "migrate"
+    DOWNSAMPLE    = "downsample"
 
 
 # Picker sentinels — typed as plain str so existing `is`/`==` checks at

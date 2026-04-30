@@ -193,6 +193,54 @@ def target_rate(sr):
     return None
 
 
+def scan_dir_for_hires(directory, *, base_dir=None):
+    """List the high-sample-rate FLACs under `directory` (recursive) that the
+    resampler would shrink — without touching anything.
+
+    Returns ``{"hires": [{"path", "sr", "target", "size"}], "n_flac": int}``.
+    The downsample scan uses this to build review candidates; compress_dir runs
+    the same probe before it resamples. ``base_dir`` is accepted for signature
+    symmetry with the resample helpers and is otherwise unused here.
+    """
+    directory = Path(directory)
+    hires = []
+    n_flac = 0
+    if not directory.is_dir():
+        return {"hires": hires, "n_flac": 0}
+    for p in directory.rglob("*.flac"):
+        if p.name.startswith(".") or not p.is_file():
+            continue
+        n_flac += 1
+        sr = read_sample_rate(p)
+        rate = target_rate(sr)
+        if not rate:
+            continue
+        try:
+            size = p.stat().st_size
+        except OSError:
+            continue
+        hires.append({"path": str(p), "sr": sr, "target": rate, "size": size})
+    return {"hires": hires, "n_flac": n_flac}
+
+
+def _decode_ok(path):
+    """True if the FLAC at `path` decodes cleanly (flac -t, frame-CRC + decode).
+
+    A missing flac tool returns True — the resample already succeeded and
+    without the reference decoder there's nothing to second-guess it with; the
+    source is preserved on a real failure regardless. A timeout or OS error
+    returns False so an unverifiable encode never overwrites the original."""
+    try:
+        r = subprocess.run(["flac", "-t", "-s", str(path)],
+                           capture_output=True, timeout=300,
+                           stdin=subprocess.DEVNULL)
+    except FileNotFoundError:
+        return True
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return r.returncode == 0
+
+
 def resample_one(rel, sr, rate, af_filter, *, base_dir=None):
     """Resample one file. Returns (rel, sr, rate, saved_bytes, error_msg).
 
@@ -201,17 +249,14 @@ def resample_one(rel, sr, rate, af_filter, *, base_dir=None):
     onto the canonical music tree yet.
     """
     src = (base_dir or MUSIC_ROOT) / rel
-    # Encode to a temp file in the SAME directory as the source, then swap
-    # it in with os.replace(). os.replace() is an atomic same-filesystem
-    # rename, so an interrupt (Ctrl+C / OOM / power loss) can never leave a
-    # half-written file where the original was: either the old file or the
-    # fully-encoded new one is present, nothing in between. A previous
-    # implementation encoded into a scratch dir (often a different
-    # filesystem from the music tree) and moved the result over the source —
-    # cross-device that degrades to copy-then-unlink, and an interrupt
-    # mid-copy destroyed the user's only lossless copy. The temp name is
-    # dot-prefixed so a library scanner (which skips dotfiles) never indexes
-    # the transient file.
+    # Encode to a temp file in the SAME directory as the source, then swap it
+    # in with os.replace() — an atomic same-filesystem rename, so an interrupt
+    # (Ctrl+C / OOM / power loss) always leaves either the intact original or
+    # the fully-encoded replacement, never a half-written file. The same-dir
+    # temp is what keeps the rename on one filesystem: a cross-device move
+    # degrades to copy-then-unlink, where an interrupt mid-copy would destroy
+    # the only lossless copy. The temp name is dot-prefixed so a library
+    # scanner (which skips dotfiles) never indexes the transient file.
     tmp = None
     try:
         in_size = src.stat().st_size
@@ -239,6 +284,11 @@ def resample_one(rel, sr, rate, af_filter, *, base_dir=None):
             capture_output=True,
         )
         out_size = tmp.stat().st_size
+        # Verify the encode decodes before it overwrites the source. A
+        # downsample has no re-download to fall back on, so a corrupt encode
+        # must never replace a good original.
+        if not _decode_ok(tmp):
+            return (rel, sr, rate, None, "resampled file failed verification")
         os.replace(str(tmp), str(src))
         tmp = None
         return (rel, sr, rate, in_size - out_size, None)
