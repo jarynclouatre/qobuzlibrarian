@@ -8,7 +8,7 @@ We probe both.
 
 Imported best-effort: if the script can't be found, the downsample step
 is silently skipped rather than aborting the pipeline. HAVE_DOWNSAMPLE
-is the canonical gate; HAVE_COMPRESS is kept as a legacy alias.
+is the gate the rest of the app checks.
 """
 import os
 import sys
@@ -37,8 +37,3 @@ for _dir in _candidates:
         except Exception:
             downsample_dir = None  # type: ignore
             continue
-
-# Legacy aliases so prior imports keep resolving — call sites are free
-# to migrate at their own pace.
-HAVE_COMPRESS = HAVE_DOWNSAMPLE
-compress_dir = downsample_dir
