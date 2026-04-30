@@ -238,6 +238,21 @@ def test_download_error_raw_exception_not_reflected(client, monkeypatch):
     assert "alert-error" in r.text
 
 
+def test_downsample_scan_needs_no_credentials(client, monkeypatch):
+    # Downsampling is local — the scan route must not gate on a Qobuz token the
+    # way Upgrade/Repair do, and it submits a downsample-kind job.
+    import qobuz_librarian.web.app as app_mod
+
+    captured = {}
+    monkeypatch.setattr(app_mod.job_mgr, "submit_scan",
+                        lambda job, scan_fn, execute_fn: captured.update(job=job))
+    # No _get_token patch on purpose: a missing token must not block this route.
+    r = client.post("/downsample", follow_redirects=False)
+    assert r.status_code == 303
+    assert "/jobs/" in r.headers["location"]
+    assert captured["job"].execute_kind == "downsample"
+
+
 def test_download_partial_result_marks_done_with_error(client, monkeypatch):
     # A partial download (some tracks failed but the album was imported)
     # keeps the job DONE — the folder is reachable — but must surface the

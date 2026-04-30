@@ -64,6 +64,13 @@ quality Qobuz offers for that release. Already have an album in a lower quality?
 **Upgrade** mode finds everything Qobuz can now serve better and re-rips just
 those.
 
+**Reclaim space from hi-res you don't need.** The **Downsample** mode scans your
+library for FLACs stored above CD rate and shrinks the ones you pick down to
+44.1 / 48 kHz — most playback gear can't tell the difference, and the files are a
+fraction of the size. It's local (no Qobuz login needed), each file is verified to
+decode cleanly before it replaces the original, and it only ever runs when you ask.
+It's irreversible, so nothing is selected by default and the original is not kept.
+
 **Catch new releases, without going looking.** A *Check for new releases* pass —
 across your whole library, or one artist at a time — compares each artist's
 current Qobuz catalogue against what you've already seen and surfaces only what's
@@ -124,15 +131,17 @@ changed until you do.
 | **Artist**  | Scan one artist's discography (always fresh; new releases flagged + pre-ticked), pick which to get |
 | **Library** | Scan every artist for missing albums — or just *check for new releases* across the whole library |
 | **Upgrade** | Find albums Qobuz can serve at higher quality, choose what to re-rip |
+| **Downsample** | Shrink hi-res library files to CD rate to reclaim space (a tab on the Upgrade page; local, no login) |
 | **Repair**  | Find truncated/partial FLACs (ISRC-verified), choose what to refill |
 | **Migrate** | One-time: reorganise an existing library into the layout (copies, never touches originals) |
 | **Queue**   | Live progress, jobs awaiting review, and download history           |
 | **Settings**| Qobuz credentials and behaviour toggles (applied without a restart) |
 
-On the **Library** and **Upgrade** scans you can also *dismiss* albums you've
-decided against — they're remembered and skipped on future scans, so a large
-library can be triaged over days without re-reviewing the same things; restore
-any of them from the **Hidden** view. The single-artist **Artist** scan never
+On the **Library**, **Upgrade**, and **Downsample** scans you can also *dismiss*
+albums you've decided against — they're remembered and skipped on future scans, so
+a large library can be triaged over days without re-reviewing the same things;
+restore any of them from the **Hidden** view. (On Downsample, dismissing an album
+keeps it hi-res.) The single-artist **Artist** scan never
 hides anything, since typing a name is a deliberate request to see everything.
 
 Dismissing is per *album*, not per artist, so a brand-new release by an artist
@@ -188,11 +197,14 @@ either way.
 
 Off by default because they change your files:
 
-- **Downsample hi-res** (`DOWNSAMPLE_HIRES_ENABLED`): downsample high-sample-rate FLACs
-  (88.2/176.4/352.8 kHz → 44.1, 96/192/384 kHz → 48; bit depth preserved) on
-  import. Pairs with the hi-res default: grab the highest quality, then store
-  it at a sane sample rate. Still lossless FLAC; originals are replaced
-  atomically, so an interrupt can't corrupt a track.
+- **Downsample hi-res on import** (`DOWNSAMPLE_HIRES_ENABLED`): downsample
+  high-sample-rate FLACs (88.2/176.4/352.8 kHz → 44.1, 96/192/384 kHz → 48; bit
+  depth preserved) as they're downloaded. Pairs with the hi-res default: grab the
+  highest quality, then store it at a sane sample rate. Still lossless FLAC;
+  originals are replaced atomically, so an interrupt can't corrupt a track. This
+  only touches *new* downloads — to shrink hi-res that's **already** in your
+  library, use the on-demand [Downsample](#how-you-use-it) mode instead, which
+  needs no setting and asks before it changes anything.
 
 ## Quick start (Docker)
 
@@ -542,9 +554,15 @@ default — bump `MISSING_ALBUMS_MIN_TRACKS` in `compose.yaml` (or pass
   that it periodically checks for new releases (interval in Settings; off via
   `NEW_RELEASE_CHECK_INTERVAL`). Both only read Qobuz and park a review list on the
   dashboard — **nothing downloads or changes a file until you approve it.**
-- It **never** deletes a track during gap-fill. A bare gap-fill only adds
-  missing tracks; the Upgrade walk is the only path that replaces files,
-  and it backs them up first (see `UPGRADE_BACKUP_RETENTION_DAYS`).
+- It **never** deletes or rewrites a track during gap-fill — that only adds
+  missing tracks. Two modes replace existing files, and both are **opt-in and run
+  only when you start them**: **Upgrade** re-rips at higher quality and backs up
+  the originals first (see `UPGRADE_BACKUP_RETENTION_DAYS`); **Downsample** rewrites
+  hi-res files to CD rate in place with no backup — it's irreversible, so it
+  verifies every file decodes before replacing it and pre-selects nothing. (The
+  separate `DOWNSAMPLE_HIRES_ENABLED` import setting, off by default, also
+  downsamples, but only files as they're freshly downloaded — never your existing
+  library.)
 - Consolidation (merging sibling/duplicate album folders) is **CLI-only**
   and **off by default**. It needs per-folder confirmation, which the CLI
   prompts for; the web UI has no review screen for it, so web downloads
@@ -608,6 +626,9 @@ docker compose run --rm qobuz-librarian cli --artist "Stars of the Lid"
 
 # Sweep every artist for quality upgrades, auto-confirming the safe ones
 docker compose run --rm qobuz-librarian cli --upgrade-walk --auto-safe
+
+# Preview which hi-res library files would shrink to CD rate (changes nothing)
+docker compose run --rm qobuz-librarian cli --downsample-walk --dry-run
 
 # Full flag reference
 docker compose run --rm qobuz-librarian cli --help
