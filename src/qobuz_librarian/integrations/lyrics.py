@@ -11,9 +11,11 @@ from qobuz_librarian.integrations import lyric_fetch
 from qobuz_librarian.ui_cli.colors import C, fmt
 from qobuz_librarian.ui_cli.logging import log, report_progress, vlog
 
-# Lyric tag I/O needs mutagen; provider fetching additionally needs syncedlyrics
-# (tracked separately as lyric_fetch.AVAILABLE). Gate on mutagen alone so the
-# embed/sidecar paths still run when only the provider library is missing.
+# Lyric tag I/O (read/write embedded lyrics, materialise .lrc sidecars) needs
+# only mutagen; fetching from providers additionally needs syncedlyrics
+# (lyric_fetch.AVAILABLE). HAVE_LYRIC_FETCH gates the tag-I/O helpers so the
+# sidecar pass still runs when only the provider library is missing; the fetch
+# entry points below gate on lyric_fetch.AVAILABLE instead.
 HAVE_LYRIC_FETCH = lyric_fetch.FLAC is not None
 
 
@@ -26,8 +28,9 @@ def _run_lyric_hook(album_dir):
     empty_result = ({}, [])
     if not cfg.LYRICS_ENABLED:
         return empty_result
-    if not HAVE_LYRIC_FETCH:
-        log.info(fmt(C.GRAY, "     (lyric_fetch unavailable; skipping lyrics hook)"))
+    if not lyric_fetch.AVAILABLE:
+        log.info(fmt(C.GRAY,
+            "     (lyric provider library not installed; skipping lyrics)"))
         return empty_result
     if album_dir is None or not album_dir.exists():
         return empty_result
@@ -362,10 +365,10 @@ def offer_resume_lyric_retry(args, token):
     paths = load_lyric_retry()
     if not paths:
         return False
-    if not HAVE_LYRIC_FETCH:
+    if not lyric_fetch.AVAILABLE:
         log.info(fmt(C.YELLOW,
-            f"  ⚠  {len(paths)} file(s) queued for lyric retry but "
-            f"lyric_fetch is unavailable. Manifest preserved."))
+            f"  ⚠  {len(paths)} file(s) queued for lyric retry but the "
+            f"syncedlyrics provider library isn't installed. Manifest preserved."))
         return False
 
     # Filter out files that have since vanished (manual move/delete).
