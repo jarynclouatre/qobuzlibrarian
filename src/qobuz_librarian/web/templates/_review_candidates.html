@@ -1,6 +1,9 @@
 <div id="review-candidates">
-  {% set triage = job.execute_kind in ('library', 'upgrade', 'new_releases') %}
+  {% set triage = job.execute_kind in ('library', 'upgrade', 'new_releases', 'downsample') %}
   {% set preselected = job.execute_kind in ('repair', 'migration') %}
+  {% set _hidden_url = '/upgrade/hidden' if job.execute_kind == 'upgrade'
+                       else '/downsample/hidden' if job.execute_kind == 'downsample'
+                       else '/library/hidden' %}
   {% set _groups = job.candidates | groupby('artist') %}
   {% set _n = job.candidates | length %}
   <div id="review-summary-row"
@@ -8,6 +11,7 @@
     <p class="text-base-content/70">
       <span data-summary-count>{{ _n }} album{% if _n != 1 %}s{% endif %} across {{ _groups | length }} artist{% if _groups | length != 1 %}s{% endif %}</span> —
       {% if job.execute_kind == 'new_releases' %}new since your last check and pre-ticked — untick any you don't want, or hide one to stop it resurfacing.
+      {% elif job.execute_kind == 'downsample' %}tick the albums to shrink to CD rate, or hide one to keep it hi-res. Nothing's selected — this can't be undone.
       {% elif triage %}tick the albums you want, or hide an artist you don't.
       {% elif preselected %}everything's selected by default; untick anything to skip.
       {% else %}tick the albums you want.{% endif %}
@@ -20,6 +24,14 @@
     </div>
   </div>
 
+  {% if job.execute_kind == 'downsample' %}
+  <div class="alert alert-warning mb-3 text-sm">
+    <span>Shrinking rewrites each file in place — the hi-res original is not kept
+      and there's no undo. Each file is verified to decode cleanly before it
+      replaces the original.</span>
+  </div>
+  {% endif %}
+
   <div id="review-groups" class="space-y-2">
     {% for artist, items in _groups %}
     {% with open = (_groups | length == 1) %}{% include "_review_group.html" %}{% endwith %}
@@ -29,6 +41,6 @@
   <div id="review-empty" class="text-center py-8 text-base-content/60{% if job.candidates %} hidden{% endif %}">
     <p class="font-medium">Nothing left to review.</p>
     <p class="text-sm mt-1">Everything here has been queued or hidden.
-      <a href="/library/hidden" class="link">Manage hidden albums</a>.</p>
+      <a href="{{ _hidden_url }}" class="link">Manage hidden albums</a>.</p>
   </div>
 </div>

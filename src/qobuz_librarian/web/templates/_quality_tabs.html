@@ -1,0 +1,8 @@
+<div role="tablist" class="tabs mb-6 text-base font-medium border-b border-base-300">
+  <a role="tab" href="/upgrade"
+     class="tab {% if active_tab == 'upgrade' %}tab-active{% endif %}"
+     {% if active_tab == 'upgrade' %}aria-current="page"{% endif %}>Upgrade</a>
+  <a role="tab" href="/downsample"
+     class="tab {% if active_tab == 'downsample' %}tab-active{% endif %}"
+     {% if active_tab == 'downsample' %}aria-current="page"{% endif %}>Downsample</a>
+</div>

@@ -34,6 +34,7 @@ from qobuz_librarian.library.scanner import (
     list_library_artists,
 )
 from qobuz_librarian.library.tags import VA_NORMALIZED, normalize
+from qobuz_librarian.ui_cli.colors import format_size
 from qobuz_librarian.ui_cli.errors import plural
 from qobuz_librarian.ui_cli.logging import log
 
@@ -631,6 +632,117 @@ def execute_upgrades(job, chosen, token):
     log.info(f"Finished — upgraded {ok}/{plural(len(chosen), 'album')}.")
     if failed:
         job.error = f"{failed} of {plural(len(chosen), 'album')} couldn't be upgraded — see the log."
+
+
+# ── Downsample flow ─────────────────────────────────────────────────────────────
+
+def scan_downsamples(job):
+    """Scan the library for FLACs stored above CD rate.
+
+    Local only — the answer comes off disk, so unlike the upgrade scan there's
+    no Qobuz lookup and no token. Serial (the per-file read is fast and disk-
+    bound; fanning out would just thrash the spindle) with a cancel check and
+    per-artist progress.
+    """
+    from qobuz_librarian.library.downsample import scan_artist_for_downsample
+
+    clear_scan_caches()
+    artists = [d for d in list_library_artists()
+               if normalize(d.name) not in VA_NORMALIZED]
+    if not artists:
+        log.info("No artist folders found under MUSIC_ROOT.")
+        log.info("  Check that QL_MUSIC_DIR in your .env points at the right place.")
+        return
+    hidden = hidden_mod.load()
+    log.info(f"Scanning {plural(len(artists), 'artist')} for hi-res files to downsample")
+    total = 0
+    done = 0
+    n = len(artists)
+    for ad in artists:
+        if job.cancel_requested:
+            log.info("Cancelled — stopping scan.")
+            break
+        done += 1
+        name = ad.name
+        try:
+            cands = scan_artist_for_downsample(ad)
+        except Exception as e:
+            log.info(f"    skipped {name}: {e}")
+            job.push_progress("Scanning for hi-res files", done, n, name, found=total)
+            continue
+        added = 0
+        for c in cands:
+            # An album the user chose to keep hi-res shouldn't be re-flagged
+            # every scan.
+            if hidden_mod.is_hidden(hidden_mod.SCOPE_DOWNSAMPLE, name, c.title, hidden):
+                continue
+            # Unticked by default — a downsample is irreversible, so nothing is
+            # shrunk without an explicit per-album tick.
+            job.add_candidate(
+                kind="downsample",
+                title=c.title,
+                artist=name,
+                detail=c.detail,
+                payload={"album_dir": str(c.album_dir)},
+                selected=False,
+            )
+            total += 1
+            added += 1
+        hit = {"artist": name, "albums": added} if added else None
+        job.push_progress("Scanning for hi-res files", done, n, name,
+                          found=total, hit=hit)
+        if added:
+            log.info(f"  {name} — {plural(added, 'album')} above CD rate")
+    if not job.cancel_requested:
+        _flag_new_since_last_scan(job, "downsample")
+    log.info(f"Done. {plural(total, 'album')} above CD rate.")
+
+
+def execute_downsamples(job, chosen):
+    """Shrink the chosen albums' hi-res FLACs to CD rate, in place.
+
+    Each file is decode-verified before it overwrites the original (in
+    resample_one), so a bad encode can't destroy a master that has no
+    re-download fallback.
+    """
+    from qobuz_librarian.integrations.compress import HAVE_DOWNSAMPLE, downsample_dir
+    from qobuz_librarian.web.jobs import staging_lock
+
+    if not HAVE_DOWNSAMPLE or downsample_dir is None:
+        job.error = "Downsampling isn't available on this server."
+        return
+    shrunk = 0
+    total_saved = 0
+    total_errors = 0
+    processed = 0
+    for i, cand in enumerate(chosen, 1):
+        if job.cancel_requested:
+            log.info(f"Cancelled — {shrunk} shrunk, {len(chosen) - processed} not started.")
+            break
+        processed = i
+        album_dir = Path((cand.get("payload") or {}).get("album_dir", ""))
+        title = cand.get("title") or album_dir.name
+        log.info(f"[{i}/{len(chosen)}] {cand.get('artist', '')} — {title}")
+        if not album_dir.is_dir():
+            log.info("  skipped: folder no longer exists")
+            continue
+        try:
+            with staging_lock():
+                res = downsample_dir(album_dir, verbose=True,
+                                     base_dir=album_dir, log=log.info)
+        except Exception as e:
+            log.info(f"  failed: {e}")
+            total_errors += 1
+            continue
+        if res.get("resampled"):
+            shrunk += 1
+        total_saved += res.get("saved_bytes", 0)
+        total_errors += res.get("errors", 0)
+    log.info(f"Finished — shrank {plural(shrunk, 'album')}, "
+             f"reclaimed {format_size(total_saved)}.")
+    if total_errors:
+        job.error = (f"{plural(total_errors, 'file')} couldn't be downsampled "
+                     "(left unchanged) — see the log.")
 
 
 # ── Repair flow ───────────────────────────────────────────────────────────────

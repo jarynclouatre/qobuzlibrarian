@@ -2,6 +2,9 @@
 {% block title %}Upgrade — Qobuz Librarian{% endblock %}
 {% block content %}
 
+{% set active_tab = 'upgrade' %}
+{% include "_quality_tabs.html" %}
+
 <h1 class="text-2xl font-bold mb-2">Quality upgrade scan</h1>
 <p class="text-base-content/60 mb-2">
   Check every album in your library against Qobuz and find the ones available

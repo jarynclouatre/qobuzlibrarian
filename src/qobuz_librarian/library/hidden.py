@@ -30,7 +30,8 @@ from qobuz_librarian.library.tags import normalize, strip_album_decorations
 
 SCOPE_MISSING = "missing"
 SCOPE_UPGRADE = "upgrade"
-_SCOPES = (SCOPE_MISSING, SCOPE_UPGRADE)
+SCOPE_DOWNSAMPLE = "downsample"
+_SCOPES = (SCOPE_MISSING, SCOPE_UPGRADE, SCOPE_DOWNSAMPLE)
 
 
 def album_fingerprint(artist, title):

@@ -38,6 +38,6 @@ def test_load_tolerates_a_corrupt_file(monkeypatch, tmp_path):
     p = tmp_path / "h.json"
     p.write_text("{ not json", encoding="utf-8")
     monkeypatch.setattr("qobuz_librarian.config.HIDDEN_FILE", p)
-    assert hidden.load() == {"missing": {}, "upgrade": {}}
+    assert hidden.load() == {"missing": {}, "upgrade": {}, "downsample": {}}
 
 

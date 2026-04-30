@@ -108,6 +108,11 @@ def _resume_migration(job, args):
         j, chosen, dest, in_place=in_place)
 
 
+def _resume_downsample(job, _args):
+    from qobuz_librarian.web import flows
+    return lambda j, chosen: flows.execute_downsamples(j, chosen)
+
+
 # Names the persisted ``execute_kind`` strings so jobs survive a restart
 # even though their original execute closure is gone. Each factory is
 # called lazily, when the user actually approves the reloaded job, so
@@ -120,6 +125,7 @@ _RESUME_EXECUTE: dict = {
     "upgrade":      _resume_upgrade,
     "repair":       _resume_repair,
     "migration":    _resume_migration,
+    "downsample":   _resume_downsample,
 }
 
 
@@ -1173,6 +1179,49 @@ async def upgrade_scan(request: Request):
     return RedirectResponse(url=f"/jobs/{job.id}", status_code=303)
 
 
+@app.get("/downsample", response_class=HTMLResponse)
+async def downsample_page(request: Request):
+    from qobuz_librarian.integrations.compress import HAVE_DOWNSAMPLE
+    from qobuz_librarian.library import hidden as hidden_mod
+    return _tr(request, "downsample.html", {
+        "page": "downsample",
+        "have_downsample": HAVE_DOWNSAMPLE,
+        "hidden_count": hidden_mod.count(hidden_mod.SCOPE_DOWNSAMPLE)})
+
+
+@app.get("/downsample/hidden", response_class=HTMLResponse)
+async def downsample_hidden(request: Request):
+    from qobuz_librarian.library import hidden as hidden_mod
+    return _hidden_view(request, hidden_mod.SCOPE_DOWNSAMPLE, page="downsample",
+                        restore_action="/downsample/hidden/restore",
+                        back_url="/downsample")
+
+
+@app.post("/downsample/hidden/restore")
+async def downsample_hidden_restore(request: Request):
+    from qobuz_librarian.library import hidden as hidden_mod
+    return await _restore_hidden(request, hidden_mod.SCOPE_DOWNSAMPLE,
+                                 "/downsample/hidden")
+
+
+@app.post("/downsample")
+async def downsample_scan(request: Request):
+    # No credential check: downsampling only reads and rewrites local files.
+    busy = _lock_busy_response(request)
+    if busy is not None:
+        return busy
+    from qobuz_librarian.web import flows
+    job = job_mgr.Job(title="Downsample scan")
+    job.execute_kind = "downsample"
+    job.review_verb = "Downsample"  # the action rewrites files, not a download
+    job_mgr.submit_scan(
+        job,
+        lambda j: flows.scan_downsamples(j),
+        lambda j, chosen: flows.execute_downsamples(j, chosen),
+    )
+    return RedirectResponse(url=f"/jobs/{job.id}", status_code=303)
+
+
 @app.get("/repair", response_class=HTMLResponse)
 async def repair_page(request: Request):
     creds_ok = bool(_read_creds().get("auth_token"))
@@ -1320,13 +1369,16 @@ async def job_approve(request: Request, job_id: str):
 # Scan kinds that get the paced-triage surface (unticked, hideable, live-fill).
 # Both share one review screen; they differ only in which hidden-store scope a
 # dismiss writes — missing-album for the gap scan, upgrade for the upgrade scan.
-_TRIAGE_KINDS = ("library", "upgrade", "new_releases")
+_TRIAGE_KINDS = ("library", "upgrade", "new_releases", "downsample")
 
 
 def _hide_scope(execute_kind):
     from qobuz_librarian.library import hidden as hidden_mod
-    return (hidden_mod.SCOPE_UPGRADE if execute_kind == "upgrade"
-            else hidden_mod.SCOPE_MISSING)
+    if execute_kind == "upgrade":
+        return hidden_mod.SCOPE_UPGRADE
+    if execute_kind == "downsample":
+        return hidden_mod.SCOPE_DOWNSAMPLE
+    return hidden_mod.SCOPE_MISSING
 
 
 @app.post("/jobs/{job_id}/hide", response_class=HTMLResponse)

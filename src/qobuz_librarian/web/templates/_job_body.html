@@ -14,7 +14,7 @@
 
   {# ── Live review — also drives a running Library scan, so its results fill
        in and become hideable/tickable while the walk is still going. ─────── #}
-  {% if s == 'awaiting_review' or (job.execute_kind in ('library', 'upgrade') and s == 'scanning') %}
+  {% if s == 'awaiting_review' or (job.execute_kind in ('library', 'upgrade', 'downsample') and s == 'scanning') %}
     {% set scanning = (s == 'scanning') %}
     {% if scanning %}
     <div id="scan-header" class="flex items-center justify-between mb-3">
@@ -53,6 +53,8 @@
         <button type="submit" formaction="/jobs/{{ job.id }}/cancel" class="btn btn-ghost">Cancel</button>
         {% if job.execute_kind == 'upgrade' %}
         <a href="/upgrade/hidden" class="btn btn-ghost btn-sm sm:ml-auto">Hidden upgrades</a>
+        {% elif job.execute_kind == 'downsample' %}
+        <a href="/downsample/hidden" class="btn btn-ghost btn-sm sm:ml-auto">Kept hi-res</a>
         {% elif job.execute_kind in ('library', 'new_releases') %}
         <a href="/library/hidden" class="btn btn-ghost btn-sm sm:ml-auto">Hidden albums</a>
         {% endif %}
