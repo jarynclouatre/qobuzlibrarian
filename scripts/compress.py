@@ -81,30 +81,41 @@ def human(b):
 
 _RESAMPLER_FILTER = None
 
+_SOXR_FILTER = "aresample=resampler=soxr:precision=28:dither_method=triangular_hp"
+_SWR_FILTER  = "aresample=filter_size=512:phase_shift=20:dither_method=triangular_hp"
 
-def detect_resampler_filter():
-    """Return the -af filter string to use, based on what ffmpeg has compiled in.
 
-    Cached after the first probe — what ffmpeg supports doesn't change within
-    a run, and the per-album hook would otherwise spawn `ffmpeg -resamplers`
-    once for every album in a batch."""
-    global _RESAMPLER_FILTER
-    if _RESAMPLER_FILTER is not None:
-        return _RESAMPLER_FILTER
-    result = ("aresample=filter_size=512:phase_shift=20:dither_method=triangular_hp",
-              "swresample HQ")
+def _soxr_available():
+    """True when this ffmpeg can resample through libsoxr.
+
+    Probed by running the soxr filter on a scrap of generated audio: that
+    proves the filter loads and the precision/dither options take, which a
+    build-config string wouldn't. ffmpeg has no flag that lists its
+    resamplers, so there's nothing cheaper to query."""
     try:
         r = subprocess.run(
-            ["ffmpeg", "-hide_banner", "-resamplers"],
-            capture_output=True, timeout=5,
+            ["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin",
+             "-f", "lavfi", "-i", "anullsrc=r=96000:cl=stereo",
+             "-af", _SOXR_FILTER, "-ar", "48000", "-t", "0.05", "-f", "null", "-"],
+            capture_output=True, timeout=10, stdin=subprocess.DEVNULL,
         )
-        if r.returncode == 0 and b"soxr" in r.stdout:
-            result = ("aresample=resampler=soxr:precision=28:dither_method=triangular_hp",
-                      "soxr p28")
-    except Exception:
-        pass
-    _RESAMPLER_FILTER = result
-    return result
+        return r.returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
+def detect_resampler_filter():
+    """Pick the best resampler this ffmpeg has, as (-af filter, name).
+
+    soxr at precision 28 when libsoxr is present, else swresample's wide
+    polyphase filter. Cached after the first probe — ffmpeg's capabilities
+    don't change within a run, and the per-album hook would otherwise probe
+    once per album in a batch."""
+    global _RESAMPLER_FILTER
+    if _RESAMPLER_FILTER is None:
+        _RESAMPLER_FILTER = ((_SOXR_FILTER, "soxr p28") if _soxr_available()
+                             else (_SWR_FILTER, "swresample HQ"))
+    return _RESAMPLER_FILTER
 
 
 def parse_flac_info(data: bytes):
@@ -180,7 +191,7 @@ def discover():
     for root, dirs, files in os.walk(MUSIC_ROOT):
         dirs[:] = [d for d in dirs if not d.startswith(".")]
         for f in files:
-            if f.lower().endswith(".flac"):
+            if f.lower().endswith(".flac") and not f.startswith("."):
                 out.append(str((Path(root) / f).relative_to(MUSIC_ROOT)))
     return out
 
@@ -216,7 +227,7 @@ def _flac_audio_offset(path):
         return 0
 
 
-def scan_dir_for_hires(directory, *, base_dir=None):
+def scan_dir_for_hires(directory):
     """List the high-sample-rate FLACs under `directory` (recursive) that the
     resampler would shrink — without touching anything.
 
@@ -224,8 +235,7 @@ def scan_dir_for_hires(directory, *, base_dir=None):
     "n_flac": int}``. ``audio_size`` is the file minus its metadata/art (which
     don't shrink), so a saving estimate scaled off it isn't inflated by a big
     embedded cover. The downsample scan uses this to build review candidates;
-    compress_dir runs the same probe before it resamples. ``base_dir`` is
-    accepted for signature symmetry with the resample helpers, unused here.
+    compress_dir runs the same probe before it resamples.
     """
     directory = Path(directory)
     hires = []
@@ -269,6 +279,13 @@ def _decode_ok(path):
     return r.returncode == 0
 
 
+# Resample output is written to a dot-prefixed temp beside the source, then
+# atomically swapped in. The dot keeps the library scanner from indexing it
+# mid-encode; the shared prefix lets a later run recognise and sweep one an
+# interrupt left behind.
+_TMP_PREFIX = ".compress-"
+
+
 def resample_one(rel, sr, rate, af_filter, *, base_dir=None):
     """Resample one file. Returns (rel, sr, rate, saved_bytes, error_msg).
 
@@ -283,8 +300,7 @@ def resample_one(rel, sr, rate, af_filter, *, base_dir=None):
     # the fully-encoded replacement, never a half-written file. The same-dir
     # temp is what keeps the rename on one filesystem: a cross-device move
     # degrades to copy-then-unlink, where an interrupt mid-copy would destroy
-    # the only lossless copy. The temp name is dot-prefixed so a library
-    # scanner (which skips dotfiles) never indexes the transient file.
+    # the only lossless copy.
     tmp = None
     try:
         in_size = src.stat().st_size
@@ -293,7 +309,7 @@ def resample_one(rel, sr, rate, af_filter, *, base_dir=None):
         sample_fmt = "s16" if bps == 16 else "s32"
 
         fd, tmp_name = tempfile.mkstemp(
-            dir=str(src.parent), prefix=".compress-", suffix=".flac")
+            dir=str(src.parent), prefix=_TMP_PREFIX, suffix=".flac")
         os.close(fd)
         tmp = Path(tmp_name)
 
@@ -335,6 +351,26 @@ def resample_one(rel, sr, rate, af_filter, *, base_dir=None):
                 pass
 
 
+def sweep_stale_encodes(directory):
+    """Delete orphaned resample temps under `directory`, returning the count.
+
+    A temp only survives the resample_one finally-cleanup if the process was
+    hard-killed (OOM/power loss/SIGKILL) mid-encode. compress_dir never runs
+    concurrently against the same tree — the web path holds the staging lock,
+    the CLI is single-threaded — so any temp present here is a dead orphan, not
+    an encode in flight. Left alone they hide from the library scanner (dot
+    prefix) but quietly accumulate disk.
+    """
+    removed = 0
+    for p in Path(directory).rglob(_TMP_PREFIX + "*.flac"):
+        try:
+            p.unlink()
+            removed += 1
+        except OSError:
+            pass
+    return removed
+
+
 def compress_dir(directory, *, verbose=True, base_dir=None, log=print):
     """Resample any high-sample-rate FLACs inside `directory` (recursive).
 
@@ -349,6 +385,8 @@ def compress_dir(directory, *, verbose=True, base_dir=None, log=print):
     if not directory.exists() or not directory.is_dir():
         return {"resampled": 0, "errors": 0, "saved_bytes": 0}
 
+    sweep_stale_encodes(directory)
+
     # When base_dir is supplied (e.g. STAGING_DIR),
     # operate on paths relative to that root and disable the on-disk
     # cache. Cache keys are MUSIC_ROOT-relative; staging paths would
@@ -358,7 +396,7 @@ def compress_dir(directory, *, verbose=True, base_dir=None, log=print):
 
     af_filter, _ = detect_resampler_filter()
 
-    flacs = list(directory.rglob("*.flac"))
+    flacs = [p for p in directory.rglob("*.flac") if not p.name.startswith(".")]
     if not flacs:
         return {"resampled": 0, "errors": 0, "saved_bytes": 0}
 
@@ -438,6 +476,11 @@ def main():
 
     mode = "DRY RUN" if DRY_RUN else "LIVE"
     print(f"\n{'=' * 60}\n  compress  |  {mode}  |  resampler: {resampler_name}\n{'=' * 60}")
+
+    if not DRY_RUN:
+        swept = sweep_stale_encodes(MUSIC_ROOT)
+        if swept:
+            print(f"  cleared {swept} stale temp file(s) from a prior interrupted run")
 
     print("  scanning library (listing FLACs)...")
     t0 = time.monotonic()
