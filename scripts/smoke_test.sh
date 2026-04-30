@@ -3,7 +3,7 @@
 # actually serves. This is NOT an end-to-end download test (that needs real
 # Qobuz credentials) — it catches "the release is fundamentally broken"
 # before you ship: the image builds, the server starts, routes respond,
-# and the bundled tools (rip/beet/ffprobe) are present.
+# and the bundled tools (rip/beet/ffmpeg/flac) are present.
 #
 # Usage:  ./scripts/smoke_test.sh
 # Exits non-zero on the first failure.
@@ -73,7 +73,7 @@ check /static/logo.png        200
 check /api/jobs/nope/status   404   # unknown job id
 
 echo "==> Checking bundled tools in the image"
-for bin in rip beet ffprobe; do
+for bin in rip beet ffmpeg flac; do
     if docker exec "$NAME" sh -c "command -v $bin" >/dev/null 2>&1; then
         echo "  ok  $bin present"
     else
