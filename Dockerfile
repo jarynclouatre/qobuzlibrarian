@@ -27,41 +27,28 @@ WORKDIR /app
 # when a Qobuz-side schema change forces it; verify with scripts/smoke_test.sh
 # before changing the SHA. Last verified: 2026-04 against streamrip dev.
 #
-# beets gets --no-deps + an explicit dependency list so the image stays lean
-# and reproducible rather than resolving beets' optional extras we never
-# enable. The list already covers everything the bundled configs touch: core
-# beets, the fetchart + inline plugins (beets-default.yaml), and the
-# chroma/AcoustID path — pyacoustid here, fpcalc via libchromaprint-tools in
-# the runtime stage — that beets-chroma.yaml and the library-migration
-# fingerprint stage depend on.
-RUN pip install --no-cache-dir \
+# streamrip and beets install --no-deps: both cap a few helpers (Pillow,
+# aiofiles, tomlkit) far below the versions the librarian runs and verifies, so
+# letting them resolve their own trees would either downgrade those or fail the
+# build outright. image-lock.txt supplies the whole dependency set instead —
+# core beets, the fetchart + inline plugins (beets-default.yaml), the
+# chroma/AcoustID path (pyacoustid here, fpcalc via libchromaprint-tools in the
+# runtime stage) that beets-chroma.yaml and the migration fingerprint stage use,
+# the app's own deps, and every transitive dependency — pinned to a verified
+# resolution so a rebuild can't drift to newer releases. Regenerate it with
+# scripts/lock-image-deps.sh after changing the streamrip ref or beets pin.
+COPY docker/image-lock.txt ./image-lock.txt
+RUN pip install --no-cache-dir --no-deps \
         "streamrip @ git+https://github.com/nathom/streamrip.git@e3291615ba6be34aa76df19da8aeb6f41673c6a0" \
-        "syncedlyrics>=0.4" \
  && pip install --no-cache-dir --no-deps "beets==2.11.0" \
- && pip install --no-cache-dir \
-        confuse \
-        jellyfish \
-        lap \
-        mediafile \
-        munkres \
-        packaging \
-        "pillow>=12.2.0" \
-        platformdirs \
-        pyacoustid \
-        pyyaml \
-        requests \
-        requests-ratelimiter \
-        typing_extensions \
-        unidecode
+ && pip install --no-cache-dir -r image-lock.txt
 
-# App + its Python deps. requirements.txt is the resolved lockfile (regenerate
-# via `uv pip compile pyproject.toml`); the editable install picks up source
-# without re-resolving. The .pth references /app/src — kept at the same path
-# in the runtime stage.
-COPY LICENSE README.md pyproject.toml requirements.txt ./
+# App source. image-lock.txt already installed the app's dependencies above, so
+# the editable install only links /app/src (--no-deps). The .pth references
+# /app/src — kept at the same path in the runtime stage.
+COPY LICENSE README.md pyproject.toml ./
 COPY src/ ./src/
-RUN pip install --no-cache-dir -r requirements.txt \
- && pip install --no-cache-dir -e . --no-deps
+RUN pip install --no-cache-dir -e . --no-deps
 
 # Tailwind production bundle: scans templates + static JS for class names,
 # emits a minified CSS file shipped at /static/dist/app.css.
