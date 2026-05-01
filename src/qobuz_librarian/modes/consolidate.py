@@ -4,6 +4,7 @@
 from pathlib import Path
 
 from qobuz_librarian import config
+from qobuz_librarian.integrations.beets import forget_beets_entries
 from qobuz_librarian.library.catalog import maybe_remove_empty_dir
 from qobuz_librarian.library.scanner import read_album_dir
 from qobuz_librarian.library.tags import normalize, similarity, strip_album_decorations
@@ -96,7 +97,9 @@ def consolidation_summary(siblings, primary_tracks):
 
 
 def execute_consolidation(summary):
-    n_deleted = n_failed = 0
+    """Delete the overlapping sibling tracks. Returns (deleted_paths, n_failed)
+    so the caller can drop exactly those files from the beets DB."""
+    deleted, n_failed = [], 0
     for st, _ in summary["overlap"]:
         path = Path(st.get("path", ""))
         if not path.exists():
@@ -104,12 +107,12 @@ def execute_consolidation(summary):
             continue
         try:
             path.unlink()
-            n_deleted += 1
+            deleted.append(path)
             vlog(f"deleted {path}")
         except OSError as e:
             n_failed += 1
             log.info(fmt(C.RED, f"      ✗  failed to delete {path.name}: {e}."))
-    return n_deleted, n_failed
+    return deleted, n_failed
 
 
 def consolidate_albums(album, args):
@@ -196,12 +199,17 @@ def consolidate_albums(album, args):
                                    default_yes=True, auto_yes=False):
                         log.info(fmt(C.GRAY, "    Skipped."))
                         break
-                n_del, n_fail = execute_consolidation(s)
+                deleted, n_fail = execute_consolidation(s)
+                n_del = len(deleted)
                 if n_del:
                     log.info(fmt(C.GREEN, f"    ✓  Deleted {plural(n_del, 'track')}."))
                 if n_fail:
                     log.info(fmt(C.RED, f"    ✗  Failed to delete {plural(n_fail, 'track')}."))
                 n_actioned += n_del
+                # Drop the deleted tracks from the beets library too, so a
+                # hand-run `beet` doesn't keep listing files that are gone.
+                if deleted and forget_beets_entries(deleted):
+                    log.info(fmt(C.GRAY, "    ⤷  Updated the beets library."))
                 # Offer to remove empty dir if no bonus tracks remain
                 if not s["unique"] and n_del:
                     if maybe_remove_empty_dir(sib_dir):

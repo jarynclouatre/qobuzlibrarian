@@ -413,6 +413,6 @@ def test_execute_consolidation_deletes_and_counts_failures(tmp_path, monkeypatch
         return real_unlink(self, missing_ok=missing_ok)
 
     monkeypatch.setattr(cmod.Path, "unlink", maybe_fail)
-    n_del, n_fail = execute_consolidation(summary)
-    assert (n_del, n_fail) == (1, 1)
+    deleted, n_fail = execute_consolidation(summary)
+    assert [p.name for p in deleted] == ["track.flac"] and n_fail == 1
     assert not f_ok.exists() and f_locked.exists()

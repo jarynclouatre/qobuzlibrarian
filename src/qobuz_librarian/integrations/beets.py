@@ -683,6 +683,35 @@ def _consolidate_duplicate_albums():
         clear_scan_caches()
 
 
+def forget_beets_entries(paths):
+    """Drop beets DB entries for files that were deleted outside beets.
+
+    Consolidation removes duplicate sibling tracks straight off disk; without
+    this their rows linger in the beets library, so someone who also runs
+    `beet` by hand sees ghost tracks until the next `beet update`. `beet
+    remove` is used rather than a direct sqlite delete so beets cleans up the
+    album row and any flexible-attribute rows along with the item — leaving
+    the database consistent. No `-d`: the files are already gone, so beets
+    only touches its database. beets' path query is directory-boundary aware,
+    so a full file path matches exactly that one track. Returns the number of
+    entries forgotten.
+    """
+    if not paths or not shutil.which("beet"):
+        return 0
+    beet_env = {**os.environ, "BEETSDIR": str(cfg.BEETS_CONFIG_DIR)}
+    n = 0
+    for p in paths:
+        try:
+            r = subprocess.run(["beet", "remove", "-f", "path:" + str(p)],
+                               capture_output=True, text=True,
+                               env=beet_env, timeout=120)
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if r.returncode == 0:
+            n += 1
+    return n
+
+
 def staging_preflight(args):
     """Sweep streamrip non-audio residue, then handle any remaining leftovers."""
     from qobuz_librarian.integrations.rip import cleanup_staging_residue
