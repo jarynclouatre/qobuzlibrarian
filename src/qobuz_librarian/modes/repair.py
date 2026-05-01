@@ -2,6 +2,7 @@
 
 """
 import shutil
+import sys
 from collections import Counter
 from pathlib import Path
 
@@ -27,7 +28,7 @@ from qobuz_librarian.queue.executor import _execute_download_queue
 from qobuz_librarian.repair_log import append_repair_log, scan_dir_for_isrc_repairs
 from qobuz_librarian.ui_cli.colors import C, fmt, section, truncate
 from qobuz_librarian.ui_cli.errors import EXIT_AUTH, die
-from qobuz_librarian.ui_cli.logging import log
+from qobuz_librarian.ui_cli.logging import log, vlog
 
 
 def _format_mmss(secs):
@@ -361,26 +362,43 @@ _REPAIR_AUTH_LOST = ("\n✗  Auth lost. Set QOBUZ_USER_AUTH_TOKEN, or open the "
                      "Settings page in the web UI to update your token.\n")
 
 
-def _scan_report_repair(album_dir, artist_name, args, token, deep=True):
+def _scan_report_repair(album_dir, artist_name, args, token, deep=True,
+                        quiet=False):
     """Scan one album dir by ISRC, report, confirm, and repair.
 
-    Returns "repaired" | "clean" | "skipped". Raises AuthLost to the
-    caller (it decides whether to abort the whole run/sweep). Shared by
-    the single-album picker path and the whole-library sweep so both
-    behave identically per album. A whole-library sweep passes deep=False
-    so healthy tracks skip the per-track Qobuz lookup (fast); a single
-    album stays deep so every track is verified.
+    Returns "repaired" | "clean" | "skipped" | "failed". Raises AuthLost to
+    the caller (it decides whether to abort the whole run/sweep). Shared by
+    the single-album picker path and the whole-library sweep so both behave
+    identically per album. A whole-library sweep passes deep=False so healthy
+    tracks skip the per-track Qobuz lookup (fast); a single album stays deep
+    so every track is verified.
+
+    quiet=True (the sweep) prints nothing for a healthy album — no header, no
+    "nothing to repair" — so a clean library doesn't bury its handful of real
+    findings under a screen of per-album reports. The caller keeps its own
+    progress line live; the report commits it only when there's something to
+    show.
     """
-    section(f"Repair scan — {truncate(album_dir.name, 60)}")
-    log.info(fmt(C.GRAY,
-        "  Resolving every FLAC by ISRC against Qobuz "
-        "(no album-edition guessing) …"))
+    if not quiet:
+        section(f"Repair scan — {truncate(album_dir.name, 60)}")
+        log.info(fmt(C.GRAY,
+            "  Resolving every FLAC by ISRC against Qobuz "
+            "(no album-edition guessing) …"))
 
     scan = scan_dir_for_isrc_repairs(album_dir, token, deep=deep)
     verified_truncated = scan["verified_truncated"]
     verified_ok        = scan["verified_ok"]
     isrc_no_match      = scan["isrc_no_match"]
     no_isrc_tag        = scan["no_isrc_tag"]
+
+    if quiet and not verified_truncated and not any(
+            x.get("diagnostic") for x in no_isrc_tag):
+        return "clean"
+    if quiet:
+        # Commit the caller's \r progress line and head the report.
+        print()
+        log.info(fmt(C.BOLD + C.WHITE,
+            f"  {artist_name} — {truncate(album_dir.name, 50)}"))
 
     log.info(fmt(C.GRAY,
         f"  {verified_ok} verified ok  ·  "
@@ -416,8 +434,9 @@ def _scan_report_repair(album_dir, artist_name, args, token, deep=True):
                 f"    ... and {len(no_isrc_tag) - 10} more"))
 
     if not verified_truncated:
-        log.info(fmt(C.GREEN,
-            "\n  ✓  No verified-truncated tracks. Nothing to repair."))
+        if not quiet:
+            log.info(fmt(C.GREEN,
+                "\n  ✓  No verified-truncated tracks. Nothing to repair."))
         return "clean"
 
     log.info(fmt(C.YELLOW + C.BOLD,
@@ -468,7 +487,7 @@ def _all_library_album_dirs():
     return pairs
 
 
-def run_album_repair_mode(args, token, *, query_args=None, loop=False):
+def run_album_repair_mode(args, token, *, loop=False):
     """ISRC-anchored refill of truncated FLACs — replaces are matched on
     ISRC so the new file is the same recording as the old one.
 
@@ -497,21 +516,34 @@ def run_album_repair_mode(args, token, *, query_args=None, loop=False):
                     continue
                 section(f"Repair scan — whole library "
                         f"({len(targets)} album(s))")
+                log.info(fmt(C.GRAY,
+                    "  Albums with no damaged tracks are skipped silently. "
+                    "Ctrl-C to stop."))
                 tally = {"repaired": 0, "clean": 0, "skipped": 0, "failed": 0}
                 try:
                     for i, (adir, aldir) in enumerate(targets, 1):
-                        log.info(fmt(C.CYAN,
-                            f"\n  [{i}/{len(targets)}] {adir.name} — "
-                            f"{truncate(aldir.name, 50)}"))
+                        _line = (f"  [{i}/{len(targets)}] Scanning "
+                                 f"{truncate(adir.name, 28)} — "
+                                 f"{truncate(aldir.name, 30)}…")
+                        if sys.stdout.isatty():
+                            print(f"\r{_line:<90}", end="", flush=True)
+                        else:
+                            vlog(_line.strip())
                         try:
                             status = _scan_report_repair(
-                                aldir, adir.name, args, token, deep=False)
+                                aldir, adir.name, args, token,
+                                deep=False, quiet=True)
                         except AuthLost:
+                            print()
                             die(fmt(C.RED, _REPAIR_AUTH_LOST), EXIT_AUTH)
                         tally[status] = tally.get(status, 0) + 1
                 except KeyboardInterrupt:
+                    print()
                     log.info(fmt(C.YELLOW,
-                        "\n  Interrupted — stopping library repair sweep."))
+                        "  Interrupted — stopping library repair sweep."))
+                else:
+                    if sys.stdout.isatty():
+                        print(f"\r{' ' * 90}\r", end="", flush=True)
                 section("Library repair summary")
                 _summary = (f"  repaired: {tally['repaired']}  ·  "
                             f"clean: {tally['clean']}  ·  "

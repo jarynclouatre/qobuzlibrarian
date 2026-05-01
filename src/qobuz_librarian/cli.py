@@ -598,7 +598,7 @@ def main():
             run_album_walk_mode(args, token)
         elif mode == Mode.ALBUM_REPAIR:
             from qobuz_librarian.modes.repair import run_album_repair_mode
-            run_album_repair_mode(args, token, query_args=[], loop=True)
+            run_album_repair_mode(args, token, loop=True)
         elif mode == Mode.UPGRADE:
             # Explicit upgrade walk: the user chose this, so enable the
             # upgrade-replace path for its duration regardless of the
