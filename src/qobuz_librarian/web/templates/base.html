@@ -83,6 +83,7 @@
         <li><a href="/library" class="{% if page=='library' %}active{% endif %}">Library</a></li>
         <li><a href="/upgrade" class="{% if page in ('upgrade', 'downsample') %}active{% endif %}">Upgrade / Downsample</a></li>
         <li><a href="/repair"   class="{% if page=='repair' %}active{% endif %}">Repair</a></li>
+        <li><a href="/lyrics"   class="{% if page=='lyrics' %}active{% endif %}">Lyrics</a></li>
         <li><a href="/queue"   class="{% if page=='queue' %}active{% endif %}">
           Queue
           {% set _qbadge = pending_job_count or 0 %}
@@ -110,6 +111,7 @@
           <li><a href="/library">Library</a></li>
           <li><a href="/upgrade">Upgrade / Downsample</a></li>
           <li><a href="/repair">Repair</a></li>
+          <li><a href="/lyrics">Lyrics</a></li>
           <li><a href="/queue">
             Queue
             {% set _qbadge = pending_job_count or 0 %}

@@ -1248,6 +1248,37 @@ async def repair_scan(request: Request):
     return RedirectResponse(url=f"/jobs/{job.id}", status_code=303)
 
 
+@app.get("/lyrics", response_class=HTMLResponse)
+async def lyrics_page(request: Request):
+    from qobuz_librarian.integrations.lyric_fetch import AVAILABLE
+    providers = ", ".join(cfg.LYRICS_PROVIDERS) or "Lrclib, NetEase, Musixmatch"
+    return _tr(request, "lyrics.html", {
+        "page": "lyrics",
+        "have_lyrics": AVAILABLE,
+        "lyrics_format": (cfg.LYRICS_FORMAT or "embed").lower(),
+        "providers": providers,
+    })
+
+
+@app.post("/lyrics")
+async def lyrics_scan(request: Request):
+    # No credential check: lyric fetching only reads/writes local files and
+    # talks to the lyric providers, never Qobuz.
+    busy = _lock_busy_response(request)
+    if busy is not None:
+        return busy
+    form = await request.form()
+    rescan = bool(form.get("rescan"))
+    synced_only = bool(form.get("synced_only"))
+    from qobuz_librarian.web import flows
+    job = job_mgr.Job(title="Lyrics backfill")
+    job_mgr.submit(
+        job,
+        lambda j: flows.run_library_lyrics(j, rescan=rescan, synced_only=synced_only),
+    )
+    return RedirectResponse(url=f"/jobs/{job.id}", status_code=303)
+
+
 @app.get("/migrate", response_class=HTMLResponse)
 async def migrate_page(request: Request):
     import os as _os

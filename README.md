@@ -91,7 +91,9 @@ check interval, or disable it, on the Settings page.
 
 **Clean import.** beets handles tagging and cover art; files land in your
 library in one move so a scanner never sees a half-processed state. Synced
-lyrics are fetched automatically (when `LYRICS_ENABLED` is on; default).
+lyrics are fetched automatically (when `LYRICS_ENABLED` is on; default), and the
+**Lyrics** mode backfills them across tracks already in your library that are
+missing them.
 
 **Library maintenance.**
 
@@ -133,6 +135,7 @@ changed until you do.
 | **Upgrade** | Find albums Qobuz can serve at higher quality, choose what to re-rip |
 | **Downsample** | Shrink hi-res library files to CD rate to reclaim space (a tab on the Upgrade page; local, no login) |
 | **Repair**  | Find truncated/partial FLACs (ISRC-verified), choose what to refill |
+| **Lyrics**  | Fetch lyrics for library tracks that are missing them (local, no login) |
 | **Migrate** | One-time: reorganise an existing library into the layout (copies, never touches originals) |
 | **Queue**   | Live progress, jobs awaiting review, and download history           |
 | **Settings**| Qobuz credentials and behaviour toggles (applied without a restart) |
@@ -154,8 +157,8 @@ albums and track gaps the web does — it just works through them differently.
 Instead of parking a checklist you review all at once, it walks you album by
 album with yes/no prompts (skip, queue, fill, stop), which suits hands-on,
 power-user runs. Launch with no arguments for the menu (Search · Artist ·
-Library walk · Album gaps · Repair · Upgrade · Migrate), or pass flags for
-unattended runs — `--help` lists them all.
+Library walk · Album gaps · Repair · Upgrade · Migrate · Downsample · Lyrics),
+or pass flags for unattended runs — `--help` lists them all.
 
 **Web app and CLI take turns.** They share one download lock, so only one
 can run at a time. To use the CLI without stopping the container, open
@@ -563,6 +566,11 @@ default — bump `MISSING_ALBUMS_MIN_TRACKS` in `compose.yaml` (or pass
   separate `DOWNSAMPLE_HIRES_ENABLED` import setting, off by default, also
   downsamples, but only files as they're freshly downloaded — never your existing
   library.)
+- **Lyrics** (the page, the menu's *Lyrics* option, and `--lyrics-walk`) writes
+  lyric tags — or `.lrc` sidecars, per `LYRICS_FORMAT` — into existing tracks that
+  are missing them, **only when you start it**, and never touches the audio. The
+  automatic import-time fetch (`LYRICS_ENABLED`, on by default) does the same for
+  tracks as they're downloaded.
 - Consolidation (merging sibling/duplicate album folders) is **CLI-only**
   and **off by default**. It needs per-folder confirmation, which the CLI
   prompts for; the web UI has no review screen for it, so web downloads
@@ -629,6 +637,9 @@ docker compose run --rm qobuz-librarian cli --upgrade-walk --auto-safe
 
 # Preview which hi-res library files would shrink to CD rate (changes nothing)
 docker compose run --rm qobuz-librarian cli --downsample-walk --dry-run
+
+# Fetch lyrics for library tracks that are missing them
+docker compose run --rm qobuz-librarian cli --lyrics-walk
 
 # Full flag reference
 docker compose run --rm qobuz-librarian cli --help

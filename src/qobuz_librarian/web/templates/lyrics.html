@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% block title %}Lyrics — Qobuz Librarian{% endblock %}
+{% block content %}
+
+<h1 class="text-2xl font-bold mb-2">Lyrics</h1>
+<p class="text-base-content/60 mb-2">
+  Fetch lyrics for tracks already in your library that are missing them. Each
+  track is matched by title and artist, and synced (timed) lyrics are preferred,
+  falling back to plain. Tracks that already have lyrics are skipped.
+</p>
+<p class="text-base-content/40 text-sm mb-6">
+  Writing <span class="font-mono">{{ lyrics_format }}</span> lyrics via {{ providers }}
+  (<a href="/settings" class="link">change in Settings</a>). Safe to interrupt —
+  progress is saved, so re-running picks up where it left off. Slow on a big
+  library: lyrics come from rate-limited public providers.
+</p>
+
+{% if have_lyrics %}
+<form action="/lyrics" method="post">
+  <input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}">
+  <div class="space-y-4 mb-6 max-w-xl">
+    <div class="flex items-start gap-3">
+      <input type="checkbox" name="synced_only" id="cb-synced" class="toggle toggle-primary mt-1">
+      <div>
+        <label for="cb-synced" class="font-medium cursor-pointer">Synced lyrics only</label>
+        <div class="text-sm text-base-content/50">
+          Only write timed lyrics that scroll with the song; skip plain text.
+        </div>
+      </div>
+    </div>
+    <div class="flex items-start gap-3">
+      <input type="checkbox" name="rescan" id="cb-rescan" class="toggle toggle-primary mt-1">
+      <div>
+        <label for="cb-rescan" class="font-medium cursor-pointer">Re-check everything</label>
+        <div class="text-sm text-base-content/50">
+          Ignore the saved state and re-query every track — useful after a
+          provider adds lyrics that weren't found before.
+        </div>
+      </div>
+    </div>
+  </div>
+  <button type="submit" class="btn btn-primary"
+          onclick="return confirm('Start a library-wide lyrics pass? This can take a while on a large library.')">Fetch missing lyrics</button>
+</form>
+{% else %}
+<div class="alert alert-warning">
+  <span>Lyric fetching isn't available — the <span class="font-mono">syncedlyrics</span>
+    provider library isn't installed in this build.</span>
+</div>
+{% endif %}
+
+{% endblock %}

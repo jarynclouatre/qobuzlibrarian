@@ -189,6 +189,16 @@ def parse_args():
                    help="Scan the library for hi-res files and shrink them to "
                         "CD rate in place (per-artist confirm; --dry-run lists "
                         "only). Local — no Qobuz login needed.")
+    p.add_argument("--lyrics-walk", action="store_true",
+                   help="Fetch lyrics for tracks already in the library that "
+                        "are missing them (LYRICS_FORMAT / LYRICS_PROVIDERS "
+                        "settings apply). Local — no Qobuz login needed.")
+    p.add_argument("--lyrics-rescan", action="store_true",
+                   help="With --lyrics-walk: re-check every track, ignoring the "
+                        "saved per-track state.")
+    p.add_argument("--lyrics-synced-only", action="store_true",
+                   help="With --lyrics-walk: only write timed (synced) lyrics, "
+                        "never plain.")
     p.add_argument("--no-catalog",   action="store_true",
                    help="Artist mode: skip step 2 (don't show missing albums)")
     p.add_argument("--include-comps", action="store_true",
@@ -344,6 +354,16 @@ def parse_args():
                                  or args.reset_walk_seen):
         p.error("--downsample-walk runs on its own — drop the other "
                 "artist/query/upgrade-walk arguments")
+    # --lyrics-walk is its own whole-library mode and dispatches before the
+    # download modes; pairing it with one would silently drop the other.
+    if args.lyrics_walk and (args.artist or args.query or args.upgrade_walk
+                             or args.downsample_walk or args.reset_walk_seen
+                             or args.migrate):
+        p.error("--lyrics-walk runs on its own — drop the other "
+                "artist/query/upgrade-walk/downsample-walk arguments")
+    if (args.lyrics_rescan or args.lyrics_synced_only) and not args.lyrics_walk:
+        p.error("--lyrics-rescan / --lyrics-synced-only only apply with "
+                "--lyrics-walk")
     return args
 
 
@@ -404,6 +424,15 @@ def main():
     if args.migrate:
         from qobuz_librarian.modes.migrate import run_migrate_mode
         run_migrate_mode(args)
+        return
+
+    # Lyrics backfill reads/writes library files and fetches from lyric
+    # providers — no streamrip, ffmpeg or Qobuz token involved. Dispatch here,
+    # before the tool/credential checks, so it runs on a box that only has the
+    # library mounted.
+    if args.lyrics_walk:
+        from qobuz_librarian.modes.lyrics import run_library_lyrics_mode
+        run_library_lyrics_mode(args)
         return
 
     check_rip()
@@ -588,6 +617,9 @@ def main():
         elif mode == Mode.DOWNSAMPLE:
             from qobuz_librarian.modes.downsample import run_downsample_walk_mode
             run_downsample_walk_mode(args)
+        elif mode == Mode.LYRICS:
+            from qobuz_librarian.modes.lyrics import run_library_lyrics_mode
+            run_library_lyrics_mode(args)
 
 
 def _check_staging_occupied():

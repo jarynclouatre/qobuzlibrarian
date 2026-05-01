@@ -645,3 +645,48 @@ def test_import_override_pins_autotag_off(monkeypatch):
     import yaml
     conf = yaml.safe_load(_build_artwork_yaml(monkeypatch))
     assert conf["import"]["autotag"] is False
+
+
+def test_library_lyrics_walk_targets_library_flacs_only(tmp_path, monkeypatch):
+    # The backfill must lyric the real library and leave the staging dir,
+    # dot-folders and empty artists alone — fetching staging files would lyric
+    # half-imported downloads behind the import hook's back.
+    from collections import Counter
+
+    import qobuz_librarian.config as cfg
+    from qobuz_librarian.integrations import lyric_fetch
+    from qobuz_librarian.library import lyrics as liblyr
+    from qobuz_librarian.library import scanner
+
+    music = tmp_path / "music"
+    monkeypatch.setattr(cfg, "MUSIC_ROOT", music)
+    monkeypatch.setattr(cfg, "STAGING_DIR", music / "staging")
+    scanner.clear_scan_caches()
+
+    def touch(rel):
+        p = music / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(b"x")
+        return p
+
+    expected = {
+        touch("ArtistA/Album1 (2020)/01.flac"),
+        touch("ArtistA/Album1 (2020)/02.flac"),
+        touch("ArtistB/Album2/Disc 1/03.flac"),
+    }
+    touch(".hidden/x.flac")          # dot-folder artist
+    touch("staging/junk.flac")       # in-progress import
+    (music / "EmptyArtist").mkdir()  # no audio
+
+    seen = {}
+    monkeypatch.setattr(lyric_fetch, "index_existing", lambda *a, **k: Counter())
+
+    def fake_fetch(paths, **kw):
+        seen["paths"] = [Path(p) for p in paths]
+        return Counter({"already-synced": len(seen["paths"])})
+
+    monkeypatch.setattr(lyric_fetch, "fetch_for_paths", fake_fetch)
+
+    res = liblyr.run_library_lyrics()
+    assert set(seen["paths"]) == expected
+    assert res["total"] == 3

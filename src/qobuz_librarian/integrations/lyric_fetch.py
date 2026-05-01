@@ -709,6 +709,7 @@ def index_existing(
     workers: int = 64,
     save_every: int = 500,
     should_stop: Optional[Callable[[], bool]] = None,
+    progress_cb: Optional[Callable[[int, int, str], None]] = None,
 ) -> Counter:
     """
     Fast scan-only pass — open each FLAC, classify the existing lyrics tag,
@@ -800,6 +801,8 @@ def index_existing(
             outcome = index_one(fp, mt, sz)
             completed += 1
             counts[outcome] += 1
+            if progress_cb:
+                progress_cb(completed, total, fp.name)
             if completed % progress_every == 0:
                 now = time.monotonic()
                 rate = progress_every / max(0.001, now - last_log)
@@ -822,6 +825,8 @@ def index_existing(
                         outcome = "exception"
                     completed += 1
                     counts[outcome] += 1
+                    if progress_cb:
+                        progress_cb(completed, total, fp.name)
                     if completed % progress_every == 0:
                         now = time.monotonic()
                         rate = progress_every / max(0.001, now - last_log)

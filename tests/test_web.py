@@ -253,6 +253,20 @@ def test_downsample_scan_needs_no_credentials(client, monkeypatch):
     assert captured["job"].execute_kind == "downsample"
 
 
+def test_lyrics_scan_needs_no_credentials(client, monkeypatch):
+    # Lyric fetching is local — the route must not gate on a Qobuz token, and it
+    # submits a simple run-to-completion job rather than a scan/review.
+    import qobuz_librarian.web.app as app_mod
+
+    captured = {}
+    monkeypatch.setattr(app_mod.job_mgr, "submit",
+                        lambda job, fn: captured.update(job=job))
+    r = client.post("/lyrics", data={"synced_only": "on"}, follow_redirects=False)
+    assert r.status_code == 303
+    assert "/jobs/" in r.headers["location"]
+    assert captured["job"].title == "Lyrics backfill"
+
+
 def test_download_partial_result_marks_done_with_error(client, monkeypatch):
     # A partial download (some tracks failed but the album was imported)
     # keeps the job DONE — the folder is reachable — but must surface the

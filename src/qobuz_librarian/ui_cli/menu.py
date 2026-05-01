@@ -21,6 +21,7 @@ def interactive_session_mode():
     log.info(fmt(C.WHITE, "    7) Migrate      — one-time setup: reorganize an existing library into the"))
     log.info(fmt(C.GRAY,  "                      Artist/Album layout (copies by default, never touches originals)"))
     log.info(fmt(C.WHITE, "    8) Downsample   — shrink hi-res files you own down to CD quality to reclaim space"))
+    log.info(fmt(C.WHITE, "    9) Lyrics       — fetch lyrics for tracks you own that are missing them"))
     log.info(fmt(C.WHITE, "    q) Quit"))
     while True:
         try:
@@ -45,4 +46,6 @@ def interactive_session_mode():
             return Mode.MIGRATE
         if r == "8":
             return Mode.DOWNSAMPLE
-        log.info(fmt(C.GRAY, "  Enter 1-8 (blank = 1) or q to quit."))
+        if r == "9":
+            return Mode.LYRICS
+        log.info(fmt(C.GRAY, "  Enter 1-9 (blank = 1) or q to quit."))

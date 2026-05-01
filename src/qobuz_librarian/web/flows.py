@@ -919,7 +919,6 @@ def execute_repairs(job, chosen, token):
 def run_lyric_retry(job, token):
     """Retry lyric fetching for tracks queued from a previous failed run."""
     from qobuz_librarian.integrations.lyrics import (
-        HAVE_LYRIC_FETCH,
         _refresh_lyric_retry,
         load_lyric_retry,
         lyric_fetch,
@@ -931,8 +930,8 @@ def run_lyric_retry(job, token):
         log.info("No tracks queued for lyric retry.")
         return
 
-    if not HAVE_LYRIC_FETCH:
-        log.info("lyric_fetch is unavailable — manifest preserved.")
+    if not lyric_fetch.AVAILABLE:
+        log.info("The syncedlyrics provider library isn't installed — manifest preserved.")
         return
 
     existing = [Path(p) for p in paths if Path(p).exists()]
@@ -962,6 +961,44 @@ def run_lyric_retry(job, token):
         log.info(f"{plural(len(remaining), 'track')} still unresolved — will retry next time.")
     else:
         log.info("All retried tracks resolved.")
+
+
+def run_library_lyrics(job, *, rescan=False, synced_only=False):
+    """Fetch lyrics for every library track that's missing them."""
+    from qobuz_librarian.library.lyrics import HAVE_LYRICS
+    from qobuz_librarian.library.lyrics import run_library_lyrics as engine
+
+    if not HAVE_LYRICS:
+        job.summary = "Lyric fetching isn't available — the syncedlyrics library isn't installed."
+        log.info(job.summary)
+        return
+
+    log.info(f"Fetching lyrics across the library (writing {(cfg.LYRICS_FORMAT or 'embed').lower()}).")
+    if rescan:
+        log.info("Re-checking every track (ignoring saved state).")
+    res = engine(rescan=rescan, synced_only=synced_only,
+                 should_stop=lambda: job.cancel_requested, log=log)
+
+    total = res.get("total", 0)
+    if not total:
+        job.summary = "No FLAC files found in the library."
+        log.info(job.summary)
+        return
+    if res.get("stopped"):
+        job.summary = f"Stopped after scanning {plural(total, 'track')}."
+        return
+
+    wrote = (res.get("wrote-synced", 0) + res.get("wrote-plain", 0)
+             + res.get("dry:wrote-synced", 0) + res.get("dry:wrote-plain", 0))
+    not_found = res.get("not-found", 0)
+    unavailable = res.get("providers-unavailable", 0)
+    parts = [f"{plural(total, 'track')} scanned", f"{wrote} got lyrics"]
+    if not_found:
+        parts.append(f"{not_found} not found")
+    if unavailable:
+        parts.append(f"{unavailable} couldn't reach a provider (re-run later)")
+    job.summary = " · ".join(parts) + "."
+    log.info(job.summary)
 
 
 # ── Library migration ──────────────────────────────────────────────────────────
