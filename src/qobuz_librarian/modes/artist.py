@@ -97,7 +97,10 @@ def run_artist_gap_fill(artist_name, artist_dir, args, token, *,
     album_dirs = list_artist_album_dirs(artist_dir)
     if not album_dirs:
         log.info(fmt(C.YELLOW, f"  ⚠  No album folders found under {artist_dir}."))
-        return [], {}, set(), set(), None, []
+        # catalog=None, not []: the missing-albums step treats a non-None
+        # catalog as authoritative. Handing it an empty list here would make
+        # it report "caught up" without ever querying Qobuz.
+        return [], {}, set(), set(), None, None
 
     sibling_choices = {}  # picked_dir -> [siblings to delete after fill]
 
@@ -125,10 +128,12 @@ def run_artist_gap_fill(artist_name, artist_dir, args, token, *,
     if resolved_name:
         artist_name = resolved_name
     catalog = []
+    catalog_fetched = False
     if artist_id is not None:
         try:
             catalog, qobuz_total = get_artist_albums(
                 artist_id, token, limit=cfg.ARTIST_CATALOG_LIMIT, fresh=fresh)
+            catalog_fetched = True
             vlog(f"  Pre-fetched {len(catalog)} catalog entries (artist_id={artist_id}).")
             if qobuz_total is not None and qobuz_total > len(catalog):
                 log.info(fmt(C.YELLOW,
@@ -446,7 +451,11 @@ def run_artist_gap_fill(artist_name, artist_dir, args, token, *,
     if pending_stop is not None:
         raise pending_stop
 
-    return results, owned_titles, handled_ids, resolved_dirs, artist_id, catalog
+    # catalog is None when the pre-fetch didn't land (no artist match, or a
+    # failed fetch) so the missing-albums step re-fetches instead of trusting
+    # an empty list as "nothing on Qobuz".
+    return (results, owned_titles, handled_ids, resolved_dirs, artist_id,
+            catalog if catalog_fetched else None)
 
 
 def run_artist_missing_albums(artist_name, owned_titles, args, token,
