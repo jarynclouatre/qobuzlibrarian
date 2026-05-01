@@ -182,26 +182,19 @@ def repair_album_dir(album_dir, verified_truncated, artist_name, args, token):
     Non-interactive and self-contained — the CLI repair mode and the web
     Repair flow both call this so there is one implementation of the
     risky part. Forces no-upgrade for the run so a quality delta can never
-    escalate a surgical repair into a full wipe-and-replace. Raises AuthLost
-    (after restoring the backup) if auth drops mid-run. Returns
+    escalate a surgical repair into a full wipe-and-replace. Auth lost
+    before the backup is taken aborts with the originals untouched; auth
+    lost mid-refill restores the backup before re-raising. Returns
     {"n_ok", "n_fail", "backup"}.
     """
     saved_no_upgrade = getattr(args, "no_upgrade", False)
     args.no_upgrade = True
     try:
-        # ── Backup the truncated originals before any deletion ───────────
-        broken_paths = [b["path"] for b in verified_truncated]
-        backup_path = backup_gap_fill_files(broken_paths, album_dir)
-        if not backup_path:
-            log.info(fmt(C.RED,
-                "  ✗  Backup creation failed — aborting repair to "
-                "preserve existing files."))
-            return {"n_ok": 0, "n_fail": len(verified_truncated), "backup": None}
-        log.info(fmt(C.GRAY,
-            f"  ⟳  Moved {len(verified_truncated)} broken file(s) "
-            f"to backup: {backup_path.name}"))
-
-        # ── Build the synthetic queue item ───────────────────────────────
+        # ── Resolve the refill plan before touching any files ────────────
+        # Everything Qobuz-side happens up front, while the truncated
+        # originals are still in place. If the parent-album lookup hits a
+        # transient outage the repair aborts cleanly with nothing moved,
+        # rather than stranding the only copies in the backup dir.
         parent_ids = []
         for b in verified_truncated:
             aid = ((b["qobuz_track"].get("album") or {}).get("id"))
@@ -214,11 +207,11 @@ def repair_album_dir(album_dir, verified_truncated, artist_name, args, token):
         if most_common_aid is not None:
             try:
                 album = get_album(most_common_aid, token)
-            except (QobuzError, AuthLost) as e:
-                if isinstance(e, AuthLost):
-                    if backup_path and backup_path.exists():
-                        restore_gap_fill_backup(backup_path, album_dir)
-                    raise
+            except QobuzError as e:
+                # A genuine no-match is recoverable — the per-track ISRC
+                # matches drive the refill, so fall back to a synthetic album
+                # dict. AuthLost / QobuzUnavailable are not QobuzError; they
+                # propagate and abort before anything is moved.
                 log.info(fmt(C.GRAY,
                     f"  (parent-album lookup failed: {e}; "
                     "falling back to synthetic album dict)"))
@@ -261,6 +254,18 @@ def repair_album_dir(album_dir, verified_truncated, artist_name, args, token):
         before_paths = set()
         if landed_pre is not None and not _paths_equal(landed_pre, album_dir):
             before_paths = {et.get("path") for et in read_album_dir(landed_pre)}
+
+        # ── Back up the truncated originals (plan in hand) ───────────────
+        broken_paths = [b["path"] for b in verified_truncated]
+        backup_path = backup_gap_fill_files(broken_paths, album_dir)
+        if not backup_path:
+            log.info(fmt(C.RED,
+                "  ✗  Backup creation failed — aborting repair to "
+                "preserve existing files."))
+            return {"n_ok": 0, "n_fail": len(verified_truncated), "backup": None}
+        log.info(fmt(C.GRAY,
+            f"  ⟳  Moved {len(verified_truncated)} broken file(s) "
+            f"to backup: {backup_path.name}"))
 
         try:
             _execute_download_queue([qi], args, token)
