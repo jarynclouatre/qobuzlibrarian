@@ -12,7 +12,6 @@ from qobuz_librarian.library.scanner import (
 )
 from qobuz_librarian.library.tags import VA_NORMALIZED, normalize
 from qobuz_librarian.modes.artist import (
-    resolve_artist_dir,
     run_artist_gap_fill,
     run_artist_missing_albums,
 )
@@ -316,6 +315,10 @@ def run_album_walk_mode(args, token):
             except (AuthLost, QobuzUnavailable):
                 # Queue is already persisted via save_callback; let it propagate
                 # so the run exits with the right status and message.
+                if shared_queue:
+                    log.info(fmt(C.GRAY,
+                        f"  Queue retained ({len(shared_queue)} album(s)) — "
+                        f"persisted to {cfg.PENDING_QUEUE_FILE.name} for resume."))
                 raise
     finally:
         args.consolidate = saved_consolidate
@@ -469,13 +472,11 @@ def run_walk_queued_mode(args, token):
 
             decided = True
             if rl in ("y", "yes"):
+                # d came straight from list_library_artists(), so it already is
+                # the artist folder to scan — no need to fuzzy-resolve it again.
                 artist_query = re.sub(r"\s+", " ",
                                       d.name.replace("_", " ")).strip()
-                artist_dir_resolved = resolve_artist_dir(artist_query)
-                if artist_dir_resolved is None:
-                    log.info(fmt(C.YELLOW,
-                        "  ⚠  No matching artist directory; skipping."))
-                elif normalize(artist_query) in VA_NORMALIZED:
+                if normalize(artist_query) in VA_NORMALIZED:
                     log.info(fmt(C.YELLOW,
                         "  ⚠  'Various Artists' isn't a real artist; skipping."))
                 else:
@@ -484,8 +485,8 @@ def run_walk_queued_mode(args, token):
                     try:
                         clear_scan_caches()
                         gap_fill_result = run_artist_gap_fill(
-                            artist_query, artist_dir_resolved,
-                            args, token, shared_queue=shared_queue,
+                            artist_query, d, args, token,
+                            shared_queue=shared_queue,
                             save_callback=_save_now,
                         )
                         (_, owned_titles, handled_ids, resolved_dirs,
@@ -507,15 +508,15 @@ def run_walk_queued_mode(args, token):
                             f"{cfg.PENDING_QUEUE_FILE.name}; resume next launch."))
                         decided = False
 
-                n_scanned += 1
+                    n_scanned += 1
 
-                if shared_queue:
+                    if shared_queue:
+                        print()
+                        if confirm(
+                                f"  Process queue now ({len(shared_queue)} album(s))?",
+                                default_yes=False, auto_yes=args.yes):
+                            _flush_queue()
                     print()
-                    if confirm(
-                            f"  Process queue now ({len(shared_queue)} album(s))?",
-                            default_yes=False, auto_yes=args.yes):
-                        _flush_queue()
-                print()
             elif rl in ("", "n", "no"):
                 n_skipped += 1
             else:
