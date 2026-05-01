@@ -22,6 +22,22 @@ from qobuz_librarian.ui_cli.errors import plural
 from qobuz_librarian.ui_cli.logging import log, vlog
 from qobuz_librarian.ui_cli.prompts import _flush_stdin, confirm
 
+# process_album outcomes that mean "nothing to upgrade here", not a failure.
+# A backup-failed abort is deliberately absent: that's a real failure (Qobuz
+# would have had an upgrade, but the existing folder couldn't be safely backed
+# up) and the user should see it counted, the same way the web upgrade flow
+# treats it.
+_BENIGN_UPGRADE_RESULTS = {
+    "upgrade_only_no_op",
+    "skipped_already_higher_quality",
+    "skipped_has_extras",
+    "lossy_only",
+    "no_tracks",
+    "user_skipped",
+    "dry_run",
+    "cancelled",
+}
+
 
 def run_upgrade_walk_mode(args, token):
     """Upgrade walk — walk every artist in the library, find albums that can
@@ -54,6 +70,7 @@ def run_upgrade_walk_mode(args, token):
     n = len(all_artists)
     n_scanned = 0
     n_upgraded_albums = 0
+    n_failed_albums = 0
     unsafe_artists = []  # --auto-safe skipped artists, for end-of-run review
 
     # Load cap markers; surface count for transparency.
@@ -198,17 +215,15 @@ def run_upgrade_walk_mode(args, token):
                     return
 
                 _pr_result = (_proc_result or {}).get("result", "")
-                if _pr_result in (
-                    "upgrade_only_no_op",
-                    "skipped_already_higher_quality",
-                    "skipped_has_extras",
-                    "lossy_only", "no_tracks", "user_skipped",
-                    "dry_run", "cancelled",
-                    "upgrade_aborted_backup_failed",
-                ):
+                if _pr_result in _BENIGN_UPGRADE_RESULTS:
                     time.sleep(cfg.ARTIST_API_DELAY)
                     continue
                 if not (_proc_result or {}).get("imported", False):
+                    # Attempted (Qobuz had a higher-quality copy) but didn't
+                    # land — backup failed, download failed, import failed.
+                    # process_album already logged the reason; tally it so the
+                    # end-of-run summary doesn't imply a clean sweep.
+                    n_failed_albums += 1
                     time.sleep(cfg.ARTIST_API_DELAY)
                     continue
                 n_upgraded_albums += 1
@@ -239,6 +254,10 @@ def run_upgrade_walk_mode(args, token):
     log.info(fmt(C.GRAY,
         f"     Scanned {plural(n_scanned, 'artist')} — upgraded tracks in "
         f"{plural(n_upgraded_albums, 'album')}."))
+    if n_failed_albums:
+        log.info(fmt(C.YELLOW,
+            f"     ⚠  {plural(n_failed_albums, 'album')} couldn't be upgraded "
+            "(see the log above)."))
     if unsafe_artists:
         print()
         log.info(fmt(C.YELLOW + C.BOLD,
