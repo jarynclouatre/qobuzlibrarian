@@ -25,9 +25,9 @@ from qobuz_librarian.ui_cli.prompts import _flush_stdin, confirm
 # process_album outcomes that mean "nothing to upgrade here", not a failure.
 # A backup-failed abort is deliberately absent: that's a real failure (Qobuz
 # would have had an upgrade, but the existing folder couldn't be safely backed
-# up) and the user should see it counted, the same way the web upgrade flow
-# treats it.
-_BENIGN_UPGRADE_RESULTS = {
+# up) and the user should see it counted. The web upgrade flow imports this so
+# the CLI walk and the web both classify results the same way.
+BENIGN_UPGRADE_RESULTS = frozenset({
     "upgrade_only_no_op",
     "skipped_already_higher_quality",
     "skipped_has_extras",
@@ -36,7 +36,7 @@ _BENIGN_UPGRADE_RESULTS = {
     "user_skipped",
     "dry_run",
     "cancelled",
-}
+})
 
 
 def run_upgrade_walk_mode(args, token):
@@ -215,7 +215,7 @@ def run_upgrade_walk_mode(args, token):
                     return
 
                 _pr_result = (_proc_result or {}).get("result", "")
-                if _pr_result in _BENIGN_UPGRADE_RESULTS:
+                if _pr_result in BENIGN_UPGRADE_RESULTS:
                     time.sleep(cfg.ARTIST_API_DELAY)
                     continue
                 if not (_proc_result or {}).get("imported", False):

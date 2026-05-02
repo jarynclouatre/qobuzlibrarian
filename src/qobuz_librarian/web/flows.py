@@ -586,6 +586,7 @@ def scan_upgrades(job, token):
 def execute_upgrades(job, chosen, token):
     """Re-rip the present tracks of each chosen album at higher quality."""
     from qobuz_librarian.modes.process import process_album
+    from qobuz_librarian.modes.upgrade import BENIGN_UPGRADE_RESULTS
     from qobuz_librarian.web.jobs import staging_lock
 
     clear_scan_caches()
@@ -595,11 +596,9 @@ def execute_upgrades(job, chosen, token):
     args.auto_upgrade = True
     args.consolidate = False
     # Outcomes that aren't a failure — the album just didn't need (or couldn't
-    # safely take) an upgrade. A backup-failed abort is NOT here: that's a real
-    # failure the user should see.
-    _skip = {"upgrade_only_no_op", "skipped_already_higher_quality",
-             "skipped_has_extras", "lossy_only", "no_tracks",
-             "user_skipped", "dry_run", "cancelled"}
+    # safely take) an upgrade. Shared with the CLI upgrade walk; a backup-failed
+    # abort is deliberately excluded, so it counts as the real failure it is.
+    _skip = BENIGN_UPGRADE_RESULTS
     ok = 0
     failed = 0
     processed = 0
