@@ -692,24 +692,44 @@ def forget_beets_entries(paths):
     remove` is used rather than a direct sqlite delete so beets cleans up the
     album row and any flexible-attribute rows along with the item — leaving
     the database consistent. No `-d`: the files are already gone, so beets
-    only touches its database. beets' path query is directory-boundary aware,
-    so a full file path matches exactly that one track. Returns the number of
-    entries forgotten.
+    only touches its database. `-l` pins the same database the import wrote to
+    (the import override forces `library:` to BEETS_DB_PATH), so this stays
+    correct even when a deployer points BEETS_DB_PATH somewhere other than the
+    `library:` line in config.yaml.
+
+    The paths are OR'd into one query — a bare comma separates beets
+    sub-queries — so a consolidation that deletes dozens of tracks costs two
+    `beet` runs, not one per file. A `list` pass first counts how many of the
+    paths beets actually tracks: that count is what's returned (0, with no
+    `remove`, when beets knows none of them). beets' path query is
+    directory-boundary aware, so each full file path matches exactly its track.
     """
+    paths = [str(p) for p in paths if str(p)]
     if not paths or not shutil.which("beet"):
         return 0
     beet_env = {**os.environ, "BEETSDIR": str(cfg.BEETS_CONFIG_DIR)}
-    n = 0
+    base = ["beet", "-l", str(cfg.BEETS_DB_PATH)]
+    query = []
     for p in paths:
-        try:
-            r = subprocess.run(["beet", "remove", "-f", "path:" + str(p)],
-                               capture_output=True, text=True,
-                               env=beet_env, timeout=120)
-        except (OSError, subprocess.SubprocessError):
-            continue
-        if r.returncode == 0:
-            n += 1
-    return n
+        if query:
+            query.append(",")
+        query.append("path:" + p)
+    try:
+        listing = subprocess.run(base + ["ls", "-f", "$id", *query],
+                                 capture_output=True, text=True,
+                                 env=beet_env, timeout=120)
+    except (OSError, subprocess.SubprocessError):
+        return 0
+    tracked = sum(1 for line in listing.stdout.splitlines() if line.strip())
+    if not tracked:
+        return 0
+    try:
+        rm = subprocess.run(base + ["remove", "-f", *query],
+                            capture_output=True, text=True,
+                            env=beet_env, timeout=120)
+    except (OSError, subprocess.SubprocessError):
+        return 0
+    return tracked if rm.returncode == 0 else 0
 
 
 def staging_preflight(args):
