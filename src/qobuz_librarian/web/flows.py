@@ -1060,7 +1060,7 @@ def scan_migration(job, src, dest, *, use_acoustid, in_place=False):
     log.info(job.summary)
 
 
-def execute_migration(job, chosen, dest, *, in_place):
+def execute_migration(job, chosen, dest, *, in_place, src=None):
     """Copy (or move) the files behind the approved albums into the layout."""
     from qobuz_librarian.library import migrate as engine
 
@@ -1085,8 +1085,11 @@ def execute_migration(job, chosen, dest, *, in_place):
         engine.write_results_manifest(result, dest / "migration-results.csv")
     except OSError:
         pass
-    for src, reason in result.failures[:50]:
-        job.push_line(f"failed: {src} — {reason}")
+    for failed_src, reason in result.failures[:50]:
+        job.push_line(f"failed: {failed_src} — {reason}")
+
+    # In-place leaves the emptied source folders behind; clear the husk.
+    pruned = engine.prune_empty_dirs(src) if (in_place and src) else 0
 
     verb = "moved" if in_place else "copied"
     parts = [f"{plural(result.copied, 'file')} {verb} into {dest}"]
@@ -1094,6 +1097,8 @@ def execute_migration(job, chosen, dest, *, in_place):
         parts.append(f"{result.skipped} skipped (already present)")
     if result.failed:
         parts.append(f"{result.failed} failed — see the log")
+    if pruned:
+        parts.append(f"cleared {plural(pruned, 'empty source folder')}")
     if result.cancelled:
         parts.append("stopped early")
     job.summary = "; ".join(parts) + "."

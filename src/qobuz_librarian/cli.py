@@ -281,21 +281,13 @@ def parse_args():
     # so plain gap-fills behave the same as before; the explicit upgrade
     # walk flips this without mutating the cfg the web Settings page reads.
     args.auto_upgrade = cfg.AUTO_UPGRADE_ENABLED
-    # Reject flag/mode combinations that would otherwise be silently
-    # --auto-safe is only consulted by run_upgrade_walk_mode; the menu's
-    # upgrade option uses the same code path, so don't reject it at parse
-    # time — that would block menu users from running unattended.
-    # --force re-downloads everything; it's an album-mode concept and is
+    # Reject flag/mode combinations that would otherwise be silently dropped or
+    # accepted. --force re-downloads everything; it's an album-mode concept,
     # ignored inside an artist scan / upgrade walk.
     if args.force and (args.artist or args.upgrade_walk):
         p.error("--force only applies to album mode (a query or Qobuz "
                 "URL), not --artist or --upgrade-walk")
-    # Migration is a self-contained local mode; it can't share a run with a
-    # download/scan mode, and its options are meaningless without it.
-    if args.migrate and (args.artist or args.upgrade_walk or args.query
-                         or args.downsample_walk or args.reset_walk_seen):
-        p.error("--migrate runs on its own — drop --artist, --upgrade-walk, "
-                "--downsample-walk, --reset-walk-seen, and the query")
+    # --migrate's extra options mean nothing without it.
     if (args.in_place or args.acoustid or args.migrate_src or args.migrate_dest) \
             and not args.migrate:
         p.error("--in-place / --acoustid / --migrate-src / --migrate-dest only "
@@ -321,6 +313,22 @@ def parse_args():
     if args.artist and args.query:
         p.error("--artist NAME scans that one artist — drop the extra words, "
                 "or search them as an album without --artist")
+    # Exactly one whole-run mode executes per invocation — main() dispatches the
+    # first it finds and returns, so a second would be silently dropped. The two
+    # query pairings above get a tailored hint; this catches every other
+    # combination (--migrate with --downsample-walk, --reset-walk-seen with
+    # --artist, …) with one message instead of a rejection per pair.
+    requested = [name for name, on in (
+        ("a query (album mode)", bool(args.query)),
+        ("--artist", args.artist is not None),
+        ("--upgrade-walk", args.upgrade_walk),
+        ("--downsample-walk", args.downsample_walk),
+        ("--lyrics-walk", args.lyrics_walk),
+        ("--migrate", args.migrate),
+        ("--reset-walk-seen", args.reset_walk_seen),
+    ) if on]
+    if len(requested) > 1:
+        p.error("run one mode at a time — got " + ", ".join(requested))
     # --include-comps controls compilation filtering in artist mode.
     if args.include_comps and (args.upgrade_walk
                                or (args.query and not args.artist)):
@@ -334,34 +342,11 @@ def parse_args():
     # menu's upgrade option reads it.
     if args.auto_safe and not args.upgrade_walk and (args.query or args.artist):
         p.error("--auto-safe only applies to --upgrade-walk")
-    # --artist and --upgrade-walk are both whole-run modes; main() dispatches
-    # --artist first, so the walk would be silently dropped. Run one at a time.
-    if args.artist and args.upgrade_walk:
-        p.error("--artist and --upgrade-walk are separate modes — run one at "
-                "a time")
-    # --reset-walk-seen clears the walk-history files and exits on its own;
-    # pairing it with a mode or query silently skips that work.
-    if args.reset_walk_seen and (args.artist or args.upgrade_walk or args.query):
-        p.error("--reset-walk-seen runs on its own (it clears the walk history "
-                "and exits) — run your artist/query/upgrade-walk separately")
     # An empty --artist (e.g. `--artist "$VAR"` with VAR unset) is falsy, so it
     # would silently fall through to the interactive menu instead of running
     # artist mode — confusing in a script. Reject it.
     if args.artist is not None and not args.artist.strip():
         p.error("--artist needs an artist name")
-    # --downsample-walk is its own whole-library mode and dispatches before the
-    # other modes; pairing it with one would silently drop the other.
-    if args.downsample_walk and (args.artist or args.query or args.upgrade_walk
-                                 or args.reset_walk_seen):
-        p.error("--downsample-walk runs on its own — drop the other "
-                "artist/query/upgrade-walk arguments")
-    # --lyrics-walk is its own whole-library mode and dispatches before the
-    # download modes; pairing it with one would silently drop the other.
-    if args.lyrics_walk and (args.artist or args.query or args.upgrade_walk
-                             or args.downsample_walk or args.reset_walk_seen
-                             or args.migrate):
-        p.error("--lyrics-walk runs on its own — drop the other "
-                "artist/query/upgrade-walk/downsample-walk arguments")
     if (args.lyrics_rescan or args.lyrics_synced_only) and not args.lyrics_walk:
         p.error("--lyrics-rescan / --lyrics-synced-only only apply with "
                 "--lyrics-walk")

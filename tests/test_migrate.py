@@ -209,6 +209,19 @@ def test_space_estimate_counts_copy_bytes_but_not_same_fs_moves(tmp_path):
     assert m.space_estimate(plan, in_place=True)[0] == 0
 
 
+def test_prune_empty_dirs_clears_husk_but_keeps_root_and_nonempty(tmp_path):
+    root = tmp_path / "src"
+    (root / "EmptyArtist" / "EmptyAlbum").mkdir(parents=True)   # nested empties
+    keep = root / "HasArt"
+    keep.mkdir()
+    (keep / "cover.jpg").write_bytes(b"art")
+    removed = m.prune_empty_dirs(root)
+    assert removed == 2                             # album + its now-empty artist
+    assert not (root / "EmptyArtist").exists()
+    assert (keep / "cover.jpg").exists()            # a folder with a file stays
+    assert root.exists()                            # the root is never removed
+
+
 def test_migrate_only_flags_require_migrate_mode(monkeypatch):
     from qobuz_librarian import cli
     monkeypatch.setattr("sys.argv", ["qobuz-librarian", "--in-place"])
@@ -221,6 +234,15 @@ def test_migrate_cannot_combine_with_a_query(monkeypatch):
     monkeypatch.setattr("sys.argv", ["qobuz-librarian", "--migrate", "some album"])
     with pytest.raises(SystemExit):
         cli.parse_args()
+
+
+def test_whole_run_modes_are_mutually_exclusive(monkeypatch):
+    from qobuz_librarian import cli
+    for combo in (["--migrate", "--downsample-walk"],
+                  ["--reset-walk-seen", "--lyrics-walk"]):
+        monkeypatch.setattr("sys.argv", ["qobuz-librarian", *combo])
+        with pytest.raises(SystemExit):
+            cli.parse_args()
 
 
 def test_resolve_paths_refuses_destination_inside_source(tmp_path):

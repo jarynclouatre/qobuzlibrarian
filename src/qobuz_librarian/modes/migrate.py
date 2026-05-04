@@ -168,12 +168,18 @@ def run_migrate_mode(args):
     except OSError as e:
         log.info(fmt(C.YELLOW, f"  ⚠  Couldn't write the results manifest ({e})."))
 
+    # In-place leaves the emptied source folders behind; clear the husk.
+    pruned = engine.prune_empty_dirs(src) if in_place else 0
+
     log.info("")
     log.info(fmt(C.GREEN,
         f"  ✓  {result.copied} file(s) {'moved' if in_place else 'copied'}."))
     if result.skipped:
         log.info(fmt(C.YELLOW,
             f"  ⚠  {result.skipped} skipped (destination already existed)."))
+    if pruned:
+        log.info(fmt(C.GRAY,
+            f"  Cleared {pruned} now-empty folder(s) from the source."))
     if result.failed:
         log.info(fmt(C.RED, f"  ✗  {result.failed} failed:"))
         for src, reason in result.failures[:50]:

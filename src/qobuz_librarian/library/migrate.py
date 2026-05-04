@@ -487,6 +487,30 @@ def space_estimate(plan: MigrationPlan, *, in_place: bool = False) -> tuple:
     return need, free
 
 
+def prune_empty_dirs(root: Path) -> int:
+    """Remove now-empty directories beneath ``root`` (never ``root`` itself).
+
+    Run after an in-place migration to clear the husk of the old layout left
+    behind once a folder's files have moved out. Only truly empty directories
+    go — one still holding any file (cover art, a log, a stray track) is left
+    alone. Bottom-up, so a parent that empties out as its children are removed
+    is cleared in the same pass; symlinked directories are never followed."""
+    root = Path(root)
+    removed = 0
+    for dirpath, _dirnames, _filenames in os.walk(root, topdown=False,
+                                                  followlinks=False):
+        p = Path(dirpath)
+        if p == root:
+            continue
+        try:
+            if not any(p.iterdir()):
+                p.rmdir()
+                removed += 1
+        except OSError:
+            continue
+    return removed
+
+
 # ── Source collection ─────────────────────────────────────────────────────────
 
 def _audio_files(source_root: Path) -> list:
