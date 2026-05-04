@@ -188,6 +188,27 @@ def test_execute_stops_on_cancel(tmp_path):
         assert e.source.exists()
 
 
+def test_results_manifest_records_copied_and_failed(tmp_path):
+    plan = _placed_plan(tmp_path, n=2)
+    plan.placed[0].source.unlink()                  # one source vanishes
+    res = m.execute_plan(plan, in_place=False)
+    out = tmp_path / "results.csv"
+    m.write_results_manifest(res, out)
+    text = out.read_text()
+    assert "status,source,destination,reason" in text
+    assert m.COPIED in text and m.FAILED in text
+
+
+def test_space_estimate_counts_copy_bytes_but_not_same_fs_moves(tmp_path):
+    plan = _placed_plan(tmp_path, n=2)
+    total = sum(e.source.stat().st_size for e in plan.placed)
+    need, free = m.space_estimate(plan, in_place=False)
+    assert need == total                            # a copy writes every file
+    assert free is not None and free > 0
+    # An in-place move within one filesystem is a rename — no bytes written.
+    assert m.space_estimate(plan, in_place=True)[0] == 0
+
+
 def test_migrate_only_flags_require_migrate_mode(monkeypatch):
     from qobuz_librarian import cli
     monkeypatch.setattr("sys.argv", ["qobuz-librarian", "--in-place"])
@@ -277,7 +298,7 @@ def test_execute_migration_copies_selected_and_keeps_originals(tmp_path):
     assert (dest / "Artist/Album (2017)/02 - B.flac").read_bytes() == b"two"
     assert f1.exists() and f2.exists()             # copy mode: originals intact
     assert "2 files copied" in job.summary
-    assert (dest / "migration-manifest.csv").exists()
+    assert (dest / "migration-results.csv").exists()
 
 
 def test_album_tag_with_year_isnt_doubled():

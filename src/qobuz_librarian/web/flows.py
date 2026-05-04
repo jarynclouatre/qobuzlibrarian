@@ -1002,7 +1002,7 @@ def run_library_lyrics(job, *, rescan=False, synced_only=False):
 
 # ── Library migration ──────────────────────────────────────────────────────────
 
-def scan_migration(job, src, dest, *, use_acoustid):
+def scan_migration(job, src, dest, *, use_acoustid, in_place=False):
     """Analyze the source library and attach one candidate per placeable album.
 
     Placeable albums become the review list (grouped by artist); files that
@@ -1042,11 +1042,19 @@ def scan_migration(job, src, dest, *, use_acoustid):
         )
 
     s = plan.summary()
-    parts = [f"{plural(s['place'], 'file')} ready to copy"]
+    verb = "move" if in_place else "copy"
+    parts = [f"{plural(s['place'], 'file')} ready to {verb}"]
     if s["unplaceable"]:
         parts.append(f"{s['unplaceable']} couldn't be identified")
     if s["collision"]:
         parts.append(f"{s['collision']} skipped to avoid name collisions")
+    need, free = engine.space_estimate(plan, in_place=in_place)
+    if need and free is not None:
+        space = f"≈{format_size(need)} to {verb}, {format_size(free)} free at the destination"
+        if need > free:
+            space = ("⚠ not enough free space — needs "
+                     f"≈{format_size(need)} but only {format_size(free)} is free")
+        parts.append(space)
     job.summary = ("; ".join(parts) + ". Unidentified and skipped files stay "
                    f"where they are. Full plan written to {manifest}.")
     log.info(job.summary)
@@ -1071,10 +1079,14 @@ def execute_migration(job, chosen, dest, *, in_place):
         plan, in_place=in_place,
         cancel_check=lambda: job.cancel_requested,
         progress=job.push_progress)
+    # Leave the preview manifest (the full plan, including what was left behind)
+    # alone; record what this run actually did in a sibling results file.
     try:
-        engine.write_manifest(plan, dest / "migration-manifest.csv")
+        engine.write_results_manifest(result, dest / "migration-results.csv")
     except OSError:
         pass
+    for src, reason in result.failures[:50]:
+        job.push_line(f"failed: {src} — {reason}")
 
     verb = "moved" if in_place else "copied"
     parts = [f"{plural(result.copied, 'file')} {verb} into {dest}"]

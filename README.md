@@ -412,10 +412,13 @@ It is safe by design:
   instead of copy" option exists, but copying is the default and the safe
   choice.)
 - **You preview before anything is written.** It shows exactly what would go
-  where and what it couldn't place, and waits for you to confirm.
+  where, what it couldn't place, and how much space the copy needs against
+  what's free at the destination, then waits for you to confirm.
 - **It never deletes anything.** Files it can't confidently identify are left
-  where they are and listed in a report (`migration-manifest.csv`, written to
-  the destination) — never moved into a wrong guess, never removed.
+  where they are and listed in a report — never moved into a wrong guess, never
+  removed. Two CSVs land in the destination: `migration-manifest.csv` (the full
+  plan, including everything left behind and why) and, once you confirm,
+  `migration-results.csv` (what the run actually copied, skipped, or failed on).
 
 ### Running it
 

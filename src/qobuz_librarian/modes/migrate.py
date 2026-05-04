@@ -10,7 +10,7 @@ from pathlib import Path
 from qobuz_librarian import config
 from qobuz_librarian.library import migrate as engine
 from qobuz_librarian.library.scanner import HAVE_MUTAGEN
-from qobuz_librarian.ui_cli.colors import C, fmt, section, truncate
+from qobuz_librarian.ui_cli.colors import C, fmt, format_size, section, truncate
 from qobuz_librarian.ui_cli.logging import log
 from qobuz_librarian.ui_cli.prompts import confirm
 
@@ -67,7 +67,7 @@ def _artist_count(entries) -> int:
     return len({e.dest_rel.parts[0] for e in entries if e.dest_rel})
 
 
-def _print_preview(plan, verbose: bool) -> None:
+def _print_preview(plan, verbose: bool, in_place: bool) -> None:
     s = plan.summary()
     log.info("")
     log.info(fmt(C.BOLD + C.CYAN, "  Preview"))
@@ -80,6 +80,20 @@ def _print_preview(plan, verbose: bool) -> None:
     if s["collision"]:
         log.info(fmt(C.YELLOW,
             f"    {s['collision']} skipped to avoid a name collision"))
+    need, free = engine.space_estimate(plan, in_place=in_place)
+    if need:
+        verb = "move" if in_place else "copy"
+        if free is None:
+            log.info(fmt(C.GRAY, f"    ≈{format_size(need)} to {verb}"))
+        else:
+            log.info(fmt(C.GRAY,
+                f"    ≈{format_size(need)} to {verb} · "
+                f"{format_size(free)} free at the destination"))
+            if need > free:
+                log.info(fmt(C.BOLD + C.RED,
+                    f"    ⚠  Not enough free space: needs about {format_size(need)} "
+                    f"but only {format_size(free)} is free. Free up space or pick "
+                    "another destination first."))
     if verbose:
         for e in plan.unplaceable[:50]:
             log.info(fmt(C.GRAY, f"      ? {truncate(str(e.source), 70)}"))
@@ -123,7 +137,7 @@ def run_migrate_mode(args):
     items = engine.collect_items(src, use_acoustid=use_acoustid, progress=progress)
     plan = engine.build_plan(items, dest)
 
-    _print_preview(plan, bool(getattr(args, "verbose", False)))
+    _print_preview(plan, bool(getattr(args, "verbose", False)), in_place)
 
     # A preview always leaves an auditable artifact, even on a dry run.
     manifest = dest / "migration-manifest.csv"
@@ -148,6 +162,12 @@ def run_migrate_mode(args):
 
     result = engine.execute_plan(plan, in_place=in_place, progress=progress)
 
+    results_manifest = dest / "migration-results.csv"
+    try:
+        engine.write_results_manifest(result, results_manifest)
+    except OSError as e:
+        log.info(fmt(C.YELLOW, f"  ⚠  Couldn't write the results manifest ({e})."))
+
     log.info("")
     log.info(fmt(C.GREEN,
         f"  ✓  {result.copied} file(s) {'moved' if in_place else 'copied'}."))
@@ -155,11 +175,17 @@ def run_migrate_mode(args):
         log.info(fmt(C.YELLOW,
             f"  ⚠  {result.skipped} skipped (destination already existed)."))
     if result.failed:
-        log.info(fmt(C.RED, f"  ✗  {result.failed} failed — see the log above."))
+        log.info(fmt(C.RED, f"  ✗  {result.failed} failed:"))
+        for src, reason in result.failures[:50]:
+            log.info(fmt(C.RED, f"       {truncate(str(src), 60)} — {reason}"))
+        if result.failed > 50:
+            log.info(fmt(C.RED,
+                f"       … and {result.failed - 50} more — see {results_manifest}"))
     if result.cancelled:
         log.info(fmt(C.YELLOW,
             "  ⚠  Stopped early; the destination holds a partial copy."))
     log.info(fmt(C.GRAY,
         f"  New library: {dest}\n"
-        f"  Manifest:    {manifest}\n"
+        f"  Plan:        {manifest}\n"
+        f"  Results:     {results_manifest}\n"
         "  Spot-check it before pointing the tool at it as your main library."))

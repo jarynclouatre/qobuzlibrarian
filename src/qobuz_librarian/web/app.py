@@ -1333,7 +1333,8 @@ async def migrate_scan(request: Request):
     job.execute_args = {"dest": str(dest), "in_place": bool(in_place)}
     job_mgr.submit_scan(
         job,
-        lambda j: flows.scan_migration(j, src, dest, use_acoustid=use_acoustid),
+        lambda j: flows.scan_migration(j, src, dest, use_acoustid=use_acoustid,
+                                       in_place=in_place),
         lambda j, chosen: flows.execute_migration(j, chosen, dest, in_place=in_place),
     )
     return RedirectResponse(url=f"/jobs/{job.id}", status_code=303)

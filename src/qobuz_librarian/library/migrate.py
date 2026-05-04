@@ -60,6 +60,10 @@ PLACE = "place"
 UNPLACEABLE = "unplaceable"
 COLLISION = "collision"
 
+COPIED = "copied"
+SKIPPED = "skipped"
+FAILED = "failed"
+
 
 @dataclass
 class PlanEntry:
@@ -103,7 +107,15 @@ class ExecResult:
     skipped: int = 0
     failed: int = 0
     cancelled: bool = False
-    failures: list = field(default_factory=list)   # (source, reason)
+    # One (source, dest_rel, status, reason) per attempted file — the record of
+    # what actually happened, surfaced to the user and written to the results
+    # manifest. status is COPIED | SKIPPED | FAILED.
+    outcomes: list = field(default_factory=list)
+
+    @property
+    def failures(self) -> list:
+        return [(src, reason) for src, _, status, reason in self.outcomes
+                if status == FAILED]
 
 
 # ── Tag extraction ──────────────────────────────────────────────────────────
@@ -435,6 +447,46 @@ def validate_paths(src: Path, dest: Path) -> Optional[str]:
     return None
 
 
+def _existing_ancestor(path: Path) -> Optional[Path]:
+    """The nearest path that exists at or above ``path`` (where a copy lands)."""
+    p = Path(path)
+    while True:
+        if p.exists():
+            return p
+        if p.parent == p:
+            return None
+        p = p.parent
+
+
+def space_estimate(plan: MigrationPlan, *, in_place: bool = False) -> tuple:
+    """``(bytes_to_write, free_bytes_at_dest)`` for carrying out ``plan``.
+
+    Only files that actually get written count toward ``bytes_to_write``: every
+    placed file in copy mode, but in in-place mode only those on a different
+    filesystem than the destination, since a same-filesystem move is a rename
+    that consumes no space. ``free_bytes`` is the space available where the new
+    library is built, or None when it can't be read (no existing ancestor, or a
+    stat error)."""
+    anchor = _existing_ancestor(plan.dest_root)
+    free = dest_dev = None
+    if anchor is not None:
+        try:
+            free = shutil.disk_usage(anchor).free
+            dest_dev = anchor.stat().st_dev
+        except OSError:
+            free = None
+    need = 0
+    for entry in plan.placed:
+        try:
+            st = entry.source.stat()
+        except OSError:
+            continue
+        if in_place and dest_dev is not None and st.st_dev == dest_dev:
+            continue
+        need += st.st_size
+    return need, free
+
+
 # ── Source collection ─────────────────────────────────────────────────────────
 
 def _audio_files(source_root: Path) -> list:
@@ -556,18 +608,21 @@ def execute_plan(plan: MigrationPlan, *, in_place: bool = False,
             progress("Copying into the new library", i, total, src.name)
         if not src.exists():
             result.failed += 1
-            result.failures.append((src, "source vanished before copy"))
+            result.outcomes.append((src, entry.dest_rel, FAILED,
+                                    "source vanished before copy"))
             continue
         if dst.exists():
             result.skipped += 1
-            result.failures.append((src, "destination appeared after planning"))
+            result.outcomes.append((src, entry.dest_rel, SKIPPED,
+                                    "destination already present"))
             continue
         try:
             _place_file(src, dst, move=in_place)
             result.copied += 1
+            result.outcomes.append((src, entry.dest_rel, COPIED, ""))
         except (OSError, shutil.Error) as e:
             result.failed += 1
-            result.failures.append((src, str(e)))
+            result.outcomes.append((src, entry.dest_rel, FAILED, str(e)))
     return result
 
 
@@ -585,3 +640,19 @@ def write_manifest(plan: MigrationPlan, path: Path) -> None:
         for e in plan.entries:
             dest = str(e.dest_rel) if e.dest_rel else ""
             w.writerow([e.status, e.source_of_truth, str(e.source), dest, e.reason])
+
+
+def write_results_manifest(result: ExecResult, path: Path) -> None:
+    """Record what the execution actually did — one row per attempted file.
+
+    Sits beside the plan manifest: the plan says where every file *would* go,
+    this says where it *went* (copied / skipped / failed) and why, so the run is
+    auditable after the fact and not just before it."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", newline="", encoding="utf-8") as fh:
+        w = csv.writer(fh)
+        w.writerow(["status", "source", "destination", "reason"])
+        for source, dest_rel, status, reason in result.outcomes:
+            w.writerow([status, str(source),
+                        str(dest_rel) if dest_rel else "", reason])

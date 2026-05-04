@@ -292,9 +292,10 @@ def parse_args():
                 "URL), not --artist or --upgrade-walk")
     # Migration is a self-contained local mode; it can't share a run with a
     # download/scan mode, and its options are meaningless without it.
-    if args.migrate and (args.artist or args.upgrade_walk or args.query):
+    if args.migrate and (args.artist or args.upgrade_walk or args.query
+                         or args.downsample_walk or args.reset_walk_seen):
         p.error("--migrate runs on its own — drop --artist, --upgrade-walk, "
-                "and the query")
+                "--downsample-walk, --reset-walk-seen, and the query")
     if (args.in_place or args.acoustid or args.migrate_src or args.migrate_dest) \
             and not args.migrate:
         p.error("--in-place / --acoustid / --migrate-src / --migrate-dest only "
