@@ -123,8 +123,8 @@ def run_migrate_mode(args):
     log.info(fmt(C.GRAY, f"  Destination: {dest}"))
     if in_place:
         log.info(fmt(C.YELLOW + C.BOLD,
-            "  In-place mode: files are MOVED into place. Originals are "
-            "relocated, not copied."))
+            "  In-place mode: files are MOVED into place — originals are "
+            "relocated, not copied, and folders left empty are removed."))
     else:
         log.info(fmt(C.GREEN,
             "  Copy mode: your originals stay exactly where they are."))

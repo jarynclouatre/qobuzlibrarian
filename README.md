@@ -409,8 +409,8 @@ It is safe by design:
 
 - **It copies — your originals are never touched.** The organised library is
   built at a *separate* destination; your source files are only read. (A "move
-  instead of copy" option exists, but copying is the default and the safe
-  choice.)
+  instead of copy" option exists — it relocates the files and clears the folders
+  it empties out — but copying is the default and the safe choice.)
 - **You preview before anything is written.** It shows exactly what would go
   where, what it couldn't place, and how much space the copy needs against
   what's free at the destination, then waits for you to confirm.
