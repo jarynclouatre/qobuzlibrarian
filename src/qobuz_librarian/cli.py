@@ -132,6 +132,13 @@ def check_media_tools():
             die(fmt(C.RED, _missing_tool_hint(tool, hint)), EXIT_CONFIG)
 
 
+def require_music_root():
+    if not cfg.MUSIC_ROOT.exists() or not cfg.MUSIC_ROOT.is_dir():
+        die(fmt(C.RED,
+            f"\n✗  MUSIC_ROOT missing or inaccessible: {cfg.MUSIC_ROOT}\n"
+            "   Refusing to proceed.\n"), EXIT_CONFIG)
+
+
 # ── Argument parsing ──────────────────────────────────────────────────────────
 
 class _ExitOneArgParser(argparse.ArgumentParser):
@@ -237,7 +244,8 @@ def parse_args():
                         f"in step 2 of artist mode")
     p.add_argument("--no-color",     action="store_true", help="disable ANSI colors")
     p.add_argument("--quiet", "-q",  action="store_true",
-                   help="suppress info-level output (errors still print to stderr)")
+                   help="suppress info-level console output (warnings/errors "
+                        "still print; the log file keeps recording)")
     p.add_argument("--reset-walk-seen", action="store_true",
                    help="delete the library-walk dedup files and exit "
                         "(so the next walk revisits every artist/album)")
@@ -268,15 +276,9 @@ def parse_args():
                    help="migration: fingerprint files whose tags can't place them "
                         "(slower, needs network; no key required)")
     args = p.parse_args()
-    # Mirror the downsample-skip flag so either spelling resolves to both
-    # attributes. Callers may read whichever name they're used to; the
-    # behaviour is the same.
-    if getattr(args, "no_compress", False) or getattr(args, "no_downsample", False):
-        args.no_compress = True
-        args.no_downsample = True
-    else:
-        args.no_compress = False
-        args.no_downsample = False
+    # --no-compress is the legacy spelling of --no-downsample; mirror them so
+    # callers can read whichever name they're used to.
+    args.no_compress = args.no_downsample = args.no_compress or args.no_downsample
     # Per-run override of cfg.AUTO_UPGRADE_ENABLED. Defaults to the global
     # so plain gap-fills behave the same as before; the explicit upgrade
     # walk flips this without mutating the cfg the web Settings page reads.
@@ -329,6 +331,13 @@ def parse_args():
     ) if on]
     if len(requested) > 1:
         p.error("run one mode at a time — got " + ", ".join(requested))
+    # With no mode, the run falls through to the interactive menu — whose
+    # prompts --quiet would silence, leaving a bare input cursor. --quiet is for
+    # unattended runs, so steer the user to name a mode.
+    if args.quiet and not requested:
+        p.error("--quiet is for unattended runs and silences the interactive "
+                "menu — name a mode (a query, --artist, --upgrade-walk, …) "
+                "or drop --quiet")
     # --include-comps controls compilation filtering in artist mode.
     if args.include_comps and (args.upgrade_walk
                                or (args.query and not args.artist)):
@@ -417,25 +426,25 @@ def main():
     # before the tool/credential checks, so it runs on a box that only has the
     # library mounted.
     if args.lyrics_walk:
+        require_music_root()
         from qobuz_librarian.modes.lyrics import run_library_lyrics_mode
         run_library_lyrics_mode(args)
         return
 
-    check_rip()
-    check_media_tools()
-
-    if not cfg.MUSIC_ROOT.exists() or not cfg.MUSIC_ROOT.is_dir():
-        die(fmt(C.RED,
-            f"\n✗  MUSIC_ROOT missing or inaccessible: {cfg.MUSIC_ROOT}\n"
-            "   Refusing to proceed.\n"), EXIT_CONFIG)
-
     # Downsample walk is local-only — it reads hi-res files off disk and
-    # resamples them in place, never touching Qobuz. Dispatch here, before the
-    # credential load, so it runs on a box with no token configured.
+    # resamples them in place, never touching Qobuz. It needs ffmpeg and the
+    # FLAC tools but not streamrip, so dispatch it before check_rip() and the
+    # credential load: it runs on a box with no token and no downloader.
     if args.downsample_walk:
+        check_media_tools()
+        require_music_root()
         from qobuz_librarian.modes.downsample import run_downsample_walk_mode
         run_downsample_walk_mode(args)
         return
+
+    check_rip()
+    check_media_tools()
+    require_music_root()
 
     from qobuz_librarian.api.auth import verify_streamrip_downloads_folder
     verify_streamrip_downloads_folder()
@@ -648,6 +657,10 @@ def _maybe_drop_privileges():
     puid = puid or "1000"
     pgid = pgid or "1000"
     if not (puid.isdigit() and pgid.isdigit()):
+        return
+    # A request to run as root is already satisfied — re-execing to uid 0 would
+    # land back here as root and loop forever.
+    if puid == "0":
         return
     gosu = shutil.which("gosu")
     if not gosu:

@@ -421,6 +421,7 @@ def test_parse_args_rejects_incompatible_flag_combos():
         ["--artist", "Four Tet", "some album"],
         ["--reset-walk-seen", "--artist", "Radiohead"],
         ["--reset-walk-seen", "Some Artist - Album"],
+        ["--quiet"],
     ]
     for argv in invalid:
         with pytest.raises(SystemExit):
@@ -469,16 +470,29 @@ def test_file_logging_strips_ansi_and_persists(tmp_path):
         qlog._file_handler = None
 
 
-def test_quiet_flag_raises_logger_above_info():
+def test_quiet_mutes_console_but_keeps_file_log(tmp_path):
     import logging
 
-    from qobuz_librarian.ui_cli.logging import log, set_quiet
-    set_quiet(True)
+    from qobuz_librarian.ui_cli import logging as qlog
+    log_path = tmp_path / "qobuz-librarian.log"
+    if qlog._file_handler is not None:
+        qlog.log.removeHandler(qlog._file_handler)
+        qlog._file_handler = None
+    qlog.set_quiet(True)
+    qlog.attach_file_handler(log_path, "INFO")
     try:
-        assert log.level == logging.WARNING
+        qlog.log.info("quiet-mode trail line")
+        qlog._file_handler.flush()
+        # Quiet raises the console handler's threshold, not the logger's, so a
+        # cron run still leaves a full file trail to diagnose from.
+        assert qlog._sh.level == logging.WARNING
+        assert qlog.log.level == logging.INFO
+        assert "quiet-mode trail line" in log_path.read_text()
     finally:
-        set_quiet(False)
-        assert log.level == logging.INFO
+        qlog.set_quiet(False)
+        qlog.log.removeHandler(qlog._file_handler)
+        qlog._file_handler = None
+        assert qlog._sh.level == logging.NOTSET
 
 
 def test_die_uses_provided_exit_code(capsys):
@@ -897,3 +911,9 @@ def test_cli_drops_to_puid_when_exec_as_root(monkeypatch):
     assert len(calls) == 1
     path, argv = calls[0]
     assert path.endswith("gosu") and argv[1] == "1000:1000"
+
+    # PUID=0 asks to stay root; re-execing to uid 0 would loop, so leave it.
+    monkeypatch.setenv("PUID", "0")
+    monkeypatch.setenv("PGID", "0")
+    cli._maybe_drop_privileges()
+    assert len(calls) == 1

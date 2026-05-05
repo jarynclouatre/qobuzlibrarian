@@ -83,9 +83,12 @@ def set_verbose(v: bool):
 
 
 def set_quiet(quiet: bool):
-    """Raise the logger threshold so log.info calls are suppressed.
-    Errors and warnings still pass."""
-    log.setLevel(logging.WARNING if quiet else logging.INFO)
+    """Mute info-level output on the console; warnings and errors still print.
+
+    Raises the level on the stdout handler rather than on the logger, so the
+    file log keeps recording at its own level — a quiet cron run still leaves
+    a full trail to diagnose from."""
+    _sh.setLevel(logging.WARNING if quiet else logging.NOTSET)
 
 
 def vlog(msg):
