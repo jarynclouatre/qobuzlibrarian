@@ -937,16 +937,18 @@ async def queue_download(request: Request, album_id: str = Form(""),
             timeout=cfg.WEB_FETCH_TIMEOUT,
         )
         if not force_redownload:
-            from qobuz_librarian.library.catalog import (
-                compute_missing,
-                find_album_dir_filesystem,
-                find_existing_tracks,
-            )
-            try:
-                album_dir = find_album_dir_filesystem(album)
-            except Exception:
-                album_dir = None
-            if album_dir is not None:
+            def _already_complete():
+                from qobuz_librarian.library.catalog import (
+                    compute_missing,
+                    find_album_dir_filesystem,
+                    find_existing_tracks,
+                )
+                try:
+                    album_dir = find_album_dir_filesystem(album)
+                except Exception:
+                    return False
+                if album_dir is None:
+                    return False
                 try:
                     # Already resolved above; pass it through so we don't repeat
                     # the cached-subdir scan + fuzzy fallback for the same album.
@@ -954,21 +956,24 @@ async def queue_download(request: Request, album_id: str = Form(""),
                 except Exception:
                     existing_tracks = []
                 qobuz_tracks = (album.get("tracks") or {}).get("items") or []
-                # Only block when the album is genuinely complete. A partial
-                # album (some tracks present, some missing) must fall through
-                # so process_album can gap-fill just the missing tracks rather
-                # than forcing a full re-download via force=1.
-                complete = bool(existing_tracks and qobuz_tracks) and not (
+                # Only count it complete when nothing's missing. A partial album
+                # (some present, some missing) returns False so process_album can
+                # gap-fill the missing tracks instead of forcing a full re-rip.
+                return bool(existing_tracks and qobuz_tracks) and not (
                     compute_missing(qobuz_tracks, existing_tracks)[0])
-                if complete:
-                    msg = "You already own this album."
-                    if _is_htmx(request):
-                        return HTMLResponse(
-                            f'<div class="alert alert-warning" data-flash>{html.escape(msg)} '
-                            f'<a href="/" class="link">Back to dashboard</a>.</div>')
-                    return RedirectResponse(
-                        url="/queue?error=" + urllib.parse.quote(msg),
-                        status_code=303)
+
+            # Resolving the album folder walks the (often NAS-mounted) library,
+            # so keep it off the event loop — otherwise a large library stalls
+            # every other request while this one request blocks.
+            if await loop.run_in_executor(None, _already_complete):
+                msg = "You already own this album."
+                if _is_htmx(request):
+                    return HTMLResponse(
+                        f'<div class="alert alert-warning" data-flash>{html.escape(msg)} '
+                        f'<a href="/" class="link">Back to dashboard</a>.</div>')
+                return RedirectResponse(
+                    url="/queue?error=" + urllib.parse.quote(msg),
+                    status_code=303)
         title  = album.get("title") or "?"
         artist = (album.get("artist") or {}).get("name") or "?"
         job = job_mgr.Job(title=title, artist=artist, album_id=album_id)
