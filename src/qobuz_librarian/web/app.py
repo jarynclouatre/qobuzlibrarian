@@ -1846,7 +1846,7 @@ async def set_mode(request: Request, target: str = Form("")):
     Switching to CLI is refused while a download/scan is active — releasing the
     lock under a running job would let the CLI race the worker over /staging.
     """
-    global _RUN_LOCK_HANDLE, _LOCK_BUSY_PID, _CLI_MODE
+    global _RUN_LOCK_HANDLE, _LOCK_BUSY_PID, _CLI_MODE, _creds_cache
     from qobuz_librarian import run_lock
     want = (target or "").strip().lower()
     if want == "cli":
@@ -1872,6 +1872,9 @@ async def set_mode(request: Request, target: str = Form("")):
             _RUN_LOCK_HANDLE = run_lock.acquire()
             _CLI_MODE = False
             _LOCK_BUSY_PID = None
+            # The CLI may have changed the saved token while it held the lock;
+            # drop the cached creds so the banner reflects what's on disk now.
+            _creds_cache = None
             return RedirectResponse(url="/settings?mode=web", status_code=303)
         except run_lock.LockBusy:
             # A CLI session still holds the lock — can't take it back yet.
