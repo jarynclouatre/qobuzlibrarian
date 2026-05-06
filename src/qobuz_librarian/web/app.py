@@ -2002,22 +2002,19 @@ async def jobs_list(status: str = "", limit: int = 50):
     """List jobs as JSON. Optional `status` filter ('pending', 'running',
     'awaiting_review', 'scanning', 'done', 'failed', 'canceled').
     `limit` caps the response — most recent first."""
-    from fastapi.responses import JSONResponse
     wanted = status.strip().lower() or None
     if wanted is not None:
         valid = {s.value for s in job_mgr.JobStatus}
         if wanted not in valid:
             raise HTTPException(status_code=400,
                                 detail="Unknown status filter")
+    cap = max(1, min(limit, 500))
     matching = []
-    with job_mgr.registry._lock:
-        ordered = [job_mgr.registry._jobs[i] for i in job_mgr.registry._order
-                   if i in job_mgr.registry._jobs]
-    for j in reversed(ordered):
+    for j in reversed(job_mgr.registry.all()):
         if wanted and j.status.value != wanted:
             continue
         matching.append(_job_to_dict(j, log_tail=0))
-        if len(matching) >= max(1, min(int(limit), 500)):
+        if len(matching) >= cap:
             break
     return JSONResponse({"jobs": matching, "count": len(matching)})
 
