@@ -235,14 +235,21 @@ it yourself.
 Open <http://localhost:8666>. On first visit the UI asks you to **set a
 username and password** for the web interface — pick those, sign in, and the
 dashboard then prompts you to add your Qobuz credentials on the **Settings**
-page (or set them in `.env` before starting).
+page (or set them in `.env` before starting). To skip the setup screen and have
+the box come up already locked down, set `WEB_AUTH_USER` / `WEB_AUTH_PASSWORD`
+in `.env` (see the login note below).
 
 > **Login is on by default.** The web UI requires sign-in out of the box. To
 > run it without a login — only sensible on a trusted LAN or behind your own
 > authenticating reverse proxy — set `WEB_AUTH=none` in `.env`. The container
-> logs a warning on every boot while auth is off. There's no password reset:
-> to change the login, stop the container and delete `.qobuz_web_auth.json`
-> from the data volume, then set it again on next visit.
+> logs a warning on every boot while auth is off.
+>
+> **Setting or resetting the login.** Either pick it on the first-visit setup
+> screen, or set `WEB_AUTH_USER` and `WEB_AUTH_PASSWORD` in `.env` so the box
+> comes up already locked down. Those two double as a password reset: change
+> them and restart to update the login. (The old way still works too — stop the
+> container, delete `.qobuz_web_auth.json` from the data volume, and set it
+> again on next visit.)
 
 > **Behind a reverse proxy,** set `FORWARDED_ALLOW_IPS` in `.env` to the
 > proxy's address so the failed-login throttle counts attempts per real client

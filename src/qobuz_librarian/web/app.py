@@ -142,6 +142,17 @@ async def _lifespan(_app: FastAPI):
     if web_auth.auth_disabled():
         _log.warning("[warn] WEB_AUTH=none — web UI is unauthenticated, do not "
                      "expose to an untrusted network")
+    else:
+        cred_status = web_auth.apply_env_credentials()
+        if cred_status == "applied":
+            _log.info("Configured the web login from WEB_AUTH_USER / "
+                      "WEB_AUTH_PASSWORD.")
+        elif cred_status == "partial":
+            _log.warning("Set both WEB_AUTH_USER and WEB_AUTH_PASSWORD to seed "
+                         "the web login from the environment — only one was set.")
+        elif cred_status == "failed":
+            _log.warning("Couldn't write the web login from the environment; "
+                         "the data volume may not be writable.")
     from qobuz_librarian import run_lock
     from qobuz_librarian.api.auth import sync_streamrip_creds_from_env
     from qobuz_librarian.web import settings_store

@@ -140,6 +140,34 @@ def set_credentials(username: str, password: str) -> bool:
     return True
 
 
+def apply_env_credentials() -> str:
+    """Seed the web login from WEB_AUTH_USER / WEB_AUTH_PASSWORD so a deployment
+    comes up already locked down instead of exposing the open setup screen to
+    whoever reaches it first, and so the password can be reset by editing the
+    environment and restarting.
+
+    The env values win when present: a changed password re-seeds (rotating the
+    session secret, which logs existing browsers out, as a password change
+    should); an unchanged one is left alone so a plain restart doesn't churn the
+    secret. Returns a status for the caller to log: 'noop', 'partial',
+    'applied', 'unchanged', or 'failed'.
+    """
+    if auth_disabled():
+        return "noop"
+    user = os.environ.get("WEB_AUTH_USER", "").strip()
+    password = os.environ.get("WEB_AUTH_PASSWORD", "")
+    if not user and not password:
+        return "noop"
+    if not user or not password:
+        return "partial"
+    d = _read()
+    if (d.get("password_hash")
+            and _constant_time_eq(user, d.get("username") or "")
+            and _verify_hash(d.get("password_hash"), password)):
+        return "unchanged"
+    return "applied" if set_credentials(user, password) else "failed"
+
+
 def verify_login(username: str, password: str) -> bool:
     """Constant-time check of both fields. The password is always run through
     the KDF when a hash exists, so a wrong username and a wrong password take

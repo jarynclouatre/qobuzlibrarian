@@ -2468,6 +2468,31 @@ def test_login_accepts_correct_password(monkeypatch, tmp_path):
         assert c.get("/", follow_redirects=False).status_code == 200
 
 
+def test_env_credentials_seed_and_reset_the_login(monkeypatch, tmp_path):
+    from qobuz_librarian import config as cfg
+    from qobuz_librarian.web import auth as web_auth
+
+    monkeypatch.setattr(cfg, "WEB_AUTH_FILE", tmp_path / "web_auth.json")
+    monkeypatch.setenv("WEB_AUTH", "")  # auth on
+    monkeypatch.setenv("WEB_AUTH_USER", "admin")
+    monkeypatch.setenv("WEB_AUTH_PASSWORD", "hunter2hunter")
+    # Nothing configured yet — the environment seeds the login.
+    assert web_auth.apply_env_credentials() == "applied"
+    assert web_auth.verify_login("admin", "hunter2hunter")
+    # A restart with the same values keeps the session secret untouched.
+    secret = web_auth.session_value()
+    assert web_auth.apply_env_credentials() == "unchanged"
+    assert web_auth.session_value() == secret
+    # Changing the password re-seeds and rotates the secret (logs browsers out).
+    monkeypatch.setenv("WEB_AUTH_PASSWORD", "a-different-password")
+    assert web_auth.apply_env_credentials() == "applied"
+    assert web_auth.verify_login("admin", "a-different-password")
+    assert web_auth.session_value() != secret
+    # Only half the pair is a misconfiguration, not a silent half-login.
+    monkeypatch.delenv("WEB_AUTH_PASSWORD")
+    assert web_auth.apply_env_credentials() == "partial"
+
+
 def test_repeated_failed_logins_are_throttled(monkeypatch, tmp_path):
     from qobuz_librarian.web import auth as web_auth
     web_auth._login_failures.clear()
