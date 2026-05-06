@@ -1,7 +1,11 @@
 {
   "name": "Qobuz Librarian",
-  "short_name": "QobuzLib",
-  "description": "Manage your local FLAC library sourced from Qobuz",
+  "short_name": "Librarian",
+  "description": "Build and maintain a complete, lossless library from Qobuz.",
+  "id": "/",
+  "lang": "en",
+  "dir": "ltr",
+  "categories": ["music", "utilities"],
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
@@ -18,7 +22,7 @@
       "src": "/static/icon.png",
       "sizes": "512x512",
       "type": "image/png",
-      "purpose": "any maskable"
+      "purpose": "any"
     }
   ]
 }

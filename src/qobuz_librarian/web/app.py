@@ -10,7 +10,6 @@ from pathlib import Path
 
 from fastapi import FastAPI, Form, HTTPException, Query, Request
 from fastapi.responses import (
-    FileResponse,
     HTMLResponse,
     JSONResponse,
     RedirectResponse,
@@ -367,10 +366,18 @@ static_dir.mkdir(exist_ok=True)
 app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
 
 
+# Bake the running version into the worker so its cache name changes on every
+# release. The script bytes then differ release-to-release, which is what makes
+# the browser actually pick up the new worker and purge the stale caches —
+# a fixed cache name left returning visitors on old assets after an upgrade.
+_SW_JS = (static_dir / "sw.js").read_text(encoding="utf-8").replace(
+    "__APP_VERSION__", _APP_VERSION)
+
+
 @app.get("/sw.js")
 async def service_worker():
-    return FileResponse(
-        str(static_dir / "sw.js"),
+    return Response(
+        _SW_JS,
         media_type="application/javascript",
         headers={"Service-Worker-Allowed": "/", "Cache-Control": "no-cache"},
     )
@@ -1315,30 +1322,34 @@ async def lyrics_scan(request: Request):
     return RedirectResponse(url=f"/jobs/{job.id}", status_code=303)
 
 
-@app.get("/migrate", response_class=HTMLResponse)
-async def migrate_page(request: Request):
+def _migrate_checks(src, dest):
     import os
-    src, dest = cfg.MIGRATE_SRC, cfg.MIGRATE_DEST
-    migrate_checks = []
+    checks = []
     for label, path in (("Source folder", src), ("Destination folder", dest)):
         if not path:
-            migrate_checks.append({"label": label, "ok": False, "detail": "not set"})
+            checks.append({"label": label, "ok": False, "detail": "not set"})
+            continue
+        p = Path(path)
+        if not p.exists():
+            checks.append({"label": label, "ok": False, "detail": f"{p} does not exist"})
+        elif not p.is_dir():
+            checks.append({"label": label, "ok": False, "detail": f"{p} is not a directory"})
+        elif not os.access(str(p), os.R_OK):
+            checks.append({"label": label, "ok": False, "detail": f"{p} is not readable"})
         else:
-            p = Path(path)
-            if not p.exists():
-                migrate_checks.append({"label": label, "ok": False, "detail": f"{p} does not exist"})
-            elif not p.is_dir():
-                migrate_checks.append({"label": label, "ok": False, "detail": f"{p} is not a directory"})
-            elif not os.access(str(p), os.R_OK):
-                migrate_checks.append({"label": label, "ok": False, "detail": f"{p} is not readable"})
-            else:
-                migrate_checks.append({"label": label, "ok": True, "detail": str(p)})
+            checks.append({"label": label, "ok": True, "detail": str(p)})
+    return checks
+
+
+@app.get("/migrate", response_class=HTMLResponse)
+async def migrate_page(request: Request):
+    src, dest = cfg.MIGRATE_SRC, cfg.MIGRATE_DEST
     return _tr(request, "migrate.html", {
         "page": "migrate",
         "src": src,
         "dest": dest,
         "configured": bool(src and dest),
-        "migrate_checks": migrate_checks,
+        "migrate_checks": _migrate_checks(src, dest),
     })
 
 
@@ -1358,7 +1369,8 @@ async def migrate_scan(request: Request):
     if err:
         return _tr(request, "migrate.html", {
             "page": "migrate", "src": src, "dest": dest,
-            "configured": bool(src and dest), "error": err})
+            "configured": bool(src and dest), "error": err,
+            "migrate_checks": _migrate_checks(src, dest)})
     form = await request.form()
     use_acoustid = form.get("acoustid") == "on"
     in_place = form.get("in_place") == "on"

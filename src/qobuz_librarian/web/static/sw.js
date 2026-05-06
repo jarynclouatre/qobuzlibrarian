@@ -1,7 +1,13 @@
-const CACHE = 'qobuz-librarian-v2';
+// __APP_VERSION__ is substituted by the /sw.js route at request time, so the
+// cache name moves with each release and `activate` clears the previous one.
+const VERSION = '__APP_VERSION__';
+const CACHE = 'qobuz-librarian-' + VERSION;
 const PRECACHE = [
-  '/static/dist/app.css',
+  '/static/dist/app.css?v=' + VERSION,
+  '/static/app.js?v=' + VERSION,
   '/static/vendor/htmx-1.9.12.min.js',
+  '/static/vendor/inter/inter-latin.woff2',
+  '/static/vendor/inter/inter-latin-ext.woff2',
   '/static/icon.png',
   '/static/icon-192.png',
   '/static/manifest.json',
@@ -30,7 +36,8 @@ self.addEventListener('fetch', event => {
   // SSE streams and API calls: always network — never cache dynamic data.
   if (url.pathname.startsWith('/api/')) return;
 
-  // Static assets: cache-first; populate cache on first miss.
+  // Static assets: cache-first; populate cache on first miss. Versioned URLs
+  // (?v=) mean a release is a fresh cache key, so this never serves stale CSS.
   if (url.pathname.startsWith('/static/')) {
     event.respondWith(
       caches.match(event.request).then(hit => {
