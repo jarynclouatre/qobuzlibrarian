@@ -1115,6 +1115,29 @@ def test_start_scan_helpers_dedupe_against_an_active_one(monkeypatch):
     assert len(jm.registry.all()) == 2
 
 
+def test_whole_library_scan_folds_onto_an_active_one(client, monkeypatch):
+    # Double-submitting a slow whole-library scan must reuse the running job,
+    # not stack a second hours-long pass — the library scan already did this;
+    # upgrade/downsample/repair/lyrics/migrate now do too.
+    import qobuz_librarian.web.app as webapp
+    monkeypatch.setattr(webapp.job_mgr, "registry", jm.JobRegistry())
+    monkeypatch.setattr(webapp, "_get_token", lambda: "tok")
+    started = []
+    monkeypatch.setattr(webapp.job_mgr, "submit_scan",
+                        lambda *a, **k: started.append(1))
+
+    active = jm.Job(title="Quality upgrade scan")
+    active.execute_kind = "upgrade"
+    active.status = jm.JobStatus.SCANNING
+    jm.registry.add(active)
+
+    r = client.post("/upgrade", follow_redirects=False)
+    assert r.status_code == 303
+    assert r.headers["location"] == f"/jobs/{active.id}"
+    assert started == []
+    assert len(jm.registry.all()) == 1
+
+
 def test_scan_checkpoint_round_trip_and_kinds_coexist(tmp_path, monkeypatch):
     import qobuz_librarian.config as cfg
     from qobuz_librarian.library import scan_checkpoint

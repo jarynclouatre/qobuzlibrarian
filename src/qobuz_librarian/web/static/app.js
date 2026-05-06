@@ -68,6 +68,24 @@
     }, 360);
   });
 
+  // Whole-library scan triggers are plain POST→redirect forms with no htmx
+  // feedback, so a slow start on a big library used to look frozen and invite a
+  // second click (which stacked a duplicate hours-long scan). Disable the
+  // button and show it working; the disable happens after the submit fires so
+  // the request still goes out and the navigation isn't cancelled.
+  document.addEventListener("submit", function (evt) {
+    var form = evt.target;
+    if (!form || !form.matches || !form.matches("form[data-busy-submit]")) return;
+    var b = form.querySelector("button[type=submit]");
+    if (!b || b.disabled) return;
+    setTimeout(function () {
+      b.disabled = true;
+      b.classList.add("btn-disabled");
+      b.innerHTML =
+        '<span class="loading loading-spinner loading-sm"></span> Starting…';
+    }, 0);
+  });
+
   // Flash banners. Every server-rendered alert driven by a one-shot query flag
   // (?saved=1, ?error=…) used to stick to the URL forever — refreshing or
   // sharing the page re-rendered the same banner. Strip the known flash params

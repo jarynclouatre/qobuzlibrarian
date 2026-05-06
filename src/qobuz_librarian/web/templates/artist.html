@@ -17,7 +17,7 @@
 {% if creds_ok %}
 <div class="card bg-base-200 shadow">
   <div class="card-body">
-    <form action="/artist" method="post" class="flex gap-2">
+    <form action="/artist" method="post" class="flex gap-2" data-busy-submit>
       <input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}">
       <input type="text" name="artist" placeholder="e.g. Stars of the Lid"
              value="{{ prefill }}" aria-label="Artist name"

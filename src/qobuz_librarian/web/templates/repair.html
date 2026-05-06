@@ -14,7 +14,7 @@
 </p>
 
 {% if creds_ok %}
-<form action="/repair" method="post">
+<form action="/repair" method="post" data-busy-submit>
   <input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}">
   <button type="submit" class="btn btn-primary"
           onclick="return confirm('Start a full repair scan? This can take a couple of hours on a large library.')">Start repair scan</button>

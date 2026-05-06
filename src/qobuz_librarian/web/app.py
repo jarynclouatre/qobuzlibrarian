@@ -660,13 +660,20 @@ def _maybe_auto_check_new_releases():
         _start_new_release_check()
 
 
-def _active_library_scan():
-    """A library scan that's already pending/crawling, or None."""
+def _active_scan(*kinds):
+    """A scan of one of the given execute_kinds that's already pending or
+    in flight, or None. Lets a double-submitted whole-library pass fold onto
+    the one already running instead of stacking a second hours-long job."""
     for j in job_mgr.registry.pending_and_running():
-        if (getattr(j, "execute_kind", "") == "library"
-                and j.status.value in ("pending", "scanning")):
+        if (getattr(j, "execute_kind", "") in kinds
+                and j.status.value in ("pending", "scanning", "running")):
             return j
     return None
+
+
+def _active_library_scan():
+    """A library scan that's already pending/crawling, or None."""
+    return _active_scan("library")
 
 
 def _start_library_scan(partial_only=False):
@@ -1210,6 +1217,9 @@ async def upgrade_scan(request: Request):
         _get_token()
     except (SystemExit, NoCredsError):
         return _no_creds_response(request)
+    existing = _active_scan("upgrade")
+    if existing is not None:
+        return RedirectResponse(url=f"/jobs/{existing.id}", status_code=303)
     from qobuz_librarian.web import flows
     job = job_mgr.Job(title="Quality upgrade scan")
     job.execute_kind = "upgrade"
@@ -1253,6 +1263,9 @@ async def downsample_scan(request: Request):
     busy = _lock_busy_response(request)
     if busy is not None:
         return busy
+    existing = _active_scan("downsample")
+    if existing is not None:
+        return RedirectResponse(url=f"/jobs/{existing.id}", status_code=303)
     from qobuz_librarian.web import flows
     job = job_mgr.Job(title="Downsample scan")
     job.execute_kind = "downsample"
@@ -1280,6 +1293,9 @@ async def repair_scan(request: Request):
         _get_token()
     except (SystemExit, NoCredsError):
         return _no_creds_response(request)
+    existing = _active_scan("repair")
+    if existing is not None:
+        return RedirectResponse(url=f"/jobs/{existing.id}", status_code=303)
     from qobuz_librarian.web import flows
     job = job_mgr.Job(title="Repair scan")
     job.execute_kind = "repair"
@@ -1310,11 +1326,15 @@ async def lyrics_scan(request: Request):
     busy = _lock_busy_response(request)
     if busy is not None:
         return busy
+    existing = _active_scan("lyrics")
+    if existing is not None:
+        return RedirectResponse(url=f"/jobs/{existing.id}", status_code=303)
     form = await request.form()
     rescan = bool(form.get("rescan"))
     synced_only = bool(form.get("synced_only"))
     from qobuz_librarian.web import flows
     job = job_mgr.Job(title="Lyrics backfill")
+    job.execute_kind = "lyrics"
     job_mgr.submit(
         job,
         lambda j: flows.run_library_lyrics(j, rescan=rescan, synced_only=synced_only),
@@ -1371,6 +1391,9 @@ async def migrate_scan(request: Request):
             "page": "migrate", "src": src, "dest": dest,
             "configured": bool(src and dest), "error": err,
             "migrate_checks": _migrate_checks(src, dest)})
+    existing = _active_scan("migration")
+    if existing is not None:
+        return RedirectResponse(url=f"/jobs/{existing.id}", status_code=303)
     form = await request.form()
     use_acoustid = form.get("acoustid") == "on"
     in_place = form.get("in_place") == "on"

@@ -36,7 +36,7 @@
   </div>
 </div>
 
-<form action="/migrate" method="post">
+<form action="/migrate" method="post" data-busy-submit>
   <input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}">
   <div class="space-y-3 mb-4">
     <label class="flex items-start gap-3 cursor-pointer">
