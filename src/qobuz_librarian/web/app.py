@@ -1831,7 +1831,12 @@ async def set_mode(request: Request, target: str = Form("")):
     from qobuz_librarian import run_lock
     want = (target or "").strip().lower()
     if want == "cli":
+        # Flip to CLI mode first so a /download or scan POST landing during the
+        # handoff is refused (503) instead of slipping past the check and racing
+        # the CLI over /staging once we release the lock below.
+        _CLI_MODE = True
         if job_mgr.registry.pending_and_running():
+            _CLI_MODE = False  # nothing handed off — stay in web mode
             return RedirectResponse(url="/settings?error=" + urllib.parse.quote(
                 "Finish or cancel the active download before handing off to the "
                 "terminal."), status_code=303)
@@ -1841,7 +1846,6 @@ async def set_mode(request: Request, target: str = Form("")):
             except OSError:
                 pass
             _RUN_LOCK_HANDLE = None
-        _CLI_MODE = True
         _LOCK_BUSY_PID = None
         return RedirectResponse(url="/settings?mode=cli", status_code=303)
     if want == "web":
