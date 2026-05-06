@@ -767,6 +767,9 @@ async def do_search(request: Request, q: str = Form("", max_length=500)):
     error = None
     query = q.strip()
     if query:
+        # Imported before the try so the except clauses below can always name
+        # them, even if a failure happens before the request reaches the API.
+        from qobuz_librarian.api.auth import AuthLost, QobuzError
         try:
             token = _get_token()
             from qobuz_librarian.api.search import get_album, search_albums
@@ -785,7 +788,6 @@ async def do_search(request: Request, q: str = Form("", max_length=500)):
             parsed = parse_qobuz_url(query) if is_qobuz_url else None
             raw = []
             loop = asyncio.get_running_loop()
-            from qobuz_librarian.api.auth import AuthLost, QobuzError
             from qobuz_librarian.api.client import call_within
             if parsed and parsed[0] == "album":
                 try:
