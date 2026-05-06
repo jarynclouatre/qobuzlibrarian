@@ -5,12 +5,15 @@ During a running job the in-memory apply is deferred until the worker idles
 to avoid mid-job quality or config changes; disk write still happens immediately.
 """
 import json
+import logging
 import os
 import tempfile
 import threading
 from typing import Optional
 
 from qobuz_librarian import config as cfg
+
+log = logging.getLogger("qobuz_librarian")
 
 SETTINGS_FILE = cfg.DATA_DIR / ".qobuz_settings.json"
 
@@ -255,8 +258,11 @@ def load():
             data = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
             if isinstance(data, dict):
                 _apply(data)
-    except (OSError, ValueError):
-        pass
+    except (OSError, ValueError) as exc:
+        # A corrupt or unreadable file would otherwise revert every behaviour
+        # setting to its env default with no hint why — say so once.
+        log.warning("Ignoring unreadable settings file %s: %s",
+                    SETTINGS_FILE, exc)
 
 
 def _any_active_job() -> bool:
@@ -326,6 +332,8 @@ def _save_locked(values: dict) -> bool:
             v = str(values[key] or "").strip().lower()
             if v not in choices:
                 continue
+            merged[key] = v  # persist the normalised value, matching cfg
+            continue
         elif kind == "list" and choices:
             raw = values[key]
             items = _str_to_list(raw) if isinstance(raw, str) else list(raw or [])
@@ -334,12 +342,17 @@ def _save_locked(values: dict) -> bool:
             continue
         merged[key] = values[key]
 
-    if _any_active_job():
-        with _pending_lock:
-            global _pending_apply
+    with _pending_lock:
+        global _pending_apply
+        if _any_active_job():
             _pending_apply = merged
-    else:
-        _apply(merged)
+        else:
+            # merged already folds in any deferred change (current() overlaid
+            # it), so applying it now supersedes _pending_apply — clear it so a
+            # drain firing right after can't roll those fields back to the old
+            # deferred copy. Apply under the lock, like drain_pending does.
+            _pending_apply = None
+            _apply(merged)
 
     try:
         SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
