@@ -19,6 +19,7 @@ from fastapi.responses import (
 )
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from qobuz_librarian import config as cfg
 from qobuz_librarian.api.auth import NoCredsError
@@ -474,7 +475,7 @@ async def setup_submit(request: Request, username: str = Form(""),
     return resp
 
 
-def _tr(request, name, context):
+def _tr(request, name, context, *, status_code=200):
     """TemplateResponse wrapper for Starlette 1.0+ signature.
 
     The navbar badge is computed once per full-page render and injected via
@@ -488,11 +489,28 @@ def _tr(request, name, context):
             any(j.status.value in ('running', 'scanning') for j in active),
         )
     context.setdefault("cli_mode", _CLI_MODE)
-    return templates.TemplateResponse(request=request, name=name, context=context)
+    return templates.TemplateResponse(request=request, name=name,
+                                      context=context, status_code=status_code)
 
 
 def _is_htmx(request):
     return request.headers.get("HX-Request") == "true"
+
+
+@app.exception_handler(StarletteHTTPException)
+async def _http_exception_handler(request: Request, exc: StarletteHTTPException):
+    """Render a styled page for a mistyped/stale URL instead of a bare
+    ``{"detail": "Not Found"}``. API routes and every non-404 status keep the
+    JSON shape callers expect."""
+    if exc.status_code == 404 and not request.url.path.startswith("/api/"):
+        return _tr(request, "error.html", {
+            "code": 404,
+            "title": "Page not found",
+            "msg": "That page doesn't exist — the link may have moved or been "
+                   "mistyped.",
+        }, status_code=404)
+    return JSONResponse({"detail": exc.detail}, status_code=exc.status_code,
+                        headers=getattr(exc, "headers", None))
 
 
 # Serialises the dedupe-check-then-submit in queue_download: the network
