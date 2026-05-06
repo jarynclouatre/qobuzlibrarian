@@ -31,10 +31,12 @@ class CSRFMiddleware(BaseHTTPMiddleware):
                 return PlainTextResponse("Request body too large",
                                          status_code=413)
             submitted = request.headers.get(CSRF_HEADER)
-            if not submitted:
-                # body() (not form()) — form() consumes the stream without
-                # letting BaseHTTPMiddleware replay it to downstream Form()
-                # handlers, which then 422.
+            if not submitted and 0 < content_length <= _MAX_FORM_BYTES:
+                # Read the body only when its length is declared and bounded —
+                # a chunked request with no Content-Length is never read here, so
+                # a tokenless POST can't make us buffer an unbounded body. body()
+                # (not form()) lets BaseHTTPMiddleware replay it to downstream
+                # Form() handlers, which would otherwise 422.
                 try:
                     body = await request.body()
                     ct = request.headers.get("content-type", "")
@@ -51,7 +53,7 @@ class CSRFMiddleware(BaseHTTPMiddleware):
                 except Exception:
                     submitted = None
             if not cookie_token or not submitted or not secrets.compare_digest(
-                str(cookie_token), str(submitted)
+                str(cookie_token).encode("utf-8"), str(submitted).encode("utf-8")
             ):
                 return PlainTextResponse(
                     "CSRF token missing or invalid", status_code=403
@@ -85,6 +87,7 @@ _CSP = (
     "style-src 'self' 'unsafe-inline'; "
     "img-src 'self' data: https://static.qobuz.com; "
     "connect-src 'self'; "
+    "object-src 'none'; "
     "frame-ancestors 'none'; "
     "base-uri 'self'; "
     "form-action 'self'"
@@ -93,13 +96,18 @@ _CSP = (
 
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     """Adds X-Content-Type-Options, X-Frame-Options, Referrer-Policy,
-    a permissive Content-Security-Policy, and HSTS on HTTPS requests only."""
+    Permissions-Policy, a permissive Content-Security-Policy, and HSTS on
+    HTTPS requests only."""
     async def dispatch(self, request, call_next):
         response = await call_next(request)
         response.headers.setdefault("X-Content-Type-Options", "nosniff")
         response.headers.setdefault("X-Frame-Options", "DENY")
         response.headers.setdefault("Referrer-Policy", "same-origin")
         response.headers.setdefault("Content-Security-Policy", _CSP)
+        # The UI uses no device sensors; deny them so an injected script can't
+        # reach for the camera/mic/location either.
+        response.headers.setdefault(
+            "Permissions-Policy", "geolocation=(), microphone=(), camera=()")
         # HSTS only on HTTPS — emitting it over plain HTTP is pointless and
         # would brick a user who later reaches the host via HTTP.
         is_https = (request.url.scheme == "https"
