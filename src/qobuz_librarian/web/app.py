@@ -196,14 +196,13 @@ async def _lifespan(_app: FastAPI):
     if _LOCK_BUSY_PID is not None:
         asyncio.create_task(_retry_lock())
 
-    import os as _os
     _UNWRITABLE_VOLUMES.clear()
     # Opt-in via env so tests / dev runs that don't have /staging /music
     # mounted don't trip on the gate. The bundled compose sets this to 1.
-    if _os.environ.get("QL_CHECK_VOLUMES") == "1":
+    if os.environ.get("QL_CHECK_VOLUMES") == "1":
         for label, path in (("/staging", cfg.STAGING_DIR),
                             ("/music", cfg.MUSIC_ROOT)):
-            if not Path(path).exists() or not _os.access(str(path), _os.W_OK):
+            if not Path(path).exists() or not os.access(str(path), os.W_OK):
                 _UNWRITABLE_VOLUMES.append(label)
         if _UNWRITABLE_VOLUMES:
             _log.error("STARTUP: critical volumes not writable: %s. Write "
@@ -1306,7 +1305,7 @@ async def lyrics_scan(request: Request):
 
 @app.get("/migrate", response_class=HTMLResponse)
 async def migrate_page(request: Request):
-    import os as _os
+    import os
     src, dest = cfg.MIGRATE_SRC, cfg.MIGRATE_DEST
     migrate_checks = []
     for label, path in (("Source folder", src), ("Destination folder", dest)):
@@ -1318,7 +1317,7 @@ async def migrate_page(request: Request):
                 migrate_checks.append({"label": label, "ok": False, "detail": f"{p} does not exist"})
             elif not p.is_dir():
                 migrate_checks.append({"label": label, "ok": False, "detail": f"{p} is not a directory"})
-            elif not _os.access(str(p), _os.R_OK):
+            elif not os.access(str(p), os.R_OK):
                 migrate_checks.append({"label": label, "ok": False, "detail": f"{p} is not readable"})
             else:
                 migrate_checks.append({"label": label, "ok": True, "detail": str(p)})
