@@ -17,6 +17,7 @@
        Pinned versions; refresh from upstream when bumping. -->
   <!-- ?v= the app version so a release busts a returning visitor's cached
        CSS/JS instead of leaving them on the previous version's files. -->
+  <link rel="preload" href="/static/vendor/inter/inter-latin.woff2" as="font" type="font/woff2" crossorigin>
   <link href="/static/dist/app.css?v={{ app_version }}" rel="stylesheet">
   <script src="/static/vendor/htmx-1.9.12.min.js"></script>
   <script>
@@ -75,21 +76,29 @@
         Qobuz Librarian
       </a>
     </div>
+    {% set _tools_pages = ('upgrade', 'downsample', 'repair', 'lyrics', 'migrate') %}
     <div class="hidden lg:flex">
       <ul class="menu menu-horizontal gap-1 px-1">
         <li><a href="/"        class="{% if page=='dashboard' %}active{% endif %}">Dashboard</a></li>
         <li><a href="/search"  class="{% if page=='search' %}active{% endif %}">Search</a></li>
         <li><a href="/artist"  class="{% if page=='artist' %}active{% endif %}">Artist</a></li>
         <li><a href="/library" class="{% if page=='library' %}active{% endif %}">Library</a></li>
-        <li><a href="/upgrade" class="{% if page in ('upgrade', 'downsample') %}active{% endif %}">Upgrade / Downsample</a></li>
-        <li><a href="/repair"   class="{% if page=='repair' %}active{% endif %}">Repair</a></li>
-        <li><a href="/lyrics"   class="{% if page=='lyrics' %}active{% endif %}">Lyrics</a></li>
+        <li>
+          <details>
+            <summary class="{% if page in _tools_pages %}active{% endif %}">Tools</summary>
+            <ul class="z-[1] min-w-max bg-base-200 rounded-box shadow-lg">
+              <li><a href="/upgrade" class="{% if page in ('upgrade', 'downsample') %}active{% endif %}">Upgrade / Downsample</a></li>
+              <li><a href="/repair"  class="{% if page=='repair' %}active{% endif %}">Repair</a></li>
+              <li><a href="/lyrics"  class="{% if page=='lyrics' %}active{% endif %}">Lyrics</a></li>
+              <li><a href="/migrate" class="{% if page=='migrate' %}active{% endif %}">Migrate</a></li>
+            </ul>
+          </details>
+        </li>
         <li><a href="/queue"   class="{% if page=='queue' %}active{% endif %}">
           Queue
           {% set _qbadge = pending_job_count or 0 %}
           {% if _qbadge > 0 %}<span class="badge {% if queue_has_running %}badge-warning{% else %}badge-primary{% endif %} badge-sm">{% if _qbadge > 99 %}99+{% else %}{{ _qbadge }}{% endif %}</span>{% endif %}
         </a></li>
-        <li><a href="/migrate"  class="{% if page=='migrate' %}active{% endif %}">Migrate</a></li>
         <li><a href="/settings" class="{% if page=='settings' %}active{% endif %}">Settings</a></li>
         {% if auth_active() %}
         <li><button type="submit" form="logout-form">Log out</button></li>
@@ -99,26 +108,27 @@
     <div class="lg:hidden">
       <!-- Mobile menu -->
       <div class="dropdown dropdown-end">
-        <label tabindex="0" class="btn btn-ghost btn-circle" aria-label="Menu">
+        <button type="button" tabindex="0" class="btn btn-ghost btn-circle" aria-label="Menu" aria-haspopup="true">
           <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/>
           </svg>
-        </label>
+        </button>
         <ul tabindex="0" class="menu menu-sm dropdown-content mt-3 z-[1] p-2 shadow bg-base-200 rounded-box min-w-max">
-          <li><a href="/">Dashboard</a></li>
-          <li><a href="/search">Search</a></li>
-          <li><a href="/artist">Artist</a></li>
-          <li><a href="/library">Library</a></li>
-          <li><a href="/upgrade">Upgrade / Downsample</a></li>
-          <li><a href="/repair">Repair</a></li>
-          <li><a href="/lyrics">Lyrics</a></li>
-          <li><a href="/queue">
+          <li><a href="/" class="{% if page=='dashboard' %}active{% endif %}">Dashboard</a></li>
+          <li><a href="/search" class="{% if page=='search' %}active{% endif %}">Search</a></li>
+          <li><a href="/artist" class="{% if page=='artist' %}active{% endif %}">Artist</a></li>
+          <li><a href="/library" class="{% if page=='library' %}active{% endif %}">Library</a></li>
+          <li><a href="/queue" class="{% if page=='queue' %}active{% endif %}">
             Queue
             {% set _qbadge = pending_job_count or 0 %}
-            {% if _qbadge > 0 %}<span class="badge badge-primary badge-sm">{% if _qbadge > 99 %}99+{% else %}{{ _qbadge }}{% endif %}</span>{% endif %}
+            {% if _qbadge > 0 %}<span class="badge {% if queue_has_running %}badge-warning{% else %}badge-primary{% endif %} badge-sm">{% if _qbadge > 99 %}99+{% else %}{{ _qbadge }}{% endif %}</span>{% endif %}
           </a></li>
-          <li><a href="/migrate">Migrate</a></li>
-          <li><a href="/settings">Settings</a></li>
+          <li class="menu-title pt-2">Tools</li>
+          <li><a href="/upgrade" class="{% if page in ('upgrade', 'downsample') %}active{% endif %}">Upgrade / Downsample</a></li>
+          <li><a href="/repair" class="{% if page=='repair' %}active{% endif %}">Repair</a></li>
+          <li><a href="/lyrics" class="{% if page=='lyrics' %}active{% endif %}">Lyrics</a></li>
+          <li><a href="/migrate" class="{% if page=='migrate' %}active{% endif %}">Migrate</a></li>
+          <li class="pt-2"><a href="/settings" class="{% if page=='settings' %}active{% endif %}">Settings</a></li>
           {% if auth_active() %}
           <li><button type="submit" form="logout-form">Log out</button></li>
           {% endif %}

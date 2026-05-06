@@ -4,3 +4,78 @@
 @plugin "daisyui" {
   themes: night --default;
 }
+
+/* Inter, vendored locally (variable, weights 400–700) so the UI keeps its type
+   on an air-gapped NAS — same reason htmx is vendored. latin + latin-ext cover
+   accented artist names (Sigur Rós, Mötley Crüe) without falling back mid-word. */
+@font-face {
+  font-family: "Inter";
+  font-style: normal;
+  font-weight: 400 700;
+  font-display: swap;
+  src: url("/static/vendor/inter/inter-latin.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA,
+    U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193,
+    U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "Inter";
+  font-style: normal;
+  font-weight: 400 700;
+  font-display: swap;
+  src: url("/static/vendor/inter/inter-latin-ext.woff2") format("woff2");
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF,
+    U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020,
+    U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI",
+    Roboto, "Helvetica Neue", Arial, sans-serif;
+}
+
+@layer base {
+  html {
+    font-family: var(--font-sans);
+    /* Inter's contextual alternates + a single-storey 'a' read cleaner at UI
+       sizes; tabular figures keep counts/sizes/timestamps from jittering. */
+    font-feature-settings: "cv11", "ss01";
+  }
+}
+
+/* Brand accent. The logo is teal; the stock night theme's accent is blue, so
+   the two fought on every page. Pull primary onto the logo's teal and let the
+   info/success/warning/error hues stay distinct so colour only ever means
+   status. Everything else inherits night's tuned greys. */
+[data-theme="night"] {
+  --color-primary: oklch(79% 0.134 182);
+  --color-primary-content: oklch(21% 0.035 196);
+}
+
+/* Hiding an artist group fades it while htmx swaps it out; app.js collapses
+   its height in the same window so the rows below slide up to fill the gap
+   instead of the group blinking out. */
+details[data-artist].htmx-swapping {
+  opacity: 0;
+  transition: opacity 200ms ease;
+}
+
+/* New artist groups ease in as a running scan turns them up, rather than
+   popping into the list. */
+@keyframes ql-enter {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: none; }
+}
+.ql-enter { animation: ql-enter 220ms ease both; }
+
+/* Honour a reduced-motion preference everywhere: collapse transitions and
+   animations to a hair rather than zero so state changes (a hide, a swap)
+   still register without movement. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

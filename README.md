@@ -2,7 +2,7 @@
   <img src="assets/logo.png" alt="Qobuz Librarian" width="520">
 </p>
 
-<p align="center"><em>Your Qobuz library, at full quality — and kept tidy.</em></p>
+<p align="center"><em>Build and maintain a complete, lossless library from Qobuz.</em></p>
 
 <p align="center">
   <a href="https://github.com/jarynclouatre/qobuz-librarian/actions/workflows/test.yml"><img src="https://github.com/jarynclouatre/qobuz-librarian/actions/workflows/test.yml/badge.svg" alt="Tests"></a>

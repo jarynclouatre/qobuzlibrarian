@@ -984,8 +984,9 @@ def test_review_list_groups_candidates_by_artist(client):
         assert r.status_code == 200
         t = r.text
         flat = re.sub(r"\s+", " ", t)
-        # One section per artist, none auto-expanded.
-        assert t.count("<details") == 2
+        # Grouped one section per artist, none auto-expanded (multi-artist stays
+        # collapsed; only a lone artist opens by default).
+        assert "Beatles" in t and "ABBA" in t
         assert "<details open" not in t
         assert "3 albums across 2 artists" in flat
         assert "2 albums" in flat          # the Beatles group's count
