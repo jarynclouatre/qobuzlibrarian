@@ -244,6 +244,13 @@ page (or set them in `.env` before starting).
 > to change the login, stop the container and delete `.qobuz_web_auth.json`
 > from the data volume, then set it again on next visit.
 
+> **Behind a reverse proxy,** set `FORWARDED_ALLOW_IPS` in `.env` to the
+> proxy's address so the failed-login throttle counts attempts per real client
+> rather than treating every request as coming from the single proxy IP (which
+> lets one wrong-password run lock everyone out). Point it at your proxy, not
+> `*`, unless the container is only ever reachable through a proxy that
+> rewrites `X-Forwarded-For`.
+
 From there:
 
 1. Open **Settings**, paste your `user_auth_token`, click **Test**, then **Save**.

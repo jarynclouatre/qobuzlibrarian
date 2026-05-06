@@ -43,11 +43,17 @@ _cred_cache: dict | None = None
 _cred_cache_path: str | None = None
 
 # Login failure tracking: IP → list of failure timestamps.
-# After _LOGIN_MAX failures within _LOGIN_WINDOW seconds, return 429.
+# After _LOGIN_MAX failures within _LOGIN_WINDOW seconds, return 429. The IP is
+# only as good as the proxy setup — set FORWARDED_ALLOW_IPS to your reverse
+# proxy so uvicorn fills request.client.host with the real client address;
+# otherwise every request shares the proxy's IP and one bad actor locks the box.
 _login_failures: dict[str, list[float]] = {}
 _login_lock = threading.Lock()
 _LOGIN_MAX = 5
 _LOGIN_WINDOW = 3600
+# Backstop against a flood of distinct (or spoofed) source IPs filling the
+# table; stale buckets are pruned continuously, this caps the live set.
+_MAX_TRACKED_IPS = 2048
 
 
 def auth_disabled() -> bool:
@@ -74,6 +80,14 @@ def _verify_hash(stored: str, password: str) -> bool:
     except (ValueError, AttributeError):
         return False
     return secrets.compare_digest(got.hex(), want_hex)
+
+
+def _constant_time_eq(a: str, b: str) -> bool:
+    """compare_digest, but on UTF-8 bytes so a non-ASCII value (a unicode
+    username, or a junk cookie a client can send as raw latin-1) compares
+    cleanly instead of raising the TypeError compare_digest gives for
+    non-ASCII strings."""
+    return secrets.compare_digest(a.encode("utf-8"), b.encode("utf-8"))
 
 
 def _read() -> dict:
@@ -134,7 +148,7 @@ def verify_login(username: str, password: str) -> bool:
     stored_hash = d.get("password_hash") or ""
     if not stored_hash:
         return False
-    user_ok = secrets.compare_digest(username, d.get("username") or "")
+    user_ok = _constant_time_eq(username, d.get("username") or "")
     pass_ok = _verify_hash(stored_hash, password)
     return user_ok and pass_ok
 
@@ -148,7 +162,7 @@ def verify_session(cookie_value: str) -> bool:
     secret = session_value()
     if not secret or not cookie_value:
         return False
-    return secrets.compare_digest(cookie_value, secret)
+    return _constant_time_eq(cookie_value, secret)
 
 
 def _secure(request) -> bool:
@@ -177,19 +191,41 @@ def auth_active() -> bool:
     return not auth_disabled() and credentials_configured()
 
 
+def _prune_failures(now: float) -> None:
+    """Drop buckets with no in-window failures left. Caller holds _login_lock."""
+    stale = [ip for ip, ts in _login_failures.items()
+             if not any(now - t < _LOGIN_WINDOW for t in ts)]
+    for ip in stale:
+        del _login_failures[ip]
+
+
 def check_login_rate_limit(ip: str) -> bool:
     """True if this IP may attempt a login, False if it's been blocked."""
     now = time.monotonic()
     with _login_lock:
         times = [t for t in _login_failures.get(ip, []) if now - t < _LOGIN_WINDOW]
-        _login_failures[ip] = times
+        if times:
+            _login_failures[ip] = times
+        else:
+            _login_failures.pop(ip, None)
         return len(times) < _LOGIN_MAX
 
 
 def record_login_failure(ip: str) -> None:
     now = time.monotonic()
     with _login_lock:
+        _prune_failures(now)
+        if ip not in _login_failures and len(_login_failures) >= _MAX_TRACKED_IPS:
+            oldest = min(_login_failures, key=lambda k: min(_login_failures[k]))
+            del _login_failures[oldest]
         _login_failures.setdefault(ip, []).append(now)
+
+
+def clear_login_failures(ip: str) -> None:
+    """Forget an IP's failures after a successful login so an earlier typo run
+    doesn't leave the next session one slip from a lockout."""
+    with _login_lock:
+        _login_failures.pop(ip, None)
 
 
 class AuthMiddleware(BaseHTTPMiddleware):
@@ -219,7 +255,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
 
         cookie = request.cookies.get(SESSION_COOKIE)
         secret = creds.get("session_secret") or ""
-        if cookie and secret and secrets.compare_digest(cookie, secret):
+        if cookie and secret and _constant_time_eq(cookie, secret):
             return await call_next(request)
         if path == LOGIN_PATH:
             return await call_next(request)

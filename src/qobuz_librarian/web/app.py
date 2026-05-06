@@ -420,6 +420,7 @@ async def login_submit(request: Request, username: str = Form(""),
             request=request, name="login.html",
             context={"error": "Incorrect username or password."},
             status_code=401)
+    web_auth.clear_login_failures(ip)
     resp = RedirectResponse(url="/", status_code=303)
     web_auth.set_session_cookie(resp, request)
     return resp

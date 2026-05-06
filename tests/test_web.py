@@ -2420,6 +2420,19 @@ def test_verify_login_matches_only_the_right_pair(monkeypatch, tmp_path):
     assert "hunter2hunter" not in (tmp_path / "web_auth.json").read_text()
 
 
+def test_credential_compare_tolerates_non_ascii(monkeypatch, tmp_path):
+    from qobuz_librarian import config as cfg
+    from qobuz_librarian.web import auth as web_auth
+
+    monkeypatch.setattr(cfg, "WEB_AUTH_FILE", tmp_path / "web_auth.json")
+    assert web_auth.set_credentials("admin", "hunter2hunter")
+    # A unicode username or a junk session cookie must compare to a clean
+    # False — not raise the TypeError compare_digest throws on non-ASCII str.
+    assert web_auth.verify_login("café", "hunter2hunter") is False
+    assert web_auth.verify_session("\x80not-the-secret") is False
+    assert web_auth.verify_login("admin", "hunter2hunter") is True
+
+
 def test_logged_out_request_redirects_to_login(monkeypatch, tmp_path):
     with _enable_auth(monkeypatch, tmp_path) as c:
         r = c.get("/", follow_redirects=False)
@@ -2453,6 +2466,25 @@ def test_login_accepts_correct_password(monkeypatch, tmp_path):
         assert r.headers["location"] == "/"
         # The session cookie now opens a protected route.
         assert c.get("/", follow_redirects=False).status_code == 200
+
+
+def test_repeated_failed_logins_are_throttled(monkeypatch, tmp_path):
+    from qobuz_librarian.web import auth as web_auth
+    web_auth._login_failures.clear()
+    try:
+        with _enable_auth(monkeypatch, tmp_path) as c:
+            c.get("/login")
+            tok = c.cookies.get("qf_csrf")
+            data = {"username": "admin", "password": "nope", "_csrf_token": tok}
+            hdr = {"X-CSRF-Token": tok}
+            for _ in range(web_auth._LOGIN_MAX):
+                assert c.post("/login", data=data, headers=hdr,
+                              follow_redirects=False).status_code == 401
+            # One more attempt is throttled rather than just rejected again.
+            r = c.post("/login", data=data, headers=hdr, follow_redirects=False)
+            assert r.status_code == 429
+    finally:
+        web_auth._login_failures.clear()
 
 
 def test_web_auth_none_bypasses_login(monkeypatch, tmp_path):
