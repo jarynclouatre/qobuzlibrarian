@@ -561,10 +561,10 @@ def scan_upgrades(job, token):
                     continue
                 np_, nt = c.get("n_present", 0), c.get("n_total", 0)
                 part = f" · {np_}/{nt} tracks" if nt and np_ < nt else ""
-                # The engine candidate carries the album's folder as a Path; the
-                # review row is persisted as JSON, so store it as text. The web
-                # execute path works off qobuz_album and never reads it back.
-                stored = {**c, "album_dir": str(c.get("album_dir", ""))}
+                # Store just the matched album's id and re-fetch it at execute
+                # time (get_album is disk-cached), rather than persisting the
+                # whole album dict the cache already holds. An edition swap keeps
+                # its own id, so the id alone reproduces the exact edition to rip.
                 # Unticked by default — like the gap scan, one click shouldn't
                 # re-rip hundreds of albums nobody reviewed.
                 job.add_candidate(
@@ -573,7 +573,7 @@ def scan_upgrades(job, token):
                     artist=name,
                     detail=f"{c.get('existing_quality_label','?')} → "
                            f"{c.get('target_quality_label','?')}{part}",
-                    payload={"candidate": stored, "year": album_year(album)},
+                    payload={"album_id": album.get("id"), "year": album_year(album)},
                     selected=False,
                 )
                 total += 1
@@ -611,10 +611,19 @@ def execute_upgrades(job, chosen, token):
         if job.cancel_requested:
             break
         processed = i
-        c = cand["payload"]["candidate"]
-        album = c["qobuz_album"]
+        album_id = cand["payload"].get("album_id")
         log.info(f"[{i}/{len(chosen)}] {cand.get('artist','')} — "
-                 f"{album.get('title') or '?'}")
+                 f"{cand.get('title') or '?'}")
+        try:
+            album = get_album(album_id, token)
+        except Exception as e:
+            log.info(f"  could not fetch album {album_id}: {e}")
+            failed += 1
+            continue
+        if not album:
+            log.info(f"  album {album_id} is no longer on Qobuz — skipping.")
+            failed += 1
+            continue
         try:
             with staging_lock():
                 result = process_album(album, args, allow_force=False,

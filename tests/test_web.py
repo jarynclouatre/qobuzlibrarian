@@ -495,12 +495,14 @@ def test_execute_upgrades_does_not_flip_global_cfg(monkeypatch):
 
     import qobuz_librarian.modes.process as proc_mod
     monkeypatch.setattr(proc_mod, "process_album", fake_process_album)
+    monkeypatch.setattr(flows, "get_album",
+                        lambda aid, tok: {"id": aid, "title": "A"})
 
     class _FakeJob:
         cancel_requested = False
     chosen = [{
-        "artist": "Artist",
-        "payload": {"candidate": {"qobuz_album": {"id": "1", "title": "A"}}},
+        "artist": "Artist", "title": "A",
+        "payload": {"album_id": "1"},
     }]
     monkeypatch.setattr(cfg, "ARTIST_API_DELAY", 0.0)
     flows.execute_upgrades(_FakeJob(), chosen, token="tok")
@@ -681,13 +683,13 @@ class TestExecuteSuccessCounting:
                                 "result": "downloaded", "n_ok": 5,
                                 "n_fail": 0, "n_lossy": 0,
                                 "imported": False, "auto_upgrade": True})
+        monkeypatch.setattr(flows, "get_album",
+                            lambda aid, tok: {"id": aid, "title": "T"})
         monkeypatch.setattr("qobuz_librarian.config.ARTIST_API_DELAY", 0)
         monkeypatch.setattr("qobuz_librarian.config.AUTO_UPGRADE_ENABLED", False)
 
         cand = {
-            "payload": {"candidate": {
-                "qobuz_album": {"id": "A1", "title": "T"},
-            }},
+            "payload": {"album_id": "A1"},
             "title": "Album", "artist": "Artist",
         }
         with caplog.at_level(logging.INFO, logger="qobuz_librarian"):
@@ -1903,9 +1905,9 @@ def test_persistence_restores_awaiting_review_with_candidates(monkeypatch):
 
 
 def test_persist_survives_non_json_candidate_payload(monkeypatch):
-    """A candidate payload carrying a non-JSON value (an upgrade scan used to
-    stash the album's folder Path) must not blow up the write — that TypeError
-    escaped the sqlite guard, killed the worker, and lost the whole review."""
+    """A stray non-JSON value in a candidate payload (a Path, say) must coerce
+    to text at the write boundary, not raise TypeError — that escaped the
+    sqlite guard, killed the worker, and lost the whole parked review."""
     from pathlib import Path
 
     from qobuz_librarian.web import job_persistence
@@ -1914,17 +1916,16 @@ def test_persist_survives_non_json_candidate_payload(monkeypatch):
     monkeypatch.setattr(job_persistence, "_disabled", False)
     job_persistence.init()
 
-    job = jm.Job(title="Upgrade scan")
+    job = jm.Job(title="Review")
     job.kind = "scan"
     job.status = jm.JobStatus.AWAITING_REVIEW
-    job.add_candidate("upgrade", "Album", "Artist", payload={
-        "candidate": {"qobuz_album": {"id": "A1"},
-                      "album_dir": Path("/music/Artist/Album")}})
+    job.add_candidate("album", "Album", "Artist",
+                      payload={"album_id": "A1", "dir": Path("/music/A/B")})
     job_persistence.persist(job)
 
     row = job_persistence.load_one(job.id)
     assert row is not None
-    assert row["candidates"][0]["payload"]["candidate"]["qobuz_album"]["id"] == "A1"
+    assert row["candidates"][0]["payload"]["album_id"] == "A1"
 
 
 def test_persistence_rebadges_inflight_jobs_on_restore(monkeypatch):
