@@ -1902,6 +1902,31 @@ def test_persistence_restores_awaiting_review_with_candidates(monkeypatch):
     assert executed.get("ids") == ["abc"]
 
 
+def test_persist_survives_non_json_candidate_payload(monkeypatch):
+    """A candidate payload carrying a non-JSON value (an upgrade scan used to
+    stash the album's folder Path) must not blow up the write — that TypeError
+    escaped the sqlite guard, killed the worker, and lost the whole review."""
+    from pathlib import Path
+
+    from qobuz_librarian.web import job_persistence
+
+    job_persistence._reset_for_tests()
+    monkeypatch.setattr(job_persistence, "_disabled", False)
+    job_persistence.init()
+
+    job = jm.Job(title="Upgrade scan")
+    job.kind = "scan"
+    job.status = jm.JobStatus.AWAITING_REVIEW
+    job.add_candidate("upgrade", "Album", "Artist", payload={
+        "candidate": {"qobuz_album": {"id": "A1"},
+                      "album_dir": Path("/music/Artist/Album")}})
+    job_persistence.persist(job)
+
+    row = job_persistence.load_one(job.id)
+    assert row is not None
+    assert row["candidates"][0]["payload"]["candidate"]["qobuz_album"]["id"] == "A1"
+
+
 def test_persistence_rebadges_inflight_jobs_on_restore(monkeypatch):
     """In-flight jobs from before a restart come back sensibly: a running/pending
     job as FAILED with a retry hint; a scan caught mid-crawl as the neutral

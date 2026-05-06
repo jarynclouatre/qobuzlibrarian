@@ -461,9 +461,7 @@ def execute_albums(job, chosen, token):
     processed = 0
     for i, cand in enumerate(chosen, 1):
         if job.cancel_requested:
-            remaining = len(chosen) - processed
-            log.info(f"Cancelled — {ok} downloaded, {remaining} not started.")
-            return
+            break
         processed = i
         album_id = cand["payload"].get("album_id")
         label = f"[{i}/{len(chosen)}] {cand.get('artist','')} — {cand['title']}"
@@ -487,6 +485,9 @@ def execute_albums(job, chosen, token):
         elif not (result and result.get("result") in _benign):
             failed += 1
         time.sleep(cfg.ARTIST_API_DELAY)
+    if job.cancel_requested:
+        log.info(f"Cancelled — {ok} downloaded, {len(chosen) - processed} not started.")
+        return
     log.info(f"Finished — {ok}/{plural(len(chosen), 'album')} downloaded and imported.")
     if failed:
         job.error = f"{failed} of {plural(len(chosen), 'album')} didn't finish — see the log."
@@ -560,6 +561,10 @@ def scan_upgrades(job, token):
                     continue
                 np_, nt = c.get("n_present", 0), c.get("n_total", 0)
                 part = f" · {np_}/{nt} tracks" if nt and np_ < nt else ""
+                # The engine candidate carries the album's folder as a Path; the
+                # review row is persisted as JSON, so store it as text. The web
+                # execute path works off qobuz_album and never reads it back.
+                stored = {**c, "album_dir": str(c.get("album_dir", ""))}
                 # Unticked by default — like the gap scan, one click shouldn't
                 # re-rip hundreds of albums nobody reviewed.
                 job.add_candidate(
@@ -568,7 +573,7 @@ def scan_upgrades(job, token):
                     artist=name,
                     detail=f"{c.get('existing_quality_label','?')} → "
                            f"{c.get('target_quality_label','?')}{part}",
-                    payload={"candidate": c, "year": album_year(album)},
+                    payload={"candidate": stored, "year": album_year(album)},
                     selected=False,
                 )
                 total += 1
@@ -604,8 +609,6 @@ def execute_upgrades(job, chosen, token):
     processed = 0
     for i, cand in enumerate(chosen, 1):
         if job.cancel_requested:
-            remaining = len(chosen) - processed
-            log.info(f"Cancelled — {ok} upgraded, {remaining} not started.")
             break
         processed = i
         c = cand["payload"]["candidate"]
@@ -628,6 +631,9 @@ def execute_upgrades(job, chosen, token):
         elif _res not in _skip:
             failed += 1
         time.sleep(cfg.ARTIST_API_DELAY)
+    if job.cancel_requested:
+        log.info(f"Cancelled — {ok} upgraded, {len(chosen) - processed} not started.")
+        return
     log.info(f"Finished — upgraded {ok}/{plural(len(chosen), 'album')}.")
     if failed:
         job.error = f"{failed} of {plural(len(chosen), 'album')} couldn't be upgraded — see the log."
@@ -716,7 +722,6 @@ def execute_downsamples(job, chosen):
     processed = 0
     for i, cand in enumerate(chosen, 1):
         if job.cancel_requested:
-            log.info(f"Cancelled — {shrunk} shrunk, {len(chosen) - processed} not started.")
             break
         processed = i
         album_dir = Path((cand.get("payload") or {}).get("album_dir", ""))
@@ -737,6 +742,11 @@ def execute_downsamples(job, chosen):
             shrunk += 1
         total_saved += res.get("saved_bytes", 0)
         total_errors += res.get("errors", 0)
+    if job.cancel_requested:
+        log.info(f"Cancelled — shrank {plural(shrunk, 'album')} "
+                 f"({format_size(total_saved)} reclaimed), "
+                 f"{len(chosen) - processed} not started.")
+        return
     log.info(f"Finished — shrank {plural(shrunk, 'album')}, "
              f"reclaimed {format_size(total_saved)}.")
     if total_errors:
@@ -884,9 +894,7 @@ def execute_repairs(job, chosen, token):
     processed = 0
     for i, cand in enumerate(chosen, 1):
         if job.cancel_requested:
-            remaining = len(chosen) - processed
-            log.info(f"Cancelled — {fixed} repaired, {remaining} not started.")
-            return
+            break
         processed = i
         p = cand["payload"]
         log.info(f"[{i}/{len(chosen)}] {p['artist_name']} — {cand['title']}")
@@ -910,6 +918,9 @@ def execute_repairs(job, chosen, token):
         else:
             failed += 1
         time.sleep(cfg.ARTIST_API_DELAY)
+    if job.cancel_requested:
+        log.info(f"Cancelled — {fixed} repaired, {len(chosen) - processed} not started.")
+        return
     log.info(f"Finished — repaired {fixed}/{plural(len(chosen), 'album')}.")
     if failed:
         job.error = f"{failed} of {plural(len(chosen), 'album')} couldn't be repaired — see the log."
@@ -949,6 +960,7 @@ def run_lyric_retry(job, token):
             providers=cfg.LYRICS_PROVIDERS or None,
             lyrics_format=cfg.LYRICS_FORMAT,
             state_path=cfg.LYRIC_FETCH_STATE_FILE,
+            should_stop=lambda: job.cancel_requested,
         )
     except Exception as e:
         log.info(f"Retry failed: {e} — manifest preserved.")
@@ -956,7 +968,9 @@ def run_lyric_retry(job, token):
 
     _refresh_lyric_retry(existing)
     remaining = load_lyric_retry()
-    if remaining:
+    if job.cancel_requested:
+        log.info(f"Stopped — {plural(len(remaining), 'track')} still queued for retry.")
+    elif remaining:
         log.info(f"{plural(len(remaining), 'track')} still unresolved — will retry next time.")
     else:
         log.info("All retried tracks resolved.")

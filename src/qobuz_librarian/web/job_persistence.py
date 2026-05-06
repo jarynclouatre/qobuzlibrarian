@@ -122,6 +122,10 @@ def persist(job) -> None:
         if conn is None:
             return
         try:
+            # default=str so one stray non-JSON value in a candidate payload (a
+            # Path that slipped through, say) coerces to text instead of raising
+            # TypeError here — that would escape the sqlite3.Error guard, crash
+            # the worker, and silently drop a parked review the user can't get back.
             conn.execute(
                 "INSERT OR REPLACE INTO jobs "
                 "(id, title, artist, album_id, kind, status, phase, candidates, "
@@ -133,12 +137,12 @@ def persist(job) -> None:
                     job.album_id or "", job.kind or "download",
                     job.status.value if hasattr(job.status, "value") else str(job.status),
                     job.phase or "",
-                    json.dumps(job.candidates or []),
+                    json.dumps(job.candidates or [], default=str),
                     job.error,
                     job.summary or "",
                     job.review_verb or "Download",
                     job.execute_kind or "",
-                    json.dumps(job.execute_args or {}),
+                    json.dumps(job.execute_args or {}, default=str),
                     job.created_at,
                     job.finished_at,
                 ),
