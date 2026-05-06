@@ -139,14 +139,21 @@ class Job:
     # ── logging / streaming ──────────────────────────────────────────────────
     def _fan_out(self, line: str):
         with self._lock:
-            dead = []
             for q in self._subscribers:
                 try:
                     q.put_nowait(line)
                 except queue.Full:
-                    dead.append(q)
-            for q in dead:
-                self._subscribers.remove(q)
+                    # A consumer that fell behind (throttled tab, slow link):
+                    # drop its oldest buffered line to keep the live tail — and
+                    # the closing STREAM_END — flowing rather than freezing the
+                    # stream. The complete log is always on the job page. Only
+                    # _fan_out puts (under this lock) and only the reader gets,
+                    # so the slot we free can't be taken before we reuse it.
+                    try:
+                        q.get_nowait()
+                        q.put_nowait(line)
+                    except (queue.Empty, queue.Full):
+                        pass
 
     # Read from config at class-definition time so env overrides on
     # startup take effect (set JOB_LOG_CAP to lower for tight-memory NAS
@@ -283,8 +290,9 @@ class JobRegistry:
         with self._lock:
             self._jobs[job.id] = job
             self._order.append(job.id)
-            self._prune()
+            self._prune_locked()
         job_persistence.persist(job)
+        job_persistence.prune_finished(self.PERSIST_KEEP)
 
     def get(self, job_id: str) -> Optional[Job]:
         return self._jobs.get(job_id)
@@ -324,24 +332,30 @@ class JobRegistry:
 
     PERSIST_KEEP = 1000  # finished rows retained on disk for the archive view
 
-    def _prune(self):
-        finished_ids = [jid for jid in self._order
-                        if jid in self._jobs
-                        and self._jobs[jid].status in TERMINAL]
-        while len(finished_ids) > self.MAX_FINISHED:
-            old = finished_ids.pop(0)
+    def _prune_locked(self):
+        """Evict the oldest finished jobs past MAX_FINISHED. Caller holds _lock.
+
+        Keeps the most recently finished — a restart rehydrates the on-disk
+        archive in creation order, so ordering by finish time (not insertion)
+        is what makes "the last N finished" hold there too. The SQLite row
+        stays after eviction so /jobs/{id} can still render the archive view;
+        only "Clear finished" deletes from disk (see clear_finished)."""
+        finished = [self._jobs[jid] for jid in self._order
+                    if jid in self._jobs and self._jobs[jid].status in TERMINAL]
+        excess = len(finished) - self.MAX_FINISHED
+        if excess <= 0:
+            return
+        finished.sort(key=lambda j: j.finished_at or j.created_at)
+        for job in finished:
+            if excess <= 0:
+                break
             # Don't evict a job a client is still streaming/viewing — that would
-            # 404 it out from under them. It'll be pruned once the stream closes.
-            job = self._jobs.get(old)
-            if job is not None and job._subscribers:
+            # 404 it out from under them. It's pruned once the stream closes.
+            if job._subscribers:
                 continue
-            self._order.remove(old)
-            self._jobs.pop(old, None)
-            # The SQLite row stays so /jobs/{id} can still render the archive
-            # view; the explicit "Clear finished" button is the only path that
-            # deletes from the on-disk archive (see clear_finished).
-        # Cap the archive separately so it doesn't grow forever.
-        job_persistence.prune_finished(self.PERSIST_KEEP)
+            self._order.remove(job.id)
+            self._jobs.pop(job.id, None)
+            excess -= 1
 
     def clear_finished(self):
         """Drop every job in a terminal state. Active jobs are kept."""
@@ -599,6 +613,11 @@ def submit_scan(job: Job, scan_fn, execute_fn):
     def _scan(j: Job):
         j.status = JobStatus.SCANNING
         j.phase = "scan"
+        # Record SCANNING on disk so a restart mid-crawl restores through the
+        # neutral "interrupted, resumes where it left off" path rather than the
+        # harsher running-job "submit again" one (the worker only ever persisted
+        # the preceding RUNNING).
+        job_persistence.persist(j)
         scan_fn(j)
         if j.status != JobStatus.RUNNING and j.status != JobStatus.SCANNING:
             return  # scan_fn already set a terminal/explicit status
@@ -697,6 +716,7 @@ def restore_jobs(execute_registry: dict) -> None:
     interrupted = 0
     review = 0
     historical = 0
+    restored = []
     for row in rows:
         try:
             status = JobStatus(row["status"])
@@ -756,9 +776,16 @@ def restore_jobs(execute_registry: dict) -> None:
                 review += 1
         else:
             historical += 1
-        with registry._lock:
+        restored.append(job)
+    # Insert once, then bound the in-memory finished set to MAX_FINISHED just
+    # like a live add() would — the archive on disk keeps up to PERSIST_KEEP so
+    # an evicted job still renders via /jobs/{id}. Without this a busy prior run
+    # would rehydrate hundreds of finished jobs straight onto /queue.
+    with registry._lock:
+        for job in restored:
             registry._jobs[job.id] = job
             registry._order.append(job.id)
+        registry._prune_locked()
     if interrupted or review:
         logging.getLogger("qobuz_librarian").info(
             "Restored %d historical / %d review / %d interrupted job(s) "
@@ -808,8 +835,11 @@ def request_cancel(job: Job) -> bool:
 
     Returns False only if the job is already finished.
     """
-    if job.status == JobStatus.AWAITING_REVIEW:
-        return cancel_review(job)
+    if job.status == JobStatus.AWAITING_REVIEW and cancel_review(job):
+        return True
+    # Either it wasn't in review, or an approve() flipped it to PENDING between
+    # the check and cancel_review's locked re-check. Fall through to the
+    # cooperative flag so that race doesn't swallow the user's cancel.
     if job.status in TERMINAL:
         return False
     job.cancel_requested = True

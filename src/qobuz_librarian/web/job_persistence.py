@@ -39,6 +39,20 @@ _log = logging.getLogger("qobuz_librarian")
 _lock = threading.Lock()
 _disabled = False
 _conn: Optional[sqlite3.Connection] = None
+# The db opened fine but a write later failed (typically a full disk). Surface
+# it once at INFO — durability is silently gone otherwise — then stay quiet so
+# a stuck volume doesn't flood the log on every status change.
+_warned_write_failure = False
+
+
+def _note_write_failure(what: str, e: Exception) -> None:
+    global _warned_write_failure
+    if not _warned_write_failure:
+        _warned_write_failure = True
+        _log.info("job persistence write failed (%s); jobs may not survive a "
+                  "restart until the volume recovers: %s", what, e)
+    else:
+        _log.debug("%s failed: %s", what, e)
 
 
 def _path():
@@ -131,7 +145,7 @@ def persist(job) -> None:
             )
             conn.commit()
         except sqlite3.Error as e:
-            _log.debug("job persist failed for %s: %s", job.id, e)
+            _note_write_failure(f"persist {job.id}", e)
 
 
 def delete(job_id: str) -> None:
@@ -242,7 +256,7 @@ def load_all() -> list[dict]:
 
 def _reset_for_tests() -> None:
     """Test-only hook: drop the on-disk db so a fresh test starts clean."""
-    global _disabled, _conn
+    global _disabled, _conn, _warned_write_failure
     if _conn is not None:
         try:
             _conn.close()
@@ -250,6 +264,7 @@ def _reset_for_tests() -> None:
             pass
         _conn = None
     _disabled = False
+    _warned_write_failure = False
     p = _path()
     for q in (p, p.with_suffix(".db-wal"), p.with_suffix(".db-shm")):
         try:

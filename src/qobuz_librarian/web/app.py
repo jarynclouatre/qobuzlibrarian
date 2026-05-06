@@ -1942,7 +1942,7 @@ async def job_stream(job_id: str):
                     line = await loop.run_in_executor(
                         _SSE_EXECUTOR, lambda: sub.get(timeout=0.5))
                     empty_ticks = 0
-                    if line == "__DONE__":
+                    if line == job_mgr.STREAM_END:
                         yield f"event: done\ndata: {job.status.value}\n\n"
                         break
                     if line.startswith(job_mgr.PROGRESS_PREFIX):

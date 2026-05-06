@@ -29,6 +29,28 @@ def test_push_line_strips_control_bytes():
     assert job.log_lines[-1] == "a\tb\nc"
 
 
+def test_slow_subscriber_keeps_live_tail_and_close_marker():
+    """A consumer that falls behind (its queue fills) must keep getting the
+    newest lines and the closing marker rather than being dropped and freezing
+    on a stream that never ends."""
+    job = jm.Job()
+    slow = queue.Queue(maxsize=3)
+    job._subscribers.append(slow)
+    for i in range(10):
+        job.push_line(f"line{i}")
+    job.end_stream()
+
+    drained = []
+    try:
+        while True:
+            drained.append(slow.get_nowait())
+    except queue.Empty:
+        pass
+    assert slow in job._subscribers          # not evicted on backpressure
+    assert jm.STREAM_END in drained          # close marker still delivered
+    assert [x for x in drained if x != jm.STREAM_END][-1] == "line9"
+
+
 # ── jobs.py: JobRegistry ──────────────────────────────────────────────────────
 
 
@@ -1939,6 +1961,66 @@ def test_persistence_unknown_execute_kind_fails_clean(monkeypatch):
     restored = jm.registry.get(j.id)
     assert restored.status == jm.JobStatus.FAILED
     assert "re-run" in (restored.error or "").lower()
+
+
+def test_scan_phase_is_persisted_for_restart_resume(monkeypatch):
+    """The worker persists RUNNING before a job's fn runs; a scan then flips
+    itself to SCANNING. That transition has to reach disk too, or a restart
+    mid-crawl restores the scan as a hard 'submit again' failure instead of the
+    neutral resumable state the SCANNING restore branch is written for."""
+    import threading
+
+    from qobuz_librarian.web import job_persistence
+
+    job_persistence._reset_for_tests()
+    monkeypatch.setattr(job_persistence, "_disabled", False)
+    job_persistence.init()
+
+    jm.start_worker()
+    scanning = threading.Event()
+    release = threading.Event()
+
+    def scan(j):
+        scanning.set()
+        release.wait(5)
+        j.add_candidate("album", "x")
+
+    job = jm.Job(title="mid-crawl", execute_kind="library")
+    jm.submit_scan(job, scan, lambda j, c: None)
+    try:
+        assert scanning.wait(5)
+        row = job_persistence.load_one(job.id)
+        assert row and row["status"] == jm.JobStatus.SCANNING.value
+    finally:
+        release.set()
+    assert _wait_for(lambda: job.status == jm.JobStatus.AWAITING_REVIEW)
+
+
+def test_restore_bounds_in_memory_finished_to_max(monkeypatch):
+    """A busy prior run can leave hundreds of finished rows on disk. Restore
+    keeps only the most-recently-finished MAX_FINISHED in memory; the rest stay
+    on disk for /jobs/{id} rather than all landing on /queue at once."""
+    from qobuz_librarian.web import job_persistence
+
+    job_persistence._reset_for_tests()
+    monkeypatch.setattr(job_persistence, "_disabled", False)
+    job_persistence.init()
+
+    reg = jm.JobRegistry()
+    monkeypatch.setattr(reg, "MAX_FINISHED", 5)
+    monkeypatch.setattr(jm, "registry", reg)
+
+    ids = []
+    for i in range(12):
+        j = jm.Job(title=f"old{i}", status=jm.JobStatus.DONE)
+        j.finished_at = 1000.0 + i           # old0 oldest … old11 newest
+        ids.append(j.id)
+        job_persistence.persist(j)
+
+    jm.restore_jobs({})
+    assert {j.title for j in reg.finished()} == {f"old{i}" for i in range(7, 12)}
+    assert reg.get(ids[0]) is None                      # evicted from memory
+    assert job_persistence.load_one(ids[0]) is not None  # still in the archive
 
 
 def test_dashboard_token_invalid_shows_banner(client, monkeypatch):
