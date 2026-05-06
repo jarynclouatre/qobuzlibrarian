@@ -172,7 +172,13 @@
                 const a = g.getAttribute('data-artist');
                 const sel = 'details[data-artist="' + (window.CSS && CSS.escape ? CSS.escape(a) : a) + '"]';
                 const existing = groupsBox.querySelector(sel);
-                if (existing) { existing.replaceWith(g); } else { groupsBox.appendChild(g); }
+                if (existing) {
+                  existing.replaceWith(g);
+                } else {
+                  g.classList.add('ql-enter');
+                  groupsBox.appendChild(g);
+                  setTimeout(function () { g.classList.remove('ql-enter'); }, 260);
+                }
                 g.querySelectorAll('.cb[data-seq]').forEach(function (cb) {
                   after = Math.max(after, parseInt(cb.dataset.seq, 10));
                 });

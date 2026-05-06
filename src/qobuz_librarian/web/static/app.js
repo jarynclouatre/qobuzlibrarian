@@ -1,35 +1,79 @@
-// CSP-safe htmx hooks. These used to live as hx-on:* attributes inline,
-// but htmx evaluates those via `new Function(...)`, which the page CSP
-// (script-src 'self' 'unsafe-inline', no 'unsafe-eval') rejects.
+// CSP-safe htmx hooks. These used to live as hx-on:* attributes inline, but
+// htmx evaluates those via `new Function(...)`, which the page CSP (script-src
+// 'self' 'unsafe-inline', no 'unsafe-eval') rejects.
 
-// Mark the submit button "Queued" and disable it so a double-click can't
-// queue the same album twice. The download endpoint answers 200 even when
-// it declines (album already owned, already queued) or errors, so key off
-// the genuine "added to queue" success alert rather than the status code —
-// on a decline or error htmx re-enables the button on its own.
-document.addEventListener("htmx:afterRequest", function (evt) {
-  var form = evt.target;
-  if (!form || !form.matches || !form.matches("form[data-queue-button]")) return;
-  if (!evt.detail || !evt.detail.successful) return;
-  var xhr = evt.detail.xhr;
-  if (!xhr || xhr.responseText.indexOf("alert-success") === -1) return;
-  var b = form.querySelector("button[type=submit]");
-  if (!b) return;
-  b.disabled = true;
-  b.textContent = "Queued";
-  b.classList.remove("btn-primary");
-  b.classList.add("btn-ghost", "btn-disabled");
-});
-
-// Flash banners. Every server-rendered alert that was driven by a one-shot
-// query flag (?saved=1, ?approved=1, ?error=…) used to stick to the URL
-// forever — refreshing or sharing the page re-rendered the same banner.
-// Strip the known flash params from the address bar after first paint, and
-// auto-fade success/info banners so they don't dominate the screen.
-// Errors and warnings stay until the user dismisses them (Esc).
 (function () {
+  var REDUCE = window.matchMedia
+    && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  // Collapse an element's height and fade it out, then run `done`. A row
+  // leaving the page — a hidden artist group, a dismissed flash — closes the
+  // gap smoothly instead of blinking out. Measuring the current height first
+  // (auto can't be transitioned) and forcing a reflow before zeroing makes the
+  // transition actually animate. Idempotent; a no-op under reduced-motion.
+  function collapse(el, done) {
+    if (!el || el.dataset.qlCollapsing === "1") return;
+    el.dataset.qlCollapsing = "1";
+    if (REDUCE) { if (done) done(); return; }
+    var h = el.getBoundingClientRect().height;
+    el.style.overflow = "hidden";
+    el.style.height = h + "px";
+    el.style.transition =
+      "height 280ms ease 40ms, opacity 200ms ease, " +
+      "margin 280ms ease 40ms, padding 280ms ease 40ms";
+    void el.offsetHeight;  // force reflow so the start values stick
+    el.style.opacity = "0";
+    el.style.height = "0px";
+    el.style.marginTop = "0";
+    el.style.marginBottom = "0";
+    el.style.paddingTop = "0";
+    el.style.paddingBottom = "0";
+    if (done) setTimeout(done, 320);
+  }
+
+  // Mark the submit button "Queued" and disable it so a double-click can't
+  // queue the same album twice. The download endpoint answers 200 even when
+  // it declines (album already owned, already queued) or errors, so key off
+  // the genuine "added to queue" success alert rather than the status code —
+  // on a decline or error htmx re-enables the button on its own.
+  document.addEventListener("htmx:afterRequest", function (evt) {
+    var form = evt.target;
+    if (!form || !form.matches || !form.matches("form[data-queue-button]")) return;
+    if (!evt.detail || !evt.detail.successful) return;
+    var xhr = evt.detail.xhr;
+    if (!xhr || xhr.responseText.indexOf("alert-success") === -1) return;
+    var b = form.querySelector("button[type=submit]");
+    if (!b) return;
+    b.disabled = true;
+    b.textContent = "Queued";
+    b.classList.remove("btn-primary");
+    b.classList.add("btn-ghost", "btn-disabled");
+  });
+
+  // Hiding a whole artist returns an empty body (the group is removed via an
+  // outerHTML swap). The button carries a swap delay so the node lingers long
+  // enough to collapse it as it leaves. A partial hide returns the trimmed
+  // group instead — let that one swap normally (it just fades via CSS).
+  document.addEventListener("htmx:beforeSwap", function (evt) {
+    var t = evt.detail && evt.detail.target;
+    if (!t || !t.matches || !t.matches("details[data-artist]")) return;
+    if ((evt.detail.serverResponse || "").trim() !== "") return;
+    collapse(t);
+    // The server's qlHidden fires before this delayed swap, so it recounts
+    // with the group still present; htmx's afterSwap doesn't bubble up from a
+    // node being removed. Re-announce once the group is actually gone so the
+    // summary, submit count and empty-state settle on the right numbers.
+    setTimeout(function () {
+      document.body.dispatchEvent(new CustomEvent("qlHidden"));
+    }, 360);
+  });
+
+  // Flash banners. Every server-rendered alert driven by a one-shot query flag
+  // (?saved=1, ?error=…) used to stick to the URL forever — refreshing or
+  // sharing the page re-rendered the same banner. Strip the known flash params
+  // after first paint, and fade banners out so they don't dominate the screen.
   var FLASH_PARAMS = ["approved", "stale", "saved", "queued", "connected",
-                       "unverified", "mode", "error"];
+                      "unverified", "mode", "error"];
   function cleanFlashUrl() {
     if (typeof URL !== "function" || !history.replaceState) return;
     try {
@@ -44,41 +88,23 @@ document.addEventListener("htmx:afterRequest", function (evt) {
       }
     } catch (e) { /* malformed URL — leave it alone */ }
   }
-  function fade(el) {
-    if (!el || el.dataset.flashFading === "1") return;
-    el.dataset.flashFading = "1";
-    // Animate the height and margins down to 0 alongside the opacity so the
-    // content below the banner slides up instead of snapping. Measuring the
-    // current height first (auto can't be transitioned) and forcing a reflow
-    // before changing to 0 makes the transition actually animate.
-    var h = el.getBoundingClientRect().height;
-    el.style.overflow = "hidden";
-    el.style.height = h + "px";
-    el.style.transition =
-      "opacity 200ms, height 280ms ease 80ms, " +
-      "margin 280ms ease 80ms, padding 280ms ease 80ms";
-    void el.offsetHeight;  // force reflow so the start values stick
-    el.style.opacity = "0";
-    el.style.height = "0px";
-    el.style.marginTop = "0";
-    el.style.marginBottom = "0";
-    el.style.paddingTop = "0";
-    el.style.paddingBottom = "0";
-    setTimeout(function () { if (el.parentNode) el.parentNode.removeChild(el); }, 420);
-  }
+  function fade(el) { collapse(el, function () { if (el.parentNode) el.remove(); }); }
   function autoDismissFlashes() {
-    var els = document.querySelectorAll(
-      "[data-flash].alert-success, [data-flash].alert-info");
-    els.forEach(function (el) { setTimeout(function () { fade(el); }, 6000); });
+    // Success/info banners fade on their own; errors/warnings stay until the
+    // user dismisses them (Esc) — except in the toast corner, where a decline
+    // or error from a queue action would otherwise sit there forever.
+    document.querySelectorAll("[data-flash].alert-success, [data-flash].alert-info")
+      .forEach(function (el) { setTimeout(function () { fade(el); }, 6000); });
+    document.querySelectorAll("#download-toast [data-flash]")
+      .forEach(function (el) { setTimeout(function () { fade(el); }, 8000); });
   }
-  // htmx swaps insert flashes after the initial DOMContentLoaded run
-  // (download confirmation toast, search-error swap, etc.) — re-scan
-  // after any swap so those fade too. The fade marker (dataset.flashFading)
-  // makes re-scanning idempotent, so a whole-document rescan is fine.
+  // htmx swaps insert flashes after the initial DOMContentLoaded run (download
+  // toast, search-error swap, etc.) — re-scan after any swap so those fade too.
+  // The collapse marker makes re-scanning idempotent.
   document.addEventListener("htmx:afterSwap", autoDismissFlashes);
-  // Hide every flash, regardless of severity. The job page calls this from
-  // the SSE done/progress handler — once the job moves on, the "queued"
-  // banner is stale even though it's a success.
+  // Hide every flash regardless of severity. The job page calls this from the
+  // SSE done/progress handler — once the job moves on, the "queued" banner is
+  // stale even though it's a success.
   window.qlDismissAllFlashes = function () {
     document.querySelectorAll("[data-flash]").forEach(fade);
   };
