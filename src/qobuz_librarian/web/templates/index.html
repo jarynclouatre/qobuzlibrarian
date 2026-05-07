@@ -118,11 +118,12 @@
 </div>
 {% endif %}
 
-<!-- Hero + search -->
-<section class="text-center pt-6 pb-8">
-  <img src="/static/icon.png" alt="" class="h-16 w-16 rounded-2xl mx-auto mb-4 shadow-lg">
-  <h1 class="text-3xl font-bold text-primary">Qobuz Librarian</h1>
-  <p class="text-base-content/60 mt-1">Build and maintain a complete, lossless library from Qobuz.</p>
+<!-- Hero + search. The navbar already carries the logo + wordmark, so the hero
+     leads with the tagline (as the page heading) over a single logo mark rather
+     than repeating the lockup. -->
+<section class="text-center pt-4 pb-8">
+  <img src="/static/icon.png" alt="" class="h-14 w-14 rounded-2xl mx-auto mb-4 shadow-lg">
+  <h1 class="text-xl sm:text-2xl font-semibold max-w-xl mx-auto text-balance">Build and maintain a complete, lossless library from Qobuz.</h1>
 
   {% if not creds_ok %}
   <a href="/settings" class="btn btn-primary btn-lg mt-6">Set up your Qobuz account</a>
