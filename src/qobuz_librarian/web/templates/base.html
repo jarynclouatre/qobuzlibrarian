@@ -61,6 +61,11 @@
 </head>
 <body class="min-h-screen bg-base-100 flex flex-col">
 
+  <a href="#main-content"
+     class="sr-only focus:not-sr-only focus:absolute focus:z-50 focus:top-3 focus:left-3 btn btn-primary btn-sm">
+    Skip to content
+  </a>
+
   <noscript>
     <div class="bg-error text-error-content px-4 py-2 text-sm text-center">
       Qobuz Librarian needs JavaScript to run. Enable it in your browser
@@ -166,7 +171,7 @@
   {% endif %}
 
   <!-- Main content -->
-  <main class="container mx-auto px-4 py-6 max-w-5xl flex-1 w-full">
+  <main id="main-content" class="container mx-auto px-4 py-6 max-w-5xl flex-1 w-full">
     {% block content %}{% endblock %}
   </main>
 
