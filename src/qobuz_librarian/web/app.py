@@ -666,13 +666,16 @@ def _maybe_auto_check_new_releases():
         _start_new_release_check()
 
 
-def _active_scan(*kinds):
-    """A scan of one of the given execute_kinds that's already pending or
-    in flight, or None. Lets a double-submitted whole-library pass fold onto
-    the one already running instead of stacking a second hours-long job."""
+def _active_scan(*kinds, statuses=("pending", "scanning")):
+    """A job of one of the given execute_kinds in one of ``statuses``, or None —
+    used to fold a double-submitted pass onto the one already in flight instead
+    of stacking duplicate work. Defaults to the scan phase: a scan keeps its
+    execute_kind through the post-review download (which runs as ``running``),
+    so matching only pending/scanning lets a deliberate re-scan still queue
+    behind a batch that's downloading. Run-to-completion jobs with no review
+    (lyrics) pass their own running phase instead."""
     for j in job_mgr.registry.pending_and_running():
-        if (getattr(j, "execute_kind", "") in kinds
-                and j.status.value in ("pending", "scanning", "running")):
+        if getattr(j, "execute_kind", "") in kinds and j.status.value in statuses:
             return j
     return None
 
@@ -1332,7 +1335,7 @@ async def lyrics_scan(request: Request):
     busy = _lock_busy_response(request)
     if busy is not None:
         return busy
-    existing = _active_scan("lyrics")
+    existing = _active_scan("lyrics", statuses=("pending", "running"))
     if existing is not None:
         return RedirectResponse(url=f"/jobs/{existing.id}", status_code=303)
     form = await request.form()

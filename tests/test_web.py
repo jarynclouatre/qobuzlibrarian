@@ -1115,10 +1115,11 @@ def test_start_scan_helpers_dedupe_against_an_active_one(monkeypatch):
     assert len(jm.registry.all()) == 2
 
 
-def test_whole_library_scan_folds_onto_an_active_one(client, monkeypatch):
-    # Double-submitting a slow whole-library scan must reuse the running job,
-    # not stack a second hours-long pass — the library scan already did this;
-    # upgrade/downsample/repair/lyrics/migrate now do too.
+def test_rescan_folds_during_scan_but_queues_during_download(client, monkeypatch):
+    # Double-submitting a slow whole-library scan while it's still crawling must
+    # reuse that job, not stack a second hours-long pass. But once the reviewed
+    # batch is downloading, a deliberate new scan must queue — the executing job
+    # keeps the same execute_kind, so it must not swallow the re-scan.
     import qobuz_librarian.web.app as webapp
     monkeypatch.setattr(webapp.job_mgr, "registry", jm.JobRegistry())
     monkeypatch.setattr(webapp, "_get_token", lambda: "tok")
@@ -1135,7 +1136,12 @@ def test_whole_library_scan_folds_onto_an_active_one(client, monkeypatch):
     assert r.status_code == 303
     assert r.headers["location"] == f"/jobs/{active.id}"
     assert started == []
-    assert len(jm.registry.all()) == 1
+
+    active.status = jm.JobStatus.RUNNING
+    r = client.post("/upgrade", follow_redirects=False)
+    assert r.status_code == 303
+    assert r.headers["location"] != f"/jobs/{active.id}"
+    assert started == [1]
 
 
 def test_navbar_surfaces_a_rejected_token_on_every_page(client, monkeypatch):
