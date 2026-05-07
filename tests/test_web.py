@@ -1138,6 +1138,19 @@ def test_whole_library_scan_folds_onto_an_active_one(client, monkeypatch):
     assert len(jm.registry.all()) == 1
 
 
+def test_navbar_surfaces_a_rejected_token_on_every_page(client, monkeypatch):
+    # A token that 401s mid-session must be visible from any page, not only the
+    # dashboard — the navbar shows a Settings-linked pill.
+    import qobuz_librarian.web.app as webapp
+    monkeypatch.setattr(webapp, "_LOCK_BUSY_PID", None)
+    monkeypatch.setattr(webapp, "_TOKEN_VALID", None)
+    assert "Reconnect Qobuz" not in client.get("/queue").text
+    monkeypatch.setattr(webapp, "_TOKEN_VALID", False)
+    body = client.get("/queue").text
+    assert "Reconnect Qobuz" in body
+    assert 'href="/settings"' in body
+
+
 def test_scan_checkpoint_round_trip_and_kinds_coexist(tmp_path, monkeypatch):
     import qobuz_librarian.config as cfg
     from qobuz_librarian.library import scan_checkpoint

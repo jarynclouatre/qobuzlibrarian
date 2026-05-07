@@ -507,6 +507,12 @@ def _tr(request, name, context, *, status_code=200):
             any(j.status.value in ('running', 'scanning') for j in active),
         )
     context.setdefault("cli_mode", _CLI_MODE)
+    # Standing health the navbar surfaces on every page, not just the dashboard:
+    # a rejected token (auth lost mid-session) and a lock held by another
+    # instance both stop downloads, and a user on Search/Queue shouldn't only
+    # find out when a job fails. Both are cheap module-level flags — no I/O.
+    context.setdefault("health_token_invalid", _TOKEN_VALID is False)
+    context.setdefault("health_lock_busy", bool(_LOCK_BUSY_PID))
     return templates.TemplateResponse(request=request, name=name,
                                       context=context, status_code=status_code)
 
