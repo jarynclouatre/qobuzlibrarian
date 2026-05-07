@@ -16,7 +16,7 @@
 </p>
 
 {% if have_lyrics %}
-<form action="/lyrics" method="post">
+<form action="/lyrics" method="post" data-busy-submit>
   <input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}">
   <div class="space-y-4 mb-6 max-w-xl">
     <div class="flex items-start gap-3">
@@ -44,8 +44,7 @@
 </form>
 {% else %}
 <div class="alert alert-warning">
-  <span>Lyric fetching isn't available — the <span class="font-mono">syncedlyrics</span>
-    provider library isn't installed in this build.</span>
+  <span>Lyric fetching isn't available in this build.</span>
 </div>
 {% endif %}
 

@@ -49,7 +49,10 @@
       <input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}">
       {% include "_review_candidates.html" %}
       <div class="flex flex-wrap items-center gap-2 mt-4">
-        <button type="submit" id="review-submit" class="btn btn-primary"{% if scanning %} disabled{% endif %}>{{ job.review_verb }}<span data-count></span> selected</button>
+        <button type="submit" id="review-submit" class="btn btn-primary"{% if scanning %} disabled{% endif %}
+          {%- if job.execute_kind == 'downsample' %} onclick="return confirm('Downsample the selected albums now? Each file is rewritten in place at CD rate — the hi-res original is not kept and this cannot be undone.')"
+          {%- elif job.execute_kind == 'migration' and job.review_verb == 'Move' %} onclick="return confirm('Move the selected files now? This relocates your originals instead of copying them, and removes the folders it empties.')"
+          {%- endif %}>{{ job.review_verb }}<span data-count></span> selected</button>
         <button type="submit" formaction="/jobs/{{ job.id }}/cancel" class="btn btn-ghost">Cancel</button>
         {% if job.execute_kind == 'upgrade' %}
         <a href="/upgrade/hidden" class="btn btn-ghost btn-sm sm:ml-auto">Hidden upgrades</a>
@@ -240,7 +243,7 @@
         {# The phase the flow reports ("Fetching lyrics", "Downsampling", …) is
            the accurate label; fall back to a neutral word until the first tick
            lands so a non-download job never reads "Downloading". #}
-        <span id="job-activity">{% if s == 'scanning' %}{{ job.progress_phase or 'Scanning' }}{% elif s == 'running' %}{{ job.progress_phase or 'Working' }}{% else %}Queued{% endif %}</span>
+        <span id="job-activity" aria-live="polite">{% if s == 'scanning' %}{{ job.progress_phase or 'Scanning' }}{% elif s == 'running' %}{{ job.progress_phase or 'Working' }}{% else %}Queued{% endif %}</span>
         {% if job.cancel_requested %}<span class="badge badge-ghost badge-sm ml-2">stopping</span>{% endif %}
         <span id="sse-reconnect" class="badge badge-warning badge-sm ml-2 hidden">connection lost — reconnecting…</span>
       </p>
@@ -294,7 +297,7 @@
       src.addEventListener('progress', e => {
         let p; try { p = JSON.parse(e.data); } catch (_) { return; }
         if (window.qlDismissAllFlashes) { window.qlDismissAllFlashes(); }
-        if (activity && p.phase) activity.textContent = p.phase;
+        if (activity && p.phase && activity.textContent !== p.phase) activity.textContent = p.phase;
         card.classList.remove('hidden');
         label.textContent = p.phase || 'Working';
         let ct = p.total > 0 ? p.current + ' / ' + p.total : (p.current ? String(p.current) : '');

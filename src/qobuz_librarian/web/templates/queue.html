@@ -17,7 +17,7 @@
     <form action="/queue/clear" method="post">
       <input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}">
       <button type="submit" class="btn btn-sm btn-ghost"
-              onclick="return confirm('Clear completed job history?')">Clear history</button>
+              onclick="return confirm('Clear the completed jobs from this list?')">Clear completed</button>
     </form>
     {% endif %}
   </div>
