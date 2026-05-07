@@ -50,6 +50,12 @@
 [data-theme="night"] {
   --color-primary: oklch(79% 0.134 182);
   --color-primary-content: oklch(21% 0.035 196);
+  /* Night's stock body text sits around 84% lightness, which left the dimmed
+     (/50–/60) captions well under WCAG AA. Lifting it to 95% crisps the primary
+     text and rides the muted scale up so /50–/60 clear AA (the /40 incidentals —
+     timestamps, version — land at AA-large, the ceiling for opacity-muting on
+     these backgrounds). */
+  --color-base-content: oklch(95% 0.012 255);
 }
 
 /* Hiding an artist group fades it while htmx swaps it out; app.js collapses
