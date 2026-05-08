@@ -468,6 +468,8 @@ def execute_albums(job, chosen, token):
         log.info(label)
         try:
             full = get_album(album_id, token)
+        except (AuthLost, QobuzUnavailable):
+            raise
         except Exception as e:
             log.info(f"  could not fetch album {album_id}: {e}")
             failed += 1
@@ -476,6 +478,8 @@ def execute_albums(job, chosen, token):
             with staging_lock():
                 result = process_album(full, args, allow_force=False,
                                        already_confirmed=True, token=token)
+        except (AuthLost, QobuzUnavailable):
+            raise
         except Exception as e:
             log.info(f"  failed: {e}")
             failed += 1
@@ -616,6 +620,8 @@ def execute_upgrades(job, chosen, token):
                  f"{cand.get('title') or '?'}")
         try:
             album = get_album(album_id, token)
+        except (AuthLost, QobuzUnavailable):
+            raise
         except Exception as e:
             log.info(f"  could not fetch album {album_id}: {e}")
             failed += 1
@@ -629,6 +635,8 @@ def execute_upgrades(job, chosen, token):
                 result = process_album(album, args, allow_force=False,
                                        already_confirmed=True,
                                        upgrade_only=True, token=token)
+        except (AuthLost, QobuzUnavailable):
+            raise
         except Exception as e:
             log.info(f"  failed: {e}")
             failed += 1
@@ -916,6 +924,8 @@ def execute_repairs(job, chosen, token):
                     result = repair_album_dir(Path(p["album_dir"]),
                                               p["verified_truncated"],
                                               p["artist_name"], args, token)
+        except (AuthLost, QobuzUnavailable):
+            raise
         except Exception as e:
             log.info(f"  failed: {e}")
             failed += 1

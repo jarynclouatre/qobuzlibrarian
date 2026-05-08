@@ -696,6 +696,25 @@ class TestExecuteSuccessCounting:
             flows.execute_upgrades(jm.Job(title="t"), [cand], "tok")
         assert any("0/1" in r.message for r in caplog.records)
 
+    def test_execute_propagates_auth_loss_instead_of_swallowing_it(self, monkeypatch):
+        # A token that drops mid-batch must abort so the worker shows the
+        # "token expired" banner — not be caught as one album's failure while
+        # every later album fails the same way and the job still ends "done".
+        from qobuz_librarian.api.auth import AuthLost
+        from qobuz_librarian.web import flows
+
+        monkeypatch.setattr(flows, "get_album",
+                            lambda aid, tok: {"id": aid, "title": "T"})
+
+        def expired(*a, **k):
+            raise AuthLost("401")
+
+        monkeypatch.setattr("qobuz_librarian.modes.process.process_album", expired)
+        monkeypatch.setattr("qobuz_librarian.config.ARTIST_API_DELAY", 0)
+
+        with pytest.raises(AuthLost):
+            flows.execute_albums(jm.Job(title="t"), [self._candidate()], "tok")
+
 
 # ── Settings diagnostics card ────────────────────────────────────────
 
