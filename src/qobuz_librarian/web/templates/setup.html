@@ -5,6 +5,17 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Set up login — Qobuz Librarian</title>
   <link rel="icon" type="image/png" href="/static/icon.png">
+  <script>
+    (function () {
+      try {
+        var t = localStorage.getItem('ql-theme');
+        if (t !== 'night' && t !== 'winter') {
+          t = matchMedia('(prefers-color-scheme: light)').matches ? 'winter' : 'night';
+        }
+        document.documentElement.setAttribute('data-theme', t);
+      } catch (e) {}
+    })();
+  </script>
   <link href="/static/dist/app.css?v={{ app_version }}" rel="stylesheet">
 </head>
 <body class="min-h-screen bg-base-100 flex items-center justify-center px-4 py-8">

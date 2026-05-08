@@ -86,6 +86,20 @@
     }, 0);
   });
 
+  // Light/dark toggle. The pre-paint init in base.html sets the initial theme;
+  // this flips it on click, remembers the choice, and keeps the mobile
+  // address-bar colour in step.
+  document.addEventListener("click", function (evt) {
+    var btn = evt.target.closest && evt.target.closest("#theme-toggle");
+    if (!btn) return;
+    var next = document.documentElement.getAttribute("data-theme") === "winter"
+      ? "night" : "winter";
+    document.documentElement.setAttribute("data-theme", next);
+    try { localStorage.setItem("ql-theme", next); } catch (e) { /* private mode */ }
+    var m = document.querySelector('meta[name="theme-color"]');
+    if (m) m.setAttribute("content", next === "winter" ? "#ffffff" : "#1d232a");
+  });
+
   // Flash banners. Every server-rendered alert driven by a one-shot query flag
   // (?saved=1, ?error=…) used to stick to the URL forever — refreshing or
   // sharing the page re-rendered the same banner. Strip the known flash params

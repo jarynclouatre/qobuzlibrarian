@@ -2,7 +2,7 @@
 @config "../../../../../tailwind.config.js";
 
 @plugin "daisyui" {
-  themes: night --default;
+  themes: night --default, winter;
 }
 
 /* Inter, vendored locally (variable, weights 400–700) so the UI keeps its type
@@ -57,6 +57,64 @@
      these backgrounds). */
   --color-base-content: oklch(95% 0.012 255);
 }
+
+/* Light theme: a clean cool base (winter) pulled onto the same brand teal.
+   The accent is darkened vs the dark theme so white button text and teal links
+   clear AA on a near-white field (~5:1); winter's body text is darkened so the
+   muted captions ride up; and its stock info is a pale cyan that's unreadable
+   as text, so it's pulled to a real blue that works for both text-info and the
+   info badges/buttons. */
+[data-theme="winter"] {
+  --color-primary: oklch(50% 0.105 187);
+  --color-primary-content: oklch(99% 0.01 187);
+  --color-base-content: oklch(20% 0.015 255);
+  --color-info: oklch(52% 0.14 245);
+  --color-info-content: oklch(99% 0.01 245);
+}
+
+/* Log/scan console — a deliberate terminal look. Dark in both themes would read
+   as washed-out on a light page, so it follows the theme: a GitHub-style light
+   code block under winter, the dark console under night. */
+.log-console {
+  font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+  font-size: 0.78rem;
+  line-height: 1.5;
+  background: #0d1117;
+  color: #c9d1d9;
+  border-radius: 0.5rem;
+  padding: 1rem;
+  overflow-y: auto;
+  max-height: min(60vh, 400px);
+  overscroll-behavior: contain;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.log-console:empty::before { content: "Waiting for output…"; color: #484f58; }
+[data-theme="winter"] .log-console {
+  background: #f6f8fa;
+  color: #1f2328;
+  border: 1px solid #d0d7de;
+}
+[data-theme="winter"] .log-console:empty::before { color: #8c959f; }
+
+/* Quality badges read as coloured text + border on a transparent badge, so the
+   hues need enough contrast against each theme's surface. */
+.quality-hires { color: #7ee787; }
+.quality-cd    { color: #79c0ff; }
+.quality-lossy { color: #f78166; }
+[data-theme="winter"] .quality-hires { color: #15803d; }
+[data-theme="winter"] .quality-cd    { color: #1d4ed8; }
+[data-theme="winter"] .quality-lossy { color: #c2410c; }
+
+/* htmx spinners must not reserve layout while idle — only occupy space during
+   an in-flight request. */
+.htmx-indicator { display: none; }
+.htmx-request .htmx-indicator,
+.htmx-request.htmx-indicator { display: inline-block; }
+
+/* Theme toggle shows the destination: a sun while dark, a moon while light. */
+[data-theme="night"] .theme-when-light { display: none; }
+[data-theme="winter"] .theme-when-dark { display: none; }
 
 /* Hiding an artist group fades it while htmx swaps it out; app.js collapses
    its height in the same window so the rows below slide up to fill the gap
