@@ -224,6 +224,65 @@ def prune_finished(keep: int) -> None:
             _log.debug("prune_finished(%d) failed: %s", keep, e)
 
 
+_TERMINAL_SQL = "status IN ('done', 'failed', 'canceled')"
+
+
+def history_count() -> int:
+    """How many finished jobs are on disk — for paginating the History view."""
+    with _lock:
+        conn = _get_conn()
+        if conn is None:
+            return 0
+        try:
+            return conn.execute(
+                f"SELECT COUNT(*) FROM jobs WHERE {_TERMINAL_SQL}").fetchone()[0]
+        except sqlite3.Error:
+            return 0
+
+
+def history_page(limit: int, offset: int) -> list[dict]:
+    """A page of finished jobs, newest first — the browsable record behind the
+    History view. Lighter than ``load_all`` (no candidates/args): just what a
+    history row shows, plus the id to open the full job. The ``id`` tiebreaker
+    keeps paging stable when finish times collide."""
+    with _lock:
+        conn = _get_conn()
+        if conn is None:
+            return []
+        try:
+            rows = conn.execute(
+                "SELECT id, title, artist, album_id, status, error, summary, "
+                "execute_kind, created_at, finished_at FROM jobs "
+                f"WHERE {_TERMINAL_SQL} "
+                "ORDER BY COALESCE(finished_at, created_at) DESC, id DESC "
+                "LIMIT ? OFFSET ?",
+                (limit, offset),
+            ).fetchall()
+        except sqlite3.Error as e:
+            _log.debug("history_page failed: %s", e)
+            return []
+    return [{
+        "id": r[0], "title": r[1] or "", "artist": r[2] or "",
+        "album_id": r[3] or "", "status": r[4], "error": r[5],
+        "summary": r[6] or "", "execute_kind": r[7] or "",
+        "created_at": r[8], "finished_at": r[9],
+    } for r in rows]
+
+
+def clear_history() -> None:
+    """Delete every finished job from disk — the user clearing the History
+    record. In-flight jobs are untouched."""
+    with _lock:
+        conn = _get_conn()
+        if conn is None:
+            return
+        try:
+            conn.execute(f"DELETE FROM jobs WHERE {_TERMINAL_SQL}")
+            conn.commit()
+        except sqlite3.Error as e:
+            _log.debug("clear_history failed: %s", e)
+
+
 def load_all() -> list[dict]:
     """Return every persisted job as a plain dict — caller rehydrates into
     a Job. Returns [] when the db can't be opened."""

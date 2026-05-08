@@ -1605,19 +1605,49 @@ async def job_cancel(request: Request, job_id: str):
 
 @app.get("/queue", response_class=HTMLResponse)
 async def queue_page(request: Request, error: str = ""):
+    """The Queue tab: jobs in flight (pending / scanning / running / awaiting
+    review). Finished jobs live in the History tab, which reads the durable
+    archive rather than the capped in-memory set."""
     return _tr(request, "queue.html", {
         "pending": job_mgr.registry.pending_and_running(),
-        "finished": job_mgr.registry.finished(),
         "error": error[:200],
         "page": "queue",
+        "active_tab": "queue",
+    })
+
+
+_HISTORY_PER_PAGE = 30
+
+
+@app.get("/queue/history", response_class=HTMLResponse)
+async def queue_history(request: Request, p: int = 1):
+    """The History tab: every finished job, newest first, paged from jobs.db so
+    the record outlives the in-memory cap (which only the Queue/SSE views use)."""
+    from datetime import datetime
+
+    from qobuz_librarian.web import job_persistence
+    p = max(1, p)
+    total = job_persistence.history_count()
+    pages = max(1, (total + _HISTORY_PER_PAGE - 1) // _HISTORY_PER_PAGE)
+    p = min(p, pages)
+    rows = job_persistence.history_page(_HISTORY_PER_PAGE, (p - 1) * _HISTORY_PER_PAGE)
+    for r in rows:
+        ts = r.get("finished_at") or r.get("created_at")
+        r["when"] = datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M") if ts else ""
+    return _tr(request, "history.html", {
+        "page": "queue", "active_tab": "history",
+        "jobs": rows, "cur_page": p, "pages": pages, "total": total,
     })
 
 
 @app.post("/queue/clear")
 async def queue_clear():
-    """Drop finished/canceled/failed jobs from the registry."""
+    """Clear the History: drop finished/canceled/failed jobs from the registry
+    and the full on-disk archive. In-flight jobs are untouched."""
+    from qobuz_librarian.web import job_persistence
     job_mgr.registry.clear_finished()
-    return RedirectResponse(url="/queue", status_code=303)
+    job_persistence.clear_history()
+    return RedirectResponse(url="/queue/history", status_code=303)
 
 
 @app.post("/queue/cancel-pending")

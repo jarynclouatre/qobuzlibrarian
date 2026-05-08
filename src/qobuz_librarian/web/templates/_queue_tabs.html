@@ -1,0 +1,12 @@
+<div role="tablist" class="tabs mb-6 text-base font-medium border-b border-base-300">
+  <a role="tab" href="/queue"
+     class="tab {% if active_tab == 'queue' %}tab-active{% endif %}"
+     {% if active_tab == 'queue' %}aria-current="page"{% endif %}>
+    Queue
+    {% set _qbadge = pending_job_count or 0 %}
+    {% if _qbadge > 0 %}<span class="badge {% if queue_has_running %}badge-warning{% else %}badge-primary{% endif %} badge-sm ml-1.5">{% if _qbadge > 99 %}99+{% else %}{{ _qbadge }}{% endif %}</span>{% endif %}
+  </a>
+  <a role="tab" href="/queue/history"
+     class="tab {% if active_tab == 'history' %}tab-active{% endif %}"
+     {% if active_tab == 'history' %}aria-current="page"{% endif %}>History</a>
+</div>

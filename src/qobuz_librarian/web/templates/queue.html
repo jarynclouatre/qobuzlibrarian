@@ -3,25 +3,18 @@
 {% block content %}
 <div id="queue-body">
 
-<div class="flex items-center justify-between mb-6 gap-2 flex-wrap">
-  <h1 class="text-2xl font-bold">Download queue</h1>
-  <div class="flex gap-2 flex-wrap">
-    {% if pending %}
-    <form action="/queue/cancel-pending" method="post">
-      <input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}">
-      <button type="submit" class="btn btn-sm btn-ghost"
-              onclick="return confirm('Cancel everything that is queued, running, or waiting for your review? Any unreviewed scan results are discarded.')">Cancel all jobs</button>
-    </form>
-    {% endif %}
-    {% if finished %}
-    <form action="/queue/clear" method="post">
-      <input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}">
-      <button type="submit" class="btn btn-sm btn-ghost"
-              onclick="return confirm('Clear the completed jobs from this list?')">Clear completed</button>
-    </form>
-    {% endif %}
-  </div>
+{% set active_tab = 'queue' %}
+{% include "_queue_tabs.html" %}
+
+{% if pending %}
+<div class="flex justify-end mb-4">
+  <form action="/queue/cancel-pending" method="post">
+    <input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}">
+    <button type="submit" class="btn btn-sm btn-ghost"
+            onclick="return confirm('Cancel everything that is queued, running, or waiting for your review? Any unreviewed scan results are discarded.')">Cancel all jobs</button>
+  </form>
 </div>
+{% endif %}
 
 {% if error %}
 <div class="alert alert-error mb-4" data-flash><span>{{ error }} — refresh the queue or check Settings.</span></div>
@@ -141,59 +134,8 @@
   <svg xmlns="http://www.w3.org/2000/svg" class="h-12 w-12 mx-auto mb-3 opacity-30" fill="none" viewBox="0 0 24 24" stroke="currentColor">
     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/>
   </svg>
-  <p>Queue is empty. <a href="/search" class="link">Search for something to download.</a></p>
-</div>
-{% endif %}
-
-<!-- Completed -->
-{% if finished %}
-<div class="divider text-base-content/40 text-sm">Completed</div>
-<div class="space-y-2">
-  {% for job in finished | reverse %}
-  <div class="flex flex-wrap items-center gap-x-3 gap-y-1 px-4 py-3 bg-base-200 rounded-lg">
-    <div class="shrink-0">
-      {% if job.status.value == 'done' %}
-        <span class="text-success text-lg">✓</span>
-      {% elif job.status.value == 'canceled' %}
-        <span class="text-base-content/40 text-lg" title="Cancelled">⊘</span>
-      {% else %}
-        <span class="text-error text-lg">✗</span>
-      {% endif %}
-    </div>
-    <div class="min-w-0 flex-1">
-      <p class="font-medium truncate"><a href="/jobs/{{ job.id }}" class="link link-hover">{% if job.artist %}{{ job.artist }} — {% endif %}{{ job.title }}</a></p>
-      {% if job.error %}
-      <p class="text-xs text-error/80 truncate">{{ job.error }}</p>
-      {% endif %}
-    </div>
-    {# On a phone the timestamp + actions wrap to their own right-aligned line so
-       a long title isn't squeezed to nothing; on wider screens they stay inline. #}
-    <div class="flex items-center gap-2 w-full sm:w-auto justify-end">
-      <span class="text-xs text-base-content/40 tabular-nums">{{ job.finished_at_str }}</span>
-      {% if job.status.value == 'failed' and job.album_id %}
-      <form action="/jobs/{{ job.id }}/retry" method="post" class="shrink-0">
-        <input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}">
-        <button type="submit" class="btn btn-xs btn-ghost" title="Retry download">Retry</button>
-      </form>
-      {% endif %}
-      <button class="btn btn-xs btn-ghost" aria-expanded="false"
-              aria-controls="hist-{{ job.id }}"
-              onclick="const e=document.getElementById('hist-{{ job.id }}');e.classList.toggle('hidden');this.setAttribute('aria-expanded',!e.classList.contains('hidden'))">
-        Log
-      </button>
-    </div>
-  </div>
-  <div id="hist-{{ job.id }}" class="hidden px-2 pb-2">
-    {% if job.log_lines %}
-    <div class="log-console" style="max-height:200px">
-      {%- for line in job.log_lines %}{{ line }}
-{% endfor -%}
-    </div>
-    {% else %}
-    <p class="text-sm text-base-content/40 px-2">No log output was retained for this job.</p>
-    {% endif %}
-  </div>
-  {% endfor %}
+  <p>Queue is empty. <a href="/search" class="link">Search for something to download.</a>
+    Finished jobs move to <a href="/queue/history" class="link">History</a>.</p>
 </div>
 {% endif %}
 

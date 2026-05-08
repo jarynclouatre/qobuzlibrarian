@@ -971,6 +971,40 @@ def test_job_page_renders_archived_job_from_sqlite_after_eviction(client):
             job_persistence._conn = None
 
 
+def test_history_lists_finished_jobs_newest_first(client):
+    """Finished jobs live in the durable archive, not the capped in-memory set —
+    the History view pages them newest-first and offers a retry on a failure."""
+    from qobuz_librarian.web import job_persistence
+
+    job_persistence._reset_for_tests()
+    job_persistence.init()
+    try:
+        older = jm.Job(title="Older Done", status=jm.JobStatus.DONE)
+        older.finished_at = 1000.0
+        newer = jm.Job(title="Newer Failed", artist="Boards of Canada",
+                       status=jm.JobStatus.FAILED)
+        newer.finished_at = 2000.0
+        newer.album_id = "777"
+        newer.error = "import failed"
+        for j in (older, newer):
+            job_persistence.persist(j)
+
+        r = client.get("/queue/history")
+        assert r.status_code == 200
+        t = r.text
+        assert "Older Done" in t and "Newer Failed" in t
+        assert t.index("Newer Failed") < t.index("Older Done")  # newest first
+        assert f"/jobs/{newer.id}/retry" in t                   # retry on failure
+    finally:
+        job_persistence._disabled = True
+        if job_persistence._conn is not None:
+            try:
+                job_persistence._conn.close()
+            except Exception:
+                pass
+            job_persistence._conn = None
+
+
 def test_review_list_groups_candidates_by_artist(client):
     """The review list renders one collapsed section per artist with its album
     count, keeps a per-group select-all, and drops no candidate id."""
