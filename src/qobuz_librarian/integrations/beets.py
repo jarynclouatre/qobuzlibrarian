@@ -402,6 +402,27 @@ def _wait_or_idle_kill(proc, last_output):
             # still running and recently active (or guard disabled) → wait
 
 
+def _count_audio_under(paths):
+    """Total audio files under the given import paths, ignoring the parked-retry
+    subtree. beets imports by moving files into the library, so a before/after
+    count tells a real import (the staged tracks left) from an exit-0 run that
+    moved nothing."""
+    exts = set(cfg.AUDIO_EXTS)
+    n = 0
+    for p in paths:
+        root = Path(p)
+        if not root.exists():
+            continue
+        try:
+            for f in root.rglob("*"):
+                if (f.is_file() and f.suffix.lower() in exts
+                        and not _under_retry_dir(f)):
+                    n += 1
+        except OSError:
+            continue
+    return n
+
+
 def _beets_direct(override_path, cleanup_fn, paths=None):
     """Call ``beet import`` as a direct subprocess (bundled mode), scoped to
     the given paths (default: whole STAGING_DIR for back-compat). Returns
@@ -410,6 +431,7 @@ def _beets_direct(override_path, cleanup_fn, paths=None):
     from a permanent failure."""
     if not paths:
         paths = [str(cfg.STAGING_DIR)]
+    audio_before = _count_audio_under(paths)
     cmd = ["beet"]
     if override_path:
         cmd += ["-c", str(override_path)]
@@ -507,10 +529,14 @@ def _beets_direct(override_path, cleanup_fn, paths=None):
     full_out = "".join(out_lines)
     cleanup_fn()
 
-    skipped_silently = (
-        proc.returncode == 0
-        and ("No files imported" in full_out or "Skipping." in full_out)
-    )
+    # beets moves audio out of staging into the library, so the honest success
+    # signal is whether the staged tracks actually left — not a phrase in beets'
+    # output. beets prints "Skipping." per item (a duplicate, an unreadable
+    # file), so matching that text flagged a whole album failed when a single
+    # track was skipped; an exit-0 run that moved nothing is the real silent skip.
+    audio_after = _count_audio_under(paths)
+    moved_any = audio_before > 0 and audio_after < audio_before
+    imported_nothing = proc.returncode == 0 and audio_before > 0 and not moved_any
 
     clear_scan_caches()
 
@@ -521,11 +547,15 @@ def _beets_direct(override_path, cleanup_fn, paths=None):
             try: _d.rmdir()
             except OSError: pass
 
-    if proc.returncode == 0 and not skipped_silently:
+    if proc.returncode == 0 and not imported_nothing:
         log.info(fmt(C.GREEN, "  ✓  beets import succeeded."))
+        if audio_after:
+            log.info(fmt(C.GRAY,
+                f"     {audio_after} staged track(s) weren't imported "
+                "(likely duplicates or unreadable); left in staging."))
         return True, "ok"
-    if skipped_silently:
-        log.info(fmt(C.RED, "  ✗  beets exited 0 but imported nothing (silent skip)."))
+    if imported_nothing:
+        log.info(fmt(C.RED, "  ✗  beets exited 0 but moved nothing into the library."))
         log.info(fmt(C.GRAY, "     Files remain in staging. Try manually:"))
         log.info(fmt(C.GRAY, f"     {' '.join(cmd)}"))
         _report_staging_remnants()
@@ -590,6 +620,65 @@ def _duplicate_album_dirs(listing):
             if len(rows) > 1 and len(set(rows)) == 1]
 
 
+def _untracked_reimport_file():
+    return cfg.DATA_DIR / ".beets_untracked_reimport"
+
+
+def _park_untracked_for_reimport(path):
+    """Record a library folder that a consolidation re-import left untracked in
+    beets (remove succeeded, re-import failed — usually a transient DB lock), so
+    the next consolidation pass retries tracking it. The audio is safe on disk;
+    this only gets it back into the beets database."""
+    f = _untracked_reimport_file()
+    try:
+        existing = set()
+        if f.exists():
+            existing = {ln.strip() for ln in f.read_text(encoding="utf-8").splitlines()
+                        if ln.strip()}
+        existing.add(str(path))
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text("\n".join(sorted(existing)) + "\n", encoding="utf-8")
+    except OSError:
+        pass
+
+
+def _reimport_untracked_library_dirs(base, beet_env, idle):
+    """Retry `beet import -A` on library folders a prior consolidation stranded.
+    Drops each path that now tracks (or no longer exists); keeps the ones still
+    failing for the next pass. Mirrors the `.beets_retry/` guarantee for the
+    library-side strand the remove+import dance can leave behind."""
+    f = _untracked_reimport_file()
+    if not f.exists():
+        return
+    try:
+        paths = [ln.strip() for ln in f.read_text(encoding="utf-8").splitlines()
+                 if ln.strip()]
+    except OSError:
+        return
+    still_failing = []
+    for p in paths:
+        if not Path(p).exists():
+            continue  # folder deleted/moved since — nothing left to track
+        try:
+            imp = subprocess.run(base + ["import", "-A", p], capture_output=True,
+                                 text=True, env=beet_env, timeout=idle)
+        except (OSError, subprocess.SubprocessError):
+            still_failing.append(p)
+            continue
+        if imp.returncode == 0:
+            log.info(fmt(C.GREEN,
+                f"  ✓  Re-tracked a previously-stranded album: {Path(p).name}"))
+        else:
+            still_failing.append(p)
+    try:
+        if still_failing:
+            f.write_text("\n".join(sorted(set(still_failing))) + "\n", encoding="utf-8")
+        else:
+            f.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
 def _consolidate_duplicate_albums():
     """Fold any album folder that beets split into several album rows into one.
 
@@ -619,17 +708,31 @@ def _consolidate_duplicate_albums():
         except OSError:
             pass
 
+    # Retry anything a previous pass stranded before reading the library, so a
+    # transient failure self-heals on the next run rather than lingering.
+    _reimport_untracked_library_dirs(base, beet_env, idle)
+
     try:
-        listing = subprocess.run(
+        listed = subprocess.run(
             base + ["ls", "-a", "-f",
                     f"$path{_ALBUM_FIELD_SEP}$albumartist{_ALBUM_FIELD_SEP}$album"],
             capture_output=True, text=True, env=beet_env, timeout=idle,
-        ).stdout
+        )
     except (OSError, subprocess.SubprocessError):
         _drop_override()
         return
+    # A nonzero exit (locked DB, a config/plugin error) yields empty stdout that
+    # would otherwise read as "no duplicates" and skip the fold silently.
+    if listed.returncode != 0:
+        log.info(fmt(C.YELLOW,
+            f"  ⚠  Couldn't read the beets library to fold duplicates "
+            f"(beet ls exited {listed.returncode}); skipping this run."))
+        if listed.stderr.strip():
+            vlog(f"beet ls stderr: {listed.stderr.strip()[:500]}")
+        _drop_override()
+        return
 
-    dup_dirs = _duplicate_album_dirs(listing)
+    dup_dirs = _duplicate_album_dirs(listed.stdout)
 
     if dup_dirs:
         log.info(fmt(C.GRAY,
@@ -667,12 +770,13 @@ def _consolidate_duplicate_albums():
                                      capture_output=True, text=True,
                                      env=beet_env, timeout=idle)
             if imp.returncode != 0:
-                log.info(fmt(C.RED + C.BOLD,
-                    f"  ✗  Album left UNTRACKED in beets after de-duplicating: {d}\n"
-                    f"     (re-import exited {imp.returncode} twice — usually a "
-                    f"transient DB lock). The files are on disk but absent from "
-                    f"the library. Recover by hand with:\n"
-                    f"       beet import -A \"{d}\""))
+                _park_untracked_for_reimport(d)
+                log.info(fmt(C.YELLOW,
+                    f"  ⚠  {d} couldn't be re-tracked in beets after "
+                    f"de-duplicating (re-import exited {imp.returncode} twice — "
+                    f"usually a transient DB lock). The files are safe on disk; "
+                    f"the next download run retries this automatically. To do it "
+                    f"now: beet import -A \"{d}\""))
         except (OSError, subprocess.SubprocessError) as e:
             log.info(fmt(C.YELLOW,
                 f"  ⚠  Couldn't tidy duplicate entries for {d} ({e}); "

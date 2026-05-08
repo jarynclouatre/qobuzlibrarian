@@ -369,43 +369,50 @@ def test_beets_direct_kills_an_idle_import(monkeypatch):
     assert killed == [True] and cleaned == [True]
 
 
-def test_beets_direct_sets_beetsdir_and_catches_silent_skip(monkeypatch):
+def test_beets_direct_detects_silent_skip_by_unmoved_audio(monkeypatch, tmp_path):
     from qobuz_librarian import config as cfg
     from qobuz_librarian.integrations import beets
     captured_env = {}
 
-    class OkProc:
-        stdout = iter(())
-        returncode = 0
+    class _Proc:
+        def __init__(self, lines=(), on_wait=None):
+            self.stdout = iter(lines)
+            self.returncode = 0
+            self._on_wait = on_wait
 
         def wait(self, timeout=None):
+            if self._on_wait:
+                self._on_wait()
             return 0
 
         def kill(self):
             pass
 
-    def fake_popen(*args, **kwargs):
-        captured_env.update(kwargs.get("env") or {})
-        return OkProc()
+    def _popen_returning(proc):
+        def _popen(*args, **kwargs):
+            captured_env.update(kwargs.get("env") or {})
+            return proc
+        return _popen
 
-    monkeypatch.setattr(subprocess, "Popen", fake_popen)
     monkeypatch.setattr(beets, "clear_scan_caches", lambda: None)
-    beets._beets_direct(None, lambda: None)
+    album = tmp_path / "Artist - Album"
+    album.mkdir()
+    track = album / "01.flac"
+    track.write_bytes(b"flac-bytes")
+
+    # beets moves the staged track into the library (here, deletes it) and
+    # prints a per-item "Skipping." for a duplicate. The album still imported,
+    # so the skip line must not flip the result to failure.
+    monkeypatch.setattr(subprocess, "Popen",
+                        _popen_returning(_Proc(["Skipping.\n"], track.unlink)))
+    ok, kind = beets._beets_direct(None, lambda: None, [str(album)])
+    assert ok is True and kind == "ok"
     assert captured_env.get("BEETSDIR") == str(cfg.BEETS_CONFIG_DIR)
 
-    # A "Skipping." line means beets silently declined the import — treat as error.
-    class SkippingProc:
-        stdout = iter(["Skipping.\n"])
-        returncode = 0
-
-        def wait(self, timeout=None):
-            return 0
-
-        def kill(self):
-            pass
-
-    monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: SkippingProc())
-    ok, kind = beets._beets_direct(None, lambda: None)
+    # beets exits 0 but moves nothing out of staging — the real silent skip.
+    track.write_bytes(b"flac-bytes")
+    monkeypatch.setattr(subprocess, "Popen", _popen_returning(_Proc()))
+    ok, kind = beets._beets_direct(None, lambda: None, [str(album)])
     assert ok is False and kind == "error"
 
 
