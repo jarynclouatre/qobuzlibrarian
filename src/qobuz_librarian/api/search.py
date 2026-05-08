@@ -82,7 +82,12 @@ def get_album(album_id, token):
         return cached
     album = qobuz_get("album/get", {"album_id": album_id, "extra": "track_ids"}, token)
     album = _normalize_album_fields(album)
-    album_cache.put(album_id, album)
+    # Don't cache a track-less response. The album cache has no TTL, so a
+    # transient/partial 200 with an empty tracks block would otherwise report
+    # the album as empty forever; serve it this once but only persist a real
+    # track list.
+    if (album.get("tracks") or {}).get("items"):
+        album_cache.put(album_id, album)
     return album
 
 

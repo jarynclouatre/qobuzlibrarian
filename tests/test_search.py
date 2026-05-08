@@ -122,6 +122,28 @@ def test_get_album_cached_by_id(tmp_path, monkeypatch):
         album_cache._reset_for_tests()
 
 
+def test_get_album_does_not_cache_a_track_less_response(tmp_path, monkeypatch):
+    import qobuz_librarian.config as cfg
+    from qobuz_librarian.api import album_cache, search
+    monkeypatch.setattr(cfg, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(cfg, "ALBUM_CACHE_ENABLED", True)
+    album_cache._reset_for_tests()
+    try:
+        full = {"id": "ALB1", "title": "X",
+                "tracks": {"items": [{"id": 1, "title": "T"}]}}
+        # A transient/partial 200 with no tracks must not poison the TTL-less
+        # cache — the next call re-fetches and gets the real track list.
+        responses = [{"id": "ALB1", "title": "X"}, full]
+        monkeypatch.setattr(search, "qobuz_get",
+                            lambda *a, **k: responses.pop(0))
+        first = search.get_album("ALB1", "tok")
+        assert not (first.get("tracks") or {}).get("items")
+        second = search.get_album("ALB1", "tok")
+        assert (second.get("tracks") or {}).get("items")
+    finally:
+        album_cache._reset_for_tests()
+
+
 def test_get_artist_albums_cached_within_ttl(tmp_path, monkeypatch):
     import qobuz_librarian.config as cfg
     from qobuz_librarian.api import album_cache, search
