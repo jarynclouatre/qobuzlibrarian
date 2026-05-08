@@ -48,7 +48,11 @@
     <form id="review-form" action="/jobs/{{ job.id }}/approve" method="post">
       <input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}">
       {% include "_review_candidates.html" %}
-      <div class="flex flex-wrap items-center gap-2 mt-4">
+      {# Sticky so the action stays reachable while triaging a long list — tick
+         albums across artists and download without scrolling back to the foot. #}
+      <div class="sticky bottom-0 z-20 -mx-4 mt-4 flex flex-wrap items-center gap-2
+                  border-t border-base-300 bg-base-100/95 px-4 py-3
+                  supports-[backdrop-filter]:bg-base-100/75 supports-[backdrop-filter]:backdrop-blur">
         <button type="submit" id="review-submit" class="btn btn-primary"{% if scanning %} disabled{% endif %}
           {%- if job.execute_kind == 'downsample' %} onclick="return confirm('Downsample the selected albums now? Each file is rewritten in place at CD rate — the hi-res original is not kept and this cannot be undone.')"
           {%- elif job.execute_kind == 'migration' and job.review_verb == 'Move' %} onclick="return confirm('Move the selected files now? This relocates your originals instead of copying them, and removes the folders it empties.')"
