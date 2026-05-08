@@ -39,7 +39,7 @@ from qobuz_librarian.library.catalog import (
     is_lossless_album,
     prompt_and_migrate_multi_artist_folder,
 )
-from qobuz_librarian.library.scanner import clear_scan_caches
+from qobuz_librarian.library.scanner import clear_scan_caches, read_album_dir
 from qobuz_librarian.library.tags import normalize, strip_edition_suffix
 from qobuz_librarian.modes.consolidate import consolidate_albums
 from qobuz_librarian.quality.decision import (
@@ -59,10 +59,14 @@ from qobuz_librarian.ui_cli.prompts import (
 
 
 def force_cleanup_preflight(album, args):
-    """With --force, prompt to remove an existing album dir before re-import.
-    Returns True/False/None: True = safe to proceed; None = symlinked dir
-    (skip without further prompts); False = declined or rmtree failed.
-    --yes does NOT silence this prompt."""
+    """With --force, move an existing album dir aside to a backup before
+    re-import — so beets doesn't make '<n>.1.flac' collisions against the old
+    files, and a re-download that fails can be restored.
+
+    Returns the backup Path when the folder was moved aside; True when there's
+    nothing to move; None for a symlinked dir (skip without further prompts);
+    False when the user declined or the backup couldn't be made. --yes does
+    NOT silence this prompt."""
     if not args.force:
         return True
 
@@ -70,11 +74,10 @@ def force_cleanup_preflight(album, args):
     if not album_dir or not album_dir.exists():
         return True
 
-    # Refuse to --force-delete a symlinked album dir: rmtree of a symlink-to-
-    # a-dir raises anyway, but more importantly the redownload would land
-    # files through the surviving link into the target — wiping the original
-    # without an undo. Signal None so the caller skips without a collision
-    # prompt (the collision prompt makes no sense here).
+    # Refuse to --force a symlinked album dir: the redownload would land files
+    # through the surviving link into the target, wiping the original without
+    # an undo. Signal None so the caller skips without a collision prompt (the
+    # collision prompt makes no sense here).
     if album_dir.is_symlink():
         log.info("")
         log.info(fmt(C.RED + C.BOLD,
@@ -101,22 +104,71 @@ def force_cleanup_preflight(album, args):
     log.info(fmt(C.GRAY,
         f"     {len(audio_files)} audio file(s), {format_size(total_size)} total"))
     log.info(fmt(C.GRAY,
-        "     Without deletion, beets will create '<n>.1.flac' alongside existing files."))
+        "     Left in place, beets would create '<n>.1.flac' alongside the old files."))
 
-    delete_it = confirm("\n  Delete this folder before re-downloading?",
-                        default_yes=True, auto_yes=False)
-    if not delete_it:
-        log.info(fmt(C.YELLOW, "  Continuing without deletion. Expect file collisions."))
+    move_it = confirm(
+        "\n  Move this folder to a backup before re-downloading? "
+        "(restored automatically if the re-download fails)",
+        default_yes=True, auto_yes=False)
+    if not move_it:
+        log.info(fmt(C.YELLOW, "  Continuing without moving it. Expect file collisions."))
         return False
 
-    try:
-        shutil.rmtree(album_dir)
-        log.info(fmt(C.GREEN, f"  ✓  Deleted {album_dir}."))
-        return True
-    except OSError as e:
-        log.info(fmt(C.RED, f"  ✗  Couldn't delete {album_dir}: {e}."))
-        log.info(fmt(C.GRAY, "     Continuing anyway. Expect collisions."))
+    backup_path = backup_album_dir(album_dir)
+    if backup_path is None:
+        log.info(fmt(C.RED,
+            "  ✗  Couldn't back up the folder; refusing to remove it. "
+            "Expect collisions."))
         return False
+    log.info(fmt(C.GREEN,
+        "  ⤷  Moved existing folder to a backup (auto-restore on failure)."))
+    return backup_path
+
+
+_UPGRADE_VERIFY_DURATION_RATIO = 0.97
+
+
+def _audio_count_and_seconds(folder):
+    """(audio-track count, total playtime in seconds) for an album folder,
+    read through read_album_dir so lengths come from the same reader the rest
+    of the app uses. A folder that can't be read returns (0, 0.0)."""
+    total = 0.0
+    tracks = read_album_dir(folder)
+    for t in tracks:
+        try:
+            total += float(t.get("length") or 0)
+        except (TypeError, ValueError):
+            pass
+    return len(tracks), total
+
+
+def _upgrade_replacement_verified(album, album_dir, backup_path):
+    """True only when the freshly imported album is at least as complete as
+    the backed-up original — same-or-more tracks AND same-or-more playtime.
+
+    The success gate clears `flac -t` per file, which proves each file decodes
+    but not that the matcher kept every track or that a re-rip didn't land
+    short. A dropped track or a truncated-but-decodable one both show up here
+    as missing tracks/seconds. Anything that can't be confirmed (folder not
+    found, unreadable) returns False, so the caller keeps the backup rather
+    than deleting the only full copy."""
+    post_dir = find_album_dir_filesystem(album)
+    if not post_dir or not post_dir.exists():
+        return False
+    new_n, new_secs = _audio_count_and_seconds(post_dir)
+    old_n, old_secs = _audio_count_and_seconds(backup_path)
+    if new_n < old_n:
+        log.info(fmt(C.YELLOW,
+            f"  ⚠  Upgrade landed {new_n} track(s) but the original held "
+            f"{old_n} — keeping the backup."))
+        return False
+    if old_secs > 0 and new_secs < old_secs * _UPGRADE_VERIFY_DURATION_RATIO:
+        log.info(fmt(C.YELLOW,
+            f"  ⚠  Upgrade playtime {int(new_secs)}s falls short of the "
+            f"original {int(old_secs)}s (a track may be truncated) — "
+            f"keeping the backup."))
+        return False
+    return True
 
 
 def detect_sibling_album_groups(album_dirs):
@@ -590,17 +642,21 @@ def process_album(album, args, *, allow_force=True, label=None,
         log.info(fmt(C.GRAY,
             "  ⤷  Backed up existing folder (auto-restore on failure)"))
 
-    # ── --force: NOW delete the existing album dir (deferred from above) ─────
+    # ── --force: NOW move the existing album dir aside (deferred from above) ──
     if use_force:
-        force_cleaned = force_cleanup_preflight(album, args)
-        if force_cleaned is None:
+        force_outcome = force_cleanup_preflight(album, args)
+        if force_outcome is None:
             # Symlink — no safe --force path; skip without asking anything further.
             return {"result": "cancelled"}
-        if not force_cleaned:
+        if force_outcome is False:
             if not confirm("\n  Proceed with --force despite expected '<n>.1.flac' collisions?",
                            default_yes=False, auto_yes=False):
                 log.info(fmt(C.GRAY, "  Skipping this album."))
                 return {"result": "cancelled"}
+        elif isinstance(force_outcome, Path) and upgrade_backup_path is None:
+            # The moved-aside folder is restored on failure / cleared on success
+            # by the same finally block that handles the auto-upgrade backup.
+            upgrade_backup_path = force_outcome
 
     # ── Download phase ───────────────────────────────────────────────────────
     # Pre-init so the backup-resolution finally block has sane defaults if a
@@ -681,10 +737,21 @@ def process_album(album, args, *, allow_force=True, label=None,
                                   and n_ok > 0
                                   and n_fail == 0
                                   and n_lossy == 0)
-            if upgrade_succeeded:
+            # An auto-upgrade wipes the only full copy, so it has to clear a
+            # higher bar before the backup is deleted: the rebuilt folder must
+            # be verifiably at least as complete as the original (same-or-more
+            # tracks and playtime). The decode gate above proves each file
+            # plays, not that the matcher kept every track or that a re-rip
+            # isn't short. A --force replace is a deliberate override (it may
+            # swap a different/smaller edition on purpose), so it skips this.
+            upgrade_verified = upgrade_succeeded and (
+                not auto_upgrade_active
+                or _upgrade_replacement_verified(
+                    album, album_dir, upgrade_backup_path))
+            if upgrade_verified:
                 try:
                     shutil.rmtree(upgrade_backup_path)
-                    if not upgrade_only:
+                    if auto_upgrade_active and not upgrade_only:
                         log.info(fmt(C.GRAY,
                             "  ✓  Upgrade complete; backup cleared."))
                 except OSError as e:
@@ -693,6 +760,18 @@ def process_album(album, args, *, allow_force=True, label=None,
                     log.info(fmt(C.GRAY,
                         f"     Backup remains at {upgrade_backup_path} "
                         f"(auto-cleaned after {cfg.UPGRADE_BACKUP_RETENTION_DAYS} days)."))
+            elif upgrade_succeeded and auto_upgrade_active:
+                # Passed the decode/lossy gate but the rebuilt folder isn't
+                # verifiably as complete as the original — keep the only full
+                # copy instead of deleting it.
+                log.info(fmt(C.YELLOW,
+                    "\n  ⚠  Upgrade couldn't be verified as complete; "
+                    "keeping your original."))
+                log.info(fmt(C.GRAY,
+                    f"     Original preserved at {upgrade_backup_path} "
+                    f"(auto-cleaned after {cfg.UPGRADE_BACKUP_RETENTION_DAYS} days)."))
+                log.info(fmt(C.WHITE,
+                    f"     Restore: mv {upgrade_backup_path!s} {album_dir!s}"))
             elif download_phase_completed and args.no_import:
                 log.info(fmt(C.YELLOW,
                     f"\n  ⚠  --no-import set; cannot auto-verify upgrade. "

@@ -169,3 +169,43 @@ def test_staging_overflow_under_yes_exits_general_not_auth(monkeypatch, tmp_path
     with pytest.raises(SystemExit) as exc:
         beets_mod.staging_preflight(SimpleNamespace(yes=True))
     assert exc.value.code == EXIT_GENERAL
+
+
+def test_upgrade_verification_keeps_backup_when_replacement_is_short(monkeypatch, tmp_path):
+    from qobuz_librarian.modes import process as proc
+
+    backup = tmp_path / "backup"
+    backup.mkdir()
+    post = tmp_path / "Album"
+    post.mkdir()
+    original = [{"length": 200.0}, {"length": 180.0}, {"length": 240.0}]
+    monkeypatch.setattr(proc, "find_album_dir_filesystem", lambda _a: post)
+
+    # A track the matcher dropped: the rebuilt folder has fewer files.
+    monkeypatch.setattr(proc, "read_album_dir",
+                        lambda f: original if f == backup else original[:2])
+    assert proc._upgrade_replacement_verified({"id": "x"}, post, backup) is False
+
+    # All tracks present but one re-ripped short (decodes, so flac -t passes):
+    # total playtime drops below the original.
+    truncated = [{"length": 200.0}, {"length": 20.0}, {"length": 240.0}]
+    monkeypatch.setattr(proc, "read_album_dir",
+                        lambda f: original if f == backup else truncated)
+    assert proc._upgrade_replacement_verified({"id": "x"}, post, backup) is False
+
+    # Can't even locate the import: keep the backup rather than guess.
+    monkeypatch.setattr(proc, "find_album_dir_filesystem", lambda _a: None)
+    assert proc._upgrade_replacement_verified({"id": "x"}, post, backup) is False
+
+
+def test_upgrade_verification_accepts_a_complete_replacement(monkeypatch, tmp_path):
+    from qobuz_librarian.modes import process as proc
+
+    backup = tmp_path / "backup"
+    backup.mkdir()
+    post = tmp_path / "Album"
+    post.mkdir()
+    tracks = [{"length": 200.0}, {"length": 180.0}, {"length": 240.0}]
+    monkeypatch.setattr(proc, "find_album_dir_filesystem", lambda _a: post)
+    monkeypatch.setattr(proc, "read_album_dir", lambda _f: list(tracks))
+    assert proc._upgrade_replacement_verified({"id": "x"}, post, backup) is True
