@@ -89,6 +89,7 @@ def flush_resolve_cache():
     if not _resolve_cache_dirty or _resolve_cache is None:
         return
     path = cfg.ARTIST_RESOLVE_CACHE_FILE
+    tmp = None
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         payload = json.dumps({"version": _RESOLVE_CACHE_VERSION,
@@ -97,9 +98,16 @@ def flush_resolve_cache():
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(payload)
         os.replace(tmp, path)
+        tmp = None
         _resolve_cache_dirty = False
     except OSError:
         pass
+    finally:
+        if tmp is not None:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
 
 
 def resolve_artist(query, token):

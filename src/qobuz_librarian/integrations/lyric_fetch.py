@@ -17,7 +17,9 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
+import tempfile
 import threading
 import time
 from collections import Counter
@@ -191,7 +193,6 @@ def load_state(path: Path = DEFAULT_STATE_FILE) -> dict[str, TrackState]:
         raw = json.loads(path.read_text())
         return {k: TrackState(**v) for k, v in raw.items()}
     except Exception as e:
-        # L2: log corrupt state file instead of silently returning empty dict
         logging.getLogger("lyric_fetch").warning(
             "State file unreadable (%s), starting fresh: %s", path, e
         )
@@ -199,12 +200,26 @@ def load_state(path: Path = DEFAULT_STATE_FILE) -> dict[str, TrackState]:
 
 
 def save_state(state: dict[str, TrackState], path: Path = DEFAULT_STATE_FILE) -> None:
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(
+    # Unique temp + atomic replace: a shared ".tmp" name let two concurrent
+    # checkpoints (a web lyrics pass alongside a CLI import hook) clobber each
+    # other's write, and a failed write left the temp orphaned beside the state.
+    data = json.dumps(
         {k: v.__dict__ for k, v in state.items()},
         indent=0, separators=(",", ":"),
-    ))
-    tmp.replace(path)
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=path.name + ".",
+                               suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(data)
+        os.replace(tmp, path)
+    except OSError:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 # ── Lyrics classification & tag I/O ──────────────────────────────────────────
