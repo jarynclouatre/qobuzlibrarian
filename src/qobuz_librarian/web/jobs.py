@@ -518,14 +518,23 @@ def _fire_post_job_hook(job):
     })
     from qobuz_librarian import config as _cfg
     try:
-        subprocess.Popen(
+        proc = subprocess.Popen(
             ["sh", "-c", cmd],
             stdin=subprocess.PIPE,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-        ).communicate(payload.encode("utf-8"), timeout=_cfg.POST_JOB_HOOK_TIMEOUT)
-    except (subprocess.TimeoutExpired, OSError) as e:
+        )
+    except OSError as e:
         vlog(f"post-job hook failed: {e}")
+        return
+    try:
+        proc.communicate(payload.encode("utf-8"), timeout=_cfg.POST_JOB_HOOK_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        # communicate() doesn't kill or reap on timeout — without this the shell
+        # child and its open stdin pipe linger as a zombie under PID 1.
+        proc.kill()
+        proc.communicate()
+        vlog("post-job hook timed out")
 
 
 def _worker_loop(work_queue: "queue.Queue"):
