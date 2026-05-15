@@ -422,6 +422,11 @@ def test_parse_args_rejects_incompatible_flag_combos():
         ["--reset-walk-seen", "--artist", "Radiohead"],
         ["--reset-walk-seen", "Some Artist - Album"],
         ["--quiet"],
+        # the local-only walk/migrate modes read none of these flags either
+        ["--force", "--downsample-walk"],
+        ["--include-singles", "--lyrics-walk"],
+        ["--include-comps", "--migrate"],
+        ["--no-catalog", "--lyrics-walk"],
     ]
     for argv in invalid:
         with pytest.raises(SystemExit):

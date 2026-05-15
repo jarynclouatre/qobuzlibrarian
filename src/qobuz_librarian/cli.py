@@ -116,6 +116,11 @@ def check_rip():
         die(fmt(C.RED, _missing_tool_hint(
             "rip", "Install streamrip first: `pipx install streamrip` "
             "(https://github.com/nathom/streamrip).")), EXIT_CONFIG)
+    except (PermissionError, subprocess.TimeoutExpired) as e:
+        die(fmt(C.RED,
+            f"\n✗  `rip --version` couldn't run ({e}). The streamrip binary "
+            "may be broken — reinstall it with `pipx reinstall streamrip`.\n"),
+            EXIT_CONFIG)
 
 
 def check_media_tools():
@@ -283,27 +288,31 @@ def parse_args():
     # so plain gap-fills behave the same as before; the explicit upgrade
     # walk flips this without mutating the cfg the web Settings page reads.
     args.auto_upgrade = cfg.AUTO_UPGRADE_ENABLED
+    # The walk / migrate / reset modes are whole-library or local-only runs that
+    # read none of the album- or artist-scan flags below, so naming one of those
+    # flags alongside them would silently drop it.
+    other_run_mode = (args.upgrade_walk or args.downsample_walk
+                      or args.lyrics_walk or args.migrate or args.reset_walk_seen)
     # Reject flag/mode combinations that would otherwise be silently dropped or
     # accepted. --force re-downloads everything; it's an album-mode concept,
-    # ignored inside an artist scan / upgrade walk.
-    if args.force and (args.artist or args.upgrade_walk):
-        p.error("--force only applies to album mode (a query or Qobuz "
-                "URL), not --artist or --upgrade-walk")
+    # ignored inside an artist scan or any walk/migrate mode.
+    if args.force and (args.artist or other_run_mode):
+        p.error("--force only applies to album mode (a query or Qobuz URL), "
+                "not --artist or a walk/migrate mode")
     # --migrate's extra options mean nothing without it.
     if (args.in_place or args.acoustid or args.migrate_src or args.migrate_dest) \
             and not args.migrate:
         p.error("--in-place / --acoustid / --migrate-src / --migrate-dest only "
                 "apply with --migrate")
-    # --include-singles only affects artist mode's missing-albums step.
-    # Wrong with --upgrade-walk, or in album mode (a query without
-    # --artist). Allowed with --artist or the interactive menu.
-    if args.include_singles and (args.upgrade_walk
-                                 or (args.query and not args.artist)):
+    # --include-singles only affects artist mode's missing-albums step. Wrong in
+    # album mode (a query without --artist) or any walk/migrate mode. Allowed
+    # with --artist or the interactive menu.
+    if args.include_singles and not args.artist and (args.query or other_run_mode):
         p.error("--include-singles only applies to artist mode")
-    # --no-catalog skips artist mode's missing-albums step. The upgrade walk
-    # has no such step and never reads the flag, so reject it there too rather
-    # than accepting it silently. Bare --no-catalog stays valid for the menu.
-    if args.no_catalog and not args.artist and (args.query or args.upgrade_walk):
+    # --no-catalog skips artist mode's missing-albums step. No other mode has
+    # one or reads the flag, so reject it there rather than accepting it
+    # silently. Bare --no-catalog stays valid for the menu.
+    if args.no_catalog and not args.artist and (args.query or other_run_mode):
         p.error("--no-catalog only applies to artist mode")
     # The upgrade walk sweeps the whole library; a query would be silently
     # dropped, so steer the user to --artist instead.
@@ -339,8 +348,7 @@ def parse_args():
                 "menu — name a mode (a query, --artist, --upgrade-walk, …) "
                 "or drop --quiet")
     # --include-comps controls compilation filtering in artist mode.
-    if args.include_comps and (args.upgrade_walk
-                               or (args.query and not args.artist)):
+    if args.include_comps and not args.artist and (args.query or other_run_mode):
         p.error("--include-comps only applies to artist mode")
     # --no-upgrade with --upgrade-walk is contradictory.
     if args.no_upgrade and args.upgrade_walk:
