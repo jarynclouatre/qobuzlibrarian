@@ -380,6 +380,24 @@ def test_download_transient_branch_says_try_again(client, monkeypatch):
     assert "token" not in r.text.lower()
 
 
+def test_search_transient_branch_says_try_again(client, monkeypatch):
+    # A Qobuz outage during a text search must read as "temporarily
+    # unavailable", not the generic "Search failed" that hides the cause.
+    import qobuz_librarian.api.search as search_mod
+    import qobuz_librarian.web.app as app_mod
+    from qobuz_librarian.api.auth import QobuzUnavailable
+    monkeypatch.setattr(app_mod, "_get_token", lambda: "tok")
+
+    def unavailable(q, t, limit=None):
+        raise QobuzUnavailable("couldn't reach the Qobuz API")
+    monkeypatch.setattr(search_mod, "search_albums", unavailable)
+    r = client.post("/search", data={"q": "radiohead"},
+                    headers={"HX-Request": "true"})
+    assert r.status_code == 200
+    assert "temporarily unavailable" in r.text.lower()
+    assert "search failed" not in r.text.lower()
+
+
 def test_search_result_id_is_html_escaped(client, monkeypatch):
     import qobuz_librarian.api.search as search_mod
     import qobuz_librarian.library.catalog as cat

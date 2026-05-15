@@ -55,16 +55,17 @@ def notify_auth_state(valid: bool) -> None:
             pass
 
 
-_RAW_API_BODY_RE = re.compile(r"^(HTTP \d+ from [^:]+):\s+.+$", re.DOTALL)
+_RAW_API_BODY_RE = re.compile(r"^((?:HTTP \d+|bad JSON) from [^:]+):\s+.+$", re.DOTALL)
 
 
 def friendly_qobuz_error(e):
     """Strip the raw API response body from a QobuzError's message.
 
-    `qobuz_get` raises ``QobuzError("HTTP NNN from endpoint: <body>")``;
-    the body is fine for logs but leaks JSON into user-facing UI when
-    surfaced verbatim. This helper keeps the status + endpoint prefix
-    and drops everything after the colon.
+    `qobuz_get` raises ``QobuzError("HTTP NNN from endpoint: <body>")`` and
+    ``QobuzError("bad JSON from endpoint: <decode error>")``; the trailing
+    detail is fine for logs but leaks a response body or a raw
+    JSONDecodeError into the user-facing UI. This helper keeps the
+    status/endpoint prefix and drops everything after the colon.
     """
     msg = str(e)
     m = _RAW_API_BODY_RE.match(msg)

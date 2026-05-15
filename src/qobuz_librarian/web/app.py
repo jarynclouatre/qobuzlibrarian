@@ -821,7 +821,7 @@ async def do_search(request: Request, q: str = Form("", max_length=500)):
     if query:
         # Imported before the try so the except clauses below can always name
         # them, even if a failure happens before the request reaches the API.
-        from qobuz_librarian.api.auth import AuthLost, QobuzError
+        from qobuz_librarian.api.auth import AuthLost, QobuzError, QobuzUnavailable
         try:
             token = _get_token()
             from qobuz_librarian.api.search import get_album, search_albums
@@ -852,7 +852,7 @@ async def do_search(request: Request, q: str = Form("", max_length=500)):
                     )]
                 except asyncio.TimeoutError:
                     error = "Timed out reaching the Qobuz API."
-                except AuthLost:
+                except (AuthLost, QobuzUnavailable):
                     raise
                 except QobuzError:
                     error = "Couldn't fetch that album — check the URL."
@@ -916,6 +916,9 @@ async def do_search(request: Request, q: str = Form("", max_length=500)):
             error = "No Qobuz credentials set — visit Settings."
         except AuthLost:
             error = "Qobuz auth lost. Check Settings."
+        except QobuzUnavailable:
+            error = ("Qobuz is temporarily unavailable (network or rate "
+                     "limit) — try again shortly.")
         except QobuzError:
             error = "Search failed — try again."
         except Exception:

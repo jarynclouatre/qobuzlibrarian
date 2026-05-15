@@ -115,5 +115,9 @@ def test_friendly_qobuz_error_strips_response_body():
     assert friendly_qobuz_error(e) == "HTTP 404 from album/get"
     e = QobuzError("HTTP 500 from artist/get: <html>\n  <body>...</body>\n</html>")
     assert friendly_qobuz_error(e) == "HTTP 500 from artist/get"
+    # A malformed-200 body raises "bad JSON from …: <decode error>"; the raw
+    # JSONDecodeError text mustn't reach the UI either.
+    e = QobuzError("bad JSON from album/get: Expecting value: line 1 column 1 (char 0)")
+    assert friendly_qobuz_error(e) == "bad JSON from album/get"
     # Non-HTTP messages pass through unchanged.
     assert friendly_qobuz_error(QobuzError("connection refused")) == "connection refused"
