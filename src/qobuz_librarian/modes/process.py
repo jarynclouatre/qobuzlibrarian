@@ -152,6 +152,11 @@ def _upgrade_replacement_verified(album, album_dir, backup_path):
     as missing tracks/seconds. Anything that can't be confirmed (folder not
     found, unreadable) returns False, so the caller keeps the backup rather
     than deleting the only full copy."""
+    # beets renames the imported folder to its canonical $albumartist/$album,
+    # so the post-import dir is often not the one resolved before the download.
+    # The subdir listing was cached then, against the old folder name; clear it
+    # so the album resolves to the folder beets actually wrote.
+    clear_scan_caches()
     post_dir = find_album_dir_filesystem(album)
     if not post_dir or not post_dir.exists():
         return False
