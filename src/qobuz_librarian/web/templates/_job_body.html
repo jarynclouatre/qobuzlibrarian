@@ -289,8 +289,7 @@
       let titleSet = false;
       src.onmessage = e => {
         if (!titleSet) { document.title = '▶ ' + baseTitle; titleSet = true; }
-        logEl.appendChild(document.createTextNode(e.data + '\n'));
-        logEl.scrollTop = logEl.scrollHeight;
+        if (logEl) { logEl.appendChild(document.createTextNode(e.data + '\n')); logEl.scrollTop = logEl.scrollHeight; }
       };
       src.onopen = () => { if (reconnect) reconnect.classList.add('hidden'); };
       src.onerror = () => {

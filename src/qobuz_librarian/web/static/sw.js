@@ -43,6 +43,9 @@ self.addEventListener('fetch', event => {
       caches.match(event.request).then(hit => {
         if (hit) return hit;
         return fetch(event.request).then(response => {
+          // Don't store a 404/5xx — it would be served from cache until the
+          // next version bump. Hand the response back without caching it.
+          if (!response || !response.ok) return response;
           const clone = response.clone();
           caches.open(CACHE).then(cache => cache.put(event.request, clone));
           return response;
