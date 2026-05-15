@@ -229,11 +229,10 @@
           const q = document.querySelector('input[name="q"], input[name="artist"]');
           if (q) { e.preventDefault(); q.focus(); q.select && q.select(); }
         } else if (e.key === 'Escape') {
-          // Esc dismisses any flash banner (any severity), plus any leftover
-          // error/warning alert that isn't flagged as a flash. Inputs lose
-          // focus too, so a stuck modal-style keypress can be escaped.
-          document.querySelectorAll('[data-flash], .alert.alert-error, .alert.alert-warning')
-            .forEach(a => a.remove());
+          // Esc dismisses flash banners (transient, any severity) and blurs a
+          // focused field. Permanent alerts — a missing-credentials notice, a
+          // failed-job error panel — carry no data-flash and must stay put.
+          document.querySelectorAll('[data-flash]').forEach(a => a.remove());
           if (inField) document.activeElement.blur();
         } else if (e.key === 'g' && !inField) {
           gPending = true;
