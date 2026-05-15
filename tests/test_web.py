@@ -187,26 +187,32 @@ def test_submit_failing_job_marks_failed():
     assert any("kaboom" in ln for ln in job.log_lines)
 
 
-def test_approve_flips_status_before_enqueue(monkeypatch):
+def test_approve_flips_status_then_passes_chosen_to_execute(monkeypatch):
     job = jm.Job(title="scan-approve")
     job.kind = "scan"
     job.status = jm.JobStatus.AWAITING_REVIEW
-    job._execute_fn = lambda j, chosen: None
+    got_chosen = []
+    job._execute_fn = lambda j, chosen: got_chosen.append(chosen)
     job.add_candidate("album", "A", "Artist", payload={"id": 1})
 
     status_at_put = []
-    orig_put = jm._scan_queue.put
+    enqueued = []
 
     def _spy_put(item):
         status_at_put.append(item[0].status)
-        orig_put(item)
+        enqueued.append(item[1])
 
     monkeypatch.setattr(jm._scan_queue, "put", _spy_put)
 
-    assert jm.approve(job, ["c1"]) is True
+    assert jm.approve(job, ["c0"]) is True
+    # Status flips to PENDING before the execute step is enqueued, so a second
+    # concurrent approve can't double-enqueue the download.
     assert status_at_put == [jm.JobStatus.PENDING]
+    # Running the enqueued step hands execute_fn exactly the kept candidate.
+    enqueued[0](job)
+    assert [c["payload"] for c in got_chosen[0]] == [{"id": 1}]
     # A second approve no longer sees AWAITING_REVIEW, so it's rejected.
-    assert jm.approve(job, ["c1"]) is False
+    assert jm.approve(job, ["c0"]) is False
 
 
 def test_base_exception_in_job_does_not_kill_worker():

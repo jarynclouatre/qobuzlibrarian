@@ -693,7 +693,7 @@ def test_album_walk_filter_is_a_substring_match(monkeypatch):
     seen = []
     monkeypatch.setattr(walk, "run_artist_gap_fill",
                         lambda artist_query, *_a, **_k: (seen.append(artist_query) or
-                                                         ([], set(), set(), None, None)))
+                                                         ([], set(), set(), set(), None, [])))
     monkeypatch.setattr(walk, "list_artist_album_dirs", lambda d: [])
     monkeypatch.setattr(walk, "clear_scan_caches", lambda: None)
     monkeypatch.setattr(walk, "save_pending_queue", lambda *a, **k: None)
