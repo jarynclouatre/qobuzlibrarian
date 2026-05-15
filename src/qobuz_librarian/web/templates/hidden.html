@@ -1,7 +1,8 @@
 {% extends "base.html" %}
 {% set is_upgrade = scope == 'upgrade' %}
+{% set is_downsample = scope == 'downsample' %}
 {% set noun = 'upgrade' if is_upgrade else 'album' %}
-{% set back_label = 'Upgrade' if is_upgrade else 'Library' %}
+{% set back_label = 'Upgrade' if is_upgrade else ('Downsample' if is_downsample else 'Library') %}
 {% block title %}Hidden {{ noun }}s — Qobuz Librarian{% endblock %}
 {% block content %}
 
@@ -12,6 +13,8 @@
 <p class="text-base-content/60 mb-6">
   {% if is_upgrade %}Upgrades you've dismissed — Qobuz won't be suggested as a better copy
   again until you restore them. Nothing here changes the files you already have.
+  {% elif is_downsample %}Albums you've kept hi-res — they won't be suggested for
+  downsampling again until you restore them. Nothing here changes the files you already have.
   {% else %}Albums you've dismissed from the library scan — they won't be suggested again
   until you restore them. Nothing here is deleted from your library or from Qobuz.{% endif %}
 </p>
@@ -38,7 +41,7 @@
           <span class="font-medium flex-1 min-w-0 truncate">{{ g.artist }}</span>
         </label>
         <span class="text-base-content/50 text-sm shrink-0">{{ g.albums | length }} {{ noun }}{% if g.albums | length != 1 %}s{% endif %}</span>
-        {% if not is_upgrade %}
+        {% if not is_upgrade and not is_downsample %}
         <a href="/artist?artist={{ g.artist | urlencode }}" class="link link-hover text-xs shrink-0">Check for new releases</a>
         {% endif %}
       </span>
