@@ -29,7 +29,7 @@ def run_downsample_walk_mode(args):
 
     if not HAVE_DOWNSAMPLE:
         log.info(fmt(C.YELLOW,
-            "  ⚠  Downsampling isn't available (ffmpeg not found)."))
+            "  ⚠  Downsampling isn't available (needs ffmpeg and flac)."))
         return
 
     all_artists = list_library_artists()

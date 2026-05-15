@@ -30,3 +30,15 @@ def test_scan_groups_hires_tracks_and_estimates_saving(monkeypatch, tmp_path):
     assert c.est_saving == 40_000_000 + 60_000_000
     assert "96kHz/192kHz → 48kHz" in c.detail
     assert "2/3 tracks" in c.detail
+
+
+def test_decode_ok_refuses_to_verify_when_flac_cannot_run(monkeypatch):
+    # The downsample overwrites in place with no re-download to fall back on, so
+    # a verifier that can't run (missing or unusable flac) must read as not-ok —
+    # never let an unverified encode replace the only hi-res copy.
+    from qobuz_librarian.integrations import downsample_engine as eng
+
+    def _no_flac(*a, **k):
+        raise FileNotFoundError("flac")
+    monkeypatch.setattr(eng.subprocess, "run", _no_flac)
+    assert eng._decode_ok("/anything.flac") is False

@@ -22,10 +22,13 @@ import tempfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
-# Downsampling needs ffmpeg to resample. Gate on it so a checkout without the
-# binary skips the step cleanly instead of failing per-album at run time; in the
-# image ffmpeg is a pinned dependency, so this is always True there.
-HAVE_DOWNSAMPLE = shutil.which("ffmpeg") is not None
+# Downsampling needs ffmpeg to resample AND flac to verify the result. The
+# overwrite is in-place and irreversible, so without the verifier there's no way
+# to confirm a good encode replaced the only hi-res copy — treat the feature as
+# unavailable rather than overwrite unverified. Both are pinned in the image, so
+# this is always True there; a bare checkout missing either skips the step.
+HAVE_DOWNSAMPLE = (shutil.which("ffmpeg") is not None
+                   and shutil.which("flac") is not None)
 
 MUSIC_ROOT       = Path(os.environ.get("MUSIC_ROOT", "/music"))
 # 1024 is enough to clear large ID3v2 preambles on the rare track that has one.
@@ -210,18 +213,18 @@ def scan_dir_for_hires(directory):
 
 
 def _decode_ok(path):
-    """True if the FLAC at `path` decodes cleanly (flac -t, frame-CRC + decode).
+    """True only if the FLAC at `path` decodes cleanly (flac -t, frame-CRC +
+    decode).
 
-    A missing flac tool returns True — the resample already succeeded and
-    without the reference decoder there's nothing to second-guess it with; the
-    source is preserved on a real failure regardless. A timeout or OS error
-    returns False so an unverifiable encode never overwrites the original."""
+    The downsample overwrites the source in place with no re-download to fall
+    back on, so anything that leaves the encode unverified — a decode failure, a
+    timeout, or a missing/unusable flac binary (HAVE_DOWNSAMPLE already requires
+    one, but it could vanish mid-run on a network mount) — returns False, and the
+    encode is discarded rather than allowed to replace the original."""
     try:
         r = subprocess.run(["flac", "-t", "-s", str(path)],
                            capture_output=True, timeout=300,
                            stdin=subprocess.DEVNULL)
-    except FileNotFoundError:
-        return True
     except (OSError, subprocess.TimeoutExpired):
         return False
     return r.returncode == 0
