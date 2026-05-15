@@ -39,6 +39,7 @@ from qobuz_librarian.library.tags import (
     similarity,
     strip_album_decorations,
     strip_edition_suffix,
+    strip_trailing_parens,
     strip_year_decoration,
 )
 from qobuz_librarian.ui_cli.colors import C, fmt
@@ -372,19 +373,29 @@ def _norm_isrc(value):
     return (value or "").strip().replace("-", "").upper()
 
 
-def _track_key(title_raw, disc, isrc):
-    """Identity keys for one track: ISRC plus the disc-scoped title in both its
-    full and edition-stripped forms.
+def _track_key(title_raw, disc, isrc, *, disc_scoped=True):
+    """Identity keys for one track: ISRC plus the (optionally disc-scoped) title
+    in both its full and edition-stripped forms.
 
     Titles are compared normalized (ASCII-folded, punctuation dropped). A
     non-Latin title folds to '' under normalize, so fall back to the casefolded
-    raw title — without it, "東京" and "大阪" would both key on '' and either
-    match each other or nothing at all. A genuinely empty title leaves the key
-    None so two untitled tracks never pair on an empty string.
+    raw title — but a non-Latin title with a Latin edition tag ("東京
+    (Remaster)") folds to just "remaster", which would make every such track
+    collide; so fall back to the raw whenever normalize keeps only a trailing
+    decoration too, not just when it keeps nothing. A genuinely empty title
+    leaves the key None so two untitled tracks never pair on an empty string.
+
+    disc_scoped is dropped when the two sides disagree on disc structure (see
+    compute_missing): a flat, disc-untagged folder reports every track on disc 1
+    and would otherwise fail to pair against a Qobuz album's later discs.
     """
+    scope = disc if disc_scoped else None
+
     def _scoped(text):
-        norm = normalize(text) or text.strip().casefold()
-        return (disc, norm) if norm else None
+        norm = normalize(text)
+        if not norm or not normalize(strip_trailing_parens(text)):
+            norm = text.strip().casefold()
+        return (scope, norm) if norm else None
 
     title_raw = title_raw or ""
     return {
@@ -437,14 +448,32 @@ def _pair_tracks(claim_keys, slot_keys):
     return claimed
 
 
-def _qobuz_keys(qobuz_tracks):
+def _disc_count(tracks, field):
+    return len({(t.get(field, 1) or 1) for t in tracks})
+
+
+def _disc_scoped_match(qobuz_tracks, existing_tracks):
+    """Scope title matching by disc only when BOTH sides span multiple discs.
+
+    If either side is entirely on disc 1 — a single-disc album, or a flat folder
+    whose tracks carry no DISCNUMBER tag and so all default to 1 — disc scoping
+    can only invent false gaps (a later-disc Qobuz track never finding its
+    disc-1 file). Matching disc-agnostically then is safe: one-to-one pairing
+    still keeps two same-titled tracks from collapsing onto a single file."""
+    return (_disc_count(qobuz_tracks, "media_number") > 1
+            and _disc_count(existing_tracks, "discnumber") > 1)
+
+
+def _qobuz_keys(qobuz_tracks, disc_scoped=True):
     return [_track_key(qt.get("title"), qt.get("media_number", 1) or 1,
-                       qt.get("isrc")) for qt in qobuz_tracks]
+                       qt.get("isrc"), disc_scoped=disc_scoped)
+            for qt in qobuz_tracks]
 
 
-def _existing_keys(existing_tracks):
+def _existing_keys(existing_tracks, disc_scoped=True):
     return [_track_key(et.get("title"), et.get("discnumber", 1) or 1,
-                       et.get("isrc")) for et in existing_tracks]
+                       et.get("isrc"), disc_scoped=disc_scoped)
+            for et in existing_tracks]
 
 
 def compute_missing(qobuz_tracks, existing_tracks):
@@ -455,8 +484,9 @@ def compute_missing(qobuz_tracks, existing_tracks):
     one-to-one (see _pair_tracks), so a duplicate title surfaces as a real gap
     instead of being masked by a single file.
     """
-    claimed = _pair_tracks(_qobuz_keys(qobuz_tracks),
-                           _existing_keys(existing_tracks))
+    disc_scoped = _disc_scoped_match(qobuz_tracks, existing_tracks)
+    claimed = _pair_tracks(_qobuz_keys(qobuz_tracks, disc_scoped),
+                           _existing_keys(existing_tracks, disc_scoped))
     missing = [qt for i, qt in enumerate(qobuz_tracks) if not claimed[i]]
     present = [qt for i, qt in enumerate(qobuz_tracks) if claimed[i]]
     return missing, present
@@ -470,8 +500,9 @@ def find_extras_in_existing(qobuz_tracks, existing_tracks):
     is flagged rather than hidden. This gates the upgrade wipe-and-replace, so a
     missed extra means silently deleting a track the user can't get back.
     """
-    matched = _pair_tracks(_existing_keys(existing_tracks),
-                           _qobuz_keys(qobuz_tracks))
+    disc_scoped = _disc_scoped_match(qobuz_tracks, existing_tracks)
+    matched = _pair_tracks(_existing_keys(existing_tracks, disc_scoped),
+                           _qobuz_keys(qobuz_tracks, disc_scoped))
     return [et for i, et in enumerate(existing_tracks) if not matched[i]]
 
 

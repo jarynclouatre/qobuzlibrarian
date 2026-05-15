@@ -56,15 +56,32 @@ def test_compute_missing_isrc_match_beats_title_difference():
 
 
 def test_compute_missing_disc_and_edition_handling():
-    # Same title on different discs is a different track.
-    m, p = compute_missing([_qt("Intro", disc=2)], [_et("Intro", disc=1)])
-    assert len(m) == 1 and not p
+    # A multi-disc album, tagged per disc on both sides: a title repeated across
+    # discs needs a file for each — owning disc 1's copy doesn't cover disc 2's.
+    qobuz = [_qt("Intro", disc=1), _qt("Theme", disc=1),
+             _qt("Intro", disc=2), _qt("Theme", disc=2)]
+    owned = [_et("Intro", disc=1), _et("Theme", disc=1),
+             _et("Intro", disc=2), _et("Theme", disc=2)]
+    assert not compute_missing(qobuz, owned)[0]
+    m, _ = compute_missing(qobuz, owned[:2])  # own disc 1 only
+    assert sorted(t["media_number"] for t in m) == [2, 2]
     # Edition suffixes on the Qobuz side strip cleanly and match the bare disk file.
     m, p = compute_missing([_qt("Song (2014 Remaster)")], [_et("Song")])
     assert len(p) == 1 and not m
     # But (Acoustic) / (Live) are distinct performances and must NOT match.
     m, p = compute_missing([_qt("Song")], [_et("Song (Acoustic)")])
     assert len(m) == 1 and not p
+
+
+def test_flat_untagged_multidisc_album_is_not_reported_missing():
+    # A 2-disc album ripped to one flat folder with no DISCNUMBER tags reads as
+    # all disc 1, while Qobuz numbers the later disc 2. Disc-strict matching
+    # would report the whole second disc missing on an album you fully own.
+    qobuz = [_qt("One", disc=1), _qt("Two", disc=1),
+             _qt("Three", disc=2), _qt("Four", disc=2)]
+    existing = [_et("One"), _et("Two"), _et("Three"), _et("Four")]
+    missing, present = compute_missing(qobuz, existing)
+    assert not missing and len(present) == 4
 
 
 def test_compute_missing_handles_repeats_without_double_counting():
@@ -98,6 +115,18 @@ def test_non_latin_titles_match_on_text_not_empty_normalization():
     # track on disk must be flagged as an extra, never silently wiped.
     extras = find_extras_in_existing([_qt("東京")], [_et("大阪")])
     assert [t["title"] for t in extras] == ["大阪"]
+
+
+def test_non_latin_titles_with_a_shared_edition_tag_stay_distinct():
+    # '東京 (Remaster)' and '大阪 (Remaster)' both ASCII-fold to just
+    # 'remaster'; keying on that would let an owned 大阪 satisfy a missing 東京.
+    qobuz = [_qt("東京 (Remaster)"), _qt("大阪 (Remaster)")]
+    m, p = compute_missing(qobuz, [_et("大阪 (Remaster)")])
+    assert [t["title"] for t in m] == ["東京 (Remaster)"]
+    assert [t["title"] for t in p] == ["大阪 (Remaster)"]
+    # the bare-title owned copy still matches the remaster via the stripped layer
+    _, p = compute_missing([_qt("東京 (Remaster)")], [_et("東京")])
+    assert len(p) == 1
 
 
 # ── find_extras_in_existing: don't let bonus tracks get wiped on upgrade ─

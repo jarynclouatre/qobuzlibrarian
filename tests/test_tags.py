@@ -53,6 +53,9 @@ def test_strip_edition_suffix_preserves_distinct_versions():
     # Acoustic / Live are distinct recordings, not editions — leave them in.
     assert strip_edition_suffix("Song (Acoustic)") == "Song (Acoustic)"
     assert strip_edition_suffix("Song (Live)") == "Song (Live)"
+    # an edition tag wrapping a performance one is still stripped, the
+    # performance marker kept.
+    assert strip_edition_suffix("Song (LP Version) (Remix)") == "Song (Remix)"
 
 
 def test_strip_album_decorations_handles_year_prefixed_folders():

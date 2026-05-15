@@ -146,26 +146,45 @@ def strip_edition_suffix(title):
 
     Preserves: (Acoustic), (Live), (Demo), (Remix), (Instrumental),
     (Radio Edit), (Extended Mix), (feat. X), and other markers indicating a
-    genuinely different recording.
+    genuinely different recording — including when an edition tag sits OUTSIDE
+    a performance one, so "Song (LP Version) (Remix)" → "Song (Remix)".
 
-    Strips up to 3 trailing-paren groups (handles "Foo (Remaster) (Mono)").
+    Handles up to 4 trailing-paren groups ("Foo (Remaster) (Mono)").
     """
     if not title:
         return title
     s = title.strip()
-    for _ in range(3):
+    kept = []
+    for _ in range(4):
         m = _TRAILING_PAREN_CAPTURE_RE.search(s)
         if not m:
             break
-        inside = m.group(1).strip()
-        # Keep this group if it's a performance-variant marker.
-        if _PERFORMANCE_VARIANT_RE.search(inside):
+        head = s[: m.start()].strip()
+        if not head:
             break
-        new = s[: m.start()].strip()
-        if not new:
-            break
-        s = new
+        if _PERFORMANCE_VARIANT_RE.search(m.group(1)):
+            kept.append(m.group(1).strip())
+        s = head
+    for group in reversed(kept):
+        s = f"{s} ({group})"
     return s or title
+
+
+def strip_trailing_parens(title):
+    """A title with every trailing parenthesized group removed — both edition
+    AND performance-variant tags. Distinct from strip_edition_suffix (which
+    keeps performance variants): this only answers "is there a non-empty core
+    once the parenthesised decorations are gone", which catalog matching uses to
+    tell a non-Latin title apart from its ASCII-folded edition tag."""
+    s = (title or "").strip()
+    while True:
+        m = _TRAILING_PAREN_CAPTURE_RE.search(s)
+        if not m:
+            return s
+        head = s[: m.start()].strip()
+        if not head:
+            return s
+        s = head
 
 
 # ── Album-name decoration stripping ──────────────────────────────────────────
