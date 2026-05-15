@@ -377,3 +377,12 @@ def test_resolve_artist_uses_cache_and_skips_the_search(monkeypatch):
         raise AssertionError("search_artists must not run on a cache hit")
     monkeypatch.setattr(discovery, "search_artists", _boom)
     assert discovery.resolve_artist("the who", "tok") == (45964, "The Who")
+
+
+def test_owning_an_article_less_folder_suppresses_the_prefixed_album():
+    # Folder 'Dark Side of the Moon (1973)' vs Qobuz 'The Dark Side of the
+    # Moon': the leading article mustn't make an owned album look missing.
+    owned = discovery.owned_album_titles([Path("Dark Side of the Moon (1973)")])
+    album = {"title": "The Dark Side of the Moon",
+             "release_date_original": "1973-03-01"}
+    assert cat.filter_owned_albums([(album, 1)], owned) == []

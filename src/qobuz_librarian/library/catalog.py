@@ -39,6 +39,7 @@ from qobuz_librarian.library.tags import (
     similarity,
     strip_album_decorations,
     strip_edition_suffix,
+    strip_leading_article,
     strip_trailing_parens,
     strip_year_decoration,
 )
@@ -81,7 +82,9 @@ def _primary_artist_of(qartist):
 def _has_separator_match(folder_name, qartist, seps):
     if not folder_name or not qartist:
         return False
-    qa = qartist.strip()
+    # The folder was written by beets, so a special-char artist ("AC/DC")
+    # lives in "AC_DC, …"; sanitise the Qobuz name to the same form first.
+    qa = beets_sanitize(qartist).strip()
     fl = folder_name.strip()
     if len(fl) <= len(qa):
         return False
@@ -621,7 +624,7 @@ def filter_owned_albums(catalog_pairs, owned_bare_titles):
         return list(catalog_pairs)
     missing = []
     for album, n_versions in catalog_pairs:
-        bare = strip_album_decorations(album.get("title") or "")
+        bare = strip_leading_article(strip_album_decorations(album.get("title") or ""))
         key = normalize(bare)
         if not key:
             missing.append((album, n_versions))

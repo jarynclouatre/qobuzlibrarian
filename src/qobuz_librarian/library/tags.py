@@ -109,6 +109,15 @@ def similarity(a, b):
     return SequenceMatcher(None, na, nb).ratio()
 
 
+_LEADING_ARTICLE_RE = re.compile(r"^(?:the|a|an)\s+", re.IGNORECASE)
+
+
+def strip_leading_article(name):
+    """Drop a leading 'the/a/an ' so 'The Wall' compares equal to a bare
+    'Wall'. Left unchanged if stripping would empty it."""
+    return _LEADING_ARTICLE_RE.sub("", name or "", count=1) or name
+
+
 # ── Track-title edition stripping ─────────────────────────────────────────────
 # Performance variants mark genuinely different recordings and must NOT be
 # stripped. If a parenthesized suffix contains one of these, we leave it

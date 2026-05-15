@@ -45,19 +45,14 @@ from qobuz_librarian.library.scanner import (
     list_artist_album_dirs,
     list_library_artists,
 )
-from qobuz_librarian.library.tags import normalize, similarity
+from qobuz_librarian.library.tags import (
+    normalize,
+    similarity,
+    strip_leading_article,
+)
 from qobuz_librarian.ui_cli.logging import log, vlog
 
 # ── Artist resolution (the shared matcher) ──────────────────────────────────────
-
-_LEADING_ARTICLE_RE = re.compile(r"^(?:the|a|an)\s+", re.IGNORECASE)
-
-
-def _strip_leading_article(name):
-    """Drop a leading 'the/a/an ' so 'The Beatles' compares equal to a bare
-    'Beatles'. Left unchanged if stripping would empty it."""
-    return _LEADING_ARTICLE_RE.sub("", name or "", count=1) or name
-
 
 # Folder name → matched Qobuz artist, cached to disk. Resolution is deterministic
 # and artist ids are stable, so a re-scan skips the search call for every artist
@@ -134,10 +129,10 @@ def resolve_artist(query, token):
     except Exception as e:
         log.info(f"  artist search failed for '{query}': {e}")
         return None, None
-    q = _strip_leading_article(query)
+    q = strip_leading_article(query)
 
     def match_score(a):
-        return similarity(_strip_leading_article(a.get("name", "")), q)
+        return similarity(strip_leading_article(a.get("name", "")), q)
 
     qualifying = [a for a in results if match_score(a) >= cfg.ARTIST_NAME_THRESH]
     if not qualifying:
@@ -259,7 +254,7 @@ def _folder_year(name):
 
 def _record_owned_title(owned_titles, album_dir):
     from qobuz_librarian.library.tags import strip_album_decorations
-    key = normalize(strip_album_decorations(album_dir.name))
+    key = normalize(strip_leading_article(strip_album_decorations(album_dir.name)))
     if key:
         owned_titles.setdefault(key, set()).add(_folder_year(album_dir.name))
 

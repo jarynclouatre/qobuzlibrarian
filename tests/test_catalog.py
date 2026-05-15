@@ -251,6 +251,8 @@ def test_separator_and_subset_helpers():
     # Multi-artist subset: 'Beatles, X' is, plain 'Beatles' isn't.
     assert _is_multi_artist_subset("Beatles, McCartney", "Beatles") is True
     assert _is_multi_artist_subset("Beatles", "Beatles") is False
+    # A special-char artist matches its beets-sanitised folder ('AC/DC' → 'AC_DC').
+    assert _is_multi_artist_subset("AC_DC, The Stones", "AC/DC") is True
 
 
 def test_primary_artist_of_handles_all_separator_forms():
