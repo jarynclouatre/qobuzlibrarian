@@ -97,8 +97,6 @@ def test_non_flac_track_takes_disc_from_parent_folder(tmp_path):
 
 
 def test_flac_cache_hits_when_unchanged_and_invalidates_on_change(tmp_path, monkeypatch):
-    import time
-
     import qobuz_librarian.config as cfg
     from qobuz_librarian.library import flac_cache
     monkeypatch.setattr(cfg, "DATA_DIR", tmp_path)
@@ -110,9 +108,28 @@ def test_flac_cache_hits_when_unchanged_and_invalidates_on_change(tmp_path, monk
         assert flac_cache.get(f) is None                        # cold miss
         flac_cache.put(f, {"title": "T", "isrc": "X"})
         assert flac_cache.get(f) == {"title": "T", "isrc": "X"}  # hit, unchanged
-        time.sleep(0.01)
-        f.write_bytes(b"abcd")                                   # mtime + size change
+        f.write_bytes(b"abcd")                                   # size change invalidates
         assert flac_cache.get(f) is None                        # self-invalidated
+    finally:
+        flac_cache._reset_for_tests()
+
+
+def test_flac_cache_stores_the_pre_read_signature(tmp_path, monkeypatch):
+    # The signature is captured before the file is parsed; if the file changes
+    # during that read, storing the prior signature makes the now-edited file
+    # miss on the next lookup rather than serving the pre-edit tags.
+    import qobuz_librarian.config as cfg
+    from qobuz_librarian.library import flac_cache
+    monkeypatch.setattr(cfg, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(cfg, "FLAC_CACHE_ENABLED", True)
+    flac_cache._reset_for_tests()
+    try:
+        f = tmp_path / "song.flac"
+        f.write_bytes(b"original")
+        sig = flac_cache.signature(f)
+        f.write_bytes(b"edited while being read")
+        flac_cache.put(f, {"title": "stale"}, sig=sig)
+        assert flac_cache.get(f) is None
     finally:
         flac_cache._reset_for_tests()
 

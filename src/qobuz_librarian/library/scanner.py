@@ -79,6 +79,9 @@ def read_audio_meta(path: Path):
     cached = flac_cache.get(path)
     if cached is not None:
         return cached
+    # Capture the file signature before parsing so a file edited mid-scan isn't
+    # cached with its new mtime but these now-stale tags.
+    sig = flac_cache.signature(path)
     try:
         f = mutagen.File(str(path), easy=True)
     except Exception:
@@ -113,7 +116,7 @@ def read_audio_meta(path: Path):
         "length":      getattr(info, "length", 0.0) if info else 0.0,
         "path":        str(path),
     }
-    flac_cache.put(path, meta)
+    flac_cache.put(path, meta, sig=sig)
     return meta
 
 

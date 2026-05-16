@@ -73,7 +73,11 @@ def _conn():
     return conn
 
 
-def _stat(path):
+def signature(path):
+    """``(mtime_ns, size)`` for ``path``, or None if it can't be stat'd — the
+    key that detects a file changing out from under a stored entry. Capture it
+    BEFORE reading a file you intend to ``put()``, so an edit landing between the
+    read and the store doesn't pair the file's new mtime with the old tags."""
     try:
         st = path.stat()
         return st.st_mtime_ns, st.st_size
@@ -85,7 +89,7 @@ def get(path) -> dict | None:
     """Cached tags for ``path`` if the file is unchanged since they were stored."""
     if not _ensure():
         return None
-    sig = _stat(path)
+    sig = signature(path)
     if sig is None:
         return None
     mtime_ns, size = sig
@@ -104,10 +108,15 @@ def get(path) -> dict | None:
         return None
 
 
-def put(path, payload) -> None:
+def put(path, payload, sig=None) -> None:
+    """Store parsed tags for ``path``. Pass ``sig`` from ``signature(path)``
+    captured before the file was read; otherwise a file edited during the parse
+    is recorded with its new mtime but the pre-edit tags and served stale until
+    it changes again. Falls back to statting now when the caller omits it."""
     if not isinstance(payload, dict) or not _ensure():
         return
-    sig = _stat(path)
+    if sig is None:
+        sig = signature(path)
     if sig is None:
         return
     mtime_ns, size = sig
