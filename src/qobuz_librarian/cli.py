@@ -697,6 +697,11 @@ def _entry():
                 "   Nothing was lost; any queued work was saved. Re-run when it's "
                 "back.\n"), EXIT_TRANSIENT)
     finally:
+        # Persist any artist resolutions this run discovered (no-op when none),
+        # so the next CLI walk skips the search calls — only the web flows
+        # flushed before, leaving every CLI walk to re-resolve from cold.
+        from qobuz_librarian.library.discovery import flush_resolve_cache
+        flush_resolve_cache()
         _check_staging_occupied()
 
 
