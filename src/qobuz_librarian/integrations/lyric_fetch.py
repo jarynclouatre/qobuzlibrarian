@@ -222,6 +222,19 @@ def save_state(state: dict[str, TrackState], path: Path = DEFAULT_STATE_FILE) ->
         raise
 
 
+def prune_missing(state: dict[str, TrackState]) -> int:
+    """Drop entries whose file no longer exists, mutating `state` in place.
+
+    Keys are absolute paths, so a moved, renamed, or deleted track otherwise
+    leaves an orphan that's reloaded and re-serialised on every walk — the JSON
+    grows without bound and is parsed in full each run. Returns the count
+    dropped. Mirrors flac_cache.prune_missing."""
+    gone = [k for k in state if not os.path.exists(k)]
+    for k in gone:
+        del state[k]
+    return len(gone)
+
+
 # ── Lyrics classification & tag I/O ──────────────────────────────────────────
 def classify(text: Optional[str]) -> str:
     if not text or not text.strip():
@@ -632,6 +645,11 @@ def fetch_for_paths(
         _provider_fails.clear()
 
     state = load_state(state_path)
+    # Drop entries for files that have moved or gone since last run, so the
+    # state can't grow without bound across a library's churn.
+    if prune_missing(state):
+        with _state_lock:
+            save_state(state, state_path)
     candidates = [Path(p) for p in paths
                   if should_process(Path(p), state.get(str(p)), rescan,
                                     skip_existing_plain=skip_existing_plain)]

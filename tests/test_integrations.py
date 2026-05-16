@@ -244,6 +244,19 @@ def test_write_lyrics_persists_and_clears_legacy_tag():
     assert "unsyncedlyrics" not in f.tags and f.saved == 1
 
 
+def test_lyric_state_prune_drops_entries_for_vanished_files(tmp_path):
+    from qobuz_librarian.integrations import lyric_fetch
+    here = tmp_path / "here.flac"
+    here.write_bytes(b"x")
+    gone = str(tmp_path / "gone.flac")
+    state = {
+        str(here): lyric_fetch.TrackState(status="synced"),
+        gone: lyric_fetch.TrackState(status="synced"),
+    }
+    assert lyric_fetch.prune_missing(state) == 1
+    assert str(here) in state and gone not in state
+
+
 # ── beets: override YAML safety + dedup detection ──────────────────────────
 
 def test_yaml_sq_quotes_safely_and_blocks_injection():
