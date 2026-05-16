@@ -12,11 +12,17 @@ and vice-versa. A clean finish or a deliberate cancel clears that kind's entry;
 a kind's presence means "an unfinished scan of that kind is waiting to resume."
 """
 import json
+import threading
 import time
 
 from qobuz_librarian import config as cfg
 
 _KINDS = ("missing", "partial")
+
+# save/clear are read-modify-write of the shared file; serialise them so two
+# scan kinds progressing in parallel can't clobber each other's entry. Readers
+# (load/pending) need no lock — _write swaps the file in atomically.
+_lock = threading.Lock()
 
 
 def _read() -> dict:
@@ -51,30 +57,32 @@ def load(kind) -> dict | None:
 
 
 def save(kind, scanned, candidates, seen) -> None:
-    data = _read()
-    data[kind] = {
-        "scanned": sorted(scanned),
-        "candidates": candidates,
-        "seen": seen,
-        "ts": time.time(),
-    }
-    _write(data)
+    with _lock:
+        data = _read()
+        data[kind] = {
+            "scanned": sorted(scanned),
+            "candidates": candidates,
+            "seen": seen,
+            "ts": time.time(),
+        }
+        _write(data)
 
 
 def clear(kind) -> None:
-    data = _read()
-    if kind not in data:
-        return
-    del data[kind]
-    if data:
-        _write(data)
-        return
-    try:
-        cfg.SCAN_CHECKPOINT_FILE.unlink()
-    except FileNotFoundError:
-        pass
-    except OSError:
-        pass
+    with _lock:
+        data = _read()
+        if kind not in data:
+            return
+        del data[kind]
+        if data:
+            _write(data)
+            return
+        try:
+            cfg.SCAN_CHECKPOINT_FILE.unlink()
+        except FileNotFoundError:
+            pass
+        except OSError:
+            pass
 
 
 def pending() -> dict | None:

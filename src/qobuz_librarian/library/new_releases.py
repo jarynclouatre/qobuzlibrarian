@@ -7,9 +7,16 @@ baseline (so the back catalogue isn't dumped as "new") — later checks surface
 the difference. ``last_run`` lets the dashboard throttle the automatic check.
 """
 import json
+import threading
 import time
 
 from qobuz_librarian import config as cfg
+
+# The mutators below are load-modify-save sequences; a library scan seeds the
+# baseline from a worker thread while the dashboard's auto-check touches the run
+# time from another, so serialise them or one's stale snapshot clobbers the
+# other (worst case: baseline_complete gets wiped and the check never re-fires).
+_lock = threading.Lock()
 
 
 def load() -> dict:
@@ -59,12 +66,13 @@ def mark_run(seen, when=None, complete=False) -> None:
     the other fields (load-update-save, not a fresh dict). complete=True also
     marks the baseline ready — a full new-release check crawls every artist, so
     a clean one establishes the baseline just like a library scan does."""
-    state = load()
-    state["seen"] = seen
-    state["last_run"] = when if when is not None else time.time()
-    if complete:
-        state["baseline_complete"] = True
-    save(state)
+    with _lock:
+        state = load()
+        state["seen"] = seen
+        state["last_run"] = when if when is not None else time.time()
+        if complete:
+            state["baseline_complete"] = True
+        save(state)
 
 
 def is_baseline_complete() -> bool:
@@ -78,10 +86,11 @@ def seed_baseline(seen) -> None:
     """Record the per-artist catalog snapshot from a cleanly-completed library
     scan and mark the baseline ready. The scan already fetched every discography,
     so this captures "what exists now" for free; the daily check diffs against it."""
-    state = load()
-    state["seen"] = {str(k): list(v) for k, v in (seen or {}).items()}
-    state["baseline_complete"] = True
-    save(state)
+    with _lock:
+        state = load()
+        state["seen"] = {str(k): list(v) for k, v in (seen or {}).items()}
+        state["baseline_complete"] = True
+        save(state)
 
 
 def auto_scan_attempted() -> bool:
@@ -92,9 +101,10 @@ def note_auto_scan_attempted() -> None:
     """Remember that the first-run library scan was auto-started, so a fresh one
     isn't relaunched on every load if the user cancels it. (An interrupted scan
     leaves a checkpoint and is auto-resumed regardless of this flag.)"""
-    state = load()
-    state["auto_scan_attempted"] = True
-    save(state)
+    with _lock:
+        state = load()
+        state["auto_scan_attempted"] = True
+        save(state)
 
 
 def touch_run(when=None) -> None:
@@ -102,15 +112,17 @@ def touch_run(when=None) -> None:
     baseline). Called when the auto-check submits, so a run that fails or is
     cancelled doesn't re-fire on every dashboard load until one happens to
     succeed."""
-    state = load()
-    state["last_run"] = float(when) if when is not None else time.time()
-    save(state)
+    with _lock:
+        state = load()
+        state["last_run"] = float(when) if when is not None else time.time()
+        save(state)
 
 
 def record_artist_seen(artist_id, album_ids) -> None:
     """Update one artist's baseline without touching last_run (that's the
     whole-library check's throttle). Used by the per-artist Artist-page scan so
     its new-release flagging shares the same baseline as the library check."""
-    state = load()
-    state.setdefault("seen", {})[str(artist_id)] = list(album_ids)
-    save(state)
+    with _lock:
+        state = load()
+        state.setdefault("seen", {})[str(artist_id)] = list(album_ids)
+        save(state)
