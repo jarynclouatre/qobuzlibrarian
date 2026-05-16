@@ -521,6 +521,11 @@ def _execute_download_queue(queue, args, token, *, on_progress=None):
         log.info(fmt(C.BOLD + C.WHITE,
             f"  [Q {idx}/{n_items}] {truncate(title, 55)}"))
 
+        # Snapshot staging before the backup: a custom config can point
+        # UPGRADE_BACKUP_DIR inside STAGING_DIR, and a backup copied in after the
+        # snapshot would read as freshly downloaded audio. The single-album path
+        # snapshots first too.
+        item["snapshot_before"] = snapshot_staging()
         if item["auto_upgrade"] and album_dir and album_dir.exists():
             bp = backup_album_dir(album_dir)
             if bp is None:
@@ -530,8 +535,6 @@ def _execute_download_queue(queue, args, token, *, on_progress=None):
                 results.append(_resolve_queue_item(item, args, False))
                 continue   # nothing downloaded — stays queued for retry
             item["backup_path"] = bp
-
-        item["snapshot_before"] = snapshot_staging()
         try:
             _download_for_queue_item(item)
         except KeyboardInterrupt:
