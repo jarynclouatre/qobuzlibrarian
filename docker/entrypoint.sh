@@ -46,21 +46,34 @@ fi
 #     "a new version is available" notice can't be acted on; turning it off
 #     also drops a PyPI request from every download.
 enforce_streamrip() {
-    local key="$1" want="$2" cfg="$STREAMRIP_DIR/config.toml" cur
+    local key="$1" want="$2" section="$3" cfg="$STREAMRIP_DIR/config.toml" cur
     cur=$(sed -n "s/^${key} = \(.*\)/\1/p" "$cfg" 2>/dev/null)
-    if [ -z "$cur" ] || [ "$cur" = "$want" ]; then
+    if [ "$cur" = "$want" ]; then
         return 0
     fi
-    if sed -i "s/^${key} = .*/${key} = ${want}/" "$cfg" 2>/dev/null; then
-        echo "[init] Set streamrip ${key}=${want} (was ${cur})."
+    if grep -q "^${key} = " "$cfg" 2>/dev/null; then
+        if sed -i "s/^${key} = .*/${key} = ${want}/" "$cfg" 2>/dev/null; then
+            echo "[init] Set streamrip ${key}=${want} (was ${cur})."
+        else
+            echo "[warn] couldn't set streamrip ${key}=${want} — mount /config read-write." >&2
+        fi
+    elif grep -q "^\[${section}\]" "$cfg" 2>/dev/null; then
+        # Key absent (an older streamrip's config predates it) — add it under its
+        # section rather than skipping, which would silently keep streamrip's
+        # default. Appending at EOF would land it under the wrong [table].
+        if sed -i "/^\[${section}\]/a ${key} = ${want}" "$cfg" 2>/dev/null; then
+            echo "[init] Added streamrip ${key}=${want} under [${section}]."
+        else
+            echo "[warn] couldn't add streamrip ${key}=${want} — mount /config read-write." >&2
+        fi
     else
-        echo "[warn] couldn't set streamrip ${key}=${want} — mount /config read-write." >&2
+        echo "[warn] streamrip config has no [${section}] — can't enforce ${key}=${want}." >&2
     fi
 }
-enforce_streamrip downloads_enabled false
-enforce_streamrip add_singles_to_folder true
-enforce_streamrip download_booklets false
-enforce_streamrip check_for_updates false
+enforce_streamrip downloads_enabled false database
+enforce_streamrip add_singles_to_folder true filepaths
+enforce_streamrip download_booklets false qobuz
+enforce_streamrip check_for_updates false misc
 
 # The streamrip config holds the Qobuz token once creds are set. The web/env
 # write path lands 0600 (atomic mkstemp+replace); the seeded default arrives
