@@ -109,12 +109,18 @@ def hide(scope, items):
 
 
 def restore(scope, artists):
-    """Un-hide every album whose stored artist is in `artists`. Returns the
-    count removed."""
+    """Un-hide every album whose stored artist matches one in `artists`. Returns
+    the count removed.
+
+    Matched on the normalized artist, like the rest of the store keys, so a
+    casing or spacing difference between the posted value and the stored string
+    still restores it (and every casing variant of one artist clears together)
+    rather than stranding an album as un-restorable."""
     store = load()
     bucket = store.get(scope) or {}
-    targets = set(artists)
-    drop = [fp for fp, e in bucket.items() if (e.get("artist") or "") in targets]
+    targets = {normalize(a) for a in artists if normalize(a)}
+    drop = [fp for fp, e in bucket.items()
+            if normalize(e.get("artist") or "") in targets]
     for fp in drop:
         bucket.pop(fp, None)
     if drop:

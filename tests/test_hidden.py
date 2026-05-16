@@ -34,6 +34,15 @@ def test_hide_is_scoped_durable_and_restorable(monkeypatch, tmp_path):
     assert hidden.count(hidden.SCOPE_MISSING) == 0
 
 
+def test_restore_matches_artist_case_and_accent_insensitively(monkeypatch, tmp_path):
+    # A casing/spacing/accent drift between the posted value and the stored
+    # artist must still restore — restore compares normalized, like the keys.
+    monkeypatch.setattr("qobuz_librarian.config.HIDDEN_FILE", tmp_path / "h.json")
+    assert hidden.hide(hidden.SCOPE_MISSING, [("Sigur Rós", "Takk", "2005")]) == 1
+    assert hidden.restore(hidden.SCOPE_MISSING, ["sigur ros"]) == 1
+    assert hidden.count(hidden.SCOPE_MISSING) == 0
+
+
 def test_load_tolerates_a_corrupt_file(monkeypatch, tmp_path):
     p = tmp_path / "h.json"
     p.write_text("{ not json", encoding="utf-8")
