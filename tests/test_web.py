@@ -174,6 +174,23 @@ def test_scan_job_parks_for_review_then_executes():
     assert executed["ids"] == [2]
 
 
+def test_late_cancel_does_not_discard_a_parked_review():
+    # A cancel flag arriving just as a scan parks its results must not flip
+    # AWAITING_REVIEW to CANCELED — the found candidates would be lost.
+    # cancel_review is the explicit path for dismissing a parked review.
+    job = jm.Job(title="scan")
+    job.status = jm.JobStatus.RUNNING
+    job.cancel_requested = True
+
+    def fn(j):
+        j.add_candidate("album", "Album A", "Artist", payload={"id": 1})
+        j.status = jm.JobStatus.AWAITING_REVIEW
+
+    jm._run_task(job, fn)
+    assert job.status == jm.JobStatus.AWAITING_REVIEW
+    assert len(job.candidates) == 1
+
+
 def test_submit_failing_job_marks_failed():
     jm.start_worker()
 

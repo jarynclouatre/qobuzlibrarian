@@ -464,8 +464,12 @@ def _run_task(job: Job, fn):
     _TLS.current_job = job
     try:
         fn(job)
-        if job.cancel_requested and job.status not in TERMINAL:
-            # A cooperative fn returned early on the cancel flag.
+        if (job.cancel_requested and job.status not in TERMINAL
+                and job.status != JobStatus.AWAITING_REVIEW):
+            # A cooperative fn returned early on the cancel flag. A scan that
+            # reached AWAITING_REVIEW finished and parked results — a cancel
+            # landing just after that mustn't discard them; cancel_review is
+            # the explicit path for dismissing a parked review.
             job.status = JobStatus.CANCELED
         # fn may have parked the job in AWAITING_REVIEW (scan with results);
         # only auto-complete a job that's still RUNNING.
