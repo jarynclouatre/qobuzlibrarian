@@ -64,16 +64,20 @@ check /search                 200
 check /artist                 200
 check /library                200
 check /upgrade                200
+check /downsample             200
 check /repair                 200
 check /audit                  308   # legacy alias; redirects to /repair
+check /lyrics                 200
+check /migrate                200
 check /queue                  200
+check /queue/history          200
 check /settings               200
 check /static/icon.png        200
 check /static/logo.png        200
 check /api/jobs/nope/status   404   # unknown job id
 
 echo "==> Checking bundled tools in the image"
-for bin in rip beet ffmpeg flac; do
+for bin in rip beet ffmpeg flac metaflac fpcalc; do
     if docker exec "$NAME" sh -c "command -v $bin" >/dev/null 2>&1; then
         echo "  ok  $bin present"
     else
