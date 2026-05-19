@@ -323,6 +323,20 @@ def test_execute_migration_copies_selected_and_keeps_originals(tmp_path):
     assert (dest / "migration-results.csv").exists()
 
 
+def test_resume_migration_passes_the_persisted_src(monkeypatch):
+    # A restart resumes from execute_args; src must survive so an in-place move
+    # still prunes the emptied source folders rather than leaving the husks.
+    from qobuz_librarian.web import app as webapp
+    from qobuz_librarian.web import flows
+    captured = {}
+    monkeypatch.setattr(flows, "execute_migration",
+                        lambda j, chosen, dest, *, in_place, src: captured.update(
+                            dest=dest, in_place=in_place, src=src))
+    fn = webapp._resume_migration(None, {"dest": "/d", "in_place": True, "src": "/old"})
+    fn(None, [])
+    assert captured == {"dest": "/d", "in_place": True, "src": Path("/old")}
+
+
 def test_album_tag_with_year_isnt_doubled():
     plan = m.build_plan([(Path("/s/x.flac"),
         _meta(album="Black Sands (2010)", year=2010, title="Kong", track=3), "tags")],

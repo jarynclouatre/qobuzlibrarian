@@ -104,8 +104,10 @@ def _resume_migration(job, args):
     from qobuz_librarian.web import flows
     dest = args.get("dest", "")
     in_place = bool(args.get("in_place"))
+    src = args.get("src")
     return lambda j, chosen: flows.execute_migration(
-        j, chosen, dest, in_place=in_place)
+        j, chosen, dest, in_place=in_place,
+        src=Path(src) if src else None)
 
 
 def _resume_downsample(job, _args):
@@ -1413,7 +1415,10 @@ async def migrate_scan(request: Request):
     job = job_mgr.Job(title="Library migration")
     job.review_verb = "Move" if in_place else "Copy"
     job.execute_kind = "migration"
-    job.execute_args = {"dest": str(dest), "in_place": bool(in_place)}
+    # src is persisted so a resume after restart can still prune the emptied
+    # source folders on an in-place move (the live execute below gets it too).
+    job.execute_args = {"dest": str(dest), "in_place": bool(in_place),
+                        "src": str(src)}
     job_mgr.submit_scan(
         job,
         lambda j: flows.scan_migration(j, src, dest, use_acoustid=use_acoustid,
