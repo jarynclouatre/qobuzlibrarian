@@ -364,13 +364,18 @@ def _query_provider(query: str, prov: str, log: logging.Logger, **kwargs) -> Opt
     if _is_provider_dead(prov, log):
         return None
     _ChatterCapture.begin()
+    raised = False
     try:
         result = syncedlyrics.search(query, providers=[prov], **kwargs)
     except Exception as e:
         log.debug("provider %s raised: %s", prov, e)
         result = None
+        raised = True
     chatter = _ChatterCapture.end()
-    if _PROVIDER_ERROR_RE.search(chatter):
+    # A provider that raises (rather than logging) is still a hard failure — it
+    # must strike the breaker, or a broken provider is re-queried for every
+    # track of a walk instead of being disabled after a few strikes.
+    if raised or _PROVIDER_ERROR_RE.search(chatter):
         with _breaker_lock:
             n = _provider_fails.get(prov, 0) + 1
             _provider_fails[prov] = n
