@@ -462,6 +462,10 @@ def _beets_direct(override_path, cleanup_fn, paths=None):
             encoding="utf-8",
             errors="replace",
             env=beet_env,
+            # Own session so a terminal Ctrl-C doesn't hit beets mid-import
+            # directly — the interrupt handler below kills it through the
+            # controlled path (cleanup + cache clear), like rip.py does.
+            start_new_session=True,
         )
     except OSError:
         log.info(fmt(C.RED, "  ✗  `beet` not found. Is beets installed?"))
