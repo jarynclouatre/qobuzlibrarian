@@ -4,9 +4,11 @@ Every library scan re-parses every audio file with mutagen; on a large library
 that's tens of thousands of reads redone each run even when nothing changed.
 Caching the parsed tags against the file's mtime (nanoseconds) and size means an
 unchanged file costs one ``stat()`` and a SQLite lookup instead of a full parse.
-A file edited or replaced changes its mtime/size, so the cache self-invalidates
-— no stale tags. Set ``FLAC_CACHE_ENABLED=false`` to disable; delete the db to
-force a re-parse.
+A file edited or replaced changes its mtime or size, invalidating the entry, so
+in normal use there are no stale tags. The one gap is a retag that preserves
+BOTH mtime and size (e.g. an mtime restored with ``touch -r``), which keeps the
+cached tags until the file next changes. Set ``FLAC_CACHE_ENABLED=false`` to
+disable; delete the db to force a re-parse.
 """
 import json
 import os

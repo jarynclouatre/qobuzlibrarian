@@ -148,9 +148,10 @@ def get_artist_albums(artist_id, token, limit=None, fresh=False):
     Items are search-shaped (no tracks); call get_album() for those.
 
     fresh=True skips the catalog cache read and fetches from Qobuz — the
-    new-release check needs current data, and refreshing the cache as a side
-    effect keeps later gap scans both fast and up to date. The result is always
-    written back to the cache regardless."""
+    new-release check needs current data, and a complete fetch refreshes the
+    cache as a side effect so later gap scans stay fast. A short or partial
+    result (fewer than Qobuz's own total) is used for this run but NOT cached,
+    so the next scan re-fetches rather than trust it."""
     limit = limit if limit is not None else config.ARTIST_CATALOG_LIMIT
     from qobuz_librarian.api import album_cache
     cache_key = f"{artist_id}:{limit}"
