@@ -66,11 +66,16 @@ def _isolate_data_dir():
     # session.
     prior_env = {k: os.environ.get(k) for k in
                  ("WEB_AUTH", "DATA_DIR", "NEW_RELEASE_CHECK_INTERVAL",
-                  "AUTO_LIBRARY_SCAN")}
+                  "AUTO_LIBRARY_SCAN", "ALBUM_CACHE_ENABLED", "FLAC_CACHE_ENABLED")}
     os.environ["WEB_AUTH"] = "none"
     os.environ["DATA_DIR"] = str(tmp_root)
     os.environ["NEW_RELEASE_CHECK_INTERVAL"] = "0"
     os.environ["AUTO_LIBRARY_SCAN"] = "false"
+    # The caches are env-backed too so a test that importlib.reload(cfg) keeps
+    # them off (their derived paths recompute under the temp DATA_DIR) instead
+    # of reverting on for the rest of the session.
+    os.environ["ALBUM_CACHE_ENABLED"] = "false"
+    os.environ["FLAC_CACHE_ENABLED"] = "false"
 
     yield
 
