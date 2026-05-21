@@ -5,7 +5,7 @@ import sys
 import time
 
 from qobuz_librarian import config as cfg
-from qobuz_librarian.api.auth import AuthLost
+from qobuz_librarian.api.auth import AuthLost, QobuzUnavailable
 from qobuz_librarian.library.catalog import album_year, find_existing_tracks
 from qobuz_librarian.library.scanner import clear_scan_caches, list_library_artists
 from qobuz_librarian.library.tags import VA_NORMALIZED, normalize
@@ -117,7 +117,10 @@ def run_upgrade_walk_mode(args, token):
             try:
                 candidates = scan_artist_for_upgrades(
                     artist_name, artist_dir, token, args, capped=capped)
-            except AuthLost:
+            except (AuthLost, QobuzUnavailable):
+                # Finish the progress line before the abort propagates to the
+                # clean EXIT_AUTH / EXIT_TRANSIENT stop in the entry point.
+                print()
                 raise
             except KeyboardInterrupt:
                 print()

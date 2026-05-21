@@ -7,7 +7,7 @@ from collections import Counter
 from pathlib import Path
 
 from qobuz_librarian import config as cfg
-from qobuz_librarian.api.auth import AuthLost, QobuzError
+from qobuz_librarian.api.auth import AuthLost, QobuzError, QobuzUnavailable
 from qobuz_librarian.api.search import get_album
 from qobuz_librarian.library.backup import backup_gap_fill_files, restore_gap_fill_backup
 from qobuz_librarian.library.catalog import (
@@ -536,6 +536,11 @@ def run_album_repair_mode(args, token, *, loop=False):
                         except AuthLost:
                             print()
                             die(fmt(C.RED, _REPAIR_AUTH_LOST), EXIT_AUTH)
+                        except QobuzUnavailable:
+                            # Finish the progress line before the transient
+                            # abort propagates to the clean EXIT_TRANSIENT stop.
+                            print()
+                            raise
                         tally[status] = tally.get(status, 0) + 1
                 except KeyboardInterrupt:
                     print()
