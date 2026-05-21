@@ -126,6 +126,24 @@ def test_restore_upgrade_backup_survives_rmtree_failure_mid_walk(tmp_path):
     shutil.rmtree(original.with_name(original.name + ".restore_trash"))
 
 
+def test_restore_upgrade_backup_clears_a_stale_restore_trash(tmp_path):
+    # A prior interrupted restore can leave a .restore_trash beside the album;
+    # it must be cleared, or it blocks the rename here (and orphans forever).
+    backup = tmp_path / "backup"
+    backup.mkdir()
+    (backup / "intact.flac").write_bytes(b"a" * 100_000)
+    original = tmp_path / "Album"
+    original.mkdir()
+    (original / "partial.flac").write_bytes(b"x" * 1_000)
+    stale = original.with_name(original.name + ".restore_trash")
+    stale.mkdir()
+    (stale / "old.flac").write_bytes(b"x" * 500)
+
+    assert restore_upgrade_backup(backup, original) is True
+    assert (original / "intact.flac").exists()
+    assert not stale.exists()
+
+
 # ── backup_gap_fill_files ───────────────────────────────────────────────────
 
 def test_gap_fill_backup_falls_back_to_copy_on_cross_device_rename(tmp_path, monkeypatch):

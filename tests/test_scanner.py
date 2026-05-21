@@ -52,6 +52,9 @@ def test_list_artist_album_dirs_excludes_dot_and_empty_folders(tmp_path):
     art_only = tmp_path / "Art Only"
     art_only.mkdir()
     (art_only / "cover.jpg").write_bytes(b"img")           # art only → skipped
+    trash = tmp_path / "Kid A (2000).restore_trash"        # interrupted restore
+    trash.mkdir()
+    (trash / "01.flac").write_bytes(b"audio")              # has audio, still skipped
     names = [d.name for d in list_artist_album_dirs(tmp_path)]
     assert names == ["Kid A (2000)", "OK Computer (1997)"]
 

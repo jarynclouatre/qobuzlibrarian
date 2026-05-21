@@ -347,6 +347,14 @@ def restore_upgrade_backup(backup_path: Path, original_path: Path) -> bool:
                 # a recognisable trash dir rather than a half-deleted album
                 # path that beets would later collide with.
                 trash = original_path.with_name(original_path.name + ".restore_trash")
+                if trash.exists():
+                    # A prior interrupted restore can leave this behind; clear it
+                    # now so it both stops being an orphan and doesn't block the
+                    # rename below (which would fail onto a non-empty dir).
+                    try:
+                        shutil.rmtree(str(trash))
+                    except OSError:
+                        pass
                 try:
                     os.rename(str(original_path), str(trash))
                 except OSError as e:

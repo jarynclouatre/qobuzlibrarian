@@ -252,6 +252,8 @@ def list_artist_album_dirs(artist_dir: Path):
                 continue
             if d.name.startswith("."):          # skip hidden dirs (.Trash, .DS_Store/, etc.)
                 continue
+            if d.name.endswith(".restore_trash"):  # leftover from an interrupted restore
+                continue
             if not _has_audio_anywhere(d):
                 empties.append(d.name)
                 continue
