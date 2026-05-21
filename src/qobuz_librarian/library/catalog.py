@@ -1444,10 +1444,17 @@ def find_qobuz_album_for_dir(album_dir: Path, artist_name: str, token,
         return None
 
     _sort_by_match(candidates, prefer_hires)
-    best_score, _best_year_bonus, best = candidates[0]
-    if best_score < config.ARTIST_DIR_MATCH_THRESH:
-        vlog(f"    best Qobuz match {best.get('title')!r} scored {best_score:.2f} — under threshold")
+    # Threshold on the RAW score, not the year-boosted sort rank: a nearby-year
+    # but title-weak candidate can sort first yet fail the threshold, so don't
+    # let it shadow a higher-raw candidate that clears the bar. Keep the passing
+    # ones; the sort order then picks the best among them.
+    passing = [c for c in candidates if c[0] >= config.ARTIST_DIR_MATCH_THRESH]
+    if not passing:
+        top = candidates[0]
+        vlog(f"    best Qobuz match {top[2].get('title')!r} scored "
+             f"{top[0]:.2f} — under threshold")
         return None
+    best_score, _best_year_bonus, best = passing[0]
 
     # When a specific on-disk target is required, walk all viable candidates
     # and return the first whose predicted path resolves back to target_dir.
