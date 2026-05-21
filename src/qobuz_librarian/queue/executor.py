@@ -332,15 +332,42 @@ def _resolve_queue_item(item, args, imported_globally):
         # Backup resolution uses stricter success than art/sibling cleanup —
         # the backup is the only intact copy of pre-upgrade content, so only
         # drop it when the new folder is whole (n_fail == 0 AND n_lossy == 0).
-        n_fail_item = item.get("n_fail", 0)
-        n_lossy_item = item.get("n_lossy", 0)
-        per_album_success = had_any_success and n_fail_item == 0 and n_lossy_item == 0
-        if per_album_success:
-            try:
-                shutil.rmtree(bp)
-            except OSError as e:
+        # _item_strict_success is the download-and-import-was-clean signal,
+        # independent of whether we then relocated the imported folder.
+        if _item_strict_success and album_has_content:
+            # bp is set only for an auto-upgrade, which wiped the only full copy,
+            # so clear the same bar process.py does before deleting the backup:
+            # the rebuilt folder must be verifiably at least as complete as the
+            # original (track count + playtime), not merely decode-clean. The
+            # artist/upgrade walks run their bulk upgrades through this executor,
+            # so without this they'd skip the C01/C02 completeness gate.
+            from qobuz_librarian.modes.process import _upgrade_replacement_verified
+            if _upgrade_replacement_verified(item["album"], album_dir, bp):
+                try:
+                    shutil.rmtree(bp)
+                except OSError as e:
+                    log.info(fmt(C.YELLOW,
+                        f"  ⚠  Couldn't remove backup for {truncate(album_dir.name, 40)}: {e}"))
+            else:
                 log.info(fmt(C.YELLOW,
-                    f"  ⚠  Couldn't remove backup for {truncate(album_dir.name, 40)}: {e}"))
+                    f"  ⚠  {truncate(album_dir.name, 40)}: upgrade couldn't be "
+                    f"verified as complete — keeping your original."))
+                log.info(fmt(C.GRAY,
+                    f"     Original preserved at {bp} "
+                    f"(auto-cleaned after {cfg.UPGRADE_BACKUP_RETENTION_DAYS} days)."))
+        elif _item_strict_success:
+            # The download and import succeeded cleanly, but the imported album
+            # couldn't be relocated (beets renamed the folder past what the
+            # matcher found), so post_dir fell back to the original we'd moved
+            # aside. Restoring it now would duplicate the content beside the
+            # fresh import — keep the backup and let the user reconcile.
+            log.info(fmt(C.YELLOW,
+                f"  ⚠  {truncate(album_dir.name, 40)}: imported, but the new "
+                f"folder couldn't be located — keeping the backup rather than "
+                f"restoring it as a duplicate."))
+            log.info(fmt(C.GRAY,
+                f"     Backup at {bp}; remove it once you've confirmed the "
+                f"upgrade landed."))
         elif args.no_import:
             log.info(fmt(C.YELLOW,
                 f"  ⚠  {truncate(album_dir.name, 40)}: backup kept at {bp}"))

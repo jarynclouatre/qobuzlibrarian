@@ -128,6 +128,70 @@ def test_executor_gap_fill_backup_restored_when_track_returns_lossy(monkeypatch,
     assert owned.read_bytes() == b"the-owned-original"
 
 
+def test_executor_upgrade_runs_completeness_gate_before_dropping_backup(monkeypatch, tmp_path):
+    # The artist/upgrade walks bulk-upgrade through this executor, so it must run
+    # the same completeness gate process.py does: a decode-clean import whose
+    # rebuilt folder isn't verifiably as complete as the backup KEEPS the backup.
+    from qobuz_librarian.modes import process as proc
+    from qobuz_librarian.queue import executor
+
+    album_dir = tmp_path / "music" / "Artist" / "Album"
+    album_dir.mkdir(parents=True)
+    (album_dir / "01.flac").write_bytes(b"new")
+    backup = tmp_path / "backups" / "Album.bak"
+    backup.mkdir(parents=True)
+    (backup / "01.flac").write_bytes(b"old")
+
+    monkeypatch.setattr(executor, "find_album_dir_filesystem", lambda _a: album_dir)
+    monkeypatch.setattr(executor, "cleanup_duplicate_art", lambda _d: 0)
+
+    item = {
+        "album": {"id": "A", "artist": {"name": "Artist"}, "tracks": {"items": []}},
+        "album_dir": album_dir, "backup_path": backup, "gap_fill_backup_path": None,
+        "siblings_to_delete": [], "n_ok": 1, "n_fail": 0, "n_lossy": 0,
+        "auto_upgrade": True,
+    }
+    args = Namespace(migrate_multi_artist=False, no_import=False, consolidate=False)
+
+    monkeypatch.setattr(proc, "_upgrade_replacement_verified", lambda *a: False)
+    executor._resolve_queue_item(item, args, imported_globally=True)
+    assert backup.exists()                       # unverified → backup kept
+
+    monkeypatch.setattr(proc, "_upgrade_replacement_verified", lambda *a: True)
+    item["backup_path"] = backup
+    executor._resolve_queue_item(item, args, imported_globally=True)
+    assert not backup.exists()                   # verified → backup cleared
+
+
+def test_executor_upgrade_keeps_backup_when_new_folder_not_located(monkeypatch, tmp_path):
+    # Clean import but the renamed folder can't be relocated → keep the backup,
+    # never restore it as a duplicate beside the fresh import.
+    from qobuz_librarian.queue import executor
+
+    album_dir = tmp_path / "music" / "Artist" / "Album"
+    album_dir.mkdir(parents=True)                # original was moved aside; empty
+    backup = tmp_path / "backups" / "Album.bak"
+    backup.mkdir(parents=True)
+    (backup / "01.flac").write_bytes(b"old")
+
+    monkeypatch.setattr(executor, "find_album_dir_filesystem", lambda _a: None)
+    monkeypatch.setattr(executor, "cleanup_duplicate_art", lambda _d: 0)
+    restored = []
+    monkeypatch.setattr(executor, "restore_upgrade_backup",
+                        lambda bp, dest: restored.append((bp, dest)) or True)
+
+    item = {
+        "album": {"id": "A", "artist": {"name": "Artist"}, "tracks": {"items": []}},
+        "album_dir": album_dir, "backup_path": backup, "gap_fill_backup_path": None,
+        "siblings_to_delete": [], "n_ok": 1, "n_fail": 0, "n_lossy": 0,
+        "auto_upgrade": True,
+    }
+    args = Namespace(migrate_multi_artist=False, no_import=False, consolidate=False)
+    executor._resolve_queue_item(item, args, imported_globally=True)
+
+    assert backup.exists() and restored == []
+
+
 def test_executor_per_album_isolation_one_album_failure_keeps_others(monkeypatch, tmp_path):
     """The whole point of the per-album pipeline: a beets failure on
     album N leaves albums 1..N-1 already imported and N+1..end still
