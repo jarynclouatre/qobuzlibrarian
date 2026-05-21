@@ -2,6 +2,7 @@
 import os
 import re
 import sys
+import tempfile
 
 from qobuz_librarian import config as cfg
 from qobuz_librarian.api.auth import AuthLost, QobuzUnavailable
@@ -48,8 +49,10 @@ def _atomic_append(path, header_lines, entry):
 
     Plain "a" mode leaves a truncated line on the disk if the process dies
     mid-write; the next reader silently drops the partial line and the
-    entry is lost. Writing the full intended content to a sibling tmp and
-    renaming it eliminates the partial-write window.
+    entry is lost. Writing the full intended content to a unique sibling temp
+    and renaming it eliminates the partial-write window — and a unique name
+    (not a shared ``.tmp``) avoids clobbering a concurrent writer or orphaning
+    a fixed temp if a write is interrupted.
     """
     existing = path.read_bytes() if path.exists() else b""
     content = bytearray()
@@ -58,9 +61,18 @@ def _atomic_append(path, header_lines, entry):
             content.extend(line.encode("utf-8"))
     content.extend(existing)
     content.extend(entry.encode("utf-8"))
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_bytes(bytes(content))
-    os.replace(tmp, path)
+    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=path.name + ".",
+                               suffix=".tmp")
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(bytes(content))
+        os.replace(tmp, path)
+    except OSError:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def record_walk_seen(artist_name, seen=None):
