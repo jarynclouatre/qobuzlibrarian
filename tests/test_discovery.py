@@ -161,6 +161,26 @@ def test_partial_owned_album_reports_the_real_track_gap(monkeypatch, tmp_path, b
     assert len(gap.missing) == 4
 
 
+def test_fuzzy_match_to_a_different_album_is_not_a_false_partial_gap(monkeypatch, tmp_path):
+    # The user owns 'Untitled 1'; the catalog has the distinct 'Untitled 2'
+    # (similar name, shares only an 'Intro'). Folder-name resolution can land
+    # 'Untitled 2' on the 'Untitled 1' folder, but that folder is mostly other
+    # tracks — so it must be offered as fully-missing, not a fabricated partial
+    # gap over an album the user doesn't actually have.
+    catalog_album = _album("a2", "Untitled 2", "Test Artist", 2002,
+                           [_qt("Intro")] + [_qt(f"A{i}") for i in range(9)])
+    res = _run(monkeypatch, tmp_path,
+               query="Test Artist", artist_folder="Test Artist",
+               layout={"Test Artist": {"Untitled 1 (2001)":
+                                       [_et("Intro")] + [_et(f"B{i}") for i in range(9)]}},
+               catalog=[catalog_album],
+               artists=[{"name": "Test Artist", "id": "ta", "albums_count": 5}])
+
+    assert [g for g in res.gaps if g.on_disk_dir is not None] == []   # no false partial
+    fully = [g for g in res.gaps if g.on_disk_dir is None]
+    assert _titles(fully) == ["Untitled 2"]                           # fully-missing
+
+
 def test_deluxe_edition_gap_measured_against_the_owned_edition(monkeypatch, tmp_path, beatles_search):
     # The folder is an anniversary edition; the gap must be computed against the
     # edition that folder actually is (14 tracks), not the standard release —

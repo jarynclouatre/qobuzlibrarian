@@ -332,6 +332,16 @@ def match_album_dir(album_dir, artist_name, token, *, catalog, prefer_hires):
     missing, present = compute_missing(tracks, existing)
     if existing and not present:
         return DirMatch("false_match", album_dir, album, existing=existing)
+    # Resolution can land a different but similarly-named album here when the
+    # fuzzy match is symmetric (this album resolves back to this folder), so the
+    # predicted-path recheck above agrees even though it's the wrong album. A
+    # folder with a gap but dominated by tracks NOT in this album is that wrong
+    # album, not a partial of it — report it like a path mismatch so the album
+    # stays eligible to be offered fully-missing instead of as a fabricated gap.
+    # A folder that really is this album has no unrelated tracks, so a genuine
+    # partial (even owning just a few of its tracks) is never mislabelled here.
+    if missing and len(present) * 2 < len(existing):
+        return DirMatch("low_overlap", album_dir, album, existing=existing)
     status = "partial" if missing else "complete"
     return DirMatch(status, album_dir, album,
                     list(missing), list(present), existing)
@@ -366,27 +376,37 @@ def discover_fully_missing(artist_name, catalog, opts, *, hidden=None,
         existing, album_dir = find_existing_tracks(album)
         if album_dir is not None and str(album_dir) in resolved_dirs:
             continue
-        if not existing:
-            # The owned pass walks folders directly under the artist; a same-
-            # named folder its resolution missed must not be re-offered.
-            if _owned_by_name(owned_titles, album):
-                continue
-            gaps.append(AlbumGap(album, None))
-            continue
-        if quick:
+        if existing and quick:
             # New-release check: a catalog entry that resolves to a folder the
             # user already has (even partially) isn't new — skip it without the
-            # track-list fetch the partial-gap path below would do.
+            # track-list fetch the gap path below would need.
             continue
-        # Resolves to a folder the owned pass didn't walk (a collaboration filed
-        # under a second artist). Offer only the genuine gap, never a re-download
-        # over a folder that merely fuzz-matched (no track overlap).
-        album, tracks = _materialize_tracks(album, token)
-        if not tracks:
+        if existing:
+            # Resolves to a folder the owned pass didn't walk (e.g. a
+            # collaboration filed under a second artist). Fetch the tracks to
+            # tell a genuine partial from a fuzzy false match.
+            album, tracks = _materialize_tracks(album, token)
+            if not tracks:
+                continue
+            missing, present = compute_missing(tracks, existing)
+            # Resolution matched on folder-name similarity alone, so a different
+            # but similarly-named album that merely shares a title (an "Intro")
+            # can land here. A folder dominated by tracks NOT in this album is
+            # that wrong match; a folder that really is this album has no
+            # unrelated tracks, so this never hides a genuine gap — the false
+            # matches fall through to the fully-missing judgement instead.
+            if len(present) * 2 >= len(existing):
+                if missing and present:
+                    gaps.append(AlbumGap(album, album_dir,
+                                         list(missing), list(present)))
+                continue
+        # Not resolved, or resolved to a wrong folder. The owned pass walks
+        # folders directly under the artist; a same-named folder its resolution
+        # missed must not be re-offered, so check the year-aware owned-by-name
+        # backstop before calling the album fully-missing.
+        if _owned_by_name(owned_titles, album):
             continue
-        missing, present = compute_missing(tracks, existing)
-        if missing and present:
-            gaps.append(AlbumGap(album, album_dir, list(missing), list(present)))
+        gaps.append(AlbumGap(album, None))
     return gaps
 
 
@@ -502,13 +522,21 @@ def classify_owned_match(result, m, hidden, artist_name,
     catalog ids and folders the owned pass has now accounted for. A false or
     track-less match still counts as accounted-for (its folder fuzz-resolved
     there), so the missing pass won't re-offer that album; a predicted-path
-    mismatch or no-match does not."""
+    mismatch, a low-overlap wrong-album match, or no-match does not."""
     ad = m.album_dir
     if m.status == "no_match":
         result.unmatched_dirs.append(ad)
         return
     if m.status == "predicted_path_mismatch":
         result.skipped.append({"dir": ad, "reason": "predicted_path_mismatch",
+                               "qobuz_title": (m.qobuz_album or {}).get("title") or "?"})
+        return
+    if m.status == "low_overlap":
+        # A different, similarly-named album fuzz-matched this folder; like a
+        # path mismatch it's NOT accounted for, so the real album it matched
+        # stays eligible to be offered fully-missing rather than re-downloaded
+        # over this unrelated folder.
+        result.skipped.append({"dir": ad, "reason": "low_overlap",
                                "qobuz_title": (m.qobuz_album or {}).get("title") or "?"})
         return
     if m.qobuz_album and m.qobuz_album.get("id") is not None:
