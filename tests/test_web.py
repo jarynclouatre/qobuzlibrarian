@@ -1497,13 +1497,9 @@ def test_post_job_hook_receives_terminal_state_as_json(tmp_path, monkeypatch):
     job.status = jm.JobStatus.DONE
     job.finished_at = 1234.0
     _jobs._fire_post_job_hook(job)
-    # The subprocess.Popen runs async, but communicate() blocks; the file
-    # should be written by the time _fire_post_job_hook returns.
-    import time as _t
-    for _ in range(20):
-        if out.exists() and out.read_text():
-            break
-        _t.sleep(0.05)
+    # _fire_post_job_hook communicate()s the hook, so the file is written by the
+    # time it returns — wait for it rather than parse a possibly-empty file.
+    assert _wait_for(lambda: out.exists() and out.read_text())
     payload = json.loads(out.read_text())
     assert payload["id"] == "hook-test-id"
     assert payload["status"] == "done"
