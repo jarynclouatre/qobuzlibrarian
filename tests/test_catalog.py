@@ -215,9 +215,12 @@ def test_filter_owned_albums_doesnt_swallow_sequels_or_distinct_years():
     result = filter_owned_albums(pairs, {"load": [1996], "album": [2010]})
     assert [a["title"] for a, _ in result] == ["Reload"]
 
-    # A same-title release with a year far from owned is NOT a re-issue.
+    # An exact same-title match counts as owned regardless of the year gap: a
+    # far-off year is a remaster/reissue of the same work, so owning the 1966
+    # Revolver suppresses a 2022 Revolver instead of re-offering it as a
+    # duplicate. (The year window guards the fuzzy path, not the exact one.)
     pairs = [({"title": "Revolver", "release_date_original": "2022"}, 1)]
-    assert len(filter_owned_albums(pairs, {"revolver": [1966]})) == 1
+    assert filter_owned_albums(pairs, {"revolver": [1966]}) == []
 
     # An owned-year list with None still drops the match.
     pairs = [({"title": "Revolver", "release_date_original": "1966"}, 1)]

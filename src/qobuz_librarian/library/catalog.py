@@ -615,10 +615,10 @@ def _best_edition(group, prefer_hires):
 def filter_owned_albums(catalog_pairs, owned_bare_titles):
     """Drop catalog entries whose bare title matches something already owned.
 
-    Exact match (normalized bare title in owned_bare_titles) with a year-
-    aware check: if all owned copies are >3 years away, treat as distinct.
-    Falls back to fuzzy match at CONSOLIDATE_THRESH for edition variants the
-    decoration stripper didn't fully normalize.
+    An exact normalized-bare-title match counts as owned regardless of year (a
+    remaster is the same work in a new edition). Falls back to a fuzzy match at
+    CONSOLIDATE_THRESH for edition variants the decoration stripper didn't fully
+    normalize, where a nearby-year guard separates distinct same-named releases.
     """
     if not owned_bare_titles:
         return list(catalog_pairs)
@@ -630,18 +630,13 @@ def filter_owned_albums(catalog_pairs, owned_bare_titles):
             missing.append((album, n_versions))
             continue
         if key in owned_bare_titles:
-            owned_years = owned_bare_titles[key]
-            catalog_yr_str = album_year(album)
-            try:
-                catalog_yr = int(catalog_yr_str) if catalog_yr_str else None
-            except ValueError:
-                catalog_yr = None
-            if catalog_yr is None or None in owned_years:
-                continue
-            if any(abs(oy - catalog_yr) <= 3 for oy in owned_years
-                   if oy is not None):
-                continue
-            missing.append((album, n_versions))
+            # An exact normalized bare-title match is almost always the same
+            # work in a different edition — a remaster carries a far-off year —
+            # so it counts as owned regardless of the year gap. Otherwise owning
+            # a 2011 remaster of a 1973 album leaves the 1973 original offered as
+            # "missing" and re-downloaded as a duplicate. The year window's real
+            # job is the fuzzy path below, separating distinct same-named
+            # releases (sequels, numbered entries) that only resemble each other.
             continue
         # Fuzzy fallback for edition variants the stripper didn't fully
         # normalize. Require the catalog title to be the owned one plus a
