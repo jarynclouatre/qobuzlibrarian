@@ -344,11 +344,14 @@ def scan_library(job, token, partial_only=False):
     # Reached here only without an AuthLost/outage abort (that re-raises out
     # above, leaving the checkpoint for resume and not seeding the baseline).
     flush_resolve_cache()
-    _record_last_scan()
     if job.cancel_requested:
         # Deliberate stop — discard this kind's progress so it isn't auto-resumed.
         scan_checkpoint.clear(kind)
     else:
+        # Only a clean, complete crawl stamps "last scanned" — a cancelled scan
+        # mustn't make the dashboard read as freshly scanned and suppress the
+        # next automatic new-release check.
+        _record_last_scan()
         _flag_new_since_last_scan(job, kind)
         # The crawl reached every artist cleanly — establish the new-release
         # baseline from the catalog snapshot (only the first time; the daily

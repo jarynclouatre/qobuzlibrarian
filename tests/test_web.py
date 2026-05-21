@@ -1759,6 +1759,30 @@ def test_scan_library_propagates_authlost_so_job_fails(monkeypatch, tmp_path):
         flows.scan_library(job, "tok")
 
 
+def test_cancelled_library_scan_does_not_stamp_last_scan(monkeypatch, tmp_path):
+    # A cancelled scan must NOT record "last scanned" — otherwise the dashboard
+    # reads as freshly scanned and the automatic new-release check is suppressed.
+    from qobuz_librarian.library.discovery import DiscoveryResult
+    from qobuz_librarian.web import flows
+
+    artist_dir = tmp_path / "Artist"
+    artist_dir.mkdir()
+    monkeypatch.setattr(flows, "clear_scan_caches", lambda: None)
+    monkeypatch.setattr(flows, "list_library_artists", lambda: [artist_dir])
+    monkeypatch.setattr(flows, "find_missing_for_artist",
+                        lambda *a, **k: DiscoveryResult(None, None))
+    stamped = []
+    monkeypatch.setattr(flows, "_record_last_scan", lambda: stamped.append(1))
+
+    cancelled = jm.Job(title="cancelled scan")
+    cancelled.cancel_requested = True
+    flows.scan_library(cancelled, "tok")
+    assert stamped == []                 # cancelled → never stamped
+
+    flows.scan_library(jm.Job(title="clean scan"), "tok")
+    assert stamped == [1]                # a clean finish stamps exactly once
+
+
 def test_scan_upgrades_collects_every_artist(monkeypatch, tmp_path):
     """The upgrade scan fans artists out across worker threads; every artist's
     candidate must still land on the single-writer candidate list."""
