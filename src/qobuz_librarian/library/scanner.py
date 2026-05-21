@@ -163,6 +163,7 @@ def read_album_dir(album_dir: Path):
                 "discnumber":  int(disc_m.group(1)) if disc_m else 1,
                 "bits":        0,
                 "sample_rate": 0,
+                "channels":    0,
                 "length":      0.0,
                 "path":        str(f),
             }
