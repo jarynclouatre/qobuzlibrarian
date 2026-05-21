@@ -460,6 +460,7 @@ def execute_albums(job, chosen, token):
     _benign = {"already_complete", "skipped_already_higher_quality", "dry_run",
                "user_skipped", "lossy_only", "no_tracks"}
     ok = 0
+    partial = 0
     failed = 0
     processed = 0
     for i, cand in enumerate(chosen, 1):
@@ -488,7 +489,12 @@ def execute_albums(job, chosen, token):
             failed += 1
             continue
         if result and result.get("imported") and result.get("n_ok", 0) > 0:
-            ok += 1
+            # A partial (some tracks landed, some failed) isn't a full download —
+            # count it apart so the summary doesn't claim it finished.
+            if result.get("n_fail", 0) > 0:
+                partial += 1
+            else:
+                ok += 1
         elif not (result and result.get("result") in _benign):
             failed += 1
         time.sleep(cfg.ARTIST_API_DELAY)
@@ -496,6 +502,9 @@ def execute_albums(job, chosen, token):
         log.info(f"Cancelled — {ok} downloaded, {len(chosen) - processed} not started.")
         return
     log.info(f"Finished — {ok}/{plural(len(chosen), 'album')} downloaded and imported.")
+    if partial:
+        log.info(f"  {plural(partial, 'album')} downloaded only partly "
+                 f"(some tracks failed) — see the log.")
     if failed:
         job.error = f"{failed} of {plural(len(chosen), 'album')} didn't finish — see the log."
 
