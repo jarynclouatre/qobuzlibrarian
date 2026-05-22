@@ -106,6 +106,10 @@ class ExecResult:
     copied: int = 0
     skipped: int = 0
     failed: int = 0
+    # In-place moves that reached the destination but whose source couldn't be
+    # deleted, so the original still occupies space — counted apart from clean
+    # moves so the summary doesn't claim them as fully relocated.
+    lingered: int = 0
     cancelled: bool = False
     # One (source, dest_rel, status, reason) per attempted file — the record of
     # what actually happened, surfaced to the user and written to the results
@@ -630,20 +634,33 @@ def execute_plan(plan: MigrationPlan, *, in_place: bool = False,
         dst = plan.dest_root / entry.dest_rel
         if progress:
             progress("Copying into the new library", i, total, src.name)
+        if dst.exists():
+            # Already placed — a re-run after a cancel/crash, or a collision
+            # that turned up after planning. Resuming an in-place move where
+            # the source is already gone must read as done here, not as a
+            # "source vanished" failure (dst is checked first for that reason).
+            result.skipped += 1
+            result.outcomes.append((src, entry.dest_rel, SKIPPED,
+                                    "destination already present"))
+            continue
         if not src.exists():
             result.failed += 1
             result.outcomes.append((src, entry.dest_rel, FAILED,
                                     "source vanished before copy"))
             continue
-        if dst.exists():
-            result.skipped += 1
-            result.outcomes.append((src, entry.dest_rel, SKIPPED,
-                                    "destination already present"))
-            continue
         try:
             _place_file(src, dst, move=in_place)
-            result.copied += 1
-            result.outcomes.append((src, entry.dest_rel, COPIED, ""))
+            if in_place and src.exists():
+                # The copy verified but the original couldn't be removed
+                # (logged in _place_file). The file is at the destination, but
+                # the source still occupies space — report it apart from a
+                # clean move so prune/summary don't treat it as relocated.
+                result.lingered += 1
+                result.outcomes.append((src, entry.dest_rel, COPIED,
+                                        "source could not be removed"))
+            else:
+                result.copied += 1
+                result.outcomes.append((src, entry.dest_rel, COPIED, ""))
         except (OSError, shutil.Error) as e:
             result.failed += 1
             result.outcomes.append((src, entry.dest_rel, FAILED, str(e)))

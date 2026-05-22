@@ -177,6 +177,10 @@ def run_migrate_mode(args):
     if result.skipped:
         log.info(fmt(C.YELLOW,
             f"  ⚠  {result.skipped} skipped (destination already existed)."))
+    if result.lingered:
+        log.info(fmt(C.YELLOW,
+            f"  ⚠  {result.lingered} moved but the original couldn't be removed "
+            f"(still at the source)."))
     if pruned:
         log.info(fmt(C.GRAY,
             f"  Cleared {pruned} now-empty folder(s) from the source."))
