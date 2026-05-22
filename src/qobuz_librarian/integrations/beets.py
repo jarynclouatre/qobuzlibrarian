@@ -827,11 +827,22 @@ def forget_beets_entries(paths):
         if query:
             query.append(",")
         query.append("path:" + p)
+    def _ghost_warning(reason):
+        # The files are already gone from disk, so a remove that can't run
+        # leaves their rows behind as ghost entries in `beet ls` until a
+        # hand-run `beet update` notices the missing files. Returning 0
+        # silently reads as "nothing to forget", so say what happened.
+        log.info(fmt(C.YELLOW,
+            f"  ⚠  Couldn't drop the deleted track(s) from the beets library "
+            f"({reason}); they'll linger as ghost entries until you run "
+            f"`beet update`."))
+
     try:
         listing = subprocess.run(base + ["ls", "-f", "$id", *query],
                                  capture_output=True, text=True,
                                  env=beet_env, timeout=120)
-    except (OSError, subprocess.SubprocessError):
+    except (OSError, subprocess.SubprocessError) as e:
+        _ghost_warning(f"couldn't read the library — {e}")
         return 0
     tracked = sum(1 for line in listing.stdout.splitlines() if line.strip())
     if not tracked:
@@ -840,9 +851,20 @@ def forget_beets_entries(paths):
         rm = subprocess.run(base + ["remove", "-f", *query],
                             capture_output=True, text=True,
                             env=beet_env, timeout=120)
-    except (OSError, subprocess.SubprocessError):
+        # A nonzero exit is usually a transient DB lock — retry once before
+        # falling back to the manual-recovery message (mirrors the
+        # consolidation re-import retry above).
+        if rm.returncode != 0:
+            rm = subprocess.run(base + ["remove", "-f", *query],
+                                capture_output=True, text=True,
+                                env=beet_env, timeout=120)
+    except (OSError, subprocess.SubprocessError) as e:
+        _ghost_warning(f"beet remove couldn't run — {e}")
         return 0
-    return tracked if rm.returncode == 0 else 0
+    if rm.returncode == 0:
+        return tracked
+    _ghost_warning(f"beet remove exited {rm.returncode}")
+    return 0
 
 
 def staging_preflight(args):
