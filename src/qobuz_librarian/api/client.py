@@ -92,14 +92,16 @@ def _remaining_budget() -> float | None:
 
 
 def _attempt_timeout() -> float | None:
-    """Per-request timeout, shrunk to whatever the deadline still allows.
-    None means the deadline has already passed — don't even start a request."""
+    """Per-request timeout, shrunk to whatever the deadline still allows. None
+    means the deadline has already passed — don't even start a request. The
+    timeout is NOT floored, so a near-spent deadline yields a sub-second timeout
+    (the request fails fast) rather than the old 1.0s floor overrunning it."""
     remaining = _remaining_budget()
     if remaining is None:
         return _REQUEST_TIMEOUT
     if remaining <= 0:
         return None
-    return max(1.0, min(_REQUEST_TIMEOUT, remaining))
+    return min(_REQUEST_TIMEOUT, remaining)
 
 
 def _retry_delay(attempt: int, suggested: float) -> float | None:

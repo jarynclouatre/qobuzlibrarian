@@ -67,6 +67,15 @@ def test_qobuz_get_gives_up_when_the_deadline_is_spent():
         assert sess.return_value.get.call_count == 1
 
 
+def test_attempt_timeout_does_not_floor_above_a_near_spent_deadline():
+    # With under a second of budget the per-request timeout must shrink to fit
+    # the deadline, not get floored up to 1.0s and overrun it.
+    from qobuz_librarian.api.client import _attempt_timeout, request_deadline
+    with request_deadline(0.5):
+        t = _attempt_timeout()
+    assert t is not None and t <= 0.5
+
+
 def test_qobuz_get_reports_token_validity(monkeypatch):
     # The dashboard banner listens for auth state. A 200 reports the token good
     # and a 401 reports it bad — reporting only failures leaves the banner stuck
