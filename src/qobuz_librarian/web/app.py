@@ -145,9 +145,14 @@ async def _lifespan(_app: FastAPI):
                      "expose to an untrusted network")
     else:
         cred_status = web_auth.apply_env_credentials()
-        if cred_status == "applied":
+        if cred_status in ("applied", "applied_weak"):
             _log.info("Configured the web login from WEB_AUTH_USER / "
                       "WEB_AUTH_PASSWORD.")
+            if cred_status == "applied_weak":
+                _log.warning(
+                    "WEB_AUTH_PASSWORD is shorter than %d characters — it's the "
+                    "only thing gating the web UI; use a longer one.",
+                    web_auth.MIN_PASSWORD_LEN)
         elif cred_status == "partial":
             _log.warning("Set both WEB_AUTH_USER and WEB_AUTH_PASSWORD to seed "
                          "the web login from the environment — only one was set.")
@@ -509,6 +514,10 @@ def _tr(request, name, context, *, status_code=200):
             any(j.status.value in ('running', 'scanning') for j in active),
         )
     context.setdefault("cli_mode", _CLI_MODE)
+    # Error/utility renders (e.g. the 404 page) don't name a nav section; an
+    # explicit empty page just leaves every nav link inactive instead of
+    # relying on Jinja's undefined-is-falsey behaviour.
+    context.setdefault("page", "")
     # Standing health the navbar surfaces on every page, not just the dashboard:
     # a rejected token (auth lost mid-session) and a lock held by another
     # instance both stop downloads, and a user on Search/Queue shouldn't only
@@ -795,11 +804,19 @@ async def dashboard(request: Request):
 
 @app.post("/lyric-retry")
 async def lyric_retry(request: Request):
+    # No credential check: lyric fetching only reads/writes local files and
+    # talks to the lyric providers, never Qobuz.
     busy = _lock_busy_response(request)
     if busy is not None:
         return busy
+    # A retry and a full backfill share the one lyric-state file, so they must
+    # never run at once — fold onto whichever lyrics pass is already in flight.
+    existing = _active_scan("lyrics", statuses=("pending", "running"))
+    if existing is not None:
+        return RedirectResponse(url=f"/jobs/{existing.id}", status_code=303)
     from qobuz_librarian.web import flows
     job = job_mgr.Job(title="Lyric retry")
+    job.execute_kind = "lyrics"
     job_mgr.submit(job, lambda j: flows.run_lyric_retry(j, _get_token()))
     return RedirectResponse(url=f"/jobs/{job.id}", status_code=303)
 

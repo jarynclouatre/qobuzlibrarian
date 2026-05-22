@@ -301,14 +301,13 @@
         let p; try { p = JSON.parse(e.data); } catch (_) { return; }
         if (window.qlDismissAllFlashes) { window.qlDismissAllFlashes(); }
         if (activity && p.phase && activity.textContent !== p.phase) activity.textContent = p.phase;
-        card.classList.remove('hidden');
-        label.textContent = p.phase || 'Working';
+        if (card) card.classList.remove('hidden');
+        if (label) label.textContent = p.phase || 'Working';
         let ct = p.total > 0 ? p.current + ' / ' + p.total : (p.current ? String(p.current) : '');
         if (p.found > 0) { ct += (ct ? ' · ' : '') + p.found + ' with gaps'; }
-        count.textContent = ct;
-        if (p.total > 0) { bar.max = 100; bar.value = Math.round(p.current / p.total * 100); }
-        else { bar.removeAttribute('value'); }
-        item.textContent = p.item || '';
+        if (count) count.textContent = ct;
+        if (bar) { if (p.total > 0) { bar.max = 100; bar.value = Math.round(p.current / p.total * 100); } else { bar.removeAttribute('value'); } }
+        if (item) item.textContent = p.item || '';
       });
       src.addEventListener('done', () => {
         src.close();

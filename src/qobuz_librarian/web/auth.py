@@ -165,7 +165,12 @@ def apply_env_credentials() -> str:
             and _constant_time_eq(user, d.get("username") or "")
             and _verify_hash(d.get("password_hash"), password)):
         return "unchanged"
-    return "applied" if set_credentials(user, password) else "failed"
+    if not set_credentials(user, password):
+        return "failed"
+    # The /setup form enforces an 8-char minimum; this env-seed path bypasses
+    # it, so flag a too-short env password rather than silently coming up with a
+    # trivially guessable password as the only thing gating the UI.
+    return "applied_weak" if len(password) < MIN_PASSWORD_LEN else "applied"
 
 
 def verify_login(username: str, password: str) -> bool:
