@@ -565,10 +565,13 @@ def test_album_mode_aborted_at_query_prompt_breaks_loop():
 
     with patch("qobuz_librarian.modes.album.resolve_album_from_args",
                side_effect=fake_resolve), \
-         patch("qobuz_librarian.modes.album._interactive_album_action"), \
-         patch("qobuz_librarian.modes.album.process_album") as mock_process:
+         patch("qobuz_librarian.modes.album._interactive_album_action") as mock_action:
         run_album_mode(args, "tok", loop=True)
-    assert mock_process.called is False
+    # First resolve returns an album and the action runs; the second resolve's
+    # Aborted breaks the loop cleanly — two attempts, the action invoked once,
+    # and run_album_mode returns instead of looping forever or propagating.
+    assert calls == [1, 1]
+    assert mock_action.call_count == 1
 
 
 # ── Repair: backup resolution branches ─────────────────────────────────
