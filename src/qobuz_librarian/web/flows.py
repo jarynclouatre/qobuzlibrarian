@@ -435,6 +435,7 @@ def scan_new_releases(job, token):
         # establishes the baseline too (a manual check before any library scan).
         new_releases_mod.mark_run({**seen, **current_seen}, complete=True)
     if total:
+        job.summary = f"{plural(total, 'new release')} found across the library."
         log.info(f"Done. {plural(total, 'new release')} across the library.")
     elif not seen:
         job.summary = ("First check — recorded what each artist has now. "
@@ -621,6 +622,7 @@ def execute_upgrades(job, chosen, token):
     # abort is deliberately excluded, so it counts as the real failure it is.
     _skip = BENIGN_UPGRADE_RESULTS
     ok = 0
+    kept = 0
     failed = 0
     processed = 0
     for i, cand in enumerate(chosen, 1):
@@ -654,7 +656,12 @@ def execute_upgrades(job, chosen, token):
             failed += 1
             continue
         _res = (result or {}).get("result")
-        if result and result.get("imported") and _res not in (
+        if result and result.get("upgrade_unverified"):
+            # Imported, but the rebuilt folder couldn't be verified as complete
+            # as the original, so the backup was kept. Not a clean upgrade and
+            # not a failure — count it apart so the tally stays honest.
+            kept += 1
+        elif result and result.get("imported") and _res not in (
                 _skip | {"upgrade_aborted_backup_failed"}):
             ok += 1
         elif _res not in _skip:
@@ -663,7 +670,11 @@ def execute_upgrades(job, chosen, token):
     if job.cancel_requested:
         log.info(f"Cancelled — {ok} upgraded, {len(chosen) - processed} not started.")
         return
-    log.info(f"Finished — upgraded {ok}/{plural(len(chosen), 'album')}.")
+    msg = f"Finished — upgraded {ok}/{plural(len(chosen), 'album')}."
+    if kept:
+        msg += (f" {kept} kept the original (upgrade couldn't be verified "
+                f"complete — backup retained).")
+    log.info(msg)
     if failed:
         job.error = f"{failed} of {plural(len(chosen), 'album')} couldn't be upgraded — see the log."
 
@@ -748,6 +759,7 @@ def execute_downsamples(job, chosen):
     shrunk = 0
     total_saved = 0
     total_errors = 0
+    skipped = 0
     processed = 0
     for i, cand in enumerate(chosen, 1):
         if job.cancel_requested:
@@ -758,6 +770,7 @@ def execute_downsamples(job, chosen):
         log.info(f"[{i}/{len(chosen)}] {cand.get('artist', '')} — {title}")
         if not album_dir.is_dir():
             log.info("  skipped: folder no longer exists")
+            skipped += 1
             continue
         try:
             with staging_lock():
@@ -776,8 +789,11 @@ def execute_downsamples(job, chosen):
                  f"({format_size(total_saved)} reclaimed), "
                  f"{len(chosen) - processed} not started.")
         return
-    log.info(f"Finished — shrank {plural(shrunk, 'album')}, "
-             f"reclaimed {format_size(total_saved)}.")
+    summary = (f"Finished — shrank {plural(shrunk, 'album')}, "
+               f"reclaimed {format_size(total_saved)}.")
+    if skipped:
+        summary += f" {plural(skipped, 'album')} skipped (no longer on disk)."
+    log.info(summary)
     if total_errors:
         job.error = (f"{plural(total_errors, 'file')} couldn't be downsampled "
                      "(left unchanged) — see the log.")
@@ -1140,6 +1156,8 @@ def execute_migration(job, chosen, dest, *, in_place, src=None):
     parts = [f"{plural(result.copied, 'file')} {verb} into {dest}"]
     if result.skipped:
         parts.append(f"{result.skipped} skipped (already present)")
+    if result.lingered:
+        parts.append(f"{result.lingered} moved but the original couldn't be removed")
     if result.failed:
         parts.append(f"{result.failed} failed — see the log")
     if pruned:

@@ -70,6 +70,7 @@ def run_upgrade_walk_mode(args, token):
     n = len(all_artists)
     n_scanned = 0
     n_upgraded_albums = 0
+    n_unverified_albums = 0
     n_failed_albums = 0
     unsafe_artists = []  # --auto-safe skipped artists, for end-of-run review
 
@@ -221,6 +222,13 @@ def run_upgrade_walk_mode(args, token):
                 if _pr_result in BENIGN_UPGRADE_RESULTS:
                     time.sleep(cfg.ARTIST_API_DELAY)
                     continue
+                if (_proc_result or {}).get("upgrade_unverified", False):
+                    # Imported, but the rebuilt folder couldn't be verified as
+                    # complete as the original, so the backup was kept. Tally it
+                    # apart — it's neither a clean upgrade nor an outright fail.
+                    n_unverified_albums += 1
+                    time.sleep(cfg.ARTIST_API_DELAY)
+                    continue
                 if not (_proc_result or {}).get("imported", False):
                     # Attempted (Qobuz had a higher-quality copy) but didn't
                     # land — backup failed, download failed, import failed.
@@ -257,6 +265,10 @@ def run_upgrade_walk_mode(args, token):
     log.info(fmt(C.GRAY,
         f"     Scanned {plural(n_scanned, 'artist')} — upgraded tracks in "
         f"{plural(n_upgraded_albums, 'album')}."))
+    if n_unverified_albums:
+        log.info(fmt(C.YELLOW,
+            f"     ⚠  {plural(n_unverified_albums, 'album')} kept the original "
+            "(upgrade couldn't be verified complete — backup retained)."))
     if n_failed_albums:
         log.info(fmt(C.YELLOW,
             f"     ⚠  {plural(n_failed_albums, 'album')} couldn't be upgraded "

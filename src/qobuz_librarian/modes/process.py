@@ -673,6 +673,7 @@ def process_album(album, args, *, allow_force=True, label=None,
     n_ok = n_fail = n_lossy = 0
     failed_tracks, lossy_tracks, broken_tracks = [], [], []
     imported = False
+    upgrade_unverified = False
     elapsed = 0.0
     download_phase_completed = False
     transient_lyric_sigs = []
@@ -769,6 +770,7 @@ def process_album(album, args, *, allow_force=True, label=None,
                 # Passed the decode/lossy gate but the rebuilt folder isn't
                 # verifiably as complete as the original — keep the only full
                 # copy instead of deleting it.
+                upgrade_unverified = True
                 log.info(fmt(C.YELLOW,
                     "\n  ⚠  Upgrade couldn't be verified as complete; "
                     "keeping your original."))
@@ -987,5 +989,6 @@ def process_album(album, args, *, allow_force=True, label=None,
         "result": result_status,
         "n_ok": n_ok, "n_fail": n_fail, "n_lossy": n_lossy,
         "imported": imported,
+        "upgrade_unverified": upgrade_unverified,
         "auto_upgrade": bool(auto_upgrade_active),
     }

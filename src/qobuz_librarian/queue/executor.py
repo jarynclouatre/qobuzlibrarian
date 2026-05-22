@@ -403,9 +403,18 @@ def _resolve_queue_item(item, args, imported_globally):
                     f"  ⚠  Gap-fill failed and no album dir to restore to. "
                     f"Backed-up tracks at: {gfb}"))
             else:
-                log.info(fmt(C.YELLOW,
-                    f"  ⚠  {truncate(_restore_target.name, 40)}: "
-                    f"gap-fill did not succeed; restoring backed-up tracks…"))
+                if args.no_import:
+                    # --no-import skips beets, so had_any_success is always
+                    # False here even when the download landed fine. Restoring
+                    # the moved-aside present tracks is right, but it's not a
+                    # failure — say so instead of "gap-fill did not succeed".
+                    log.info(fmt(C.GRAY,
+                        f"  · {truncate(_restore_target.name, 40)}: --no-import "
+                        f"set; restoring the backed-up tracks to the library."))
+                else:
+                    log.info(fmt(C.YELLOW,
+                        f"  ⚠  {truncate(_restore_target.name, 40)}: gap-fill "
+                        f"did not succeed; restoring backed-up tracks…"))
                 _n_back = restore_gap_fill_backup(gfb, _restore_target)
                 log.info(fmt(C.GREEN,
                     f"  ✓  Restored {_n_back} track(s) to "
