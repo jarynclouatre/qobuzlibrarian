@@ -124,7 +124,12 @@ def _merge_split_folder(dest_dir, source_dir):
     try:
         source_dir.rmdir()
     except OSError as e:
-        vlog(f"merge: couldn't remove {source_dir} ({e})")
+        try:
+            leftover = ", ".join(sorted(p.name for p in source_dir.iterdir()))
+        except OSError:
+            leftover = "?"
+        vlog(f"merge: couldn't remove {source_dir} ({e}); "
+             f"leftover: {leftover}")
         return moved
     try:
         source_parent.rmdir()
