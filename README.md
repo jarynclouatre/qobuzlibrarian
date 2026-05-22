@@ -763,6 +763,14 @@ python -m pytest -q
 
 PowerShell activation is `.venv\Scripts\Activate.ps1` instead of `source`.
 
+Running the web UI from a source checkout (rather than the Docker image) needs
+the CSS built once — `static/dist/` is gitignored, so only the image build
+produces it:
+
+```bash
+npm ci && npm run build      # writes static/dist/app.css
+```
+
 `ruff check src tests` runs in CI; keep it clean before opening a PR.
 `scripts/smoke_test.sh` boots the container and exercises the main CLI
 modes against a temp music dir — run it before tagging a release.
