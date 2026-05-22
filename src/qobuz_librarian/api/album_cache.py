@@ -134,7 +134,29 @@ def get(album_id) -> dict | None:
         return None
 
 
+# Cap the albums table so it can't grow without bound over a library's
+# lifetime. An album's track list is fixed, so this is a size bound, not a
+# staleness one: keep the most-recently-fetched rows, drop the oldest beyond the
+# cap. Trim only every _TRIM_EVERY writes to keep it off the hot path.
+_CACHE_MAX_ALBUMS = 10000
+_TRIM_EVERY = 200
+_puts_since_trim = 0
+
+
+def _trim_albums() -> None:
+    try:
+        conn = _conn()
+        conn.execute(
+            "DELETE FROM albums WHERE id NOT IN "
+            "(SELECT id FROM albums ORDER BY fetched_at DESC LIMIT ?)",
+            (_CACHE_MAX_ALBUMS,))
+        conn.commit()
+    except sqlite3.Error as e:
+        vlog(f"album cache trim failed: {e}")
+
+
 def put(album_id, payload) -> None:
+    global _puts_since_trim
     if not album_id or not isinstance(payload, dict) or not _ensure():
         return
     try:
@@ -149,6 +171,11 @@ def put(album_id, payload) -> None:
         conn.commit()
     except sqlite3.Error as e:
         vlog(f"album cache write failed: {e}")
+        return
+    _puts_since_trim += 1
+    if _puts_since_trim >= _TRIM_EVERY:
+        _puts_since_trim = 0
+        _trim_albums()
 
 
 def get_catalog(key, ttl_seconds) -> dict | None:

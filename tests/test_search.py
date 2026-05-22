@@ -144,6 +144,24 @@ def test_get_album_does_not_cache_a_track_less_response(tmp_path, monkeypatch):
         album_cache._reset_for_tests()
 
 
+def test_album_cache_trims_to_the_cap(tmp_path, monkeypatch):
+    import qobuz_librarian.config as cfg
+    from qobuz_librarian.api import album_cache
+    monkeypatch.setattr(cfg, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(cfg, "ALBUM_CACHE_ENABLED", True)
+    monkeypatch.setattr(album_cache, "_CACHE_MAX_ALBUMS", 3)
+    album_cache._reset_for_tests()
+    try:
+        for aid in ("a", "b", "c", "d", "e"):
+            album_cache.put(aid, {"id": aid})
+        album_cache._trim_albums()
+        survivors = [a for a in ("a", "b", "c", "d", "e") if album_cache.get(a)]
+        assert len(survivors) == 3        # bounded at the cap
+        assert album_cache.get("e")       # the most-recently-written survives
+    finally:
+        album_cache._reset_for_tests()
+
+
 def test_get_artist_albums_cached_within_ttl(tmp_path, monkeypatch):
     import qobuz_librarian.config as cfg
     from qobuz_librarian.api import album_cache, search
