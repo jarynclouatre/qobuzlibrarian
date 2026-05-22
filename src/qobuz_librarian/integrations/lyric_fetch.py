@@ -19,6 +19,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import tempfile
 import threading
 import time
@@ -262,12 +263,41 @@ def write_lyrics(f, content: str) -> None:
     if "unsyncedlyrics" in f.tags:
         del f.tags["unsyncedlyrics"]
     f.tags["lyrics"] = [content]
-    f.save()
+    # mutagen rewrites the metadata in place and shifts the audio frames when
+    # the comment block outgrows the padding, so a crash mid-save can corrupt
+    # the only copy. Save into a same-dir temp copy and swap it in atomically:
+    # the original stays whole until the new file is complete.
+    path = Path(f.filename)
+    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=path.name + ".",
+                               suffix=".tmp")
+    os.close(fd)
+    try:
+        shutil.copy2(str(path), tmp)
+        f.save(tmp)
+        os.replace(tmp, str(path))
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def write_sidecar(path: Path, content: str) -> None:
     """Write lyrics to a .lrc file next to the track (UTF-8)."""
-    path.with_suffix(".lrc").write_text(content, encoding="utf-8")
+    target = path.with_suffix(".lrc")
+    fd, tmp = tempfile.mkstemp(dir=str(target.parent), prefix=target.name + ".",
+                               suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(content)
+        os.replace(tmp, str(target))
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def write_output(path: Path, f, content: str, fmt: str) -> None:
@@ -778,6 +808,9 @@ def index_existing(
             normalized.append((Path(it), 0.0, 0))
 
     state = load_state(state_path)
+    if prune_missing(state):
+        with _state_lock:
+            save_state(state, state_path)
     counts: Counter = Counter()
     total = len(normalized)
     workers = max(1, int(workers))

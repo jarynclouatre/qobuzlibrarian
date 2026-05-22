@@ -224,24 +224,35 @@ def test_resolve_signatures_to_paths_matches_on_signature(tmp_path):
             [(("artist", "album", 1, 1, "wanted"), "staging/track.flac")], [tmp_path]) == []
 
 
-def test_write_lyrics_persists_and_clears_legacy_tag():
+def test_write_lyrics_saves_atomically_and_clears_legacy_tag(tmp_path):
     from mutagen.flac import VCFLACDict
 
     from qobuz_librarian.integrations import lyric_fetch
 
+    real = tmp_path / "track.flac"
+    real.write_bytes(b"original-audio")
+
     class FakeFLAC:
-        def __init__(self):
+        def __init__(self, path):
+            self.filename = str(path)
             self.tags = VCFLACDict()
-            self.saved = 0
+            self.save_targets = []
 
-        def save(self):
-            self.saved += 1
+        def save(self, target):
+            self.save_targets.append(target)
+            Path(target).write_bytes(b"new-audio+tags")
 
-    f = FakeFLAC()
+    f = FakeFLAC(real)
     f.tags["UNSYNCEDLYRICS"] = ["stale plain text"]
     lyric_fetch.write_lyrics(f, "[00:01.00]hello")
+
     assert f.tags["lyrics"] == ["[00:01.00]hello"]
-    assert "unsyncedlyrics" not in f.tags and f.saved == 1
+    assert "unsyncedlyrics" not in f.tags
+    # The live file must never be written in place — mutagen saves into a temp
+    # copy that is then atomically swapped in, so a crash can't truncate it.
+    assert f.save_targets and all(t != f.filename for t in f.save_targets)
+    assert real.read_bytes() == b"new-audio+tags"
+    assert not any(p.name.endswith(".tmp") for p in tmp_path.iterdir())
 
 
 def test_lyric_state_prune_drops_entries_for_vanished_files(tmp_path):

@@ -3,6 +3,7 @@
 """
 import json
 import os
+import tempfile
 from datetime import datetime
 from pathlib import Path
 
@@ -318,9 +319,22 @@ def save_lyric_retry(paths):
             "updated_at": datetime.now().isoformat(timespec="seconds"),
             "files": paths,
         }
-        tmp = cfg.LYRIC_RETRY_FILE.with_suffix(cfg.LYRIC_RETRY_FILE.suffix + ".tmp")
-        tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-        os.replace(tmp, cfg.LYRIC_RETRY_FILE)
+        # Unique temp, not a fixed ".tmp": an import-time hook and a web
+        # retry run can both rewrite this manifest at once, and a shared temp
+        # name lets one os.replace clobber the other's update.
+        fd, tmp = tempfile.mkstemp(dir=str(cfg.LYRIC_RETRY_FILE.parent),
+                                   prefix=cfg.LYRIC_RETRY_FILE.name + ".",
+                                   suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                json.dump(payload, fh, indent=2)
+            os.replace(tmp, cfg.LYRIC_RETRY_FILE)
+        except BaseException:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
     except Exception as e:
         vlog(f"save_lyric_retry failed: {e}")
 
