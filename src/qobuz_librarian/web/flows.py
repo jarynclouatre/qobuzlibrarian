@@ -892,7 +892,10 @@ def _redownload_damaged_album(payload, token):
         backup_album_dir,
         restore_upgrade_backup,
     )
-    from qobuz_librarian.modes.process import process_album
+    from qobuz_librarian.modes.process import (
+        _upgrade_replacement_verified,
+        process_album,
+    )
     from qobuz_librarian.web.jobs import staging_lock
 
     log.info("  The damaged file can't be verified by its ID, so the whole "
@@ -913,10 +916,19 @@ def _redownload_damaged_album(payload, token):
         if backup:
             restore_upgrade_backup(backup, album_dir)
         raise
-    succeeded = bool(result.get("imported")) and result.get("n_ok", 0) > 0
+    imported_ok = bool(result.get("imported")) and result.get("n_ok", 0) > 0
     if backup:
-        if succeeded:
+        if imported_ok and _upgrade_replacement_verified(full, album_dir, backup):
+            # The rebuild is verifiably at least as complete as the original
+            # (track count + playtime) — safe to drop the backup.
             _shutil.rmtree(backup, ignore_errors=True)
+        elif imported_ok:
+            # Imported, but a decode pass alone doesn't prove the re-rip kept
+            # every track — a truncated or short result could be WORSE than the
+            # damaged original it replaced. Keep the only copy that may hold
+            # more rather than deleting it on the old decode-only gate.
+            log.info("  Re-download landed but couldn't be verified as complete "
+                     f"as the original — keeping your backup at {backup}.")
         else:
             log.info("  Re-download didn't complete — restoring the original "
                      "album folder.")
