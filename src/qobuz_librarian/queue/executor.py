@@ -661,9 +661,15 @@ def _execute_download_queue(queue, args, token, *, on_progress=None):
         elif summary_n_ok == 0:
             log.info(fmt(C.GRAY, "  Skipping beets — nothing landed."))
 
-        results.append(_resolve_queue_item(item, args, item_imported))
+        # Drop a finished item from the persisted queue BEFORE resolving its
+        # backup. If the process dies between the two, the worst case is an
+        # orphaned backup the retention sweep clears — not a completed album
+        # left queued and needlessly re-downloaded on the next resume. The
+        # retry decision reads only download-phase state, so it's unaffected by
+        # the resolve that now follows it.
         if not _queue_item_needs_retry(item):
             _drop(item)
+        results.append(_resolve_queue_item(item, args, item_imported))
 
         # Qobuz throttles sustained bulk queues. When the last rip showed
         # throttle signals, pause longer than the normal inter-album gap
