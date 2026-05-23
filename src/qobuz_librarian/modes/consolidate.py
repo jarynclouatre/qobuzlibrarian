@@ -101,7 +101,14 @@ def execute_consolidation(summary):
     so the caller can drop exactly those files from the beets DB."""
     deleted, n_failed = [], 0
     for st, _ in summary["overlap"]:
-        path = Path(st.get("path", ""))
+        raw = (st.get("path") or "").strip()
+        if not raw:
+            # Malformed overlap entry with no path — nothing to delete. Skip it
+            # rather than letting Path("") resolve to (and try to unlink) the
+            # current working directory.
+            vlog("consolidation: skipping overlap entry with no path")
+            continue
+        path = Path(raw)
         if not path.exists():
             n_failed += 1
             continue
