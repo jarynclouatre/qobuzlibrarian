@@ -197,6 +197,10 @@ def get_artist_albums(artist_id, token, limit=None, fresh=False):
     complete = (qobuz_total is None
                 or len(items) >= qobuz_total
                 or len(items) >= limit)
-    if complete:
+    # Never cache an empty discography unless Qobuz explicitly said the artist
+    # has none (total == 0). A 200 with an error body (no "albums" key) yields
+    # items=[] and total=None, which would otherwise read as "complete" and
+    # hide that artist's whole catalog from scans for the cache's lifetime.
+    if complete and (items or qobuz_total == 0):
         album_cache.put_catalog(cache_key, {"items": items, "total": qobuz_total})
     return items, qobuz_total
