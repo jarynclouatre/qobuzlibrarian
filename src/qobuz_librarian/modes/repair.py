@@ -101,6 +101,25 @@ def _refills_present_in(album_dir, wanted_isrcs):
     return wanted_isrcs.issubset(present)
 
 
+def _refills_intact(album_dir, wanted_isrcs, token):
+    """True only when none of the refilled ISRCs is still flagged truncated by
+    a fresh duration scan. A presence check can't tell a complete refill from a
+    short-but-decodable one — the exact failure repair exists to fix — so the
+    rebuilt folder is re-verified against the same gate before the originals'
+    backup is trusted as redundant. Caller guarantees wanted_isrcs is non-empty;
+    AuthLost / QobuzUnavailable propagate so a transient outage can't read as
+    "still truncated"."""
+    try:
+        scan = scan_dir_for_isrc_repairs(album_dir, token, deep=True)
+    except (AuthLost, QobuzUnavailable):
+        raise
+    except Exception:
+        return False
+    still_truncated = {_norm_isrc(b.get("isrc"))
+                       for b in scan["verified_truncated"]}
+    return wanted_isrcs.isdisjoint(still_truncated)
+
+
 def _prompt_library_album_for_repair(args, token):
     """Library-scoped picker for repair mode. Returns (artist_dir, album_dir).
 
@@ -271,10 +290,16 @@ def repair_album_dir(album_dir, verified_truncated, artist_name, args, token):
         try:
             _execute_download_queue([qi], args, token)
         except AuthLost:
+            # Don't auto-restore: a multi-track refill may have already written
+            # good replacements, and moving the truncated originals back would
+            # clobber them (the same reasoning as the interrupt branch below).
+            # Preserve the backup and point the user at it.
             if backup_path and backup_path.exists():
                 log.info(fmt(C.YELLOW,
-                    "  Auth lost; restoring truncated originals …"))
-                restore_gap_fill_backup(backup_path, album_dir)
+                    f"  ⚠  Auth lost mid-refill — truncated originals preserved at:\n"
+                    f"     {backup_path}\n"
+                    f"     Re-run Repair once your token is refreshed, or restore "
+                    f"them by hand."))
             raise
         except (KeyboardInterrupt, Exception):
             # Interrupted or an unexpected failure mid-refill. Don't
@@ -302,11 +327,15 @@ def repair_album_dir(album_dir, verified_truncated, artist_name, args, token):
 
         n_fail_final = qi.get("n_fail", 0)
         n_ok_final = qi.get("n_ok", 0)
-        # Success is "the refilled tracks are back in album_dir", not merely
-        # "beets imported them somewhere".
-        repaired = (n_fail_final == 0 and n_ok_final > 0
-                    and qi.get("imported", False)
-                    and _refills_present_in(album_dir, wanted_isrcs))
+        download_clean = (n_fail_final == 0 and n_ok_final > 0
+                          and qi.get("imported", False))
+        # "Back in place" = the refilled files returned to album_dir. Success
+        # additionally requires they're verifiably NOT still truncated — a
+        # presence check alone would let a short re-rip pass, and "no ISRC to
+        # verify by" is unproven, not proven.
+        back_in_place = download_clean and _refills_present_in(album_dir, wanted_isrcs)
+        repaired = (back_in_place and bool(wanted_isrcs)
+                    and _refills_intact(album_dir, wanted_isrcs, token))
 
         # ── Backup resolution ────────────────────────────────────────────
         if backup_path and backup_path.exists():
@@ -315,6 +344,15 @@ def repair_album_dir(album_dir, verified_truncated, artist_name, args, token):
                     shutil.rmtree(backup_path)
                 except OSError:
                     pass
+            elif back_in_place:
+                # The re-downloaded tracks are physically back but couldn't be
+                # verified as intact (still truncated, or no ISRC to check
+                # against). Keep the originals — deleting the only other copy on
+                # a presence check alone is how a bad re-rip silently replaces a
+                # good-enough track with a worse one.
+                log.info(fmt(C.YELLOW,
+                    f"  ⚠  Re-downloaded tracks couldn't be verified as intact; "
+                    f"keeping the originals at:\n     {backup_path}"))
             elif n_fail_final > 0:
                 log.info(fmt(C.YELLOW,
                     f"  ⚠  {n_fail_final} track(s) failed to re-download. "
