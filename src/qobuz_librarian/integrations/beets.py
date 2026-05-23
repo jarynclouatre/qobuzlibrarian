@@ -651,6 +651,23 @@ def _park_untracked_for_reimport(path):
         pass
 
 
+def _unpark_reimport(path):
+    """Drop a path the fold parked as a safety net, once it's safely tracked
+    again (or the destructive remove that needed the net never ran)."""
+    f = _untracked_reimport_file()
+    if not f.exists():
+        return
+    try:
+        kept = [ln.strip() for ln in f.read_text(encoding="utf-8").splitlines()
+                if ln.strip() and ln.strip() != str(path)]
+        if kept:
+            f.write_text("\n".join(sorted(set(kept))) + "\n", encoding="utf-8")
+        else:
+            f.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
 def _reimport_untracked_library_dirs(base, beet_env, idle):
     """Retry `beet import -A` on library folders a prior consolidation stranded.
     Drops each path that now tracks (or no longer exists); keeps the ones still
@@ -749,12 +766,21 @@ def _consolidate_duplicate_albums():
             "into duplicate library entries…"))
     for d in dup_dirs:
         try:
+            # Park BEFORE the destructive remove. The remove clears every row
+            # for the folder, so a hard kill (OOM, power loss, a docker stop
+            # past its grace timeout) between the remove and the re-import would
+            # otherwise strand the album — files on disk, absent from beets,
+            # with nothing scheduled to re-track it. Parked first, the next
+            # pass's _reimport_untracked_library_dirs picks it up; the unparks
+            # below drop it again the moment it's safely tracked.
+            _park_untracked_for_reimport(d)
             rm = subprocess.run(base + ["remove", "-f", "path:" + d],
                                 capture_output=True, text=True, env=beet_env,
                                 timeout=120)
             # If the remove failed the rows are still there; re-importing on top
             # would add a third row and make the split worse, so skip this one.
             if rm.returncode != 0:
+                _unpark_reimport(d)  # nothing was removed — nothing to recover
                 log.info(fmt(C.YELLOW,
                     f"  ⚠  Couldn't clear the old entries for {d} (beet remove "
                     f"exited {rm.returncode}); leaving it as-is. Run "
@@ -771,15 +797,14 @@ def _consolidate_duplicate_albums():
                                  capture_output=True, text=True, env=beet_env,
                                  timeout=idle)
             if imp.returncode != 0:
-                # The remove already cleared every row for this folder, so a
-                # failed re-import strands the album (files on disk, absent
-                # from beets). A transient DB lock is the usual cause — retry
-                # once before falling back to the manual-recovery message.
+                # A transient DB lock is the usual cause — retry once before
+                # leaving it parked for the next pass.
                 imp = subprocess.run(base + ["import", "-A", d],
                                      capture_output=True, text=True,
                                      env=beet_env, timeout=idle)
-            if imp.returncode != 0:
-                _park_untracked_for_reimport(d)
+            if imp.returncode == 0:
+                _unpark_reimport(d)  # re-tracked cleanly — drop the safety net
+            else:
                 log.info(fmt(C.YELLOW,
                     f"  ⚠  {d} couldn't be re-tracked in beets after "
                     f"de-duplicating (re-import exited {imp.returncode} twice — "
@@ -787,9 +812,10 @@ def _consolidate_duplicate_albums():
                     f"the next download run retries this automatically. To do it "
                     f"now: beet import -A \"{d}\""))
         except (OSError, subprocess.SubprocessError) as e:
+            # Left parked (recorded above) so the next pass retries tracking it.
             log.info(fmt(C.YELLOW,
                 f"  ⚠  Couldn't tidy duplicate entries for {d} ({e}); "
-                "run `beet import` on that folder by hand."))
+                "the next download run retries this automatically."))
 
     _drop_override()
     if dup_dirs:
