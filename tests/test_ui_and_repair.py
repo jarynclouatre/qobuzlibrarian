@@ -576,7 +576,8 @@ def test_album_mode_aborted_at_query_prompt_breaks_loop():
 
 # ── Repair: backup resolution branches ─────────────────────────────────
 
-def _call_repair_album_dir(tmp_path, monkeypatch, *, n_ok, n_fail, imported):
+def _call_repair_album_dir(tmp_path, monkeypatch, *, n_ok, n_fail, imported,
+                           present=True, intact=True):
     from argparse import Namespace
 
     import qobuz_librarian.modes.repair as repair_mod
@@ -597,8 +598,13 @@ def _call_repair_album_dir(tmp_path, monkeypatch, *, n_ok, n_fail, imported):
 
     monkeypatch.setattr(repair_mod, "_execute_download_queue", fake_execute)
     monkeypatch.setattr(repair_mod, "append_repair_log", lambda e: True)
+    # The dummy file isn't a real FLAC, so drive the post-refill verification
+    # gate directly: `present` = the refilled tracks returned to album_dir,
+    # `intact` = the re-scan found them no longer truncated.
+    monkeypatch.setattr(repair_mod, "_refills_present_in", lambda d, w: present)
+    monkeypatch.setattr(repair_mod, "_refills_intact", lambda d, w, t: intact)
 
-    vt = [{"path": str(track), "title": "Track 01",
+    vt = [{"path": str(track), "title": "Track 01", "isrc": "USRC11111111",
            "qobuz_track": {"id": 1, "title": "Track 01", "album": {"id": "ALB1"}},
            "file_length": 5.0}]
     args = Namespace(force=False, yes=True, prefer_hires=False, consolidate=False, no_upgrade=False)
@@ -610,17 +616,28 @@ def _backup_files(tmp_path):
     return list(root.rglob("*")) if root.exists() else []
 
 
-def test_repair_backup_dropped_on_full_success_and_restored_on_silent_beets_failure(tmp_path, monkeypatch):
-    # Full success: backup is consumed (dropped).
+def test_repair_backup_dropped_only_when_refills_verify_intact(tmp_path, monkeypatch):
+    # Refills back in place AND verified no longer truncated: backup consumed.
     result, p = _call_repair_album_dir(tmp_path / "ok", monkeypatch,
-                                       n_ok=1, n_fail=0, imported=True)
+                                       n_ok=1, n_fail=0, imported=True,
+                                       present=True, intact=True)
     assert [f for f in _backup_files(p) if f.is_file()] == []
     assert result["n_ok"] == 1
 
-    # Silent beets failure (downloads succeeded but import didn't): roll back
-    # to the pre-repair originals from the backup.
+    # Re-downloaded but still truncated (a short re-rip passing the decode
+    # gate): the originals' backup is KEPT, not deleted on presence alone, and
+    # the repair isn't reported as a success.
+    result, p = _call_repair_album_dir(tmp_path / "short", monkeypatch,
+                                       n_ok=1, n_fail=0, imported=True,
+                                       present=True, intact=False)
+    assert [f for f in _backup_files(p) if f.is_file()]
+    assert result["n_ok"] == 0
+
+    # Silent beets failure (downloads succeeded but import didn't, so nothing
+    # returned to the folder): roll back to the pre-repair originals.
     result, p = _call_repair_album_dir(tmp_path / "silent", monkeypatch,
-                                       n_ok=1, n_fail=0, imported=False)
+                                       n_ok=1, n_fail=0, imported=False,
+                                       present=False)
     assert [f for f in _backup_files(p) if f.is_file()] == []
     assert (p / "Artist" / "Album (2020)" / "01 - Track.flac").exists()
     assert result["imported"] is False
