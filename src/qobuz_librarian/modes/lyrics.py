@@ -66,6 +66,7 @@ def _report_summary(res, *, dry_run):
                     + res.get("kept-existing-plain", 0))
     not_found    = res.get("not-found", 0)
     unavailable  = res.get("providers-unavailable", 0)
+    errors       = res.get("write-error", 0) + res.get("exception", 0)
 
     print()
     log.info(fmt(C.GREEN, "  ✓  Lyrics pass complete."))
@@ -78,3 +79,7 @@ def _report_summary(res, *, dry_run):
         log.info(fmt(C.YELLOW,
             f"     {plural(unavailable, 'track')} couldn't reach a provider "
             "(rate-limited or down) — re-run later to pick them up."))
+    if errors:
+        log.info(fmt(C.YELLOW,
+            f"     {plural(errors, 'track')} hit an error while writing or "
+            "fetching lyrics — see the log above."))
