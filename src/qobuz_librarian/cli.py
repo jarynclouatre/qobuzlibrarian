@@ -395,6 +395,16 @@ def main():
         set_color_enabled(False)
 
     if args.reset_walk_seen:
+        if args.dry_run:
+            present = [str(f) for f in (cfg.WALK_SEEN_FILE, cfg.ALBUM_WALK_SEEN_FILE)
+                       if f.exists()]
+            if present:
+                log.info(fmt(C.GRAY, "  --dry-run: would clear walk-seen state:"))
+                for r in present:
+                    log.info(fmt(C.GRAY, f"     {r}"))
+            else:
+                log.info(fmt(C.GRAY, "  No walk-seen state to clear."))
+            return
         removed = []
         for f in (cfg.WALK_SEEN_FILE, cfg.ALBUM_WALK_SEEN_FILE):
             try:
