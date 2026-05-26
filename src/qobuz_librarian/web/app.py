@@ -1752,6 +1752,24 @@ def _diagnostics():
     else:
         checks.append({"label": "Stranded upgrade backups", "ok": True,
                        "detail": "none"})
+
+    # Backups whose original is still missing the tracks they hold — orphaned by
+    # a hard kill that skipped the restore/delete. Retention keeps these rather
+    # than reaping the only copy; surface them so they can be reconciled.
+    try:
+        from qobuz_librarian.library.backup import find_only_copy_backups
+        orphans = find_only_copy_backups()
+    except Exception:
+        orphans = []
+    if orphans:
+        first = orphans[0]
+        hint = f" e.g. restore {first[0].name!r} → {first[1]}" if first[1] else ""
+        checks.append({"label": "Orphaned backups (only copy)", "ok": False,
+                       "detail": f"{len(orphans)} backup(s) hold tracks missing "
+                                 f"from their album folder.{hint}"})
+    else:
+        checks.append({"label": "Orphaned backups (only copy)", "ok": True,
+                       "detail": "none"})
     return checks
 
 

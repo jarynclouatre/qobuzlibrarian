@@ -50,6 +50,36 @@ def test_backup_album_dir_moves_and_refuses_symlinks(tmp_path, monkeypatch):
     assert target.exists()
 
 
+def test_retention_keeps_an_orphaned_backup_but_reaps_a_completed_one(tmp_path, monkeypatch):
+    monkeypatch.setattr("qobuz_librarian.config.UPGRADE_BACKUP_DIR", tmp_path / "backups")
+    monkeypatch.setattr("qobuz_librarian.config.DATA_DIR", tmp_path / "data")
+    (tmp_path / "data").mkdir()
+
+    def _aged_backup(name):
+        src = tmp_path / "music" / name
+        src.mkdir(parents=True)
+        (src / "01.flac").write_bytes(b"a" * 2000)
+        (src / "02.flac").write_bytes(b"b" * 2000)
+        bp = backup_album_dir(src)
+        aged = bp.with_name("20200101_000000_" + name)  # well past any retention
+        bp.rename(aged)
+        return src, aged
+
+    orphan_src, orphan_bp = _aged_backup("Orphan")  # a hard kill left its folder gone
+    done_src, done_bp = _aged_backup("Done")
+    # The "Done" album's operation completed — its folder was rebuilt.
+    done_src.mkdir(parents=True, exist_ok=True)
+    (done_src / "01.flac").write_bytes(b"x" * 9000)
+    (done_src / "02.flac").write_bytes(b"y" * 9000)
+
+    assert (orphan_bp / ".ql_backup_origin").read_text() == str(orphan_src)
+
+    removed = cleanup_old_upgrade_backups(force=True)
+    assert not done_bp.exists()    # origin rebuilt → safe to reap
+    assert orphan_bp.exists()      # origin still missing the tracks → only copy, kept
+    assert removed == 1
+
+
 def test_backup_album_dir_cross_filesystem_copy_verify_commit(tmp_path, monkeypatch):
     # When src and backup are on different filesystems, rename can't be used —
     # backup copies, verifies, then deletes the source. No .partial must survive.

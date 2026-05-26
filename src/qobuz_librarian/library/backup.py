@@ -57,6 +57,64 @@ def _tree_stats(d: Path):
     return (n_files, n_bytes)
 
 
+# A backup records the folder it was taken from, so a sweep can tell a backup
+# whose operation completed (origin rebuilt → safe to reap) from one orphaned by
+# a hard kill that skipped the caller's restore/delete (origin still short → the
+# backup may be the only copy). Lives inside the backup dir so rmtree clears it
+# for free; restore strips it so it never lands in the live library.
+_ORIGIN_SIDECAR = ".ql_backup_origin"
+
+
+def _write_backup_origin(bp: Path, origin: Path) -> None:
+    try:
+        (bp / _ORIGIN_SIDECAR).write_text(str(origin), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def _read_backup_origin(bp: Path):
+    f = bp / _ORIGIN_SIDECAR
+    try:
+        return Path(f.read_text(encoding="utf-8").strip()) if f.is_file() else None
+    except OSError:
+        return None
+
+
+def _backup_is_only_copy(bp: Path) -> bool:
+    """True when ``bp`` must not be reaped: its recorded origin is gone or holds
+    fewer files than the backup, so the operation that took it never finished
+    putting the content back. A legacy backup with no sidecar returns False so
+    the age-based sweep still applies to it."""
+    origin = _read_backup_origin(bp)
+    if origin is None:
+        return False
+    if not origin.exists():
+        return True
+    o = _tree_stats(origin)
+    b = _tree_stats(bp)
+    if o is None or b is None:
+        return True
+    backup_files = b[0] - (1 if (bp / _ORIGIN_SIDECAR).is_file() else 0)
+    return o[0] < backup_files
+
+
+def find_only_copy_backups():
+    """Backups whose recorded origin is gone or still short of them — orphaned
+    by a hard kill that skipped the caller's restore/delete. Retention keeps
+    these; the web diagnostic surfaces them so the user can recover or clear
+    them (each holds the origin path in its sidecar)."""
+    out = []
+    if not cfg.UPGRADE_BACKUP_DIR.exists():
+        return out
+    try:
+        for entry in cfg.UPGRADE_BACKUP_DIR.iterdir():
+            if entry.is_dir() and _backup_is_only_copy(entry):
+                out.append((entry, _read_backup_origin(entry)))
+    except OSError:
+        pass
+    return out
+
+
 def backup_album_dir(album_dir: Path):
     """Move album_dir to a timestamped backup. Returns the backup Path on
     success, None on failure. Refuses symlinks (rename would orphan the
@@ -79,6 +137,7 @@ def backup_album_dir(album_dir: Path):
     if _same_filesystem(album_dir, cfg.UPGRADE_BACKUP_DIR):
         try:
             shutil.move(str(album_dir), str(bp))
+            _write_backup_origin(bp, album_dir)
             return bp
         except (OSError, shutil.Error) as e:
             from qobuz_librarian.ui_cli.errors import oserr_hint
@@ -143,6 +202,7 @@ def backup_album_dir(album_dir: Path):
         log.info(fmt(C.RED,
             f"     Manual: rm -rf {album_dir} && mv {bp} {album_dir}"))
         return None
+    _write_backup_origin(bp, album_dir)
     return bp
 
 
@@ -225,6 +285,7 @@ def backup_gap_fill_files(file_paths, album_dir: Path):
             return None
     except OSError:
         pass
+    _write_backup_origin(bp, album_dir)
     return bp
 
 
@@ -253,7 +314,7 @@ def restore_gap_fill_backup(backup_path: Path, album_dir: Path) -> int:
     n_restored = 0
     n_failed = 0
     for f in backup_path.rglob("*"):
-        if not f.is_file():
+        if not f.is_file() or f.name == _ORIGIN_SIDECAR:
             continue
         rel = f.relative_to(backup_path)
         dst = album_dir / rel
@@ -384,6 +445,10 @@ def restore_upgrade_backup(backup_path: Path, original_path: Path) -> bool:
                 return False
         original_path.parent.mkdir(parents=True, exist_ok=True)
         shutil.move(str(backup_path), str(original_path))
+        try:
+            (original_path / _ORIGIN_SIDECAR).unlink(missing_ok=True)
+        except OSError:
+            pass
         return True
     except (OSError, shutil.Error) as e:
         log.info(fmt(C.RED,
@@ -441,6 +506,16 @@ def cleanup_old_upgrade_backups(retention_days: int = None,
                 f"timestamp prefix; leaving it alone."))
             continue
         if ts < cutoff:
+            if _backup_is_only_copy(entry):
+                # The folder this backup came from is gone or still short of it,
+                # so a hard kill skipped the caller's restore/delete and this may
+                # be the only copy of those tracks. Retention must never reap the
+                # last copy; the web diagnostic surfaces it for the user to
+                # reconcile (restore or remove by hand).
+                log.info(fmt(C.YELLOW,
+                    f"  ⚠  Keeping backup {entry.name!r} past retention — its "
+                    f"original is still missing the tracks it holds."))
+                continue
             try:
                 shutil.rmtree(entry)
                 n_removed += 1
