@@ -441,6 +441,8 @@ def validate_paths(src: Path, dest: Path) -> Optional[str]:
     recurse into or overwrite itself."""
     if not src.is_dir():
         return f"Source isn't a readable directory: {src}"
+    if dest.exists() and not dest.is_dir():
+        return f"Destination exists but isn't a folder: {dest}"
     if src.resolve() == dest.resolve():
         return "Source and destination are the same folder."
     if _is_within(dest, src):
