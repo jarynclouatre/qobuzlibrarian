@@ -705,6 +705,20 @@ def process_album(album, args, *, allow_force=True, label=None,
             return {"result": "cancelled", "imported": False,
                     "n_ok": n_ok, "n_lossy": n_lossy, "n_fail": n_fail}
 
+        # A wipe-replace (auto-upgrade or --force moved the original aside) that
+        # came back partial gets rolled back to the original by the finally
+        # below — so importing the partial first would only strand its rows in
+        # beets once the backup is restored over it. Discard the partial and let
+        # the finally restore the original, the same shape as the cancel path.
+        if ((auto_upgrade_active or use_force) and n_ok > 0
+                and (n_fail > 0 or n_lossy > 0) and not args.no_import):
+            log.info(fmt(C.YELLOW,
+                "\n  Re-download came back incomplete — discarding it and "
+                "keeping your original."))
+            _discard_staged_since(snapshot)
+            return {"result": "partial", "imported": False,
+                    "n_ok": n_ok, "n_fail": n_fail, "n_lossy": n_lossy}
+
         # ── Pre-import: compress + lyrics on STAGING ─────────────────────────────
         # compress + lyric_fetch run on staging BEFORE beets imports.
         # Beets's `move: yes` then transfers already-compressed,
