@@ -1,6 +1,6 @@
-"""Album mode — single-album query, selection, and download.
+"""Album mode — single-album query, selection, and download."""
+import sys
 
-"""
 from qobuz_librarian import config as cfg
 from qobuz_librarian.api.auth import (
     Aborted,
@@ -187,7 +187,7 @@ def run_album_mode(args, token, *, query_args=None, loop=False):
         if not args.dry_run and not drained:
             log.info(fmt(C.YELLOW,
                 f"  ⚠  {len(album_queue)} album(s) couldn't be downloaded — "
-                f"kept in the queue; retry or re-run to try again."))
+                f"re-run the command to try them again."))
 
     try:
         while True:
@@ -259,5 +259,8 @@ def run_album_mode(args, token, *, query_args=None, loop=False):
                 "discarding queue (Ctrl+C means abort)."))
         raise
     finally:
-        if not interrupted:
+        # Flush only on a clean exit. A Ctrl-C discards the queue above, and an
+        # in-flight die()/AuthLost/QobuzUnavailable must not trigger a download
+        # pass against a dead token from inside the finally.
+        if not interrupted and sys.exc_info()[0] is None:
             _flush_queue()
