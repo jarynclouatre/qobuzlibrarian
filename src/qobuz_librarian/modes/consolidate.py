@@ -60,6 +60,7 @@ def match_sibling_track(sibling_track, primary_tracks):
     s_mbid = (sibling_track.get("mb_trackid") or "").lower()
     s_title_norm = normalize(sibling_track.get("title", ""))
     s_disc = sibling_track.get("discnumber", 1) or 1
+    s_track = sibling_track.get("tracknumber") or 0
 
     if s_isrc:
         for pt in primary_tracks:
@@ -70,9 +71,15 @@ def match_sibling_track(sibling_track, primary_tracks):
             if (pt.get("mb_trackid") or "").lower() == s_mbid:
                 return pt
     if s_title_norm:
+        # Last-resort title match also requires the track position: two folders
+        # of the same album share it, while a deluxe edition's same-titled bonus
+        # track sits at a different number — so this no longer offers a distinct
+        # recording for deletion just because it shares a title. Untagged tracks
+        # (number 0 on both sides) still fall back to title + disc alone.
         for pt in primary_tracks:
             if (normalize(pt.get("title", "")) == s_title_norm
-                    and (pt.get("discnumber", 1) or 1) == s_disc):
+                    and (pt.get("discnumber", 1) or 1) == s_disc
+                    and (pt.get("tracknumber") or 0) == s_track):
                 return pt
     return None
 
