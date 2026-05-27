@@ -99,25 +99,29 @@ def parse_flac_info(data: bytes):
 
 
 def read_local_bit_depth(path: Path) -> int:
-    """Bit depth of a local FLAC. metaflac reads it straight from STREAMINFO,
-    immune to any ID3-style preamble that would push the header past the byte
-    window; fall back to parsing the header bytes when the flac tools aren't
-    installed. Returns 0 on failure. Getting this wrong upconverts the resample
-    (a 24-bit master re-encoded at s32), so the read has to be reliable."""
-    try:
-        out = subprocess.run(
-            ["metaflac", "--show-bps", str(path)],
-            capture_output=True, text=True, timeout=10).stdout.strip()
-        if out:
-            return int(out)
-    except (FileNotFoundError, OSError, subprocess.TimeoutExpired, ValueError):
-        pass
+    """Bit depth of a local FLAC. The 1 KB header byte-parse settles the common
+    case in a single read; metaflac backstops a file whose STREAMINFO sits past
+    the probe window (a leading ID3 tag would do it) so the resample never
+    upconverts a 24-bit master to s32 off a misread. Returns 0 on failure.
+
+    Mirrors read_sample_rate: a downsample run reads this per selected file, so
+    the cheap byte read leads and the metaflac subprocess is the exception. A
+    byte-parse that can't find the header returns 0 and defers to metaflac, so
+    leading the cheap path costs no reliability."""
     try:
         with open(path, "rb") as f:
             data = f.read(PROBE_BYTES)
         _, bps = parse_flac_info(data)
-        return bps
     except OSError:
+        return 0
+    if bps:
+        return bps
+    try:
+        out = subprocess.run(
+            ["metaflac", "--show-bps", str(path)],
+            capture_output=True, text=True, timeout=10).stdout.strip()
+        return int(out) if out else 0
+    except (FileNotFoundError, OSError, subprocess.TimeoutExpired, ValueError):
         return 0
 
 
