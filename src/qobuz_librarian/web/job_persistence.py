@@ -117,15 +117,20 @@ def init() -> None:
 
 def persist(job) -> None:
     """Write the job's current state to disk. Idempotent (INSERT OR REPLACE)."""
+    # Serialize the payloads before taking the lock — a parked review can hold
+    # hundreds of candidate dicts, and json.dumps of that shouldn't run while
+    # the single persistence lock is held, stalling a concurrent history read or
+    # the other worker lane's write. default=str so one stray non-JSON value (a
+    # Path that slipped into a payload) coerces to text instead of raising
+    # TypeError, which would escape the sqlite3.Error guard, crash the worker,
+    # and silently drop a parked review the user can't get back.
+    candidates_json = json.dumps(job.candidates or [], default=str)
+    execute_args_json = json.dumps(job.execute_args or {}, default=str)
     with _lock:
         conn = _get_conn()
         if conn is None:
             return
         try:
-            # default=str so one stray non-JSON value in a candidate payload (a
-            # Path that slipped through, say) coerces to text instead of raising
-            # TypeError here — that would escape the sqlite3.Error guard, crash
-            # the worker, and silently drop a parked review the user can't get back.
             conn.execute(
                 "INSERT OR REPLACE INTO jobs "
                 "(id, title, artist, album_id, kind, status, phase, candidates, "
@@ -137,12 +142,12 @@ def persist(job) -> None:
                     job.album_id or "", job.kind or "download",
                     job.status.value if hasattr(job.status, "value") else str(job.status),
                     job.phase or "",
-                    json.dumps(job.candidates or [], default=str),
+                    candidates_json,
                     job.error,
                     job.summary or "",
                     job.review_verb or "Download",
                     job.execute_kind or "",
-                    json.dumps(job.execute_args or {}, default=str),
+                    execute_args_json,
                     job.created_at,
                     job.finished_at,
                 ),
