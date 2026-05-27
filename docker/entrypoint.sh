@@ -103,10 +103,14 @@ case "${PUID}${PGID}" in
         ;;
     *)
         APP_USER="${PUID}:${PGID}"
-        # Only the small, app-owned dirs are chowned. The music/staging trees
-        # may be huge NAS mounts — recursively chowning them would be slow and
-        # wrong; their permissions are the user's to manage.
-        chown -R "$APP_USER" "$CONFIG_DIR" /data 2>/dev/null || true
+        # /music is the user's library — possibly a huge NAS mount — so it's
+        # never recursively chowned; its permissions are theirs to manage (the
+        # writability check below guides them if PUID doesn't match). The rest
+        # are small app-managed volumes: chown them so a fresh deploy doesn't
+        # warn "not writable" on every boot until the user fixes it by hand.
+        # Non-fatal on failure (a NAS-bound staging just falls through to the
+        # writability warning).
+        chown -R "$APP_USER" "$CONFIG_DIR" /data /staging /upgrade_backups 2>/dev/null || true
         echo "[init] Running as ${APP_USER}."
         ;;
 esac
