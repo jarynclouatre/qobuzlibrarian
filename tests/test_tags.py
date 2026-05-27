@@ -56,6 +56,11 @@ def test_strip_edition_suffix_preserves_distinct_versions():
     # an edition tag wrapping a performance one is still stripped, the
     # performance marker kept.
     assert strip_edition_suffix("Song (LP Version) (Remix)") == "Song (Remix)"
+    # "with" mid-phrase is an edition descriptor, not a collaboration — the
+    # whole edition tag still strips...
+    assert strip_edition_suffix("Song (Single Version with Intro)") == "Song"
+    # ...but a leading "(with X)" credit marks a distinct recording, kept.
+    assert strip_edition_suffix("Song (with Beyoncé)") == "Song (with Beyoncé)"
 
 
 def test_strip_album_decorations_handles_year_prefixed_folders():

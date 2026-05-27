@@ -130,7 +130,7 @@ _PERFORMANCE_VARIANT_RE = re.compile(
     r"radio\s*edit|extended\s*mix|club\s*mix|"
     r"dub(?:\s*mix)?|piano\s*version|"
     r"unplugged|orchestral|symphonic|"
-    r"feat\.?|featuring|with\s+\w+|"
+    r"feat\.?|featuring|"
     r"karaoke|backing\s*track|"
     r"alternate\s*(?:take|version|mix)|"
     r"early\s*(?:take|version|mix)|"
@@ -142,6 +142,13 @@ _PERFORMANCE_VARIANT_RE = re.compile(
 
 # Trailing parenthesized chunk capturer — non-greedy, anchored to end.
 _TRAILING_PAREN_CAPTURE_RE = re.compile(r"\s*\(([^()]*)\)\s*$")
+
+# A parenthesized collaboration credit — "(with Beyoncé)" — names a distinct
+# recording and stays attached. Anchored to the start so a "with" buried in an
+# edition descriptor ("(Single Version with Intro)") doesn't keep that whole
+# edition tag; the common "(feat. X)" / "(featuring X)" forms are handled by
+# the performance-variant set above.
+_LEADING_COLLAB_RE = re.compile(r"^\s*with\s+\w", re.IGNORECASE)
 
 
 @lru_cache(maxsize=4096)
@@ -171,7 +178,8 @@ def strip_edition_suffix(title):
         head = s[: m.start()].strip()
         if not head:
             break
-        if _PERFORMANCE_VARIANT_RE.search(m.group(1)):
+        if (_PERFORMANCE_VARIANT_RE.search(m.group(1))
+                or _LEADING_COLLAB_RE.match(m.group(1))):
             kept.append(m.group(1).strip())
         s = head
     for group in reversed(kept):
