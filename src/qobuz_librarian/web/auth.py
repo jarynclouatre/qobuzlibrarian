@@ -204,18 +204,22 @@ def _secure(request) -> bool:
 
 
 def set_session_cookie(response, request) -> None:
+    # SameSite=strict (matching the CSRF cookie): the session is the auth
+    # credential, and no app flow needs it carried on a cross-site first hop —
+    # a deep link from elsewhere just bounces once through /login, which
+    # re-issues it. Strict keeps the auth cookie off every cross-site request.
     response.set_cookie(
         SESSION_COOKIE,
         session_value(),
         max_age=_COOKIE_MAX_AGE,
         httponly=True,
-        samesite="lax",
+        samesite="strict",
         secure=_secure(request),
     )
 
 
 def clear_session_cookie(response) -> None:
-    response.delete_cookie(SESSION_COOKIE, samesite="lax")
+    response.delete_cookie(SESSION_COOKIE, samesite="strict")
 
 
 def auth_active() -> bool:
