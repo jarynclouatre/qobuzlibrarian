@@ -15,10 +15,12 @@ const PRECACHE = [
 ];
 
 self.addEventListener('install', event => {
+  // skipWaiting is chained inside waitUntil so a failed precache aborts the
+  // install rather than activating a worker with a half-populated cache.
   event.waitUntil(
     caches.open(CACHE).then(cache => cache.addAll(PRECACHE))
+      .then(() => self.skipWaiting())
   );
-  self.skipWaiting();
 });
 
 self.addEventListener('activate', event => {

@@ -213,8 +213,7 @@
     document.addEventListener('click', e => {
       const link = e.target.closest('.dropdown-content a, .dropdown-content button');
       if (!link) return;
-      const label = link.closest('.dropdown') && link.closest('.dropdown').querySelector('label[tabindex]');
-      if (label && label.blur) label.blur();
+      // Dropping focus from the tapped item closes the daisyUI dropdown.
       if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
     });
     // Global keyboard shortcuts. "/" focuses the search box; Esc dismisses
@@ -232,7 +231,8 @@
           // Esc dismisses flash banners (transient, any severity) and blurs a
           // focused field. Permanent alerts — a missing-credentials notice, a
           // failed-job error panel — carry no data-flash and must stay put.
-          document.querySelectorAll('[data-flash]').forEach(a => a.remove());
+          // qlDismissAllFlashes animates them out, matching auto-dismiss.
+          if (window.qlDismissAllFlashes) window.qlDismissAllFlashes();
           if (inField) document.activeElement.blur();
         } else if (e.key === 'g' && !inField) {
           gPending = true;
