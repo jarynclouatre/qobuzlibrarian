@@ -326,6 +326,9 @@
     var summaryRow = document.getElementById("review-summary-row");
     var summaryCount = document.querySelector("#review-candidates [data-summary-count]");
     var emptyBox = document.getElementById("review-empty");
+    var filterRow = document.getElementById("review-filter-row");
+    var filterInput = document.getElementById("review-filter");
+    var filterNone = document.getElementById("review-filter-none");
     var scanDone = !scanning;
 
     function plural(n, w) { return n + " " + w + (n === 1 ? "" : "s"); }
@@ -364,6 +367,8 @@
       if (summaryCount) summaryCount.textContent = plural(albums, "album") + " across " + plural(artists, "artist");
       if (summaryRow) summaryRow.classList.toggle("hidden", albums === 0);
       if (emptyBox) emptyBox.classList.toggle("hidden", albums > 0 || !scanDone);
+      if (filterRow) filterRow.classList.toggle("hidden", artists < 4);
+      applyFilter();
     }
     form.addEventListener("change", function (e) {
       if (e.target.classList && e.target.classList.contains("cb")) refresh();
@@ -377,6 +382,25 @@
     });
     form.addEventListener("htmx:afterSwap", refresh);
     document.body.addEventListener("qlHidden", function () { setTimeout(refresh, 0); });
+
+    // Client-side filter over the rendered groups — a view only, so a ticked
+    // album stays in the submit set even when filtered out of sight. refresh()
+    // reveals the box once there are enough groups and re-applies it as a live
+    // scan appends more.
+    function applyFilter() {
+      if (!groupsBox) return;
+      var q = (filterInput ? filterInput.value : "").trim().toLowerCase();
+      var shown = 0;
+      groupsBox.querySelectorAll(":scope > details").forEach(function (g) {
+        var hay = g.getAttribute("data-artist") || "";
+        g.querySelectorAll("label .font-medium").forEach(function (s) { hay += " " + s.textContent; });
+        if (!q || hay.toLowerCase().indexOf(q) !== -1) { g.classList.remove("hidden"); shown++; }
+        else { g.classList.add("hidden"); }
+      });
+      if (filterNone) filterNone.classList.toggle("hidden", shown > 0 || !q);
+    }
+    if (filterInput) filterInput.addEventListener("input", applyFilter);
+
     refresh();
 
     if (!scanning) return;

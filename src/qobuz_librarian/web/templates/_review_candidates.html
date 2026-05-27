@@ -24,6 +24,21 @@
     </div>
   </div>
 
+  {% if triage and job.candidates %}
+  <p class="text-xs text-base-content/40 mb-3">
+    This review is saved — close the tab and come back whenever; the list keeps your place.
+  </p>
+  {% endif %}
+  {# A triage list spanning many artists is unnavigable; app.js reveals this
+     filter once there are enough groups. Filtering is a view only — a ticked
+     album stays selected and still downloads even when filtered out of sight. #}
+  <div id="review-filter-row" class="hidden mb-3">
+    <input type="search" id="review-filter" autocomplete="off"
+           placeholder="Filter by artist or album…"
+           aria-label="Filter the review list by artist or album"
+           class="input input-bordered input-sm w-full sm:max-w-xs">
+  </div>
+
   {% if job.execute_kind == 'downsample' %}
   <div class="alert alert-warning mb-3 text-sm">
     <span>Shrinking rewrites each file in place — the hi-res original is not kept
@@ -37,6 +52,9 @@
     {% with open = (_groups | length == 1) %}{% include "_review_group.html" %}{% endwith %}
     {% endfor %}
   </div>
+
+  <p id="review-filter-none" class="hidden text-center py-6 text-base-content/50 text-sm">
+    No artists or albums match your filter.</p>
 
   <div id="review-empty" class="text-center py-8 text-base-content/60{% if job.candidates %} hidden{% endif %}">
     <p class="font-medium">Nothing left to review.</p>
