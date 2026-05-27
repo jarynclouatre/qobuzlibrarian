@@ -242,7 +242,9 @@
 <div id="dashboard-active" class="{% if active_jobs %}space-y-3 mb-6{% endif %}">
   {% if active_jobs %}
   {% for j in active_jobs %}
-  <div class="card bg-base-200 border border-warning shadow">
+  <div class="card bg-base-200 border border-warning shadow"
+       data-job-card data-job-id="{{ j.id }}" data-job-surface="dashboard"
+       data-job-status="{{ j.status.value }}">
     <div class="card-body py-4">
       <div class="flex items-start justify-between gap-3">
         <div class="min-w-0 flex-1">
@@ -279,52 +281,6 @@
         </div>
       </div>
     </div>
-    <script>
-    (function () {
-      const src = new EventSource('/api/jobs/{{ j.id }}/stream');
-      const reconnect = document.getElementById('dash-reconnect-{{ j.id }}');
-      function shut() {
-        try { src.close(); } catch (_) {}
-        document.removeEventListener('htmx:beforeSwap', onSwap);
-      }
-      function onSwap(e) {
-        if (e.detail && e.detail.target && e.detail.target.id === 'dashboard-active') shut();
-      }
-      document.addEventListener('htmx:beforeSwap', onSwap);
-      src.onopen = () => { if (reconnect) reconnect.classList.add('hidden'); };
-      src.onerror = () => {
-        if (reconnect && src.readyState !== EventSource.CLOSED) reconnect.classList.remove('hidden');
-      };
-      src.addEventListener('progress', e => {
-        let p; try { p = JSON.parse(e.data); } catch (_) { return; }
-        const el = document.getElementById('dash-prog-{{ j.id }}');
-        if (!el) return;
-        const verb = ('{{ j.status.value }}' === 'scanning') ? 'Scanning' : (p.phase || 'Downloading');
-        if (p.total > 0) {
-          el.textContent = verb + ' ' + p.current + ' / ' + p.total + (p.item ? ' · ' + p.item : '');
-        } else if (p.phase) {
-          el.textContent = p.phase + (p.item ? ' · ' + p.item : '');
-        }
-      });
-      src.addEventListener('done', () => {
-        shut();
-        // Don't yank the user mid-search — if search results are showing, just
-        // drop this card and leave the rest alone.
-        const results = document.getElementById('search-results');
-        if (results && results.children.length) {
-          const wrap = document.getElementById('dashboard-active');
-          if (wrap) wrap.classList.add('hidden');
-          return;
-        }
-        if (window.htmx) {
-          window.htmx.ajax('GET', '/',
-            {target: '#dashboard-active', swap: 'outerHTML', select: '#dashboard-active'});
-        } else {
-          location.reload();
-        }
-      });
-    })();
-    </script>
   </div>
   {% endfor %}
   {% endif %}

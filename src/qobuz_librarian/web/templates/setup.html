@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Set up login — Qobuz Librarian</title>
   <link rel="icon" type="image/png" href="/static/icon.png">
-  <script>
+  <script nonce="{{ request.state.csp_nonce }}">
     (function () {
       try {
         var t = localStorage.getItem('ql-theme');
@@ -17,6 +17,7 @@
     })();
   </script>
   <link href="/static/dist/app.css?v={{ app_version }}" rel="stylesheet">
+  <script src="/static/app.js?v={{ app_version }}"></script>
 </head>
 <body class="min-h-screen bg-base-100 flex items-center justify-center px-4 py-8">
   <div class="card bg-base-200 shadow-lg w-full max-w-md">
@@ -54,7 +55,7 @@
             <input type="password" name="password" id="password"
                    autocomplete="new-password" class="input input-bordered flex-1">
             <button type="button" class="btn btn-ghost btn-sm"
-                    onclick="const f=document.getElementById('password');f.type=f.type==='password'?'text':'password';this.textContent=f.type==='password'?'Show':'Hide'">Show</button>
+                    data-toggle-password="password">Show</button>
           </div>
           <p class="text-xs text-base-content/40 mt-1">At least 8 characters.</p>
         </div>
@@ -64,7 +65,7 @@
             <input type="password" name="confirm" id="confirm"
                    autocomplete="new-password" class="input input-bordered flex-1">
             <button type="button" class="btn btn-ghost btn-sm"
-                    onclick="const f=document.getElementById('confirm');f.type=f.type==='password'?'text':'password';this.textContent=f.type==='password'?'Show':'Hide'">Show</button>
+                    data-toggle-password="confirm">Show</button>
           </div>
         </div>
         <button type="submit" class="btn btn-primary w-full">Create login</button>

@@ -18,9 +18,9 @@
     </p>
     <div class="flex gap-2 shrink-0">
       <button type="button" class="btn btn-xs"
-              onclick="document.querySelectorAll('#review-candidates .cb').forEach(c=>c.checked=true)">All</button>
+              data-check="all" data-check-within="#review-candidates .cb">All</button>
       <button type="button" class="btn btn-xs"
-              onclick="document.querySelectorAll('#review-candidates .cb').forEach(c=>c.checked=false)">None</button>
+              data-check="none" data-check-within="#review-candidates .cb">None</button>
     </div>
   </div>
 

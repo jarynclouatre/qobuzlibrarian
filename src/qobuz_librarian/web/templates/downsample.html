@@ -35,7 +35,7 @@
 <form action="/downsample" method="post" data-busy-submit>
   <input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}">
   <button type="submit" class="btn btn-primary"
-          onclick="return confirm('Scan the library for hi-res files? You review and pick what to shrink before anything changes.')">Start downsample scan</button>
+          data-confirm="Scan the library for hi-res files? You review and pick what to shrink before anything changes.">Start downsample scan</button>
 </form>
 {% else %}
 <div class="alert alert-warning">

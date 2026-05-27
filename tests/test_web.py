@@ -880,6 +880,13 @@ def test_security_response_headers(client):
     assert r.headers.get("Referrer-Policy") == "same-origin"
     csp = r.headers.get("Content-Security-Policy", "")
     assert "default-src 'self'" in csp and "frame-ancestors 'none'" in csp
+    # script-src is nonce-based, not 'unsafe-inline' — so a reflected <script>
+    # can't run. The per-request nonce in the header must match the one the
+    # page stamps on its inline blocks, or the theme/CSRF/SW scripts all break.
+    script_src = next(d for d in csp.split(";") if d.strip().startswith("script-src"))
+    assert "'unsafe-inline'" not in script_src
+    nonce = script_src.split("'nonce-", 1)[1].split("'", 1)[0]
+    assert f'nonce="{nonce}"' in r.text
     # Don't leak the ASGI framework name.
     assert "server" not in {k.lower() for k in r.headers}
     # HSTS only over https (don't pin a plain-http LAN box into https-only).
@@ -1087,8 +1094,9 @@ def test_review_list_groups_candidates_by_artist(client):
         # Every candidate is still its own submittable checkbox.
         for cid in ("c0", "c1", "c2"):
             assert f'value="{cid}"' in t
-        # Per-artist select-all scoped to the group.
-        assert "this.closest('details')" in t
+        # Per-artist select-all scoped to its group (the delegated handler in
+        # app.js reads data-check-closest to bound the toggle to this details).
+        assert 'data-check-closest="details"' in t
     finally:
         _remove_job(job)
 

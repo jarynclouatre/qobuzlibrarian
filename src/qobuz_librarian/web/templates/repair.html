@@ -17,7 +17,7 @@
 <form action="/repair" method="post" data-busy-submit>
   <input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}">
   <button type="submit" class="btn btn-primary"
-          onclick="return confirm('Start a full repair scan? This can take a couple of hours on a large library.')">Start repair scan</button>
+          data-confirm="Start a full repair scan? This can take a couple of hours on a large library.">Start repair scan</button>
 </form>
 {% else %}
 <div class="alert alert-warning">

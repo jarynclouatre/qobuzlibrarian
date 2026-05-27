@@ -1,4 +1,6 @@
-<div id="job-content">
+<div id="job-content" data-job-id="{{ job.id }}"
+  {%- if job.status.value == 'awaiting_review' or (job.execute_kind in ('library', 'upgrade', 'downsample') and job.status.value == 'scanning') %} data-job-view="review"{% if job.status.value == 'scanning' %} data-scanning="1"{% endif %}
+  {%- elif job.status.value in ('pending', 'scanning', 'running') %} data-job-view="progress"{% endif %}>
   <div class="flex items-center justify-between gap-3 mb-1">
     <h1 class="text-2xl font-bold">{% if job.artist %}{{ job.artist }} — {% endif %}{{ job.title }}</h1>
     <span id="job-status-badge" class="badge whitespace-nowrap shrink-0
@@ -54,8 +56,8 @@
                   border-t border-base-300 bg-base-100/95 px-4 py-3
                   supports-[backdrop-filter]:bg-base-100/75 supports-[backdrop-filter]:backdrop-blur">
         <button type="submit" id="review-submit" class="btn btn-primary"{% if scanning %} disabled{% endif %}
-          {%- if job.execute_kind == 'downsample' %} onclick="return confirm('Downsample the selected albums now? Each file is rewritten in place at CD rate — the hi-res original is not kept and this cannot be undone.')"
-          {%- elif job.execute_kind == 'migration' and job.review_verb == 'Move' %} onclick="return confirm('Move the selected files now? This relocates your originals instead of copying them, and removes the folders it empties.')"
+          {%- if job.execute_kind == 'downsample' %} data-confirm="Downsample the selected albums now? Each file is rewritten in place at CD rate — the hi-res original is not kept and this cannot be undone."
+          {%- elif job.execute_kind == 'migration' and job.review_verb == 'Move' %} data-confirm="Move the selected files now? This relocates your originals instead of copying them, and removes the folders it empties."
           {%- endif %}>{{ job.review_verb }}<span data-count></span> selected</button>
         <button type="submit" formaction="/jobs/{{ job.id }}/cancel" class="btn btn-ghost">Cancel</button>
         {% if job.execute_kind == 'upgrade' %}
@@ -80,165 +82,6 @@
 {% endfor -%}
     </div>
     {% endif %}
-
-    <script>
-    (function () {
-      const form = document.getElementById('review-form');
-      if (!form) return;
-      const submit = document.getElementById('review-submit');
-      const countEl = submit ? submit.querySelector('[data-count]') : null;
-      const groupsBox = document.getElementById('review-groups');
-      const summaryRow = document.getElementById('review-summary-row');
-      const summaryCount = document.querySelector('#review-candidates [data-summary-count]');
-      const emptyBox = document.getElementById('review-empty');
-      const scanning = {{ 'true' if scanning else 'false' }};
-      let scanDone = !scanning;
-
-      function plural(n, w) { return n + ' ' + w + (n === 1 ? '' : 's'); }
-      function fmtBytes(n) {
-        n = Number(n) || 0;
-        const units = ['B', 'KB', 'MB', 'GB'];
-        for (const u of units) {
-          if (n < 1024) return (u === 'B' ? Math.floor(n) : n.toFixed(1)) + u;
-          n /= 1024;
-        }
-        return n.toFixed(1) + 'TB';
-      }
-      const dsTotal = document.querySelector('[data-downsample-total]');
-      function refresh() {
-        const checked = form.querySelectorAll('.cb:checked').length;
-        if (countEl) countEl.textContent = checked ? ' ' + checked : '';
-        if (submit) submit.disabled = !scanDone || checked === 0;
-        if (dsTotal) {
-          let bytes = 0;
-          form.querySelectorAll('.cb:checked').forEach(function (cb) {
-            bytes += parseInt(cb.dataset.saving || '0', 10) || 0;
-          });
-          dsTotal.textContent = bytes > 0 ? ' · ~' + fmtBytes(bytes) + ' reclaimable' : '';
-        }
-        form.querySelectorAll('[data-hide]').forEach(function (btn) {
-          const det = btn.closest('details');
-          const lbl = btn.querySelector('[data-hide-label]');
-          if (!det || !lbl) return;
-          const total = det.querySelectorAll('.cb').length;
-          const picked = det.querySelectorAll('.cb:checked').length;
-          btn.classList.toggle('hidden', total > 0 && picked === total);
-          lbl.textContent = picked ? 'Hide other ' + (total - picked) : 'Hide all ' + total;
-        });
-        const albums = groupsBox ? groupsBox.querySelectorAll('.cb').length : 0;
-        const artists = groupsBox ? groupsBox.querySelectorAll(':scope > details').length : 0;
-        if (summaryCount) summaryCount.textContent = plural(albums, 'album') + ' across ' + plural(artists, 'artist');
-        if (summaryRow) summaryRow.classList.toggle('hidden', albums === 0);
-        if (emptyBox) emptyBox.classList.toggle('hidden', albums > 0 || !scanDone);
-      }
-      form.addEventListener('change', function (e) {
-        if (e.target.classList && e.target.classList.contains('cb')) refresh();
-      });
-      form.addEventListener('click', function (e) {
-        // A Hide button sits inside <summary>; keep its click from toggling the
-        // disclosure. htmx still fires the hx-post.
-        if (e.target.closest('[data-hide]')) e.preventDefault();
-        // All/None flip checkboxes via inline handlers (no change event fires).
-        if (e.target.closest('button')) setTimeout(refresh, 0);
-      });
-      form.addEventListener('htmx:afterSwap', refresh);
-      document.body.addEventListener('qlHidden', function () { setTimeout(refresh, 0); });
-      refresh();
-
-      if (!scanning) return;
-
-      // ── Live scan: stream log + progress, append artists as the walk finds
-      //    them, leaving on-screen groups (and their state) untouched. ──────
-      const logEl = document.getElementById('log');
-      const card = document.getElementById('progress-card');
-      const label = document.getElementById('prog-label');
-      const count = document.getElementById('prog-count');
-      const bar = document.getElementById('prog-bar');
-      const item = document.getElementById('prog-item');
-      const scanHeader = document.getElementById('scan-header');
-      const reconnect = document.getElementById('sse-reconnect');
-      const baseTitle = document.title;
-      let titleSet = false;
-      let after = -1;
-      form.querySelectorAll('.cb[data-seq]').forEach(function (cb) {
-        after = Math.max(after, parseInt(cb.dataset.seq, 10));
-      });
-      let pulling = false;
-      function pullGroups(done) {
-        if (pulling) { if (done) { done(); } return; }
-        pulling = true;
-        fetch('/jobs/{{ job.id }}/groups?after=' + after, {headers: {'HX-Request': 'true'}})
-          .then(function (r) { return r.text(); })
-          .then(function (txt) {
-            pulling = false;
-            const t = txt.trim();
-            if (t && groupsBox) {
-              const tmp = document.createElement('div');
-              tmp.innerHTML = t;
-              tmp.querySelectorAll(':scope > details[data-artist]').forEach(function (g) {
-                const a = g.getAttribute('data-artist');
-                const sel = 'details[data-artist="' + (window.CSS && CSS.escape ? CSS.escape(a) : a) + '"]';
-                const existing = groupsBox.querySelector(sel);
-                if (existing) {
-                  existing.replaceWith(g);
-                } else {
-                  g.classList.add('ql-enter');
-                  groupsBox.appendChild(g);
-                  setTimeout(function () { g.classList.remove('ql-enter'); }, 260);
-                }
-                g.querySelectorAll('.cb[data-seq]').forEach(function (cb) {
-                  after = Math.max(after, parseInt(cb.dataset.seq, 10));
-                });
-              });
-              if (window.htmx) { window.htmx.process(groupsBox); }
-            }
-            refresh();
-            if (done) { done(); }
-          })
-          .catch(function () { pulling = false; if (done) { done(); } });
-      }
-
-      const src = new EventSource('/api/jobs/{{ job.id }}/stream');
-      src.onmessage = function (e) {
-        if (!titleSet) { document.title = '▶ ' + baseTitle; titleSet = true; }
-        if (logEl) { logEl.appendChild(document.createTextNode(e.data + '\n')); logEl.scrollTop = logEl.scrollHeight; }
-      };
-      src.onopen = function () { if (reconnect) reconnect.classList.add('hidden'); };
-      src.onerror = function () {
-        if (reconnect && src.readyState !== EventSource.CLOSED) { reconnect.classList.remove('hidden'); }
-      };
-      src.addEventListener('progress', function (e) {
-        let p; try { p = JSON.parse(e.data); } catch (_) { return; }
-        if (window.qlDismissAllFlashes) { window.qlDismissAllFlashes(); }
-        if (card) card.classList.remove('hidden');
-        if (label) label.textContent = p.phase || 'Working';
-        let ct = p.total > 0 ? p.current + ' / ' + p.total : (p.current ? String(p.current) : '');
-        if (p.found > 0) { ct += (ct ? ' · ' : '') + p.found + ' with gaps'; }
-        if (count) count.textContent = ct;
-        if (bar) { if (p.total > 0) { bar.max = 100; bar.value = Math.round(p.current / p.total * 100); } else { bar.removeAttribute('value'); } }
-        if (item) item.textContent = p.item || '';
-        if (p.hit) { pullGroups(); }
-      });
-      src.addEventListener('done', function (e) {
-        src.close();
-        document.title = baseTitle;
-        if (window.qlDismissAllFlashes) { window.qlDismissAllFlashes(); }
-        if (e.data === 'awaiting_review') {
-          // Scan finished with results: enable downloading in place, keeping
-          // every tick/expansion the user made while it ran.
-          if (card) card.classList.add('hidden');
-          if (scanHeader) scanHeader.classList.add('hidden');
-          const badge = document.getElementById('job-status-badge');
-          if (badge) { badge.textContent = 'awaiting review'; badge.className = 'badge whitespace-nowrap shrink-0 badge-info'; }
-          pullGroups(function () { scanDone = true; refresh(); });
-        } else if (window.htmx) {
-          window.htmx.ajax('GET', '/jobs/{{ job.id }}/content', {target: '#job-content', swap: 'outerHTML'});
-        } else {
-          location.reload();
-        }
-      });
-    })();
-    </script>
 
   {# ── Scanning (other modes) / running / pending: live log ─────────────── #}
   {% elif s in ('pending', 'scanning', 'running') %}
@@ -274,55 +117,6 @@
       <summary class="text-sm text-base-content/50 cursor-pointer select-none">Show details</summary>
       <div class="log-console mt-2" id="log"></div>
     </details>
-    <script>
-    (function () {
-      const logEl = document.getElementById('log');
-      const card = document.getElementById('progress-card');
-      const label = document.getElementById('prog-label');
-      const count = document.getElementById('prog-count');
-      const bar = document.getElementById('prog-bar');
-      const item = document.getElementById('prog-item');
-      const activity = document.getElementById('job-activity');
-      const baseTitle = document.title;
-      const reconnect = document.getElementById('sse-reconnect');
-      const src = new EventSource('/api/jobs/{{ job.id }}/stream');
-      let titleSet = false;
-      src.onmessage = e => {
-        if (!titleSet) { document.title = '▶ ' + baseTitle; titleSet = true; }
-        if (logEl) { logEl.appendChild(document.createTextNode(e.data + '\n')); logEl.scrollTop = logEl.scrollHeight; }
-      };
-      src.onopen = () => { if (reconnect) reconnect.classList.add('hidden'); };
-      src.onerror = () => {
-        if (reconnect && src.readyState !== EventSource.CLOSED) {
-          reconnect.classList.remove('hidden');
-        }
-      };
-      src.addEventListener('progress', e => {
-        let p; try { p = JSON.parse(e.data); } catch (_) { return; }
-        if (window.qlDismissAllFlashes) { window.qlDismissAllFlashes(); }
-        if (activity && p.phase && activity.textContent !== p.phase) activity.textContent = p.phase;
-        if (card) card.classList.remove('hidden');
-        if (label) label.textContent = p.phase || 'Working';
-        let ct = p.total > 0 ? p.current + ' / ' + p.total : (p.current ? String(p.current) : '');
-        if (p.found > 0) { ct += (ct ? ' · ' : '') + p.found + ' with gaps'; }
-        if (count) count.textContent = ct;
-        if (bar) { if (p.total > 0) { bar.max = 100; bar.value = Math.round(p.current / p.total * 100); } else { bar.removeAttribute('value'); } }
-        if (item) item.textContent = p.item || '';
-      });
-      src.addEventListener('done', () => {
-        src.close();
-        document.title = baseTitle;
-        if (window.qlDismissAllFlashes) { window.qlDismissAllFlashes(); }
-        if (window.htmx) {
-          window.htmx.ajax('GET', '/jobs/{{ job.id }}/content',
-                           {target: '#job-content', swap: 'outerHTML'});
-        } else {
-          location.reload();
-        }
-      });
-    })();
-    </script>
-
   {# ── Finished ─────────────────────────────────────────────────────────── #}
   {% else %}
     {% if job.error %}

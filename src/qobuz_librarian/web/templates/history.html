@@ -11,7 +11,7 @@
   <form action="/queue/clear" method="post">
     <input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}">
     <button type="submit" class="btn btn-sm btn-ghost"
-            onclick="return confirm('Clear the entire job history? This permanently removes the record of every finished job and can\'t be undone.')">Clear history</button>
+            data-confirm="Clear the entire job history? This permanently removes the record of every finished job and can't be undone.">Clear history</button>
   </form>
 </div>
 

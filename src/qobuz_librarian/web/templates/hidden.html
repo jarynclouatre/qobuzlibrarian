@@ -26,9 +26,9 @@
     <p class="text-base-content/70">{{ groups | length }} artist{% if groups | length != 1 %}s{% endif %} with hidden {{ noun }}s</p>
     <div class="flex gap-2 shrink-0">
       <button type="button" class="btn btn-xs"
-              onclick="document.querySelectorAll('.ha').forEach(c=>c.checked=true)">All</button>
+              data-check="all" data-check-within=".ha">All</button>
       <button type="button" class="btn btn-xs"
-              onclick="document.querySelectorAll('.ha').forEach(c=>c.checked=false)">None</button>
+              data-check="none" data-check-within=".ha">None</button>
     </div>
   </div>
 
@@ -54,7 +54,7 @@
 
   <button type="submit" id="restore-submit" class="btn btn-primary" disabled>Restore selected</button>
 </form>
-<script>
+<script nonce="{{ request.state.csp_nonce }}">
 (function () {
   var btn = document.getElementById('restore-submit');
   if (!btn) return;

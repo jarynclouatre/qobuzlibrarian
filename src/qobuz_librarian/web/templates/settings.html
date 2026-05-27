@@ -135,7 +135,7 @@
                  placeholder="{% if auth_token_set %}•••••••• (paste a new token to replace){% else %}paste the long token string here{% endif %}"
                  class="input input-bordered flex-1 font-mono text-base sm:text-sm">
           <button type="button" class="btn btn-ghost btn-sm"
-                  onclick="const f=document.getElementById('auth_token');f.type=f.type==='password'?'text':'password';this.textContent=f.type==='password'?'Show':'Hide'">Show</button>
+                  data-toggle-password="auth_token">Show</button>
         </div>
         <p class="text-xs text-base-content/40 mt-1">
           The long token string — not your Qobuz password.{% if auth_token_prefill %} (middle chars hidden for security){% endif %}

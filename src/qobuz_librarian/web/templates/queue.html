@@ -11,7 +11,7 @@
   <form action="/queue/cancel-pending" method="post">
     <input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}">
     <button type="submit" class="btn btn-sm btn-ghost"
-            onclick="return confirm('Cancel everything that is queued, running, or waiting for your review? Any unreviewed scan results are discarded.')">Cancel all jobs</button>
+            data-confirm="Cancel everything that is queued, running, or waiting for your review? Any unreviewed scan results are discarded.">Cancel all jobs</button>
   </form>
 </div>
 {% endif %}
@@ -24,7 +24,8 @@
 {% if pending %}
 <div class="mb-6 space-y-4">
   {% for job in pending %}
-  <div class="card bg-base-200 shadow {% if job.status.value == 'running' %}border border-warning{% endif %}">
+  <div class="card bg-base-200 shadow {% if job.status.value == 'running' %}border border-warning{% endif %}"
+       {% if job.status.value in ('running', 'scanning') %}data-job-card data-job-id="{{ job.id }}" data-job-surface="queue" data-job-status="{{ job.status.value }}"{% endif %}>
     <div class="card-body">
       <div class="flex items-start justify-between gap-3">
         <div class="min-w-0 flex-1">
@@ -87,44 +88,6 @@
         {% endif %}
       </div>
 
-      {% if job.status.value in ('running', 'scanning') %}
-      {# Live: progress updates the sub-text in place; when this job finishes,
-         we refresh the queue body so other cards reflect it too — without a
-         full reload that would yank scroll position. #}
-      <script>
-      (function () {
-        const src = new EventSource('/api/jobs/{{ job.id }}/stream');
-        function shut() {
-          try { src.close(); } catch (_) {}
-          document.removeEventListener('htmx:beforeSwap', onSwap);
-        }
-        function onSwap(e) {
-          if (e.detail && e.detail.target && e.detail.target.id === 'queue-body') shut();
-        }
-        document.addEventListener('htmx:beforeSwap', onSwap);
-        src.addEventListener('progress', e => {
-          let p; try { p = JSON.parse(e.data); } catch (_) { return; }
-          const el = document.getElementById('card-prog-{{ job.id }}');
-          if (!el) return;
-          const verb = ('{{ job.status.value }}' === 'scanning') ? 'Scanning' : (p.phase || 'Downloading');
-          if (p.total > 0) {
-            el.textContent = verb + ' ' + p.current + ' / ' + p.total + (p.item ? ' · ' + p.item : '');
-          } else if (p.phase) {
-            el.textContent = p.phase + (p.item ? ' · ' + p.item : '');
-          }
-        });
-        src.addEventListener('done', () => {
-          shut();
-          if (window.htmx) {
-            window.htmx.ajax('GET', '/queue',
-              {target: '#queue-body', swap: 'outerHTML', select: '#queue-body'});
-          } else {
-            location.reload();
-          }
-        });
-      })();
-      </script>
-      {% endif %}
     </div>
   </div>
   {% endfor %}

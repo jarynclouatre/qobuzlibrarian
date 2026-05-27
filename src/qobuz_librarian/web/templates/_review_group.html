@@ -18,9 +18,9 @@
   <div class="px-3 pb-3 pt-1 space-y-1">
     <div class="flex gap-2 mb-1">
       <button type="button" class="btn btn-xs"
-              onclick="this.closest('details').querySelectorAll('.cb').forEach(c=>c.checked=true)">All</button>
+              data-check="all" data-check-closest="details" data-check-within=".cb">All</button>
       <button type="button" class="btn btn-xs"
-              onclick="this.closest('details').querySelectorAll('.cb').forEach(c=>c.checked=false)">None</button>
+              data-check="none" data-check-closest="details" data-check-within=".cb">None</button>
     </div>
     {% for c in items %}
     <label class="flex items-center gap-3 px-3 py-2 bg-base-100 border border-base-300/40 rounded-lg cursor-pointer transition-colors hover:border-base-content/20">

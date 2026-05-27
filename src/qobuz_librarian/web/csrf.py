@@ -77,33 +77,42 @@ class CSRFMiddleware(BaseHTTPMiddleware):
         return response
 
 
-# 'unsafe-inline' is necessary because base.html ships inline <script> blocks
-# (SW register, keyboard shortcuts); a stricter CSP would need every inline
-# block lifted into a hashed external file. Defense-in-depth — autoescape is
-# the primary XSS guard.
-_CSP = (
-    "default-src 'self'; "
-    "script-src 'self' 'unsafe-inline'; "
-    "style-src 'self' 'unsafe-inline'; "
-    "img-src 'self' data: https://static.qobuz.com; "
-    "connect-src 'self'; "
-    "object-src 'none'; "
-    "frame-ancestors 'none'; "
-    "base-uri 'self'; "
-    "form-action 'self'"
-)
+# script-src carries a per-request nonce (set on request.state.csp_nonce below)
+# rather than 'unsafe-inline', so a reflected/injected <script> can't run — only
+# the few inline blocks we mint with this request's nonce do. The SSE/progress
+# logic that htmx swaps in lives in the external app.js ('self'); a nonce can't
+# survive an htmx swap because the fragment's nonce wouldn't match the live
+# document's. style-src keeps 'unsafe-inline': the Tailwind/daisyUI build and
+# htmx's indicator styles lean on inline style, and autoescape is the real XSS
+# guard — locking styles down is a separate, far larger surface.
+def _csp(nonce: str) -> str:
+    return (
+        "default-src 'self'; "
+        f"script-src 'self' 'nonce-{nonce}'; "
+        "style-src 'self' 'unsafe-inline'; "
+        "img-src 'self' data: https://static.qobuz.com; "
+        "connect-src 'self'; "
+        "object-src 'none'; "
+        "frame-ancestors 'none'; "
+        "base-uri 'self'; "
+        "form-action 'self'"
+    )
 
 
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     """Adds X-Content-Type-Options, X-Frame-Options, Referrer-Policy,
-    Permissions-Policy, a permissive Content-Security-Policy, and HSTS on
+    Permissions-Policy, a nonce-based Content-Security-Policy, and HSTS on
     HTTPS requests only."""
     async def dispatch(self, request, call_next):
+        # Minted before the route renders so templates can stamp it on their
+        # inline <script>s via request.state.csp_nonce (mirrors csrf_token).
+        nonce = _new_token()
+        request.state.csp_nonce = nonce
         response = await call_next(request)
         response.headers.setdefault("X-Content-Type-Options", "nosniff")
         response.headers.setdefault("X-Frame-Options", "DENY")
         response.headers.setdefault("Referrer-Policy", "same-origin")
-        response.headers.setdefault("Content-Security-Policy", _CSP)
+        response.headers.setdefault("Content-Security-Policy", _csp(nonce))
         # The UI uses no device sensors; deny them so an injected script can't
         # reach for the camera/mic/location either.
         response.headers.setdefault(
