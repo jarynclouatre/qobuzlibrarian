@@ -14,7 +14,7 @@ Qobuz Librarian is a self-hosted, single-user tool.
 - **Web UI login.** Auth is on by default. On first visit the UI asks you to
   set one username and password; after that every route — pages, POSTs, and
   the JSON/SSE endpoints — requires a session. The session is an `HttpOnly`,
-  `SameSite=Lax` cookie; the password is stored as a salted PBKDF2-SHA256
+  `SameSite=Strict` cookie; the password is stored as a salted PBKDF2-SHA256
   hash (never plaintext) in the data volume, written `0600`, and login does a
   constant-time compare. Setting `WEB_AUTH=none` turns the login off
   entirely — the UI logs a warning at every boot when it does. Disabling it is
@@ -22,10 +22,10 @@ Qobuz Librarian is a self-hosted, single-user tool.
 - **Network binding.** By default the UI binds to `0.0.0.0` on `WEB_PORT`, so
   it's reachable by anything on your LAN. Set `WEB_HOST=127.0.0.1` (or bind the
   published port to `127.0.0.1` in `compose.yaml`) to keep it local.
-- **Internet exposure.** The built-in login is a single shared credential
-  with no lockout or rate limiting — fine for a home LAN, but if you expose
-  the UI to the internet, still front it with a reverse proxy (or VPN /
-  Tailscale). A minimal Caddy example:
+- **Internet exposure.** The built-in login is a single shared credential. It
+  throttles repeated failures (five per hour per IP, then a `429`), which is
+  enough for a home LAN, but if you expose the UI to the internet, still front
+  it with a reverse proxy (or VPN / Tailscale). A minimal Caddy example:
 
   ```caddy
   qobuz.example.com {

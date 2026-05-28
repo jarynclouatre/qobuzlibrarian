@@ -341,6 +341,7 @@ command in a shell — only set it to a command you trust.
 | `LYRICS_ENABLED`     | `true`   | Fetch lyrics on import (toggle on Settings page) |
 | `LYRICS_FORMAT`      | `embed`  | `embed` (FLAC tag), `sidecar` (.lrc), or `both`  |
 | `LYRICS_PROVIDERS`   | *(auto)* | Comma list, in order, e.g. `Lrclib,NetEase`      |
+| `ARTWORK`            | `sidecar`| Cover art: `sidecar` (image file beside the tracks), `embed` (in each track), or `both` |
 
 ### beets & streamrip config
 
@@ -357,7 +358,8 @@ For folder/file naming without hand-editing YAML, uncomment and fill in
 
 Plugins are also overridable via `BEETS_PLUGINS` (comma list) in
 `compose.yaml` or the Settings page — e.g. `fetchart,lastgenre,replaygain`.
-The default seeded config enables only `fetchart`. Plugins that need
+The default seeded config enables `fetchart` and `inline` (the latter backs
+the multi-disc folder field, so keep it). Plugins that need
 their own config block (lastgenre API key, replaygain backend, etc.) still
 require an edit to `/config/beets/config.yaml`; the env var only controls
 which plugins are loaded.
@@ -646,7 +648,8 @@ A few common unattended forms:
 # Download a specific album (URL or "Artist Album" string)
 docker compose run --rm qobuz-librarian cli https://open.qobuz.com/album/abcd1234
 
-# Work through one artist's catalog
+# Work through one artist's catalog (add --include-singles and/or
+# --include-comps to also offer singles and compilation appearances)
 docker compose run --rm qobuz-librarian cli --artist "Stars of the Lid"
 
 # Sweep every artist for quality upgrades, auto-confirming the safe ones
@@ -655,8 +658,12 @@ docker compose run --rm qobuz-librarian cli --upgrade-walk --auto-safe
 # Preview which hi-res library files would shrink to CD rate (changes nothing)
 docker compose run --rm qobuz-librarian cli --downsample-walk --dry-run
 
-# Fetch lyrics for library tracks that are missing them
+# Fetch lyrics for tracks missing them (--lyrics-synced-only for timed
+# lyrics only; --lyrics-rescan to re-query tracks already checked)
 docker compose run --rm qobuz-librarian cli --lyrics-walk
+
+# Start the next walk fresh, revisiting artists you've already reviewed
+docker compose run --rm qobuz-librarian cli --reset-walk-seen
 
 # Full flag reference
 docker compose run --rm qobuz-librarian cli --help
@@ -683,7 +690,7 @@ a redirect, so non-browser clients can detect the auth gate cleanly.
 Example — check whether anything is currently downloading:
 
 ```bash
-curl -s -b 'qf_session=<your-cookie>' http://localhost:8080/api/jobs?status=running \
+curl -s -b 'qf_session=<your-cookie>' http://localhost:8666/api/jobs?status=running \
   | jq '.count'
 ```
 
