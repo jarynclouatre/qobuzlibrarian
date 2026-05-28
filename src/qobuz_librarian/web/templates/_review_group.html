@@ -8,6 +8,7 @@
        ride along from the form and form the keep set. Target this group only so
        a hide leaves the rest of the (possibly still-filling) list untouched. #}
     <button type="button" data-hide
+            aria-label="Hide albums by {{ artist or 'this artist' }}"
             hx-post="/jobs/{{ job.id }}/hide"
             hx-vals='{{ {"artist": artist}|tojson }}'
             hx-target="closest details"
@@ -17,9 +18,9 @@
   </summary>
   <div class="px-3 pb-3 pt-1 space-y-1">
     <div class="flex gap-2 mb-1">
-      <button type="button" class="btn btn-xs"
+      <button type="button" class="btn btn-xs" aria-label="Select all albums by {{ artist or 'this artist' }}"
               data-check="all" data-check-closest="details" data-check-within=".cb">All</button>
-      <button type="button" class="btn btn-xs"
+      <button type="button" class="btn btn-xs" aria-label="Deselect all albums by {{ artist or 'this artist' }}"
               data-check="none" data-check-closest="details" data-check-within=".cb">None</button>
     </div>
     {% for c in items %}

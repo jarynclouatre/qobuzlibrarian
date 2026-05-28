@@ -22,7 +22,7 @@
     <div id="scan-header" class="flex items-center justify-between mb-3">
       <p class="text-base-content/60">Scanning
         {% if job.cancel_requested %}<span class="badge badge-ghost badge-sm ml-2">stopping</span>{% endif %}
-        <span id="sse-reconnect" class="badge badge-warning badge-sm ml-2 hidden">connection lost — reconnecting…</span>
+        <span id="sse-reconnect" class="badge badge-warning badge-sm ml-2 hidden" role="status" aria-live="polite">connection lost — reconnecting…</span>
       </p>
       {% if not job.cancel_requested %}
       <form action="/jobs/{{ job.id }}/cancel" method="post">
@@ -37,7 +37,7 @@
           <span id="prog-label" class="font-medium"></span>
           <span id="prog-count" class="text-sm text-base-content/50 shrink-0 tabular-nums"></span>
         </div>
-        <progress id="prog-bar" class="progress progress-primary w-full"></progress>
+        <progress id="prog-bar" class="progress progress-primary w-full" aria-labelledby="prog-label"></progress>
         <p id="prog-item" class="text-xs text-base-content/50 mt-2 truncate"></p>
       </div>
     </div>
@@ -92,7 +92,7 @@
            lands so a non-download job never reads "Downloading". #}
         <span id="job-activity" aria-live="polite">{% if s == 'scanning' %}{{ job.progress_phase or 'Scanning' }}{% elif s == 'running' %}{{ job.progress_phase or 'Working' }}{% else %}Queued{% endif %}</span>
         {% if job.cancel_requested %}<span class="badge badge-ghost badge-sm ml-2">stopping</span>{% endif %}
-        <span id="sse-reconnect" class="badge badge-warning badge-sm ml-2 hidden">connection lost — reconnecting…</span>
+        <span id="sse-reconnect" class="badge badge-warning badge-sm ml-2 hidden" role="status" aria-live="polite">connection lost — reconnecting…</span>
       </p>
       {% if not job.cancel_requested %}
       <form action="/jobs/{{ job.id }}/cancel" method="post">
@@ -108,7 +108,7 @@
           <span id="prog-label" class="font-medium"></span>
           <span id="prog-count" class="text-sm text-base-content/50 shrink-0 tabular-nums"></span>
         </div>
-        <progress id="prog-bar" class="progress progress-primary w-full"></progress>
+        <progress id="prog-bar" class="progress progress-primary w-full" aria-labelledby="prog-label"></progress>
         <p id="prog-item" class="text-xs text-base-content/50 mt-2 truncate"></p>
       </div>
     </div>

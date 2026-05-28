@@ -228,11 +228,13 @@
           const q = document.querySelector('input[name="q"], input[name="artist"]');
           if (q) { e.preventDefault(); q.focus(); q.select && q.select(); }
         } else if (e.key === 'Escape') {
-          // Esc dismisses flash banners (transient, any severity) and blurs a
-          // focused field. Permanent alerts — a missing-credentials notice, a
-          // failed-job error panel — carry no data-flash and must stay put.
-          // qlDismissAllFlashes animates them out, matching auto-dismiss.
+          // Esc dismisses flash banners (transient, any severity), closes an
+          // open nav menu (the Tools disclosure), and blurs a focused field.
+          // Permanent alerts — a missing-credentials notice, a failed-job error
+          // panel — carry no data-flash and must stay put. qlDismissAllFlashes
+          // animates them out, matching auto-dismiss.
           if (window.qlDismissAllFlashes) window.qlDismissAllFlashes();
+          document.querySelectorAll('nav details[open]').forEach(function (d) { d.removeAttribute('open'); });
           if (inField) document.activeElement.blur();
         } else if (e.key === 'g' && !inField) {
           gPending = true;
