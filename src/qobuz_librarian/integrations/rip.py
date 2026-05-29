@@ -362,14 +362,33 @@ def rip_url(url, timeout=None, live_output=False, quality=None):
 
 # ── Staging snapshot / cleanup ────────────────────────────────────────────────
 
-def snapshot_staging():
+def _iter_staging_files():
+    """Yield every staging file, skipping the retry-park tree entirely.
+
+    .beets_retry/ holds re-import-queued album dirs that accumulate over a
+    long-running session; walking them on every snapshot was the dominant
+    per-album cost on big queue flushes, when nothing about those files
+    matters here. Skipping the tree (rather than rglob-then-filter) keeps
+    the walk proportional to real staging activity, not the parked backlog.
+    """
     if not cfg.STAGING_DIR.exists():
-        return set()
-    return {p for p in cfg.STAGING_DIR.rglob("*") if p.is_file()}
+        return
+    retry_name = cfg.BEETS_RETRY_DIR
+    for entry in cfg.STAGING_DIR.iterdir():
+        if entry.name == retry_name:
+            continue
+        if entry.is_file():
+            yield entry
+        elif entry.is_dir():
+            yield from (p for p in entry.rglob("*") if p.is_file())
+
+
+def snapshot_staging():
+    return set(_iter_staging_files())
 
 
 def files_added_since(prior_snapshot):
-    return [p for p in cfg.STAGING_DIR.rglob("*") if p not in prior_snapshot and p.is_file()]
+    return [p for p in _iter_staging_files() if p not in prior_snapshot]
 
 
 def cleanup_lossy(new_files):

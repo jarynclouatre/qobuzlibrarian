@@ -194,3 +194,30 @@ def test_full_album_backs_up_present_tracks_before_rip(monkeypatch, tmp_path):
     bp = result["gap_fill_backup_path"]
     assert bp is not None and not owned.exists()
     assert any(f.read_bytes() == b"the-owned-original" for f in bp.rglob("*"))
+
+
+def test_snapshot_staging_skips_the_beets_retry_tree(monkeypatch, tmp_path):
+    """The retry-park tree (.beets_retry/) can hold hundreds of files from a
+    long-running session; snapshot_staging + files_added_since used to walk it
+    on every album, dominating per-album cost on big flushes. They now skip the
+    tree entirely; the rest of staging is captured as before."""
+    from qobuz_librarian import config as cfg
+    from qobuz_librarian.integrations import rip
+
+    staging = tmp_path / "staging"
+    (staging / ".beets_retry" / "ParkedArt" / "ParkedAlbum").mkdir(parents=True)
+    (staging / ".beets_retry" / "ParkedArt" / "ParkedAlbum" / "1.flac").write_bytes(b"x")
+    (staging / "Artist" / "Album").mkdir(parents=True)
+    (staging / "Artist" / "Album" / "1.flac").write_bytes(b"x")
+    monkeypatch.setattr(cfg, "STAGING_DIR", staging)
+
+    snap = rip.snapshot_staging()
+    paths = {str(p.relative_to(staging)) for p in snap}
+    assert paths == {"Artist/Album/1.flac"}     # the parked file is invisible
+
+    # A new staging file is detected; one landing in the retry park is not
+    # (it's not "this album's download").
+    (staging / "Artist" / "Album" / "2.flac").write_bytes(b"y")
+    (staging / ".beets_retry" / "ParkedArt" / "ParkedAlbum" / "2.flac").write_bytes(b"y")
+    added = {str(p.relative_to(staging)) for p in rip.files_added_since(snap)}
+    assert added == {"Artist/Album/2.flac"}
