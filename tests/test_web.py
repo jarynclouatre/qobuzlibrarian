@@ -1280,6 +1280,13 @@ def test_scan_checkpoint_round_trip_and_kinds_coexist(tmp_path, monkeypatch):
     assert scan_checkpoint.pending() == {"kind": "partial", "done": 1}
     scan_checkpoint.clear("partial")
     assert scan_checkpoint.pending() is None
+    # The repair sweep shares this store but resumes on a manual re-run, so it's
+    # loadable yet deliberately absent from the dashboard's pending() prompt.
+    scan_checkpoint.save("repair", {"Delta"}, [], {})
+    assert scan_checkpoint.load("repair")["scanned"] == ["Delta"]
+    assert scan_checkpoint.pending() is None
+    scan_checkpoint.clear("repair")
+    assert scan_checkpoint.load("repair") is None
 
 
 def test_new_release_check_establishes_baseline(tmp_path, monkeypatch):

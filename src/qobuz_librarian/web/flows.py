@@ -811,18 +811,37 @@ def scan_repairs(job, token):
         log.info("No artist folders found under MUSIC_ROOT.")
         log.info("  Check that QL_MUSIC_DIR in your .env points at the right place.")
         return
-    log.info(f"Scanning {plural(len(artists), 'artist')} for truncated files")
+    # Resume an interrupted sweep: skip the artists already checked and restore
+    # the damaged albums they turned up. A repair scan is one Qobuz call per
+    # track and runs for hours on a big library, so a container restart or power
+    # loss mid-sweep must continue rather than re-check everything from the top.
+    cp = scan_checkpoint.load("repair")
+    scanned = set(cp["scanned"]) if cp else set()
     total = 0
-    for i, artist_dir in enumerate(artists, 1):
+    if cp:
+        for c in cp["candidates"]:
+            _readd_candidate(job, c)
+            total += 1
+        log.info(f"Resuming — {len(scanned)} artist(s) already checked, "
+                 f"{plural(total, 'album')} flagged so far.")
+    log.info(f"Scanning {plural(len(artists), 'artist')} for truncated files")
+    todo = [ad for ad in artists if ad.name not in scanned]
+    n = len(artists)
+    done = len(scanned)
+    since_save = 0
+    for artist_dir in todo:
         if job.cancel_requested:
             log.info("Cancelled — stopping scan.")
+            scan_checkpoint.clear("repair")
             return
         name = artist_dir.name
         album_dirs = list_artist_album_dirs(artist_dir)
-        job.push_progress("Checking for damaged files", i, len(artists), name)
+        done += 1
+        job.push_progress("Checking for damaged files", done, n, name, found=total)
         for album_dir in album_dirs:
             if job.cancel_requested:
                 log.info("Cancelled — stopping scan.")
+                scan_checkpoint.clear("repair")
                 return
             try:
                 scan = scan_dir_for_isrc_repairs(album_dir, token, deep=False)
@@ -873,7 +892,13 @@ def scan_repairs(job, token):
                                  f"{e.get('title') or '?'}: {e['diagnostic']}; "
                                  "couldn't match this folder to a Qobuz album "
                                  "to re-download — check by hand.")
+        scanned.add(name)
+        since_save += 1
+        if since_save >= _CHECKPOINT_EVERY:
+            since_save = 0
+            scan_checkpoint.save("repair", scanned, job.candidates, {})
         time.sleep(cfg.ARTIST_API_DELAY)
+    scan_checkpoint.clear("repair")
     log.info(f"Done. {plural(total, 'album')} flagged.")
 
 

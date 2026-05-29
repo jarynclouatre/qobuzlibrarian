@@ -333,6 +333,51 @@ def test_no_isrc_recovery_falls_back_to_hand_verify_when_unmatched(tmp_path, cap
     assert "Bad Track" in messages and "check by hand" in messages
 
 
+def test_repair_scan_resumes_from_checkpoint(tmp_path, monkeypatch):
+    """An interrupted repair sweep skips the artists already checked, restores
+    the albums it flagged, and clears the checkpoint when it finishes cleanly."""
+    from qobuz_librarian.library import scan_checkpoint
+    from qobuz_librarian.web import flows
+    monkeypatch.setattr("qobuz_librarian.config.SCAN_CHECKPOINT_FILE", tmp_path / "cp.json")
+
+    flagged = {"kind": "repair", "title": "Old Album", "artist": "Artist A",
+               "detail": "1 truncated track", "selected": True,
+               "payload": {"album_dir": str(tmp_path / "Artist A" / "Old Album"),
+                           "artist_name": "Artist A",
+                           "verified_truncated": [{"path": "x.flac"}]}}
+    scan_checkpoint.save("repair", {"Artist A"}, [flagged], {})
+
+    (tmp_path / "Artist A").mkdir()
+    (tmp_path / "Artist B" / "New Album").mkdir(parents=True)
+    artists = [tmp_path / "Artist A", tmp_path / "Artist B"]
+
+    class _Job:
+        def __init__(self):
+            self.candidates = []
+            self.cancel_requested = False
+        def add_candidate(self, **kw):
+            self.candidates.append(dict(kw))
+        def push_progress(self, *a, **k):
+            pass
+    job = _Job()
+
+    checked = []
+    def fake_scan(album_dir, token, deep=False):
+        checked.append(album_dir.name)
+        return {"verified_truncated": [], "verified_ok": 1, "no_isrc_tag": []}
+
+    with patch.object(flows, "list_library_artists", return_value=artists), \
+         patch.object(flows, "list_artist_album_dirs",
+                      side_effect=lambda d: [p for p in d.iterdir() if p.is_dir()]), \
+         patch.object(flows, "clear_scan_caches"), \
+         patch("qobuz_librarian.repair_log.scan_dir_for_isrc_repairs", side_effect=fake_scan):
+        flows.scan_repairs(job, "token")
+
+    assert checked == ["New Album"]                                  # Artist A skipped
+    assert any(c["title"] == "Old Album" for c in job.candidates)    # prior flag restored
+    assert scan_checkpoint.load("repair") is None                    # cleared on clean finish
+
+
 def test_no_isrc_redownload_failure_restores_original_folder(tmp_path, monkeypatch):
     from qobuz_librarian.web import flows
     album_dir = tmp_path / "Album"

@@ -14,10 +14,18 @@
 </p>
 
 {% if creds_ok %}
+{% if repair_resume %}
+<div class="alert alert-info mb-4">
+  <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
+    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+  </svg>
+  <span>A repair scan was interrupted — {{ repair_resume.done }} artist{{ 's' if repair_resume.done != 1 }} already checked{% if repair_resume.found %}, {{ repair_resume.found }} album{{ 's' if repair_resume.found != 1 }} flagged{% endif %}. Starting it again continues from there.</span>
+</div>
+{% endif %}
 <form action="/repair" method="post" data-busy-submit>
   <input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}">
   <button type="submit" class="btn btn-primary"
-          data-confirm="Start a full repair scan? This can take a couple of hours on a large library.">Start repair scan</button>
+          {% if repair_resume %}data-confirm="Continue the repair scan from where it left off?"{% else %}data-confirm="Start a full repair scan? This can take a couple of hours on a large library."{% endif %}>{% if repair_resume %}Resume repair scan{% else %}Start repair scan{% endif %}</button>
 </form>
 {% else %}
 <div class="alert alert-warning">

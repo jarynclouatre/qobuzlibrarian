@@ -1311,8 +1311,15 @@ async def downsample_scan(request: Request):
 
 @app.get("/repair", response_class=HTMLResponse)
 async def repair_page(request: Request):
+    from qobuz_librarian.library import scan_checkpoint
     creds_ok = bool(_read_creds().get("auth_token"))
-    return _tr(request, "repair.html", {"creds_ok": creds_ok, "page": "repair"})
+    # Surface a resume only for a genuinely interrupted sweep — not one whose
+    # periodic checkpoint exists because a repair scan is running right now.
+    cp = scan_checkpoint.load("repair")
+    resume = (None if cp is None or _active_scan("repair") is not None
+              else {"done": len(cp["scanned"]), "found": len(cp["candidates"])})
+    return _tr(request, "repair.html",
+               {"creds_ok": creds_ok, "page": "repair", "repair_resume": resume})
 
 
 @app.post("/repair")

@@ -6,10 +6,13 @@ artist it records progress here — which artists are done, the albums found so 
 and the per-artist catalog snapshot for the new-release baseline. The next start
 reads this and continues from where it left off rather than re-crawling.
 
-Progress is kept per scan **kind** ("missing" / "partial") in one file, so an
-interrupted partial-fill scan isn't wiped when a missing-albums scan completes,
-and vice-versa. A clean finish or a deliberate cancel clears that kind's entry;
-a kind's presence means "an unfinished scan of that kind is waiting to resume."
+Progress is kept per scan **kind** in one file, so interrupted scans of
+different kinds don't wipe each other. "missing" / "partial" are the library
+gap scans, surfaced for resume on the dashboard via ``pending()``; "repair" is
+the damaged-file sweep, which shares this store but resumes on a manual re-run
+of the repair scan rather than the dashboard, so ``pending()`` leaves it out. A
+clean finish or a deliberate cancel clears that kind's entry; a kind's presence
+means "an unfinished scan of that kind is waiting to resume."
 """
 import json
 import threading
@@ -17,6 +20,9 @@ import time
 
 from qobuz_librarian import config as cfg
 
+# The library gap-scan kinds pending() surfaces for the dashboard resume
+# prompt. The "repair" sweep also checkpoints here but resumes on a manual
+# re-run, so it's deliberately left out of this set.
 _KINDS = ("missing", "partial")
 
 # save/clear are read-modify-write of the shared file; serialise them so two
