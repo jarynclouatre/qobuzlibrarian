@@ -953,15 +953,20 @@ async def do_search(request: Request, q: str = Form("", max_length=500)):
     return _tr(request, "search.html", ctx)
 
 
-def _make_download_run(album, token):
-    """Return the run(j) callable used by both queue_download and job_retry."""
+def _make_download_run(album, token, *, treat_as_new=False):
+    """Return the run(j) callable used by both queue_download and job_retry.
+
+    treat_as_new downloads the album as a brand-new one even if a different
+    edition is already owned — the "get this edition too" path.
+    """
     def run(j):
         from qobuz_librarian.modes.process import process_album
         from qobuz_librarian.ui_cli.errors import plural
         from qobuz_librarian.web.flows import build_args
         with job_mgr.staging_lock():
             r = process_album(album, build_args(), allow_force=False,
-                              already_confirmed=True, token=token) or {}
+                              already_confirmed=True, token=token,
+                              treat_as_new=treat_as_new) or {}
         benign = {"already_complete", "skipped_already_higher_quality",
                   "dry_run", "user_skipped", "lossy_only", "no_tracks",
                   "cancelled"}
@@ -976,7 +981,8 @@ def _make_download_run(album, token):
 
 @app.post("/download", response_class=HTMLResponse)
 async def queue_download(request: Request, album_id: str = Form(""),
-                         force: str = Form("")):
+                         force: str = Form(""),
+                         as_new_edition: str = Form("")):
     busy = _lock_busy_response(request)
     if busy is not None:
         return busy
@@ -1001,6 +1007,12 @@ async def queue_download(request: Request, album_id: str = Form(""),
                 f'<a href="/jobs/{existing.id}" class="link">view job</a>.</div>')
         return RedirectResponse(url=f"/jobs/{existing.id}", status_code=303)
     force_redownload = str(force).strip().lower() in ("1", "true", "yes", "on")
+    # "Get this edition too" — download a different edition of an album the user
+    # already owns, as a separate album. Bypasses the owned-check and treats it
+    # as brand-new so it lands in its own (year) folder beside the existing copy
+    # rather than being skipped or replacing it.
+    download_as_new_edition = str(as_new_edition).strip().lower() in (
+        "1", "true", "yes", "on")
     try:
         token = _get_token()
         from qobuz_librarian.api.client import call_within
@@ -1012,7 +1024,7 @@ async def queue_download(request: Request, album_id: str = Form(""),
                 lambda: call_within(cfg.WEB_FETCH_TIMEOUT, get_album, album_id, token)),
             timeout=cfg.WEB_FETCH_TIMEOUT,
         )
-        if not force_redownload:
+        if not force_redownload and not download_as_new_edition:
             def _already_complete():
                 from qobuz_librarian.library.catalog import (
                     compute_missing,
@@ -1042,11 +1054,27 @@ async def queue_download(request: Request, album_id: str = Form(""),
             # so keep it off the event loop — otherwise a large library stalls
             # every other request while this one request blocks.
             if await loop.run_in_executor(None, _already_complete):
-                msg = "You already own this album."
+                msg = "You already own a version of this album."
                 if _is_htmx(request):
+                    # Offer the deliberate second-edition path instead of a dead
+                    # end: a remaster or a different mix can be kept alongside the
+                    # owned copy (it imports into its own (year) folder). The form
+                    # re-posts with as_new_edition so the owned-check is skipped.
+                    aid = html.escape(album_id)
                     return HTMLResponse(
-                        f'<div class="alert alert-warning" data-flash>{html.escape(msg)} '
-                        f'<a href="/" class="link">Back to dashboard</a>.</div>')
+                        f'<div class="alert alert-warning">'
+                        f'<div><p>{html.escape(msg)}</p>'
+                        f'<p class="text-xs text-base-content/60 mt-1">A different '
+                        f'edition — a remaster or a new mix — can be kept alongside '
+                        f'it; it downloads into its own folder. (If it shares the '
+                        f'same release year as your copy, your player may merge '
+                        f'them.)</p></div>'
+                        f'<form hx-post="/download" hx-target="#download-toast" '
+                        f'hx-swap="innerHTML" class="mt-2">'
+                        f'<input type="hidden" name="album_id" value="{aid}">'
+                        f'<input type="hidden" name="as_new_edition" value="1">'
+                        f'<button type="submit" class="btn btn-sm btn-primary">'
+                        f'Download this edition too</button></form></div>')
                 return RedirectResponse(
                     url="/queue?error=" + urllib.parse.quote(msg),
                     status_code=303)
@@ -1064,7 +1092,8 @@ async def queue_download(request: Request, album_id: str = Form(""),
                         f'<div class="alert alert-warning" data-flash>Already queued — '
                         f'<a href="/jobs/{dup.id}" class="link">view job</a>.</div>')
                 return RedirectResponse(url=f"/jobs/{dup.id}", status_code=303)
-            job_mgr.submit(job, _make_download_run(album, token))
+            job_mgr.submit(job, _make_download_run(
+                album, token, treat_as_new=download_as_new_edition))
         if _is_htmx(request):
             return _tr(request, "_job_queued.html", {"job": job})
         # Land on the new job's page so the user sees their download starting.

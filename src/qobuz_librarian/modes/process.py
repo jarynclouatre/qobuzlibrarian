@@ -256,7 +256,7 @@ def _offer_expanded_edition(album, album_dir, existing, extras, token, args):
 
 def process_album(album, args, *, allow_force=True, label=None,
                   already_confirmed=False, upgrade_only=False,
-                  token=None, quality=None):
+                  token=None, quality=None, treat_as_new=False):
     """End-to-end processing for one Qobuz album: detect → prompt → download →
     cleanup → import → consolidate.
 
@@ -300,6 +300,17 @@ def process_album(album, args, *, allow_force=True, label=None,
     force_cleaned = True
     if use_force:
         _, album_dir = find_existing_tracks(album)
+        existing = []
+        missing, present = qobuz_tracks, []
+    elif treat_as_new:
+        # Deliberately fetching a different edition of an album the user already
+        # owns — a remaster or new mix to keep alongside the original. Skip the
+        # ownership scan so it downloads in full and beets imports it as a
+        # brand-new album in its own (year) folder: no backup, no wipe, the
+        # owned edition untouched. album_dir stays None, so the auto-upgrade
+        # branch below can't fire and beets consolidation stays off — the two
+        # editions are never folded together.
+        album_dir = None
         existing = []
         missing, present = qobuz_tracks, []
     else:

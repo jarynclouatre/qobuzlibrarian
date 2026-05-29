@@ -89,6 +89,64 @@ def test_cancel_after_download_skips_beets_import(monkeypatch, tmp_path):
     assert beets_runs == []
 
 
+def test_treat_as_new_downloads_an_owned_album_as_a_separate_edition(monkeypatch, tmp_path):
+    """A normal download of an album the user already owns short-circuits as
+    'already complete'. With treat_as_new (the "get this edition too" path) the
+    ownership scan is bypassed, so it downloads in full and imports as a brand-new
+    album — album_dir stays None, so beets consolidation is off and the new
+    edition isn't folded into the owned one's folder."""
+    from qobuz_librarian import config as cfg
+    from qobuz_librarian.modes import process as proc
+
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    monkeypatch.setattr(cfg, "STAGING_DIR", staging)
+    monkeypatch.setattr(cfg, "AUTO_UPGRADE_ENABLED", False)
+
+    tracks = [{"id": 1, "title": "A", "track_number": 1},
+              {"id": 2, "title": "B", "track_number": 2}]
+    album = {"id": "ED99", "title": "Abbey Road", "artist": {"name": "The Beatles"},
+             "maximum_bit_depth": 24, "maximum_sampling_rate": 96.0,
+             "tracks": {"items": tracks}}
+    owned_dir = tmp_path / "The Beatles" / "Abbey Road (1969)"
+
+    monkeypatch.setattr(proc, "is_lossless_album", lambda _a: True)
+    # The album IS owned: the original edition resolves with all tracks present.
+    monkeypatch.setattr(proc, "find_existing_tracks", lambda _a: (list(tracks), owned_dir))
+    monkeypatch.setattr(proc, "find_album_dir_filesystem", lambda _a: owned_dir)
+    monkeypatch.setattr(proc, "compute_missing",
+                        lambda q, e: ([], list(q)) if e else (list(q), []))
+    monkeypatch.setattr(proc, "staging_preflight", lambda _a: None)
+    monkeypatch.setattr(proc, "snapshot_staging", lambda: set())
+    monkeypatch.setattr(proc, "is_cancel_requested", lambda: False)
+    monkeypatch.setattr(proc, "_pre_import_staging_hooks", lambda _a: [])
+    monkeypatch.setattr(proc, "cleanup_duplicate_art", lambda _d: 0)
+    monkeypatch.setattr(proc, "write_post_import_sidecars", lambda _ds: None)
+    monkeypatch.setattr(proc, "sweep_staging_artwork", lambda: None)
+    monkeypatch.setattr(proc, "print_album_summary", lambda *a, **k: None)
+    monkeypatch.setattr(proc, "log_fetch", lambda _e: None)
+
+    def fake_download(**kw):
+        kw["result"].update(n_ok=2, n_fail=0, n_lossy=0, failed_tracks=[],
+                            lossy_tracks=[], elapsed=0.0, gap_fill_backup_path=None)
+        return kw["result"]
+    monkeypatch.setattr(proc, "run_album_download", fake_download)
+
+    consolidate_seen = []
+    monkeypatch.setattr(proc, "beets_import_paths",
+                        lambda *a, **k: consolidate_seen.append(k.get("consolidate")) or True)
+
+    # Default: owned + complete → skipped, nothing downloaded or imported.
+    assert proc.process_album(album, _args(), token="tok")["result"] == "already_complete"
+    assert consolidate_seen == []
+
+    # treat_as_new: ownership bypassed → full download + import as a new album,
+    # consolidation off so it's never merged into the owned edition's folder.
+    result = proc.process_album(album, _args(), token="tok", treat_as_new=True)
+    assert result.get("imported") is True
+    assert consolidate_seen == [False]
+
+
 def test_gap_fill_backup_restored_when_track_returns_lossy(monkeypatch, tmp_path):
     """A full-album gap-fill stashes the owned tracks before re-ripping; if a
     re-ripped track comes back lossy, process_album's finally restores them."""

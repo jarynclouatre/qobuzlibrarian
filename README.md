@@ -59,6 +59,11 @@ tracks you already have under slightly different names:
 2. disc number + title
 3. edition-stripped title (so "(Remastered)" / "(Deluxe)" don't cause dupes)
 
+Want a *different* edition kept alongside one you own — a remaster, or a fresh
+mix like the Giles Martin Beatles reissues? Search for it and choose **Download
+this edition too**; it imports into its own folder next to the original instead
+of being skipped as a duplicate.
+
 **Best available quality by default.** New downloads come in at the highest
 quality Qobuz offers for that release. Already have an album in a lower quality? The
 **Upgrade** mode finds everything Qobuz can now serve better and re-rips just
