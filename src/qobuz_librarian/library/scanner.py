@@ -115,6 +115,11 @@ def read_audio_meta(path: Path):
         "channels":    getattr(info, "channels", 0) if info else 0,
         "length":      getattr(info, "length", 0.0) if info else 0.0,
         "path":        str(path),
+        # Carry the size from the signature so read_album_dir doesn't have to
+        # re-stat every audio file just for its size (a second stat per file
+        # adds up on a NAS-backed library). Cache HIT entries pre-dating this
+        # key fall back to the stat there.
+        "size":        sig[1] if sig else 0,
     }
     flac_cache.put(path, meta, sig=sig)
     return meta
@@ -168,10 +173,14 @@ def read_album_dir(album_dir: Path):
                 "path":        str(f),
             }
         tags["normalized"] = normalize(tags["title"])
-        try:
-            tags["size"] = f.stat().st_size
-        except OSError:
-            tags["size"] = 0
+        # read_audio_meta now carries size from the file signature; only the
+        # filename-fallback path (above) and pre-existing cache entries that
+        # predate the "size" key fall through to a stat here.
+        if "size" not in tags:
+            try:
+                tags["size"] = f.stat().st_size
+            except OSError:
+                tags["size"] = 0
         tracks.append(tags)
     return tracks
 
