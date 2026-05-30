@@ -186,6 +186,9 @@ def read_album_dir(album_dir: Path):
 
 
 # ── Library directory listing ─────────────────────────────────────────────────
+_HAS_AUDIO_CACHE: dict = {}
+
+
 def _has_audio_anywhere(d: Path) -> bool:
     """True if any audio file exists anywhere under ``d`` (recursive).
 
@@ -193,14 +196,26 @@ def _has_audio_anywhere(d: Path) -> bool:
     cost stays bounded on big trees. Errors during walk count as "no
     audio present" — they'll also break later scans, so flagging the dir
     as empty is the helpful answer.
+
+    Result cached per path: a single scan calls this once per artist plus
+    once per album dir, but artist-walk/upgrade-walk/lyric-walk all hit
+    list_artist_album_dirs for the same artists in turn, and the catalog
+    fuzzy-resolution fall-through re-asks the same dirs again — a fresh
+    iter_tree per call is wasted iterdir+stat on every album subtree.
     """
+    key = str(d)
+    if key in _HAS_AUDIO_CACHE:
+        return _HAS_AUDIO_CACHE[key]
     exts = set(config.AUDIO_EXTS)
     try:
         for f in iter_tree_no_symlinks(d):
             if f.is_file() and f.suffix.lower() in exts:
+                _HAS_AUDIO_CACHE[key] = True
                 return True
     except OSError:
+        _HAS_AUDIO_CACHE[key] = False
         return False
+    _HAS_AUDIO_CACHE[key] = False
     return False
 
 
@@ -303,6 +318,7 @@ def clear_scan_caches():
     """Drop per-scan caches. Pure-function lru_caches (normalize / etc.)
     are left alone — deterministic and worth keeping warm."""
     _ARTIST_SUBDIRS_CACHE.clear()
+    _HAS_AUDIO_CACHE.clear()
 
 
 def drop_artist_subdirs_cache(artist_dir):
