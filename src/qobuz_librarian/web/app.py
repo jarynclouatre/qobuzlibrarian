@@ -1374,6 +1374,21 @@ async def repair_scan(request: Request):
     return RedirectResponse(url=f"/jobs/{job.id}", status_code=303)
 
 
+@app.get("/repair/history", response_class=HTMLResponse)
+async def repair_history(request: Request):
+    """Show what Repair has refilled in place — so the user knows which albums
+    to refresh on an offline-sync client that may still serve the old broken
+    file. The log itself is append-only on disk (DATA_DIR); this is read-only."""
+    from qobuz_librarian.repair_log import read_repair_log_entries
+    # Walks lines on the data volume — offload to match the dashboard's pattern
+    # and keep the event loop free if the file is sizable.
+    loop = asyncio.get_running_loop()
+    entries = await loop.run_in_executor(
+        None, lambda: read_repair_log_entries(limit=500))
+    return _tr(request, "repair_history.html",
+               {"page": "repair", "entries": entries})
+
+
 @app.get("/lyrics", response_class=HTMLResponse)
 async def lyrics_page(request: Request):
     from qobuz_librarian.integrations.lyric_fetch import AVAILABLE

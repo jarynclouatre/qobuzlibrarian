@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+{% block title %}Repair history — Qobuz Librarian{% endblock %}
+{% block content %}
+
+<div class="flex items-center justify-between gap-3 mb-2">
+  <h1 class="text-2xl font-bold">Repair history</h1>
+  <a href="/repair" class="btn btn-ghost btn-sm">Back to Repair</a>
+</div>
+<p class="text-base-content/60 mb-6">
+  Tracks that Repair has refilled in place. Most music servers keep the same
+  track ID across the swap, so an offline-sync client may keep serving the old
+  broken file until you refresh that album on the device.
+</p>
+
+{% if entries %}
+<p class="text-sm text-base-content/50 mb-3">
+  {{ entries | length }} most recent (newest first)
+</p>
+<div class="overflow-x-auto">
+  <table class="table table-sm">
+    <thead>
+      <tr>
+        <th>When</th>
+        <th>Artist</th>
+        <th>Album</th>
+        <th>Track</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for e in entries %}
+      <tr>
+        <td class="whitespace-nowrap text-base-content/60">{{ e.when }}</td>
+        <td>{{ e.artist }}</td>
+        <td>{{ e.album }}</td>
+        <td>{{ e.title }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% else %}
+<div class="text-center py-12 text-base-content/60">
+  <p class="font-medium">Nothing repaired yet.</p>
+  <p class="text-sm mt-1">When Repair refills a damaged track, it'll show up here.</p>
+  <a href="/repair" class="btn btn-primary btn-sm mt-4">Go to Repair</a>
+</div>
+{% endif %}
+
+{% endblock %}

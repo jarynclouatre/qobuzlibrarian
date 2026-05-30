@@ -2,7 +2,10 @@
 {% block title %}Repair — Qobuz Librarian{% endblock %}
 {% block content %}
 
-<h1 class="text-2xl font-bold mb-2">Repair</h1>
+<div class="flex items-center justify-between gap-3 mb-2">
+  <h1 class="text-2xl font-bold">Repair</h1>
+  <a href="/repair/history" class="btn btn-ghost btn-sm">View history</a>
+</div>
 <p class="text-base-content/60 mb-2">
   Scan every album for truncated or partially-downloaded FLACs. Each file is
   matched to its exact Qobuz recording by ISRC, so a flagged file is genuinely

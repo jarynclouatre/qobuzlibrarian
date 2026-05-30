@@ -297,3 +297,34 @@ def append_repair_log(entries):
         log.info(fmt(C.YELLOW,
             f"  ⚠  Could not append to repair log ({cfg.REPAIR_LOG_PATH}): {e}"))
         return False
+
+
+def read_repair_log_entries(limit=None):
+    """Parse the replaced-tracks log into dicts, newest-first.
+
+    Each data line is ``YYYY-MM-DD HH:MM  |  Artist  |  Album  |  Track``;
+    header (``#`` comments) and blank lines are skipped, and lines that don't
+    split into four pipe fields are dropped quietly rather than poisoning the
+    view. ``limit`` caps the most recent entries (None for everything).
+    """
+    if not cfg.REPAIR_LOG_PATH.exists():
+        return []
+    entries = []
+    try:
+        with cfg.REPAIR_LOG_PATH.open("r", encoding="utf-8") as f:
+            for raw in f:
+                line = raw.rstrip("\n")
+                if not line or line.startswith("#"):
+                    continue
+                parts = [p.strip() for p in line.split("|")]
+                if len(parts) != 4:
+                    continue
+                when, artist, album, title = parts
+                entries.append({"when": when, "artist": artist,
+                                "album": album, "title": title})
+    except OSError:
+        return []
+    entries.reverse()
+    if limit is not None:
+        entries = entries[:limit]
+    return entries

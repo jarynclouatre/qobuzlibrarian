@@ -111,6 +111,33 @@ def test_append_repair_log_basics_and_escaping(tmp_path, monkeypatch):
     assert "AC|DC" not in f.read_text().split("\n")[-2]
 
 
+def test_read_repair_log_entries_parses_newest_first_and_skips_header(tmp_path, monkeypatch):
+    """read_repair_log_entries parses the pipe-separated log into dicts,
+    newest-first, skipping the header comments. The repair-history page reads
+    via this, so a malformed line mustn't poison the view."""
+    from qobuz_librarian.repair_log import read_repair_log_entries
+    f = tmp_path / "repair.log"
+    monkeypatch.setattr("qobuz_librarian.config.REPAIR_LOG_PATH", f)
+
+    assert read_repair_log_entries() == []      # missing file
+    append_repair_log([{"artist": "Radiohead", "album": "Kid A", "title": "Idioteque"}])
+    append_repair_log([{"artist": "Beatles", "album": "Abbey Road", "title": "Come Together"}])
+    # A line outside the format mustn't crash the parser — drop it quietly.
+    with f.open("a", encoding="utf-8") as fh:
+        fh.write("malformed-no-pipes line\n")
+    append_repair_log([{"artist": "Tool", "album": "Lateralus", "title": "Schism"}])
+
+    entries = read_repair_log_entries()
+    assert [(e["artist"], e["title"]) for e in entries] == [
+        ("Tool", "Schism"),
+        ("Beatles", "Come Together"),
+        ("Radiohead", "Idioteque"),
+    ]
+    # Every entry carries the four fields parsed from the line.
+    assert set(entries[0].keys()) == {"when", "artist", "album", "title"}
+    assert read_repair_log_entries(limit=1) == [entries[0]]
+
+
 def test_append_repair_log_concurrent_appends_stay_parseable(tmp_path, monkeypatch):
     # 40 simultaneous appends from a thread pool must all land, each on its
     # own line, and the header must still appear exactly once.
