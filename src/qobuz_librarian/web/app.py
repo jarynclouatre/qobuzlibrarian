@@ -1228,8 +1228,11 @@ async def _restore_hidden(request, scope, redirect):
     from qobuz_librarian.library import hidden as hidden_mod
     form = await request.form()
     artists = form.getlist("artist")[:10000]
+    fingerprints = form.getlist("fingerprint")[:10000]
     if artists:
         hidden_mod.restore(scope, artists)
+    if fingerprints:
+        hidden_mod.restore_albums(scope, fingerprints)
     return RedirectResponse(url=redirect, status_code=303)
 
 

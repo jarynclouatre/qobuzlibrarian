@@ -20,54 +20,41 @@
 </p>
 
 {% if groups %}
-<form action="{{ restore_action }}" method="post">
-  <input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}">
-  <div class="flex items-center justify-between mb-3">
-    <p class="text-base-content/70">{{ groups | length }} artist{% if groups | length != 1 %}s{% endif %} with hidden {{ noun }}s</p>
-    <div class="flex gap-2 shrink-0">
-      <button type="button" class="btn btn-xs"
-              data-check="all" data-check-within=".ha">All</button>
-      <button type="button" class="btn btn-xs"
-              data-check="none" data-check-within=".ha">None</button>
-    </div>
-  </div>
+<p class="text-base-content/70 mb-3">{{ groups | length }} artist{% if groups | length != 1 %}s{% endif %} with hidden {{ noun }}s</p>
 
-  <div class="space-y-2 mb-4">
-    {% for g in groups %}
-    <div class="block bg-base-200 border border-base-300/70 rounded-lg shadow-sm px-3 py-2.5 transition-colors hover:border-base-300">
-      <span class="flex items-center gap-3">
-        <label class="flex items-center gap-3 flex-1 min-w-0 cursor-pointer">
-          <input type="checkbox" class="checkbox checkbox-sm ha" name="artist" value="{{ g.artist }}">
-          <span class="font-medium flex-1 min-w-0 truncate">{{ g.artist }}</span>
-        </label>
-        <span class="text-base-content/50 text-sm shrink-0">{{ g.albums | length }} {{ noun }}{% if g.albums | length != 1 %}s{% endif %}</span>
-        {% if not is_upgrade and not is_downsample %}
-        <a href="/artist?artist={{ g.artist | urlencode }}" class="link link-hover text-xs shrink-0">Check for new releases</a>
-        {% endif %}
-      </span>
-      <span class="block pl-8 pt-1 text-xs text-base-content/40">
-        {% for a in g.albums %}{{ a.title }}{% if a.year %} ({{ a.year }}){% endif %}{% if not loop.last %} · {% endif %}{% endfor %}
-      </span>
+<div class="space-y-2 mb-4">
+  {% for g in groups %}
+  <div class="block bg-base-200 border border-base-300/70 rounded-lg shadow-sm px-3 py-2.5 transition-colors hover:border-base-300">
+    <div class="flex items-center gap-3">
+      <span class="font-medium flex-1 min-w-0 truncate">{{ g.artist }}</span>
+      <span class="text-base-content/50 text-sm shrink-0">{{ g.albums | length }} {{ noun }}{% if g.albums | length != 1 %}s{% endif %}</span>
+      {% if not is_upgrade and not is_downsample %}
+      <a href="/artist?artist={{ g.artist | urlencode }}" class="link link-hover text-xs shrink-0">Check for new releases</a>
+      {% endif %}
+      <form action="{{ restore_action }}" method="post" class="shrink-0">
+        <input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}">
+        <input type="hidden" name="artist" value="{{ g.artist }}">
+        <button type="submit" class="btn btn-ghost btn-xs"
+                data-confirm="Restore every hidden {{ noun }} by {{ g.artist }}?"
+                aria-label="Restore all hidden {{ noun }}s by {{ g.artist }}">Restore all</button>
+      </form>
     </div>
-    {% endfor %}
+    <ul class="pl-3 pt-1 space-y-0.5">
+      {% for a in g.albums %}
+      <li class="flex items-center gap-2 text-xs">
+        <span class="text-base-content/60 flex-1 min-w-0 truncate">{{ a.title }}{% if a.year %} <span class="text-base-content/40">({{ a.year }})</span>{% endif %}</span>
+        <form action="{{ restore_action }}" method="post" class="shrink-0">
+          <input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}">
+          <input type="hidden" name="fingerprint" value="{{ a.fp }}">
+          <button type="submit" class="btn btn-ghost btn-xs"
+                  aria-label="Restore {{ a.title }} by {{ g.artist }}">Restore</button>
+        </form>
+      </li>
+      {% endfor %}
+    </ul>
   </div>
-
-  <button type="submit" id="restore-submit" class="btn btn-primary" disabled>Restore selected</button>
-</form>
-<script nonce="{{ request.state.csp_nonce }}">
-(function () {
-  var btn = document.getElementById('restore-submit');
-  if (!btn) return;
-  var form = btn.closest('form');
-  function sync() { btn.disabled = form.querySelectorAll('.ha:checked').length === 0; }
-  form.addEventListener('change', sync);
-  // All/None flip the boxes via inline handlers, which fire no change event.
-  form.addEventListener('click', function (e) {
-    if (e.target.closest('button[type=button]')) setTimeout(sync, 0);
-  });
-  sync();
-})();
-</script>
+  {% endfor %}
+</div>
 {% else %}
 <div class="text-center py-12 text-base-content/60">
   <p class="font-medium">Nothing hidden.</p>

@@ -129,16 +129,37 @@ def restore(scope, artists):
     return len(drop)
 
 
+def restore_albums(scope, fingerprints):
+    """Un-hide specific albums by fingerprint — the same key is_hidden looks up.
+
+    Unknown fingerprints are silently skipped: the Hidden page can render
+    against a slightly stale store (another tab just restored the same row, or
+    the bucket changed mid-request) and a hard 404 there would be hostile."""
+    store = load()
+    bucket = store.get(scope) or {}
+    drop = [fp for fp in fingerprints if fp in bucket]
+    for fp in drop:
+        bucket.pop(fp, None)
+    if drop:
+        store[scope] = bucket
+        save(store)
+    return len(drop)
+
+
 def hidden_by_artist(scope, store=None):
-    """[{artist, albums: [{title, year, ts}]}], sorted for the Hidden view."""
+    """[{artist, albums: [{title, year, ts, fp}]}], sorted for the Hidden view.
+
+    `fp` is the fingerprint key, exposed so the per-album Restore button on the
+    page can target one row directly via restore_albums()."""
     bucket = (store if store is not None else load()).get(scope) or {}
     groups = {}
-    for e in bucket.values():
+    for fp, e in bucket.items():
         artist = e.get("artist") or "Unknown artist"
         groups.setdefault(artist, []).append({
             "title": e.get("title") or "?",
             "year": e.get("year") or "",
             "ts": e.get("ts") or "",
+            "fp": fp,
         })
     out = []
     for artist in sorted(groups, key=str.lower):

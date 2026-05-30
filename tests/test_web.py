@@ -1140,6 +1140,34 @@ def test_library_hide_then_restore_round_trip(client, monkeypatch, tmp_path):
         _remove_job(job)
 
 
+def test_library_hidden_restore_unhides_a_single_album_by_fingerprint(client, monkeypatch, tmp_path):
+    """The per-album Restore button on the Hidden page sends one fingerprint;
+    only that row clears, the artist's other hides stay put."""
+    from qobuz_librarian.library import hidden
+    monkeypatch.setattr("qobuz_librarian.config.HIDDEN_FILE", tmp_path / "h.json")
+
+    hidden.hide(hidden.SCOPE_MISSING,
+                [("Portishead", "Dummy", "1994"),
+                 ("Portishead", "Third", "2008")])
+    fp_dummy = hidden.album_fingerprint("Portishead", "Dummy")
+    fp_third = hidden.album_fingerprint("Portishead", "Third")
+    # The page exposes the fingerprint so the form has it to send back.
+    r = client.get("/library/hidden")
+    assert r.status_code == 200
+    assert fp_dummy in r.text
+
+    r = client.post("/library/hidden/restore", data={"fingerprint": fp_dummy})
+    assert r.status_code == 200  # follows the 303 to the Hidden view
+    store = hidden.load()
+    assert not hidden.is_hidden(hidden.SCOPE_MISSING, "Portishead", "Dummy", store)
+    assert hidden.is_hidden(hidden.SCOPE_MISSING, "Portishead", "Third", store)
+    # And the artist-level Restore-all still clears the rest.
+    r = client.post("/library/hidden/restore", data={"artist": "Portishead"})
+    assert r.status_code == 200
+    assert hidden.count(hidden.SCOPE_MISSING) == 0
+    _ = fp_third  # used as a domain-readable handle above
+
+
 def test_new_release_baseline_survives_a_check_run(tmp_path, monkeypatch):
     # A completed library scan seeds the baseline; a later check (mark_run) must
     # keep baseline_complete set — otherwise the auto-check would gate itself off

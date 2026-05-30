@@ -34,6 +34,30 @@ def test_hide_is_scoped_durable_and_restorable(monkeypatch, tmp_path):
     assert hidden.count(hidden.SCOPE_MISSING) == 0
 
 
+def test_restore_albums_unhides_a_single_row_by_fingerprint(monkeypatch, tmp_path):
+    # The per-album Restore button on the Hidden page sends the row's fingerprint
+    # (the same key is_hidden looks up) so a user can pick out one album from a
+    # multi-album artist without restoring all of that artist's hides.
+    monkeypatch.setattr("qobuz_librarian.config.HIDDEN_FILE", tmp_path / "h.json")
+    hidden.hide(hidden.SCOPE_MISSING,
+                [("Portishead", "Dummy", "1994"),
+                 ("Portishead", "Third", "2008")])
+    fp_dummy = hidden.album_fingerprint("Portishead", "Dummy")
+    assert hidden.restore_albums(hidden.SCOPE_MISSING, [fp_dummy]) == 1
+
+    store = hidden.load()
+    assert not hidden.is_hidden(hidden.SCOPE_MISSING, "Portishead", "Dummy", store)
+    assert hidden.is_hidden(hidden.SCOPE_MISSING, "Portishead", "Third", store)
+
+    # An unknown fingerprint is a no-op, not an error — a stale page race
+    # (another tab already restored the same row) mustn't crash the request.
+    assert hidden.restore_albums(hidden.SCOPE_MISSING, ["nobody|nothing"]) == 0
+    # The fingerprint is also exposed on each per-album dict so the page can
+    # render the right hidden form input without recomputing the key.
+    [group] = hidden.hidden_by_artist(hidden.SCOPE_MISSING)
+    assert [a["fp"] for a in group["albums"]] == [hidden.album_fingerprint("Portishead", "Third")]
+
+
 def test_restore_matches_artist_case_and_accent_insensitively(monkeypatch, tmp_path):
     # A casing/spacing/accent drift between the posted value and the stored
     # artist must still restore — restore compares normalized, like the keys.
