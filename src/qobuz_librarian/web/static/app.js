@@ -148,6 +148,25 @@
     if (m) m.setAttribute("content", next === "winter" ? "#ffffff" : "#1d232a");
   });
 
+  // Mobile-nav (and any future daisyUI .dropdown with [aria-expanded]): the
+  // dropdown opens on focus-within, so keep aria-expanded in lockstep with
+  // whether anything inside the .dropdown holds focus. Without this the
+  // hamburger never tells screen-reader users whether the menu is open.
+  function syncDropdownExpanded(dd) {
+    var btn = dd.querySelector("[aria-expanded]");
+    if (btn) btn.setAttribute("aria-expanded", dd.contains(document.activeElement).toString());
+  }
+  document.addEventListener("focusin", function (evt) {
+    var dd = evt.target.closest && evt.target.closest(".dropdown");
+    if (dd) syncDropdownExpanded(dd);
+  });
+  document.addEventListener("focusout", function (evt) {
+    var dd = evt.target.closest && evt.target.closest(".dropdown");
+    if (!dd) return;
+    // focusout fires before the new focus settles, so re-check next tick.
+    setTimeout(function () { syncDropdownExpanded(dd); }, 0);
+  });
+
   // Flash banners. Every server-rendered alert driven by a one-shot query flag
   // (?saved=1, ?error=…) used to stick to the URL forever — refreshing or
   // sharing the page re-rendered the same banner. Strip the known flash params
