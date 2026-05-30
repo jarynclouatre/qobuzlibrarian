@@ -885,25 +885,27 @@ def test_scan_report_classifies_repair_outcomes(tmp_path, monkeypatch):
 
 # ── Mode entry points: clean returns on misses/cancels ─────────────────
 
-def test_mode_entry_points_return_cleanly_on_misses_and_empty_libraries():
+def test_album_mode_returns_none_on_catalog_miss():
     import types
 
     from qobuz_librarian.api.auth import CatalogMiss
+    from qobuz_librarian.modes.album import run_album_mode
 
     args = types.SimpleNamespace(
         query="x", dry_run=False, force=False, yes=True, no_import=False,
         verbose=False, consolidate=False, no_upgrade=False, prefer_hires=False,
         no_compress=False, include_singles=False, auto_safe=False, upgrade_walk=False)
-
-    # Album mode: catalog miss returns None (not exception).
-    from qobuz_librarian.modes.album import run_album_mode
     with patch("qobuz_librarian.modes.album.resolve_album_from_args",
                side_effect=CatalogMiss("not found")), \
          patch("qobuz_librarian.modes.album.clear_scan_caches"):
         assert run_album_mode(args, "tok", loop=False) is None
 
-    # Repair-album: user cancels picker → clean return.
+
+def test_album_repair_mode_returns_none_when_user_cancels_the_picker():
+    import types
+
     from qobuz_librarian.modes.repair import run_album_repair_mode
+
     rargs = types.SimpleNamespace(query=None, dry_run=False, force=False, yes=False,
                                    no_import=False, verbose=False, consolidate=False,
                                    no_upgrade=False, prefer_hires=False, no_compress=False)
@@ -912,8 +914,12 @@ def test_mode_entry_points_return_cleanly_on_misses_and_empty_libraries():
          patch("qobuz_librarian.modes.repair.clear_scan_caches"):
         assert run_album_repair_mode(rargs, "tok", loop=False) is None
 
-    # Upgrade walk: empty library → clean return.
+
+def test_upgrade_walk_mode_returns_none_on_an_empty_library():
+    import types
+
     from qobuz_librarian.modes.upgrade import run_upgrade_walk_mode
+
     uargs = types.SimpleNamespace(dry_run=False, yes=False, auto_safe=False, force=False,
                                    consolidate=False, no_import=False, verbose=False,
                                    no_compress=False, prefer_hires=False)
