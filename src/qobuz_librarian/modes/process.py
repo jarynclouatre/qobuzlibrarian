@@ -39,7 +39,11 @@ from qobuz_librarian.library.catalog import (
     is_lossless_album,
     prompt_and_migrate_multi_artist_folder,
 )
-from qobuz_librarian.library.scanner import clear_scan_caches, read_album_dir
+from qobuz_librarian.library.scanner import (
+    clear_scan_caches,
+    drop_artist_subdirs_cache,
+    read_album_dir,
+)
 from qobuz_librarian.library.tags import normalize, strip_edition_suffix
 from qobuz_librarian.modes.consolidate import consolidate_albums
 from qobuz_librarian.quality.decision import (
@@ -154,9 +158,12 @@ def _upgrade_replacement_verified(album, album_dir, backup_path):
     than deleting the only full copy."""
     # beets renames the imported folder to its canonical $albumartist/$album,
     # so the post-import dir is often not the one resolved before the download.
-    # The subdir listing was cached then, against the old folder name; clear it
-    # so the album resolves to the folder beets actually wrote.
-    clear_scan_caches()
+    # The subdir listing was cached then, against the old folder name; drop
+    # just this artist's entry so the album resolves to the folder beets
+    # actually wrote — a bulk-upgrade run usually touches the same artist
+    # multiple times, and the full-cache wipe would cold-rebuild every other
+    # artist's listing on the next item for nothing.
+    drop_artist_subdirs_cache(album_dir.parent)
     post_dir = find_album_dir_filesystem(album)
     if not post_dir or not post_dir.exists():
         return False

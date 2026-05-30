@@ -294,3 +294,16 @@ def clear_scan_caches():
     """Drop per-scan caches. Pure-function lru_caches (normalize / etc.)
     are left alone — deterministic and worth keeping warm."""
     _ARTIST_SUBDIRS_CACHE.clear()
+
+
+def drop_artist_subdirs_cache(artist_dir):
+    """Invalidate the cached subdir listing for one artist, not the whole map.
+
+    Use this when only one artist's library folder has changed on disk (a
+    beets rename of just-imported album, an in-place upgrade landing) — a
+    bulk-upgrade pass touches one artist at a time, so the full-cache wipe
+    `clear_scan_caches()` does would cold-rebuild every OTHER artist's
+    listing on the next item too. Quiet on a missing key."""
+    if artist_dir is None:
+        return
+    _ARTIST_SUBDIRS_CACHE.pop(str(artist_dir), None)
