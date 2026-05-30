@@ -506,10 +506,13 @@ def _tr(request, name, context, *, status_code=200):
     """TemplateResponse wrapper for Starlette 1.0+ signature.
 
     The navbar badge is computed once per full-page render and injected via
-    context; partial-fragment renders skip this entirely.
+    context; partial-fragment renders skip this entirely. A route that already
+    fetched the active job list for its own template (`/queue`, the dashboard)
+    can pass it as `pending` and the badge derives from that — no second
+    `pending_and_running()` call on the same render.
     """
     if "pending_job_count" not in context or "queue_has_running" not in context:
-        active = job_mgr.registry.pending_and_running()
+        active = context.get("pending") or job_mgr.registry.pending_and_running()
         context.setdefault("pending_job_count", len(active))
         context.setdefault(
             "queue_has_running",
