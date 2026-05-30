@@ -143,16 +143,21 @@ def _flag_new_since_last_scan(job, mode):
     record this walk's set for next time. First-ever run badges nothing (no
     baseline to diff). Skipped on a cancelled scan so a partial run can't
     poison the baseline."""
+    # Snapshot under the lock — the scan worker appends candidates to this
+    # list and we walk it twice here, which without a snapshot is not safe
+    # against a same-instant append. `dismiss_albums` uses the same pattern.
+    with job._lock:
+        candidates = list(job.candidates)
     seen_now = set()
     fps = {}
-    for c in job.candidates:
+    for c in candidates:
         fp = hidden_mod.album_fingerprint(c.get("artist"), c.get("title"))
         if fp:
             seen_now.add(fp)
             fps[c["cid"]] = fp
     prev = _load_scan_seen(mode)
     if prev is not None:
-        for c in job.candidates:
+        for c in candidates:
             fp = fps.get(c["cid"])
             if fp and fp not in prev:
                 c["payload"]["is_new"] = True
