@@ -113,7 +113,7 @@ services:
       # Synced lyrics are fetched on every import by default. Set "false" to
       # disable. LYRICS_FORMAT: embed = FLAC tag · sidecar = .lrc · both.
       # LYRICS_PROVIDERS: comma list in preferred order; empty = built-in.
-      # LYRICS_ENABLED: "false"
+      LYRICS_ENABLED: "${LYRICS_ENABLED:-true}"
       LYRICS_FORMAT: "${LYRICS_FORMAT:-embed}"
       LYRICS_PROVIDERS: "${LYRICS_PROVIDERS:-}"
 
