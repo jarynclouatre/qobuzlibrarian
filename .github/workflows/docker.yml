@@ -47,9 +47,15 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: dinkeyes/qobuz-librarian
+          # flavor=latest=auto tags :latest only for the highest non-prerelease
+          # semver, so backfilling an OLD release (publishing v0.5.1 after v0.7.0
+          # has shipped) builds the versioned image without clobbering :latest
+          # with old code. Replaces the previous type=raw line that just gated on
+          # the event being a release.
+          flavor: |
+            latest=auto
           tags: |
             type=semver,pattern={{version}}
-            type=raw,value=latest,enable=${{ github.event_name == 'release' }}
 
       - name: Build and push
         uses: docker/build-push-action@v5
