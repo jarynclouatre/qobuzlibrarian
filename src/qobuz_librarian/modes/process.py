@@ -816,8 +816,13 @@ def process_album(album, args, *, allow_force=True, label=None,
                     f"\n  ⚠  --no-import set; cannot auto-verify upgrade. "
                     f"Backup kept at {upgrade_backup_path}."))
             else:
+                # --force routes through the same backup-restore branch (the
+                # forced re-download backed the original up the same way an
+                # auto-upgrade would), so name what actually ran instead of
+                # always saying "Upgrade".
+                op_label = "Forced re-download" if args.force else "Upgrade"
                 log.info(fmt(C.YELLOW,
-                    "\n  ⚠  Upgrade did not succeed (no successful import); "
+                    f"\n  ⚠  {op_label} did not succeed (no successful import); "
                     "restoring backup …"))
                 upgrade_restored = restore_upgrade_backup(upgrade_backup_path, album_dir)
                 if upgrade_restored:
