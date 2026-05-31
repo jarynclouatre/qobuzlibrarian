@@ -303,8 +303,12 @@
   <div class="card-body">
     <div class="flex items-baseline justify-between mb-3">
       <h2 class="text-xs font-semibold uppercase tracking-wider text-base-content/50">Recent downloads</h2>
-      {% if last_library_scan %}
-      <span class="text-xs text-base-content/40">Scanned {{ last_library_scan }}</span>
+      {% if last_library_scan or last_new_release_check %}
+      <span class="text-xs text-base-content/40">
+        {%- if last_library_scan %}Scanned {{ last_library_scan }}{% endif -%}
+        {%- if last_library_scan and last_new_release_check %} · {% endif -%}
+        {%- if last_new_release_check %}New-release check {{ last_new_release_check }}{% endif -%}
+      </span>
       {% endif %}
     </div>
     {% if recent %}

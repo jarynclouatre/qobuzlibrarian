@@ -792,6 +792,7 @@ async def dashboard(request: Request):
                 len(load_lyric_retry()) if _cfg.LYRIC_RETRY_FILE.exists() else 0,
             "staging_album_count": 0 if active_jobs else _staging_album_count(),
             "last_library_scan": _last_scan_age(),
+            "last_new_release_check": _last_new_release_check_age(),
         }
 
     loop = asyncio.get_running_loop()
@@ -1199,9 +1200,17 @@ async def artist_scan(request: Request, artist: str = Form("")):
 @app.get("/library", response_class=HTMLResponse)
 async def library_page(request: Request):
     from qobuz_librarian.library import hidden as hidden_mod
+    from qobuz_librarian.library import scan_checkpoint
     creds_ok = bool(_read_creds().get("auth_token"))
+    # Resume hint — same pattern /repair uses: only surface when a checkpoint
+    # exists AND no library scan is currently running (mid-scan the dashboard's
+    # "scanning…" indicator already covers it).
+    cp = scan_checkpoint.pending()
+    library_resume = (cp if cp is not None and _active_scan("library") is None
+                      else None)
     return _tr(request, "library.html", {
         "creds_ok": creds_ok, "page": "library",
+        "library_resume": library_resume,
         "hidden_count": hidden_mod.count(hidden_mod.SCOPE_MISSING)})
 
 
@@ -2347,13 +2356,9 @@ def _mask_token(token: str) -> str:
     return token[:8] + "•" * min(len(token) - 12, 20) + token[-4:]
 
 
-def _last_scan_age() -> str | None:
-    """Human-readable age of the last library/artist scan, or None."""
+def _format_age(ts: float) -> str:
+    """Human-readable age of a past timestamp."""
     import time as _time
-    try:
-        ts = float(cfg.LAST_SCAN_FILE.read_text(encoding="utf-8").strip())
-    except (OSError, ValueError):
-        return None
     age = _time.time() - ts
     if age < 120:
         return "just now"
@@ -2363,6 +2368,24 @@ def _last_scan_age() -> str | None:
         return f"{int(age / 3600)} hr ago"
     days = int(age / 86400)
     return f"{days} day{'s' if days != 1 else ''} ago"
+
+
+def _last_scan_age() -> str | None:
+    """Human-readable age of the last library/artist scan, or None."""
+    try:
+        ts = float(cfg.LAST_SCAN_FILE.read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        return None
+    return _format_age(ts)
+
+
+def _last_new_release_check_age() -> str | None:
+    """Human-readable age of the last new-release check, or None — gives the
+    dashboard a sibling indicator to the existing 'last library scan' line so
+    the user can see how fresh the auto-check's signal is."""
+    from qobuz_librarian.library import new_releases
+    ts = new_releases.last_run()
+    return _format_age(ts) if ts is not None else None
 
 
 def _no_creds_response(request):
