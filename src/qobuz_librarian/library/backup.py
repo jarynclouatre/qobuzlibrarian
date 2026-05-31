@@ -404,6 +404,35 @@ def restore_upgrade_backup(backup_path: Path, original_path: Path) -> bool:
                     f"  ⚠  Replacing partial dir ({orig_files} file(s), "
                     f"{orig_bytes / 1024 / 1024:.1f} MB) with backup "
                     f"({bk_files} file(s), {bk_bytes / 1024 / 1024:.1f} MB)."))
+                # A partial re-rip that beets had already imported leaves rows
+                # in the beets DB pointing at files we're about to wipe. Drop
+                # them first so the DB doesn't end up referencing deleted
+                # paths (the bug that bit --force re-downloads landing with
+                # any fail/lossy: the restore put the backup back over a
+                # partial import, the DB rows for the partial lingered as
+                # ghost tracks). Lazy-imported to keep the library layer free
+                # of an integrations import at module load.
+                try:
+                    from qobuz_librarian.integrations.beets import (
+                        forget_beets_entries,
+                    )
+                    partial_files = [p for p in original_path.rglob("*")
+                                     if p.is_file()]
+                    if partial_files:
+                        n_forgotten = forget_beets_entries(partial_files)
+                        if n_forgotten:
+                            log.info(fmt(C.GRAY,
+                                f"     · Dropped {n_forgotten} stale beets "
+                                "entry/entries for the partial-import paths."))
+                except Exception as e:
+                    # Forget is best-effort: if beets is missing or the DB
+                    # is locked, restore still proceeds. The user only sees
+                    # ghost entries until a manual `beet update`, which is
+                    # the same outcome the old code always produced.
+                    log.info(fmt(C.YELLOW,
+                        f"  · Couldn't pre-clear partial-import entries from "
+                        f"beets ({e}); they may show as ghosts until "
+                        "`beet update`."))
                 # Wipe partial in two phases so a mid-walk failure leaves
                 # a recognisable trash dir rather than a half-deleted album
                 # path that beets would later collide with.

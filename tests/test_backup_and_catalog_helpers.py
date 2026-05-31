@@ -156,6 +156,42 @@ def test_restore_upgrade_backup_survives_rmtree_failure_mid_walk(tmp_path):
     shutil.rmtree(original.with_name(original.name + ".restore_trash"))
 
 
+def test_restore_upgrade_backup_forgets_partial_import_paths_from_beets(tmp_path):
+    # The R2 bug: --force routes through the auto-upgrade restore branch; if
+    # the re-rip lands with any failed tracks, beets has imported the partial
+    # files into the library and recorded their paths. The restore overwrites
+    # those files with the backup, leaving the beets DB pointing at deleted
+    # paths (ghost rows). Restore now calls forget_beets_entries on whatever's
+    # under the partial dir BEFORE wiping it.
+    backup = tmp_path / "backup"
+    backup.mkdir()
+    (backup / "intact1.flac").write_bytes(b"a" * 100_000)
+    (backup / "intact2.flac").write_bytes(b"a" * 100_000)
+
+    original = tmp_path / "original"
+    original.mkdir()
+    partial_one = original / "partial1.flac"
+    partial_two = original / "partial2.flac"
+    partial_one.write_bytes(b"x" * 500)
+    partial_two.write_bytes(b"x" * 500)
+
+    captured_paths = []
+
+    def fake_forget(paths):
+        captured_paths.extend(str(p) for p in paths)
+        return 2  # pretend beets had two entries it dropped
+
+    with patch("qobuz_librarian.integrations.beets.forget_beets_entries",
+               side_effect=fake_forget):
+        assert restore_upgrade_backup(backup, original) is True
+
+    # The partial files' paths went through forget_beets_entries before the
+    # wipe, so the DB rows beets had for them are gone — no ghosts.
+    assert set(captured_paths) == {str(partial_one), str(partial_two)}
+    # And the restore still landed: intact files are back at the original.
+    assert (original / "intact1.flac").exists()
+
+
 def test_restore_upgrade_backup_clears_a_stale_restore_trash(tmp_path):
     # A prior interrupted restore can leave a .restore_trash beside the album;
     # it must be cleared, or it blocks the rename here (and orphans forever).
