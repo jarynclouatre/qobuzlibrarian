@@ -10,6 +10,7 @@ BOTH mtime and size (e.g. an mtime restored with ``touch -r``), which keeps the
 cached tags until the file next changes. Set ``FLAC_CACHE_ENABLED=false`` to
 disable; delete the db to force a re-parse.
 """
+import atexit
 import json
 import os
 import sqlite3
@@ -23,6 +24,16 @@ from qobuz_librarian.ui_cli.logging import vlog
 _init_lock = threading.Lock()
 _initialized = False
 _local = threading.local()
+
+# Buffered-write state. A cold scan of a 200k-track library writes one row per
+# file; doing a commit per write turns into 200k disk syncs that dominate the
+# scan. Buffer instead, flush periodically + at end-of-scan + at process exit.
+# Keyed by path so a later put() for the same file replaces the earlier
+# buffered entry, and ``get()`` can read from the buffer before falling back
+# to disk (preserving the put→get visibility contract).
+_PENDING_LOCK = threading.Lock()
+_PENDING_ROWS: dict[str, tuple] = {}  # path → (mtime_ns, size, payload_json)
+_PENDING_LIMIT = 500
 
 
 def _db_path():
@@ -88,17 +99,33 @@ def signature(path):
 
 
 def get(path) -> dict | None:
-    """Cached tags for ``path`` if the file is unchanged since they were stored."""
+    """Cached tags for ``path`` if the file is unchanged since they were stored.
+
+    Checks the in-memory write buffer first: a ``put()`` between two scan
+    passes hasn't been flushed yet, but the second pass shouldn't have to
+    re-parse the file just because the row is still in RAM.
+    """
     if not _ensure():
         return None
     sig = signature(path)
     if sig is None:
         return None
     mtime_ns, size = sig
+    p = str(path)
+    with _PENDING_LOCK:
+        buffered = _PENDING_ROWS.get(p)
+    if buffered is not None:
+        b_mtime, b_size, b_payload = buffered
+        if b_mtime == mtime_ns and b_size == size:
+            try:
+                return json.loads(b_payload)
+            except (ValueError, TypeError):
+                return None
+        return None
     try:
         row = _conn().execute(
             "SELECT mtime_ns, size, payload FROM files WHERE path = ?",
-            (str(path),)).fetchone()
+            (p,)).fetchone()
     except sqlite3.Error as e:
         vlog(f"flac cache read failed: {e}")
         return None
@@ -114,7 +141,14 @@ def put(path, payload, sig=None) -> None:
     """Store parsed tags for ``path``. Pass ``sig`` from ``signature(path)``
     captured before the file was read; otherwise a file edited during the parse
     is recorded with its new mtime but the pre-edit tags and served stale until
-    it changes again. Falls back to statting now when the caller omits it."""
+    it changes again. Falls back to statting now when the caller omits it.
+
+    Writes are buffered and flushed in batches (see ``flush_pending``) so a
+    cold library scan doesn't commit once per file. ``get()`` on a path whose
+    write is still buffered returns None — the caller re-parses, which is
+    wasted work but never wrong; scanner traversals don't read the same file
+    twice within a flush window in practice.
+    """
     if not isinstance(payload, dict) or not _ensure():
         return
     if sig is None:
@@ -126,14 +160,43 @@ def put(path, payload, sig=None) -> None:
         data = json.dumps(payload)
     except (TypeError, ValueError):
         return
+    with _PENDING_LOCK:
+        _PENDING_ROWS[str(path)] = (mtime_ns, size, data)
+        full = len(_PENDING_ROWS) >= _PENDING_LIMIT
+    if full:
+        flush_pending()
+
+
+def flush_pending() -> None:
+    """Drain any buffered ``put`` writes in one ``executemany`` transaction.
+
+    Called automatically when the buffer hits ``_PENDING_LIMIT``, by
+    ``scanner.clear_scan_caches`` at scan-end, and at process exit via
+    ``atexit``. A crash mid-scan loses at most ``_PENDING_LIMIT`` entries —
+    the next scan re-parses them (no data loss, just rework). Idempotent;
+    a no-op when the buffer is empty.
+    """
+    if not _ensure():
+        return
+    with _PENDING_LOCK:
+        if not _PENDING_ROWS:
+            return
+        rows = [(p, m, s, d) for p, (m, s, d) in _PENDING_ROWS.items()]
+        _PENDING_ROWS.clear()
     try:
         conn = _conn()
-        conn.execute(
+        conn.executemany(
             "INSERT OR REPLACE INTO files (path, mtime_ns, size, payload) "
-            "VALUES (?, ?, ?, ?)", (str(path), mtime_ns, size, data))
+            "VALUES (?, ?, ?, ?)", rows)
         conn.commit()
     except sqlite3.Error as e:
-        vlog(f"flac cache write failed: {e}")
+        vlog(f"flac cache batch write failed: {e}")
+
+
+# Flush whatever's still in the buffer when the process exits cleanly — a CLI
+# run that ends without a clear_scan_caches call (a quick --search, a forced
+# exit between scan phases) would otherwise drop its last partial batch.
+atexit.register(flush_pending)
 
 
 def prune_missing(force: bool = False) -> int:
@@ -154,6 +217,10 @@ def prune_missing(force: bool = False) -> int:
                 return 0
         except OSError:
             pass
+    # See buffered rows: a prune right after a partial scan should still drop
+    # paths whose files are now gone, even if the put() for them hasn't been
+    # flushed yet.
+    flush_pending()
     try:
         conn = _conn()
         gone = [(p,) for (p,) in conn.execute("SELECT path FROM files")
@@ -179,3 +246,5 @@ def _reset_for_tests() -> None:
         conn.close()
         _local.conn = None
     _initialized = False
+    with _PENDING_LOCK:
+        _PENDING_ROWS.clear()

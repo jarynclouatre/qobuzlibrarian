@@ -316,9 +316,15 @@ def _list_artist_subdirs_cached(artist_dir: Path):
 
 def clear_scan_caches():
     """Drop per-scan caches. Pure-function lru_caches (normalize / etc.)
-    are left alone — deterministic and worth keeping warm."""
+    are left alone — deterministic and worth keeping warm.
+
+    Also drains the flac_cache write buffer so anything parsed mid-scan is
+    on disk before the next pass starts (the scan-end commit point — put()
+    buffers rather than committing per-file to keep a cold 200k-track scan
+    out of per-file disk-sync territory)."""
     _ARTIST_SUBDIRS_CACHE.clear()
     _HAS_AUDIO_CACHE.clear()
+    flac_cache.flush_pending()
 
 
 def drop_artist_subdirs_cache(artist_dir):

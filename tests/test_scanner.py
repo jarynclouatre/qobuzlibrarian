@@ -165,3 +165,43 @@ def test_flac_cache_prune_drops_moved_rows_but_spares_unmounted_volume(tmp_path,
         assert flac_cache.get(here) == {"t": 1}
     finally:
         flac_cache._reset_for_tests()
+
+
+def test_flac_cache_put_buffers_and_flush_pending_drains_to_disk(tmp_path, monkeypatch):
+    # A cold scan would commit per file otherwise; put() now buffers and
+    # flush_pending writes the batch in one transaction. get() must still see
+    # buffered rows (the put → get visibility contract scans rely on), and
+    # opening a fresh sqlite connection must NOT see them until the flush.
+    import sqlite3
+
+    import qobuz_librarian.config as cfg
+    from qobuz_librarian.library import flac_cache
+
+    monkeypatch.setattr(cfg, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(cfg, "FLAC_CACHE_ENABLED", True)
+    flac_cache._reset_for_tests()
+    try:
+        f = tmp_path / "song.flac"
+        f.write_bytes(b"abc")
+        flac_cache.put(f, {"title": "T", "isrc": "X"})
+
+        # The buffered row is visible via get() …
+        assert flac_cache.get(f) == {"title": "T", "isrc": "X"}
+
+        # … but a brand-new sqlite connection (the worker's per-thread conn
+        # was never created since we didn't trigger a flush) sees an empty
+        # table — the bytes haven't been committed yet.
+        with sqlite3.connect(str(tmp_path / "flac_cache.db")) as side:
+            cnt = side.execute("SELECT count(*) FROM files").fetchone()[0]
+        assert cnt == 0, "put() should not have written to disk yet"
+
+        # Draining the buffer commits the row.
+        flac_cache.flush_pending()
+        with sqlite3.connect(str(tmp_path / "flac_cache.db")) as side:
+            cnt = side.execute("SELECT count(*) FROM files").fetchone()[0]
+        assert cnt == 1
+
+        # Idempotent — a second flush with an empty buffer is a no-op.
+        flac_cache.flush_pending()
+    finally:
+        flac_cache._reset_for_tests()
