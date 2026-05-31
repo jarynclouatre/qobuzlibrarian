@@ -101,7 +101,7 @@ def run_upgrade_walk_mode(args, token):
             auto_accept_all = True
             log.info(fmt(C.GREEN,
                 "  ✓ Auto-accepting every artist. Walk away."))
-    print()
+    log.info("")
 
     try:
         for i, artist_dir in enumerate(all_artists):
@@ -121,10 +121,10 @@ def run_upgrade_walk_mode(args, token):
             except (AuthLost, QobuzUnavailable):
                 # Finish the progress line before the abort propagates to the
                 # clean EXIT_AUTH / EXIT_TRANSIENT stop in the entry point.
-                print()
+                log.info("")
                 raise
             except KeyboardInterrupt:
-                print()
+                log.info("")
                 log.info(fmt(C.GRAY, "\n  Interrupted."))
                 break
 
@@ -134,15 +134,15 @@ def run_upgrade_walk_mode(args, token):
                 continue
 
             # Upgrades found — commit the progress line and print the summary.
-            print()
-            print()
+            log.info("")
+            log.info("")
             n_tracks = sum(c["n_present"] for c in candidates)
             n_albums = len(candidates)
 
             log.info(fmt(C.BOLD + C.WHITE, f"  {artist_name}"))
             log.info(fmt(C.MAGENTA,
                 f"  {plural(n_albums, 'album')} — {plural(n_tracks, 'track')} to re-rip:"))
-            print()
+            log.info("")
             for c in candidates:
                 album = c["qobuz_album"]
                 title = truncate(album.get("title") or "?", 48)
@@ -160,7 +160,7 @@ def run_upgrade_walk_mode(args, token):
                 log.info(f"    • {fmt(C.WHITE, title)} {fmt(C.GRAY, f'({year})')}   "
                          f"{fmt(C.GRAY, el)} {fmt(C.GRAY, '→')} "
                          f"{fmt(C.MAGENTA, tl)}{_suffix}")
-            print()
+            log.info("")
 
             # --auto-safe — fully unattended path.
             if getattr(args, "auto_safe", False):
@@ -185,7 +185,7 @@ def run_upgrade_walk_mode(args, token):
                         log.info(fmt(C.GRAY,
                             f"     · {truncate(_t, 50)}  —  {'; '.join(_rs)}"))
                     unsafe_artists.append((artist_name, low_conf))
-                    print()
+                    log.info("")
                     continue
                 log.info(fmt(C.GREEN,
                     f"  ✓  --auto-safe: all {n_albums} candidate(s) high-confidence."))
@@ -195,13 +195,13 @@ def run_upgrade_walk_mode(args, token):
                                default_yes=False,
                                auto_yes=args.yes or auto_accept_all):
                     log.info(fmt(C.GRAY, "  Skipped."))
-                    print()
+                    log.info("")
                     continue
 
             for j, c in enumerate(candidates, 1):
                 album = c["qobuz_album"]
                 label = f"[{j}/{n_albums}]"
-                print()
+                log.info("")
                 log.info(fmt(C.BOLD + C.WHITE,
                     f"  {label} {truncate(album.get('title') or '?', 55)}"))
                 try:
@@ -214,7 +214,7 @@ def run_upgrade_walk_mode(args, token):
                 except AuthLost:
                     raise
                 except KeyboardInterrupt:
-                    print()
+                    log.info("")
                     log.info(fmt(C.GRAY, "  Interrupted. Stopping upgrade walk."))
                     return
 
@@ -255,12 +255,12 @@ def run_upgrade_walk_mode(args, token):
                     vlog(f"post-upgrade cap check failed: {_e}")
                 time.sleep(cfg.ARTIST_API_DELAY)
 
-            print()
+            log.info("")
 
     finally:
         args.consolidate = saved_consolidate
 
-    print()
+    log.info("")
     log.info(fmt(C.GREEN, "  ✓  Upgrade walk complete."))
     log.info(fmt(C.GRAY,
         f"     Scanned {plural(n_scanned, 'artist')} — upgraded tracks in "
@@ -274,7 +274,7 @@ def run_upgrade_walk_mode(args, token):
             f"     ⚠  {plural(n_failed_albums, 'album')} couldn't be upgraded "
             "(see the log above)."))
     if unsafe_artists:
-        print()
+        log.info("")
         log.info(fmt(C.YELLOW + C.BOLD,
             f"  ⚠  {plural(len(unsafe_artists), 'artist')} skipped for manual review:"))
         for _a, _lc in unsafe_artists:

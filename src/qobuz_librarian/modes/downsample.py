@@ -61,7 +61,7 @@ def run_downsample_walk_mode(args):
         if _r in ("y", "yes"):
             auto_accept_all = True
             log.info(fmt(C.GREEN, "  ✓ Auto-accepting every artist. Walk away."))
-    print()
+    log.info("")
 
     n = len(all_artists)
     n_scanned = 0
@@ -81,19 +81,19 @@ def run_downsample_walk_mode(args):
             if not candidates:
                 continue
 
-            print()
-            print()
+            log.info("")
+            log.info("")
             n_albums = len(candidates)
             est_total = sum(c.est_saving for c in candidates)
             log.info(fmt(C.BOLD + C.WHITE, f"  {artist_name}"))
             log.info(fmt(C.MAGENTA,
                 f"  {plural(n_albums, 'album')} above CD rate — "
                 f"~{format_size(est_total)} reclaimable:"))
-            print()
+            log.info("")
             for c in candidates:
                 log.info(f"    • {fmt(C.WHITE, truncate(c.title, 48))}   "
                          f"{fmt(C.GRAY, c.detail)}")
-            print()
+            log.info("")
 
             if args.dry_run:
                 continue
@@ -102,11 +102,11 @@ def run_downsample_walk_mode(args):
             if not confirm(f"  Downsample {plural(n_albums, 'album')}?",
                            default_yes=False, auto_yes=auto_accept_all):
                 log.info(fmt(C.GRAY, "  Skipped."))
-                print()
+                log.info("")
                 continue
 
             for j, c in enumerate(candidates, 1):
-                print()
+                log.info("")
                 log.info(fmt(C.BOLD + C.WHITE,
                     f"  [{j}/{n_albums}] {truncate(c.title, 55)}"))
                 res = downsample_dir(c.album_dir, verbose=True,
@@ -115,12 +115,12 @@ def run_downsample_walk_mode(args):
                     n_albums_done += 1
                 total_saved += res.get("saved_bytes", 0)
                 total_errors += res.get("errors", 0)
-            print()
+            log.info("")
     except KeyboardInterrupt:
-        print()
+        log.info("")
         log.info(fmt(C.GRAY, "  Interrupted."))
 
-    print()
+    log.info("")
     log.info(fmt(C.GREEN, "  ✓  Downsample walk complete."))
     log.info(fmt(C.GRAY,
         f"     Scanned {plural(n_scanned, 'artist')} — shrank "
