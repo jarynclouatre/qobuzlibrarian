@@ -959,6 +959,51 @@ async def do_search(request: Request, q: str = Form("", max_length=500)):
     return _tr(request, "search.html", ctx)
 
 
+_DOWNLOAD_SUMMARY_LABELS = {
+    "already_complete": "Album already complete — nothing to download.",
+    "skipped_already_higher_quality": "Skipped — you already own higher quality.",
+    "skipped_has_extras": "Skipped — your copy has tracks the catalogue doesn't.",
+    "upgrade_only_no_op": "Already at or above the target quality.",
+    "dry_run": "Dry run — nothing downloaded.",
+    "user_skipped": "Skipped at confirmation.",
+    "lossy_only": "Qobuz only had lossy versions — nothing downloaded.",
+    "no_tracks": "Qobuz returned no tracks for this album.",
+    "cancelled": "Cancelled — the partial download was discarded.",
+    "upgrade_aborted_backup_failed": "Upgrade aborted — couldn't back up the original.",
+    "partial": "Re-download came back incomplete — kept your original.",
+}
+
+
+def _summarize_download_result(r):
+    """One-line job summary from process_album's result dict.
+
+    Picks a phrase per result kind for the documented non-success branches,
+    or builds the "N tracks downloaded" tally for an actual rip. Returns
+    "" if there's nothing useful to say (process_album returned None / {})."""
+    from qobuz_librarian.ui_cli.errors import plural
+
+    if not r:
+        return ""
+    kind = r.get("result")
+    if kind in _DOWNLOAD_SUMMARY_LABELS:
+        return _DOWNLOAD_SUMMARY_LABELS[kind]
+    if not r.get("imported"):
+        return ""
+    n_ok = r.get("n_ok", 0)
+    n_fail = r.get("n_fail", 0)
+    n_lossy = r.get("n_lossy", 0)
+    parts = [f"{plural(n_ok, 'track')} downloaded"]
+    if n_fail:
+        parts.append(f"{n_fail} failed")
+    if n_lossy:
+        parts.append(f"{n_lossy} lossy-dropped")
+    if r.get("upgrade_unverified"):
+        parts.append("upgrade couldn't be verified — original kept")
+    elif r.get("auto_upgrade"):
+        parts.append("auto-upgrade verified")
+    return ", ".join(parts) + "."
+
+
 def _make_download_run(album, token, *, treat_as_new=False):
     """Return the run(j) callable used by both queue_download and job_retry.
 
@@ -982,6 +1027,12 @@ def _make_download_run(album, token, *, treat_as_new=False):
                        if r.get("n_fail") else "download or import failed")
         elif r.get("imported") and r.get("n_fail", 0) > 0:
             j.error = f"{plural(r['n_fail'], 'track')} failed — see job log"
+        # A successful job page used to show a blank summary line: the user
+        # couldn't tell what happened from the /jobs page without expanding
+        # the log. Surface a one-line outcome here.
+        summary = _summarize_download_result(r)
+        if summary:
+            j.summary = summary
     return run
 
 

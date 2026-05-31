@@ -44,6 +44,14 @@ def _isolate_data_dir():
     cfg.LYRIC_FETCH_STATE_FILE = tmp_root / ".lyric_fetch_state.json"
     cfg.WEB_AUTH_FILE        = tmp_root / ".qobuz_web_auth.json"
     cfg.LOCK_FILE            = tmp_root / "qobuz_librarian.lock"
+    # Isolate the Qobuz credential source too — load_qobuz_token reads from
+    # STREAMRIP_CONFIG by default, and the dev's real ~/.config/streamrip/
+    # config.toml (which may carry a live token after sync_streamrip_creds_from_env
+    # ever ran) would otherwise make every "no creds → /settings" route test
+    # silently follow the happy path instead.
+    cfg.STREAMRIP_CONFIG     = tmp_root / "streamrip" / "config.toml"
+    cfg.QOBUZ_USER_AUTH_TOKEN = ""
+    cfg.QOBUZ_USER_ID = ""
     # The dashboard auto-runs the new-release check (when due) and the first-run
     # library scan; both off for the suite so unrelated GET / tests don't fire a
     # real background scan. The dedicated tests flip them on with monkeypatch.
@@ -76,6 +84,13 @@ def _isolate_data_dir():
     # of reverting on for the rest of the session.
     os.environ["ALBUM_CACHE_ENABLED"] = "false"
     os.environ["FLAC_CACHE_ENABLED"] = "false"
+    # Same reasoning: clear the Qobuz creds env so a reload(cfg) in a test
+    # doesn't pick a leftover dev-shell token back up. STREAMRIP_CONFIG is
+    # pointed at the tmp dir above; this complements that by making sure the
+    # env-var fast path can't bypass it.
+    os.environ["QOBUZ_USER_AUTH_TOKEN"] = ""
+    os.environ["QOBUZ_USER_ID"] = ""
+    os.environ["STREAMRIP_CONFIG"] = str(cfg.STREAMRIP_CONFIG)
 
     yield
 
