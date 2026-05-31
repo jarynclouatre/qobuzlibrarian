@@ -901,6 +901,59 @@ def test_album_mode_returns_none_on_catalog_miss():
         assert run_album_mode(args, "tok", loop=False) is None
 
 
+def test_check_new_releases_mode_tallies_and_marks_run_unless_dry_run(tmp_path, monkeypatch):
+    # The CLI mode is the same engine the web auto-check uses — first run on
+    # an empty baseline records what's there, later runs surface the diff. A
+    # --dry-run preview must NOT advance the baseline, or the user loses the
+    # chance to see the same releases on a real run.
+    import types
+    from collections import namedtuple
+
+    import qobuz_librarian.config as cfg
+    from qobuz_librarian.library import new_releases as nrmod
+    from qobuz_librarian.modes import new_releases as new_releases_mode
+
+    state_file = tmp_path / "new_releases.json"
+    monkeypatch.setattr(cfg, "NEW_RELEASE_STATE_FILE", state_file)
+
+    fake_artist = MagicMock(spec=Path)
+    fake_artist.name = "Stars of the Lid"
+
+    Result = namedtuple("Result",
+                        "artist_id artist_name new_gaps current_ids")
+
+    def fake_find(name, *, token, opts, seen_by_id, hidden, artist_dir):
+        Gap = types.SimpleNamespace(qobuz_album={
+            "id": "555", "title": "A Newly-Found Release",
+            "release_date_original": "2026-05-28"})
+        return Result(artist_id="42", artist_name=name,
+                      new_gaps=[Gap], current_ids=["555"])
+
+    monkeypatch.setattr(new_releases_mode, "load_qobuz_token",
+                        lambda: ("uid", "tok"))
+    monkeypatch.setattr(new_releases_mode, "list_library_artists",
+                        lambda: [fake_artist])
+    monkeypatch.setattr(new_releases_mode, "find_new_releases_for_artist",
+                        fake_find)
+    monkeypatch.setattr(new_releases_mode, "clear_scan_caches", lambda: None)
+    monkeypatch.setattr(new_releases_mode, "flush_resolve_cache", lambda: None)
+    monkeypatch.setattr(cfg, "ARTIST_SCAN_WORKERS", 1)
+
+    # Real run advances the baseline.
+    args = types.SimpleNamespace(dry_run=False)
+    new_releases_mode.run_check_new_releases_mode(args)
+    assert nrmod.load()["seen"] == {"42": ["555"]}
+    assert nrmod.last_run() is not None
+
+    # --dry-run leaves the saved baseline alone — touch the state file
+    # afterward to confirm the timestamp didn't move.
+    state_file.unlink()  # reset
+    args = types.SimpleNamespace(dry_run=True)
+    new_releases_mode.run_check_new_releases_mode(args)
+    assert nrmod.load()["seen"] == {}
+    assert nrmod.last_run() is None
+
+
 def test_album_repair_mode_returns_none_when_user_cancels_the_picker():
     import types
 

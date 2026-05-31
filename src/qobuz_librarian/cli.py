@@ -203,6 +203,11 @@ def parse_args():
                    help="Scan the library for hi-res files and shrink them to "
                         "CD rate in place (per-artist confirm; --dry-run lists "
                         "only). Local — no Qobuz login needed.")
+    p.add_argument("--check-new-releases", dest="check_new_releases",
+                   action="store_true",
+                   help="walk library artists and report what's new on Qobuz "
+                        "since the last check (same engine the web auto-check "
+                        "uses); --dry-run skips advancing the baseline")
     p.add_argument("--lyrics-walk", action="store_true",
                    help="Fetch lyrics for tracks already in the library that "
                         "are missing them (LYRICS_FORMAT / LYRICS_PROVIDERS "
@@ -294,7 +299,8 @@ def parse_args():
     # read none of the album- or artist-scan flags below, so naming one of those
     # flags alongside them would silently drop it.
     other_run_mode = (args.upgrade_walk or args.downsample_walk
-                      or args.lyrics_walk or args.migrate or args.reset_walk_seen)
+                      or args.lyrics_walk or args.migrate or args.reset_walk_seen
+                      or args.check_new_releases)
     # Reject flag/mode combinations that would otherwise be silently dropped or
     # accepted. --force re-downloads everything; it's an album-mode concept,
     # ignored inside an artist scan or any walk/migrate mode.
@@ -339,6 +345,7 @@ def parse_args():
         ("--lyrics-walk", args.lyrics_walk),
         ("--migrate", args.migrate),
         ("--reset-walk-seen", args.reset_walk_seen),
+        ("--check-new-releases", args.check_new_releases),
     ) if on]
     if len(requested) > 1:
         p.error("run one mode at a time — got " + ", ".join(requested))
@@ -449,6 +456,18 @@ def main():
         require_music_root()
         from qobuz_librarian.modes.lyrics import run_library_lyrics_mode
         run_library_lyrics_mode(args)
+        return
+
+    # The new-release check hits the Qobuz API but doesn't need streamrip,
+    # ffmpeg or the FLAC tools (one catalog call per artist, no track fetches),
+    # so dispatch here before the heavy tool checks. The mode loads its own
+    # token so failures there report cleanly without leaking the load.
+    if args.check_new_releases:
+        require_music_root()
+        from qobuz_librarian.modes.new_releases import (
+            run_check_new_releases_mode,
+        )
+        run_check_new_releases_mode(args)
         return
 
     # Downsample walk is local-only — it reads hi-res files off disk and
