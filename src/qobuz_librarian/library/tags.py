@@ -276,6 +276,11 @@ _ALBUM_VARIANT_CONTINUATIONS = (
     "tapes", "tape", "version", "versions", "tracks", "track",
     "recordings", "recording", "performance", "performances",
     "mix", "mixes", "edit", "edits", "album", "albums", "ep", "eps",
+    # Tour / concert / broadcast cluster — "Live Tour 2024", "Live in Concert",
+    # "Live Broadcast 1972", "Anniversary Live", "Live Show", "Re-recorded".
+    "tour", "tours", "broadcast", "broadcasts", "concert", "concerts",
+    "show", "shows", "rerecorded", "rerecording", "rerecordings",
+    "anniversary",
 )
 
 

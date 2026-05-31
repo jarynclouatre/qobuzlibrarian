@@ -118,6 +118,22 @@ def test_differs_by_album_variant_catches_real_distinct_releases():
     assert differs_by_album_variant("album", "albumlivesessions")
 
 
+def test_differs_by_album_variant_catches_live_tour_concert_broadcast_show():
+    # Beta-test finding: the original connector list was too thin — a real
+    # "Album Live Tour 2024" / "Album Live Concert" / "Album Live Broadcast"
+    # would slip through the boundary check (tour/concert/broadcast weren't
+    # in the connector list) and end up treated as the studio album, so the
+    # live record got hidden behind the studio owner.
+    assert differs_by_album_variant("album", "albumlivetour2024")
+    assert differs_by_album_variant("album", "albumliveinconcert")
+    assert differs_by_album_variant("album", "albumlivebroadcast1972")
+    assert differs_by_album_variant("album", "albumliveshow")
+    # And these continuations don't lift coincidental letter overlaps —
+    # 'song tourism' / 'song showdown' aren't live-tour / live-show records.
+    assert not differs_by_album_variant("song", "songtourism")
+    assert not differs_by_album_variant("song", "songshowdown")
+
+
 def test_differs_by_album_variant_rejects_coincidental_letter_overlap():
     # The bug L10 closed: a normalized title that coincidentally starts with
     # the SAME letters as a variant token isn't a variant — the token has to
