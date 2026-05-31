@@ -632,6 +632,12 @@ def scan_upgrades_for_artist(job, artist_name, token):
     args = build_args()
     capped = load_capped()
     log.info(f"Scanning {name} for quality upgrades")
+    # The per-artist scans are single-step (one artist, one fetch), so push a
+    # start frame so the SSE consumer's progress header reads "Checking for
+    # upgrades · 0/1" instead of staying on whatever the previous job left,
+    # then push the matching end frame at the close — keeps the running-job
+    # page in sync with what the user thinks is happening.
+    job.push_progress("Checking for upgrades", 0, 1, name)
     try:
         _, cands = _scan_artist_upgrades(artist_dir, token, args, capped)
     except (AuthLost, QobuzUnavailable):
@@ -655,6 +661,7 @@ def scan_upgrades_for_artist(job, artist_name, token):
             selected=False,
         )
         added += 1
+    job.push_progress("Checking for upgrades", 1, 1, name, found=added)
     log.info(f"  {name} — {plural(added, 'album')} to upgrade")
     if not added:
         job.summary = f"No upgrades found for {name}."
@@ -817,6 +824,7 @@ def scan_downsamples_for_artist(job, artist_name):
         return
     name = artist_dir.name
     log.info(f"Scanning {name} for hi-res files to downsample")
+    job.push_progress("Scanning for hi-res files", 0, 1, name)
     try:
         cands = scan_artist_for_downsample(artist_dir)
     except Exception as e:
@@ -833,6 +841,7 @@ def scan_downsamples_for_artist(job, artist_name):
             selected=False,
         )
         added += 1
+    job.push_progress("Scanning for hi-res files", 1, 1, name, found=added)
     log.info(f"  {name} — {plural(added, 'album')} above CD rate")
     if not added:
         job.summary = f"Nothing above CD rate for {name}."

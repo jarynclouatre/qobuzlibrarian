@@ -25,7 +25,7 @@
   <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
   </svg>
-  <span>A {% if library_resume.kind == 'partial' %}partial-fill{% else %}library{% endif %} scan was interrupted — {{ library_resume.done }} artist{{ 's' if library_resume.done != 1 }} already checked. Starting it again continues from there.</span>
+  <span>A {% if library_resume.kind == 'partial' %}partial-fill{% else %}library{% endif %} scan was interrupted — {{ library_resume.done }} artist{{ 's' if library_resume.done != 1 }} already checked. <strong>{% if library_resume.kind == 'partial' %}Fill gaps in albums you own{% else %}Find missing albums{% endif %}</strong> is pre-selected to continue from there; pick a different option to start a fresh scan instead.</span>
 </div>
 {% endif %}
 
@@ -34,14 +34,16 @@
   <input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}">
   <div class="space-y-2 mb-4">
     <label class="flex items-start gap-3 cursor-pointer">
-      <input type="radio" name="mode" value="missing_albums" class="radio radio-primary mt-1" checked>
+      <input type="radio" name="mode" value="missing_albums" class="radio radio-primary mt-1"
+             {% if not library_resume or library_resume.kind == 'missing' %}checked{% endif %}>
       <div>
         <div class="font-medium">Find missing albums</div>
         <div class="text-sm text-base-content/50">Surface albums you don't have at all.</div>
       </div>
     </label>
     <label class="flex items-start gap-3 cursor-pointer">
-      <input type="radio" name="mode" value="partial_fill" class="radio radio-primary mt-1">
+      <input type="radio" name="mode" value="partial_fill" class="radio radio-primary mt-1"
+             {% if library_resume and library_resume.kind == 'partial' %}checked{% endif %}>
       <div>
         <div class="font-medium">Fill gaps in albums you own</div>
         <div class="text-sm text-base-content/50">Only albums already in your library that are missing some tracks — not ones you don't have at all.</div>
