@@ -2,12 +2,13 @@
 {% block title %}Artist — Qobuz Librarian{% endblock %}
 {% block content %}
 
-<h1 class="text-2xl font-bold mb-2">Scan an artist</h1>
+<h1 class="text-2xl font-bold mb-2">For one artist</h1>
 <p class="text-base-content/60 mb-6">
-  Look up an artist on Qobuz, compare their discography against your library,
-  and pick which missing albums to download. Always checks Qobuz fresh, and
-  anything released since your last look is flagged <span class="badge badge-primary badge-xs align-middle">new</span>
-  and pre-ticked. Use the name as it appears on Qobuz.
+  Type an artist name and pick what to do for them. <strong>Find missing</strong> is the usual
+  one — looks up their Qobuz catalogue and shows what's missing or new. The other tools work
+  on what's already in your library: check for higher-quality copies on Qobuz, refill any
+  files that have got truncated, fill in any missing lyrics, or downsample hi-res files to
+  save space.
 </p>
 
 {% if error %}
@@ -17,18 +18,37 @@
 {% if creds_ok %}
 <div class="card bg-base-200 shadow">
   <div class="card-body">
-    <form action="/artist" method="post" class="flex gap-2" data-busy-submit>
+    <form action="/artist" method="post" data-busy-submit>
       <input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}">
-      <input type="text" name="artist" placeholder="e.g. Stars of the Lid"
-             value="{{ prefill }}" aria-label="Artist name"
-             inputmode="search" enterkeyhint="search" autocapitalize="words" spellcheck="false"
-             class="input input-bordered flex-1" autocomplete="off" autofocus>
-      <button type="submit" class="btn btn-primary">Scan</button>
+
+      <div class="flex gap-2">
+        <input type="text" name="artist" placeholder="e.g. Stars of the Lid"
+               value="{{ prefill }}" aria-label="Artist name"
+               inputmode="search" enterkeyhint="search" autocapitalize="words" spellcheck="false"
+               class="input input-bordered flex-1" autocomplete="off" autofocus>
+        <button type="submit" class="btn btn-primary">Find missing</button>
+      </div>
+
+      <div class="text-xs text-base-content/50 mt-4 mb-2">Or for that artist:</div>
+      <div class="flex flex-wrap gap-2">
+        <button type="submit" formaction="/upgrade/artist" class="btn btn-sm btn-outline"
+                aria-label="Check this artist for quality upgrades">Check upgrades</button>
+        <button type="submit" formaction="/lyrics/artist" class="btn btn-sm btn-outline"
+                aria-label="Fetch lyrics for this artist's tracks">Fetch lyrics</button>
+        <button type="submit" formaction="/repair/artist" class="btn btn-sm btn-outline"
+                aria-label="Scan this artist for truncated files">Scan for repair</button>
+        <button type="submit" formaction="/downsample/artist" class="btn btn-sm btn-outline"
+                aria-label="Find hi-res files to downsample for this artist">Downsample hi-res</button>
+      </div>
     </form>
-    <p class="text-xs text-base-content/40 mt-2">
-      Want the whole library scanned instead?
-      <a href="/library" class="link">Library gap scan</a> does every artist
-      at once.
+
+    <p class="text-xs text-base-content/40 mt-4">
+      Want all of these for the whole library instead?
+      <a href="/library" class="link">Library scan</a>,
+      <a href="/upgrade" class="link">Upgrade</a>,
+      <a href="/lyrics" class="link">Lyrics</a>,
+      <a href="/repair" class="link">Repair</a>,
+      <a href="/downsample" class="link">Downsample</a>.
     </p>
   </div>
 </div>

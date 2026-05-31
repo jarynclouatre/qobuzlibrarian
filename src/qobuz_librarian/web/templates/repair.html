@@ -30,6 +30,9 @@
   <button type="submit" class="btn btn-primary"
           {% if repair_resume %}data-confirm="Continue the repair scan from where it left off?"{% else %}data-confirm="Start a full repair scan? This can take a couple of hours on a large library."{% endif %}>{% if repair_resume %}Resume repair scan{% else %}Start repair scan{% endif %}</button>
 </form>
+<p class="text-xs text-base-content/50 mt-3">
+  Just one artist? <a href="/artist" class="link">Use the Artist page</a> — same scan, scoped to their albums only.
+</p>
 {% else %}
 <div class="alert alert-warning">
   <span>No Qobuz credentials set —

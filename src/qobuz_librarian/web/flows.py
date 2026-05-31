@@ -610,6 +610,56 @@ def scan_upgrades(job, token):
     log.info(f"Done. {plural(total, 'upgradeable album')} found.")
 
 
+def scan_upgrades_for_artist(job, artist_name, token):
+    """Same upgrade scan as ``scan_upgrades`` but scoped to one artist's folder.
+
+    Mirrors the per-artist library scan in shape: deliberate single-artist
+    request, so the Hidden-upgrades store is NOT consulted (asking by name is
+    "show me everything for this artist"). No pool — one artist is the whole
+    job, so the parallel fan-out the whole-library scan needs is overkill.
+    """
+    from qobuz_librarian.library.discovery import resolve_artist_dir
+    from qobuz_librarian.quality.decision import load_capped
+
+    clear_scan_caches()
+    artist_dir = resolve_artist_dir(artist_name)
+    if artist_dir is None:
+        job.summary = (f"No library folder for “{artist_name}”. "
+                       "Check the spelling, or scan the whole library.")
+        log.info(job.summary)
+        return
+    name = artist_dir.name
+    args = build_args()
+    capped = load_capped()
+    log.info(f"Scanning {name} for quality upgrades")
+    try:
+        _, cands = _scan_artist_upgrades(artist_dir, token, args, capped)
+    except (AuthLost, QobuzUnavailable):
+        raise
+    except Exception as e:
+        log.info(f"  scan failed for {name}: {e}")
+        return
+    added = 0
+    for c in cands:
+        album = c["qobuz_album"]
+        title = album.get("title") or "?"
+        np_, nt = c.get("n_present", 0), c.get("n_total", 0)
+        part = f" · {np_}/{nt} tracks" if nt and np_ < nt else ""
+        job.add_candidate(
+            kind="upgrade",
+            title=title,
+            artist=name,
+            detail=f"{c.get('existing_quality_label','?')} → "
+                   f"{c.get('target_quality_label','?')}{part}",
+            payload={"album_id": album.get("id"), "year": album_year(album)},
+            selected=False,
+        )
+        added += 1
+    log.info(f"  {name} — {plural(added, 'album')} to upgrade")
+    if not added:
+        job.summary = f"No upgrades found for {name}."
+
+
 def execute_upgrades(job, chosen, token):
     """Re-rip the present tracks of each chosen album at higher quality."""
     from qobuz_librarian.modes.process import process_album
@@ -746,6 +796,46 @@ def scan_downsamples(job):
     if not job.cancel_requested:
         _flag_new_since_last_scan(job, "downsample")
     log.info(f"Done. {plural(total, 'album')} above CD rate.")
+
+
+def scan_downsamples_for_artist(job, artist_name):
+    """Same downsample scan as ``scan_downsamples`` but scoped to one artist.
+
+    Local-only (off-disk read, no token). The Hidden-downsample store is NOT
+    consulted — a deliberate per-artist request means "show me everything for
+    this artist", same convention as the upgrade and library variants.
+    """
+    from qobuz_librarian.library.discovery import resolve_artist_dir
+    from qobuz_librarian.library.downsample import scan_artist_for_downsample
+
+    clear_scan_caches()
+    artist_dir = resolve_artist_dir(artist_name)
+    if artist_dir is None:
+        job.summary = (f"No library folder for “{artist_name}”. "
+                       "Check the spelling, or scan the whole library.")
+        log.info(job.summary)
+        return
+    name = artist_dir.name
+    log.info(f"Scanning {name} for hi-res files to downsample")
+    try:
+        cands = scan_artist_for_downsample(artist_dir)
+    except Exception as e:
+        log.info(f"  scan failed for {name}: {e}")
+        return
+    added = 0
+    for c in cands:
+        job.add_candidate(
+            kind="downsample",
+            title=c.title,
+            artist=name,
+            detail=c.detail,
+            payload={"album_dir": str(c.album_dir), "est_saving": c.est_saving},
+            selected=False,
+        )
+        added += 1
+    log.info(f"  {name} — {plural(added, 'album')} above CD rate")
+    if not added:
+        job.summary = f"Nothing above CD rate for {name}."
 
 
 def execute_downsamples(job, chosen):
@@ -905,6 +995,88 @@ def scan_repairs(job, token):
         time.sleep(cfg.ARTIST_API_DELAY)
     scan_checkpoint.clear("repair")
     log.info(f"Done. {plural(total, 'album')} flagged.")
+
+
+def scan_repairs_for_artist(job, artist_name, token):
+    """Same repair scan as ``scan_repairs`` but scoped to one artist's albums.
+
+    A focused single-artist sweep so no checkpointing — the whole-library run
+    needs it because it goes for hours; this one is over in seconds. ISRC
+    misses get the same whole-album redownload fallback the library scan does.
+    """
+    from qobuz_librarian.library.catalog import find_qobuz_album_for_dir
+    from qobuz_librarian.library.discovery import resolve_artist_dir
+    from qobuz_librarian.repair_log import scan_dir_for_isrc_repairs
+
+    clear_scan_caches()
+    artist_dir = resolve_artist_dir(artist_name)
+    if artist_dir is None:
+        job.summary = (f"No library folder for “{artist_name}”. "
+                       "Check the spelling, or scan the whole library.")
+        log.info(job.summary)
+        return
+    name = artist_dir.name
+    album_dirs = list_artist_album_dirs(artist_dir)
+    if not album_dirs:
+        job.summary = f"No albums under {name} to check."
+        log.info(job.summary)
+        return
+    log.info(f"Scanning {plural(len(album_dirs), 'album')} under {name}")
+    total = 0
+    for i, album_dir in enumerate(album_dirs, 1):
+        if job.cancel_requested:
+            log.info("Cancelled — stopping scan.")
+            return
+        job.push_progress("Checking for damaged files", i, len(album_dirs),
+                          album_dir.name, found=total)
+        try:
+            scan = scan_dir_for_isrc_repairs(album_dir, token, deep=True)
+        except (AuthLost, QobuzUnavailable):
+            raise
+        except Exception as e:
+            log.info(f"    skipped {album_dir.name}: {e}")
+            continue
+        truncated = scan["verified_truncated"]
+        if truncated:
+            job.add_candidate(
+                kind="repair",
+                title=album_dir.name,
+                artist=name,
+                detail=f"{plural(len(truncated), 'truncated track')}",
+                payload={"album_dir": str(album_dir),
+                         "artist_name": name,
+                         "verified_truncated": truncated},
+            )
+            total += 1
+        suspicious = [e for e in scan.get("no_isrc_tag", [])
+                      if e.get("diagnostic")]
+        if suspicious:
+            matched = find_qobuz_album_for_dir(album_dir, name, token)
+            if matched and matched.get("id"):
+                m_title = matched.get("title") or album_dir.name
+                m_year = album_year(matched) or "?"
+                job.add_candidate(
+                    kind="redownload",
+                    title=album_dir.name,
+                    artist=name,
+                    detail=(f"{plural(len(suspicious), 'damaged file')} "
+                            f"can't be verified by ID — re-download the whole "
+                            f"album fresh as “{m_title}” ({m_year})"),
+                    payload={"album_dir": str(album_dir),
+                             "artist_name": name,
+                             "album_id": matched.get("id"),
+                             "matched_title": m_title},
+                )
+                total += 1
+            else:
+                for e in suspicious:
+                    log.info(f"    ⚠ {album_dir.name} — "
+                             f"{e.get('title') or '?'}: {e['diagnostic']}; "
+                             "couldn't match this folder to a Qobuz album "
+                             "to re-download — check by hand.")
+    log.info(f"Done. {plural(total, 'album')} flagged.")
+    if not total:
+        job.summary = f"No damaged files found for {name}."
 
 
 def _redownload_damaged_album(payload, token):
@@ -1095,6 +1267,58 @@ def run_library_lyrics(job, *, rescan=False, synced_only=False):
     not_found = res.get("not-found", 0)
     unavailable = res.get("providers-unavailable", 0)
     parts = [f"{plural(total, 'track')} scanned", f"{wrote} got lyrics"]
+    if not_found:
+        parts.append(f"{not_found} not found")
+    if unavailable:
+        parts.append(f"{unavailable} couldn't reach a provider (re-run later)")
+    job.summary = " · ".join(parts) + "."
+    log.info(job.summary)
+
+
+def run_lyrics_for_artist(job, artist_name, *, rescan=False, synced_only=False):
+    """Same lyric backfill as ``run_library_lyrics`` but scoped to one artist.
+
+    Walks only that artist's albums (the engine's iter_library_flacs takes the
+    list now). Shares the same state file, so a per-artist run still skips
+    tracks an earlier whole-library run already resolved.
+    """
+    from qobuz_librarian.library.discovery import resolve_artist_dir
+    from qobuz_librarian.library.lyrics import HAVE_LYRICS
+    from qobuz_librarian.library.lyrics import run_library_lyrics as engine
+
+    if not HAVE_LYRICS:
+        job.summary = "Lyric fetching isn't available — the syncedlyrics library isn't installed."
+        log.info(job.summary)
+        return
+    artist_dir = resolve_artist_dir(artist_name)
+    if artist_dir is None:
+        job.summary = (f"No library folder for “{artist_name}”. "
+                       "Check the spelling, or run the whole-library backfill.")
+        log.info(job.summary)
+        return
+    name = artist_dir.name
+    log.info(f"Fetching lyrics for {name} "
+             f"(writing {(cfg.LYRICS_FORMAT or 'embed').lower()}).")
+    if rescan:
+        log.info("Re-checking every track (ignoring saved state).")
+    res = engine(rescan=rescan, synced_only=synced_only,
+                 should_stop=lambda: job.cancel_requested, log=log,
+                 artist_dirs=[artist_dir])
+
+    total = res.get("total", 0)
+    if not total:
+        job.summary = f"No FLAC files found for {name}."
+        log.info(job.summary)
+        return
+    if res.get("stopped"):
+        job.summary = f"Stopped after scanning {plural(total, 'track')}."
+        return
+
+    wrote = (res.get("wrote-synced", 0) + res.get("wrote-plain", 0)
+             + res.get("dry:wrote-synced", 0) + res.get("dry:wrote-plain", 0))
+    not_found = res.get("not-found", 0)
+    unavailable = res.get("providers-unavailable", 0)
+    parts = [f"{plural(total, 'track')} scanned for {name}", f"{wrote} got lyrics"]
     if not_found:
         parts.append(f"{not_found} not found")
     if unavailable:

@@ -721,3 +721,11 @@ def test_library_lyrics_walk_targets_library_flacs_only(tmp_path, monkeypatch):
     res = liblyr.run_library_lyrics()
     assert set(seen["paths"]) == expected
     assert res["total"] == 3
+
+    # Passing artist_dirs scopes the walk to those dirs only — the per-artist
+    # Lyrics tool relies on this to avoid re-iterating every other artist's
+    # folder. ArtistB's dir is the one we'd pick; ArtistA's tracks must drop.
+    seen.clear()
+    res = liblyr.run_library_lyrics(artist_dirs=[music / "ArtistB"])
+    assert set(seen["paths"]) == {music / "ArtistB/Album2/Disc 1/03.flac"}
+    assert res["total"] == 1

@@ -22,15 +22,20 @@ from qobuz_librarian.ui_cli.logging import report_progress, vlog
 HAVE_LYRICS = lyric_fetch.AVAILABLE
 
 
-def iter_library_flacs():
-    """Yield ``(path, mtime, size)`` for every FLAC in the library.
+def iter_library_flacs(*, artist_dirs=None):
+    """Yield ``(path, mtime, size)`` for every FLAC under the given artist dirs.
 
     Walks artists then albums via the same listing the rest of the app uses,
     so the dot-folder, staging-dir and empty-folder skips all apply. The
     stat is taken once here and handed to both the index and fetch passes so
     neither has to re-stat the file.
+
+    ``artist_dirs=None`` walks every artist under MUSIC_ROOT (the whole-library
+    backfill). Pass a list to scope to one artist — the per-artist Lyrics tool
+    uses this to fill gaps for just one artist without re-walking everything.
     """
-    for artist_dir in list_library_artists():
+    artists = artist_dirs if artist_dirs is not None else list_library_artists()
+    for artist_dir in artists:
         for album_dir in list_artist_album_dirs(artist_dir):
             try:
                 flacs = sorted(album_dir.rglob("*.flac"))
@@ -46,16 +51,19 @@ def iter_library_flacs():
 
 
 def run_library_lyrics(*, dry_run=False, rescan=False, synced_only=False,
-                       should_stop=None, log=None):
-    """Fetch lyrics across the whole library.
+                       should_stop=None, log=None, artist_dirs=None):
+    """Fetch lyrics across the whole library (or a subset of artists).
 
     Returns the fetch engine's outcome counts (``wrote-synced``,
     ``already-synced``, ``not-found``, …) with a ``total`` of files considered.
     Re-running is cheap: the state file lets each pass skip tracks already
     resolved, and provider-unavailable tracks are re-tried on the next run.
+
+    ``artist_dirs`` (default None = whole library) scopes the walk to those
+    artists only — the per-artist Lyrics tool passes the one resolved dir.
     """
     log = log or _default_log
-    items = list(iter_library_flacs())
+    items = list(iter_library_flacs(artist_dirs=artist_dirs))
     total = len(items)
     if not total:
         return {"total": 0}

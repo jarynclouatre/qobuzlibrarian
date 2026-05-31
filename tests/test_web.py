@@ -312,6 +312,99 @@ def test_lyrics_scan_needs_no_credentials(client, monkeypatch):
     assert captured["job"].title == "Lyrics backfill"
 
 
+# ── Per-artist tool routes (Artist page → scoped scans) ────────────────────
+
+def test_upgrade_scan_artist_redirects_to_settings_without_creds(client, monkeypatch):
+    # The per-artist upgrade route gates on Qobuz creds the same way the
+    # whole-library one does — a click without creds set must bounce to
+    # /setup, not silently submit a job that can't talk to Qobuz.
+    import qobuz_librarian.web.app as app_mod
+
+    monkeypatch.setattr(app_mod, "_read_creds", lambda: {})
+    r = client.post("/upgrade/artist", data={"artist": "Stars of the Lid"},
+                    follow_redirects=False)
+    assert r.status_code == 303
+    assert r.headers["location"].startswith("/settings")
+
+
+def test_upgrade_scan_artist_happy_path_submits_a_scoped_job(client, monkeypatch):
+    import qobuz_librarian.web.app as app_mod
+
+    monkeypatch.setattr(app_mod, "_get_token", lambda: "tok")
+    monkeypatch.setattr(app_mod, "_active_scan", lambda *a, **k: None)
+    captured = {}
+    monkeypatch.setattr(app_mod.job_mgr, "submit_scan",
+                        lambda job, scan_fn, execute_fn: captured.update(job=job))
+    r = client.post("/upgrade/artist", data={"artist": "Stars of the Lid"},
+                    follow_redirects=False)
+    assert r.status_code == 303 and "/jobs/" in r.headers["location"]
+    job = captured["job"]
+    assert job.execute_kind == "upgrade"
+    assert job.review_verb == "Upgrade"
+    assert job.title == "Quality upgrade scan"
+    assert job.artist == "Stars of the Lid"
+
+
+def test_downsample_scan_artist_needs_no_credentials(client, monkeypatch):
+    # Same local-only contract as the whole-library route — a missing token
+    # must not block this either, and the job carries the artist + kind.
+    import qobuz_librarian.web.app as app_mod
+
+    monkeypatch.setattr(app_mod, "_active_scan", lambda *a, **k: None)
+    captured = {}
+    monkeypatch.setattr(app_mod.job_mgr, "submit_scan",
+                        lambda job, scan_fn, execute_fn: captured.update(job=job))
+    r = client.post("/downsample/artist", data={"artist": "Burial"},
+                    follow_redirects=False)
+    assert r.status_code == 303 and "/jobs/" in r.headers["location"]
+    assert captured["job"].execute_kind == "downsample"
+    assert captured["job"].title == "Downsample scan"
+    assert captured["job"].artist == "Burial"
+
+
+def test_lyrics_scan_artist_needs_no_credentials(client, monkeypatch):
+    import qobuz_librarian.web.app as app_mod
+
+    monkeypatch.setattr(app_mod, "_active_scan", lambda *a, **k: None)
+    captured = {}
+    monkeypatch.setattr(app_mod.job_mgr, "submit",
+                        lambda job, fn: captured.update(job=job))
+    r = client.post("/lyrics/artist", data={"artist": "Bonobo"},
+                    follow_redirects=False)
+    assert r.status_code == 303 and "/jobs/" in r.headers["location"]
+    assert captured["job"].title == "Lyrics backfill"
+    assert captured["job"].artist == "Bonobo"
+
+
+def test_repair_scan_artist_redirects_to_settings_without_creds(client, monkeypatch):
+    # Repair needs Qobuz (ISRC lookups), same as the whole-library route.
+    import qobuz_librarian.web.app as app_mod
+
+    monkeypatch.setattr(app_mod, "_read_creds", lambda: {})
+    r = client.post("/repair/artist", data={"artist": "Crosby, Stills & Nash"},
+                    follow_redirects=False)
+    assert r.status_code == 303
+    assert r.headers["location"].startswith("/settings")
+
+
+def test_per_artist_routes_reject_empty_and_control_chars_with_one_helper(client, monkeypatch):
+    # _clean_artist_name backs all five Artist-page POSTs (the existing
+    # /artist scan + the four new tool ones). An empty name or a control char
+    # must redirect back to /artist with an error flash, not silently submit.
+    import qobuz_librarian.web.app as app_mod
+
+    monkeypatch.setattr(app_mod, "_get_token", lambda: "tok")  # not reached
+    for path in ("/upgrade/artist", "/lyrics/artist",
+                 "/repair/artist", "/downsample/artist"):
+        r = client.post(path, data={"artist": "  "}, follow_redirects=False)
+        assert r.status_code == 303, f"{path} on empty"
+        assert "/artist?error=" in r.headers["location"], f"{path} on empty"
+        r = client.post(path, data={"artist": "Bad\x00Name"},
+                        follow_redirects=False)
+        assert r.status_code == 303, f"{path} on control char"
+        assert "/artist?error=" in r.headers["location"], f"{path} on control char"
+
+
 def test_download_partial_result_marks_done_with_error(client, monkeypatch):
     # A partial download (some tracks failed but the album was imported)
     # keeps the job DONE — the folder is reachable — but must surface the
