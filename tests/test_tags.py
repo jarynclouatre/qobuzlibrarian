@@ -2,6 +2,7 @@
 from qobuz_librarian.library.tags import (
     beets_sanitize,
     clean_qobuz_string,
+    differs_by_album_variant,
     normalize,
     similarity,
     strip_album_decorations,
@@ -93,6 +94,45 @@ def test_strip_album_decorations_keeps_a_bare_year_title():
     assert strip_album_decorations("1989 (Deluxe Edition)") == "1989"
     assert strip_album_decorations("2112 (2012 Remaster)") == "2112"
     assert strip_album_decorations("1984") == "1984"
+
+
+def test_differs_by_album_variant_catches_real_distinct_releases():
+    # The shape this exists for: a live / acoustic / demo / sessions / remix
+    # record sits next to the studio album under the same artist and must NOT
+    # be mistaken for an un-stripped edition of it. Each pair below normalizes
+    # to (shorter, longer) where longer = shorter + a real variant marker.
+    assert differs_by_album_variant("album", "albumlive")
+    assert differs_by_album_variant("album", "albumacoustic")
+    assert differs_by_album_variant("album", "albumdemo")
+    assert differs_by_album_variant("album", "albumremixes")
+    assert differs_by_album_variant("album", "albumsessions")
+    # Continuations real titles use after a variant word — "Live at Wembley",
+    # "Live in Tokyo", "Live from BBC", "Live 2020", "Demo Tapes", "Demo
+    # Version", "Live Sessions" — must all still register as variants.
+    assert differs_by_album_variant("album", "albumliveatwembley")
+    assert differs_by_album_variant("album", "albumliveintokyo")
+    assert differs_by_album_variant("album", "albumlivefrombbc")
+    assert differs_by_album_variant("album", "albumlive2020")
+    assert differs_by_album_variant("album", "albumdemotapes")
+    assert differs_by_album_variant("album", "albumdemoversion")
+    assert differs_by_album_variant("album", "albumlivesessions")
+
+
+def test_differs_by_album_variant_rejects_coincidental_letter_overlap():
+    # The bug L10 closed: a normalized title that coincidentally starts with
+    # the SAME letters as a variant token isn't a variant — the token has to
+    # land at a real word boundary in the original. Without this guard, an
+    # owned 'Song' would NOT cover a catalog 'Song Liverpool' (a place name),
+    # nor 'Song Sessional' (an adjective), over-surfacing them as missing.
+    assert not differs_by_album_variant("song", "songliverpool")
+    assert not differs_by_album_variant("song", "songsessional")
+    # The plain-prefix cases (no variant token at all) also stay False, so a
+    # 'Cliff' folder doesn't get told 'Cliffside' differs.
+    assert not differs_by_album_variant("cliff", "cliffside")
+    assert not differs_by_album_variant("death", "deathmetal")
+    # And the empty-suffix case (identical bare titles) is False — they're
+    # the same album, not a variant pair.
+    assert not differs_by_album_variant("album", "album")
 
 
 def test_downsample_hires_env_var_compat(monkeypatch):

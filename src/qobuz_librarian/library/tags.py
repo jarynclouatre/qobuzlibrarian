@@ -265,6 +265,19 @@ _ALBUM_VARIANT_TOKENS = (
     "sessions", "session",
 )
 
+# Common words that legitimately follow a variant marker in real album titles
+# once spaces have been normalized out: "live AT Wembley", "live IN Tokyo",
+# "Live FROM the BBC", "demo TAPES", "Demo VERSION", "Live RECORDINGS",
+# "Live EP". Recognising these as a continuation lets a true variant title
+# pass the boundary check; arbitrary continuations like 'liver-pool' or
+# 'session-al' (the coincidental-substring false positives) don't.
+_ALBUM_VARIANT_CONTINUATIONS = (
+    "at", "in", "from", "of", "and", "with", "feat",
+    "tapes", "tape", "version", "versions", "tracks", "track",
+    "recordings", "recording", "performance", "performances",
+    "mix", "mixes", "edit", "edits", "album", "albums", "ep", "eps",
+)
+
 
 def differs_by_album_variant(shorter, longer):
     """True when normalized bare title ``longer`` is ``shorter`` plus a trailing
@@ -273,11 +286,34 @@ def differs_by_album_variant(shorter, longer):
     Lets a prefix-based owned check tell 'Album' from 'Album (Live)' once both
     have been normalized to bare alphanumerics, so a live or acoustic record
     isn't mistaken for an un-stripped edition of the studio album.
+
+    The marker must land at what looks like a word boundary in the normalized
+    form — exact suffix, digits (a year), another variant token, or one of
+    the common connector words real album titles use after a variant. Without
+    that guard, a normalized title that coincidentally starts with the same
+    letters as a token (``songliverpool``, ``songsessional``) would falsely
+    register as a Live or Sessions variant and over-surface its owner as a
+    different album.
     """
     if not longer.startswith(shorter):
         return False
     suffix = longer[len(shorter):]
-    return any(suffix.startswith(tok) for tok in _ALBUM_VARIANT_TOKENS)
+    for tok in _ALBUM_VARIANT_TOKENS:
+        if not suffix.startswith(tok):
+            continue
+        rest = suffix[len(tok):]
+        if not rest:
+            return True              # exact suffix — "Album (Live)" → albumlive
+        if rest[0].isdigit():
+            return True              # "(Live 2020)" → liver…digit
+        if any(rest.startswith(other) for other in _ALBUM_VARIANT_TOKENS):
+            return True              # "(Live Sessions)" → livesessions
+        if any(rest.startswith(c) for c in _ALBUM_VARIANT_CONTINUATIONS):
+            return True              # "(Live at Wembley)" → liveatwembley
+        # else: this token matched as a prefix but the continuation looks
+        # like the same word carrying on (live → liver…, session → sessional)
+        # — keep looking for a longer token that might match cleanly.
+    return False
 
 
 @lru_cache(maxsize=2048)
