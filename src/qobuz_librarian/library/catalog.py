@@ -565,6 +565,14 @@ def _standard_track_count(group):
     Deluxe/anniversary/expanded editions only ADD tracks and remasters keep
     the original count, so the smallest real edition is the album. None when
     no edition reports a usable count.
+
+    Editions below ``_MIN_ALBUM_TRACKS`` (3 tracks or fewer) are treated as
+    stray singles/EPs that happen to dedup into the same group as the album
+    by title and ignored when sizing — so a same-titled 3-track EP filed
+    next to a 15-track deluxe doesn't win the canonical pick. (An EP with
+    4+ tracks that shares the album's normalized name is a rarer edge that
+    needs Qobuz release-type metadata to distinguish reliably; until then
+    it can still mislead the canonical pick.)
     """
     counts = [tc for a in group if (tc := a.get("tracks_count") or 0) > 0]
     if not counts:

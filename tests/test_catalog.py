@@ -201,6 +201,21 @@ def test_dedup_album_versions_picks_standard_over_bloated_deluxe():
     assert dedup_album_versions(pairs, prefer_hires=False)[0][0]["tracks_count"] == 12
 
 
+def test_dedup_album_versions_min_album_tracks_threshold_filters_an_ep():
+    # NEW-4's documented case: a 3-track EP shares the normalized name with a
+    # 15-track deluxe (a stripped-decoration collision). The EP's count
+    # falls below _MIN_ALBUM_TRACKS (4), so the canonical pick ignores it
+    # and the deluxe wins on tracks_count instead. A real same-titled EP at
+    # 4+ tracks would still mislead here, but that needs release-type
+    # metadata Qobuz doesn't expose to distinguish reliably.
+    pairs = [
+        _qalbum("Title", 2020, bd=24, sr=96, tc=3),
+        _qalbum("Title (Deluxe Edition)", 2020, bd=24, sr=96, tc=15),
+    ]
+    assert dedup_album_versions(pairs, prefer_hires=True)[0][0]["tracks_count"] == 15
+    assert dedup_album_versions(pairs, prefer_hires=False)[0][0]["tracks_count"] == 15
+
+
 def test_filter_short_releases():
     short_and_full = [({"title": "EP", "tracks_count": 2}, 1),
                        ({"title": "Album", "tracks_count": 10}, 1)]
