@@ -1,6 +1,4 @@
-"""Streamrip download wrapper and staging utilities.
-
-"""
+"""Streamrip download wrapper and staging utilities."""
 import os
 import re
 import shutil
@@ -120,6 +118,30 @@ def flac_audio_ok(path):
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
         return None
     return proc.returncode == 0
+
+
+def flac_audio_offset(path):
+    """Byte offset of the first audio frame — the ``fLaC`` marker plus every
+    metadata block. Lets a caller weigh the audio stream apart from metadata and
+    embedded art, which don't shrink on resample and survive the tail damage that
+    truncates the audio. Returns 0 when the file isn't a plain FLAC or the header
+    is unreadable, so callers fall back to a whole-file size, not a wrong answer."""
+    try:
+        with open(path, "rb") as fh:
+            if fh.read(4) != b"fLaC":
+                return 0
+            offset = 4
+            while True:
+                header = fh.read(4)
+                if len(header) < 4:
+                    return 0
+                is_last = bool(header[0] & 0x80)
+                offset += 4 + int.from_bytes(header[1:4], "big")
+                fh.seek(offset)
+                if is_last:
+                    return offset
+    except OSError:
+        return 0
 
 
 def is_flac(path: Path) -> bool:
@@ -414,12 +436,48 @@ def cleanup_lossy(new_files):
             bucket, what = lossy, "non-FLAC"
         else:
             continue
+        # Record the reject whether or not we can delete it, so the caller's
+        # counts and per-track retry see it. A reject left in staging gets
+        # imported by beets (move: yes, autotag: no) — the exact lossy/truncated
+        # file this discard exists to keep out — so when the unlink fails, move
+        # it out of the import tree rather than leaving it to be picked up.
+        bucket.append(f.stem)
         try:
             f.unlink()
-            bucket.append(f.stem)
         except OSError as e:
-            log.info(fmt(C.YELLOW, f"  ⚠  Couldn't remove {what} {f.name}: {e}."))
+            if _quarantine_reject(f):
+                vlog(f"set aside undeletable {what} {f.name} so it isn't imported")
+            else:
+                log.info(fmt(C.YELLOW,
+                    f"  ⚠  Couldn't remove or set aside {what} {f.name}: {e}; "
+                    "remove it from staging by hand before the next import."))
     return kept, lossy, broken
+
+
+def _quarantine_reject(path):
+    """Move a reject that wouldn't delete out of the staging import tree (into a
+    quarantine under DATA_DIR) so beets can't pick it up. Returns True on a
+    successful move."""
+    try:
+        rel = path.relative_to(cfg.STAGING_DIR)
+    except ValueError:
+        rel = Path(path.name)
+    dest = cfg.DATA_DIR / ".rejected_staging" / rel
+    try:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        # Quarantine persists across runs, so a same-named reject from a later
+        # attempt would otherwise silently overwrite the earlier one — suffix
+        # on collision instead.
+        if dest.exists():
+            stem, suffix = dest.stem, dest.suffix
+            n = 1
+            while dest.exists():
+                dest = dest.with_name(f"{stem}.{n}{suffix}")
+                n += 1
+        shutil.move(str(path), str(dest))
+        return True
+    except OSError:
+        return False
 
 
 # Known non-audio artifacts that streamrip leaves in STAGING_DIR between runs.
