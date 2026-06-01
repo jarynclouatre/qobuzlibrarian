@@ -20,7 +20,6 @@ prefers the deepest catalog over a bare-name twin, cached to disk).
 """
 import json
 import os
-import re
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -30,6 +29,7 @@ from qobuz_librarian.api.auth import AuthLost, QobuzError, QobuzUnavailable
 from qobuz_librarian.api.search import get_album, get_artist_albums, search_artists
 from qobuz_librarian.library import hidden as hidden_mod
 from qobuz_librarian.library.catalog import (
+    _dir_year,
     _paths_equal,
     compute_missing,
     dedup_album_versions,
@@ -238,25 +238,11 @@ class NewReleaseResult:
     current_ids: list = field(default_factory=list)
 
 
-_YEAR_RE_PAREN = re.compile(r"\((\d{4})\)")
-_YEAR_RE_BARE = re.compile(r"\b(19\d{2}|20\d{2})\b")
-
-
-def _folder_year(name):
-    m = _YEAR_RE_PAREN.search(name) or _YEAR_RE_BARE.search(name)
-    if not m:
-        return None
-    try:
-        return int(m.group(1))
-    except ValueError:
-        return None
-
-
 def _record_owned_title(owned_titles, album_dir):
     from qobuz_librarian.library.tags import strip_album_decorations
     key = normalize(strip_leading_article(strip_album_decorations(album_dir.name)))
     if key:
-        owned_titles.setdefault(key, set()).add(_folder_year(album_dir.name))
+        owned_titles.setdefault(key, set()).add(_dir_year(album_dir.name))
 
 
 def owned_album_titles(album_dirs):
