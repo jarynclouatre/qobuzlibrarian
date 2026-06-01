@@ -217,12 +217,25 @@ async def _lifespan(_app: FastAPI):
     # Opt-in via env so tests / dev runs that don't have /staging /music
     # mounted don't trip on the gate. The bundled compose sets this to 1.
     if os.environ.get("QL_CHECK_VOLUMES") == "1":
-        for label, path in (("/staging", cfg.STAGING_DIR),
-                            ("/music", cfg.MUSIC_ROOT)):
-            if not Path(path).exists() or not os.access(str(path), os.W_OK):
-                _UNWRITABLE_VOLUMES.append(label)
+        # The label (the container-internal mount name) is what the operator
+        # checks in their compose.yaml; the resolved cfg path is what's
+        # actually being tested. Showing both makes "/music" warnings useful
+        # even when MUSIC_ROOT is customised away from the bundled default,
+        # and is_dir() catches a /dev/null-shaped mistake the W_OK alone misses.
+        for label, path in (("STAGING_DIR", cfg.STAGING_DIR),
+                            ("MUSIC_ROOT", cfg.MUSIC_ROOT)):
+            p = Path(path)
+            unreachable = not p.exists()
+            not_a_dir = p.exists() and not p.is_dir()
+            unwritable = p.exists() and p.is_dir() and not os.access(str(p), os.W_OK)
+            if unreachable or not_a_dir or unwritable:
+                _UNWRITABLE_VOLUMES.append(
+                    f"{label}={path!s}"
+                    + (" (missing)" if unreachable
+                       else " (not a directory)" if not_a_dir
+                       else " (read-only)"))
         if _UNWRITABLE_VOLUMES:
-            _log.error("STARTUP: critical volumes not writable: %s. Write "
+            _log.error("STARTUP: critical volumes not usable: %s. Write "
                        "endpoints will return 503 until container restarts "
                        "with mounts fixed.", _UNWRITABLE_VOLUMES)
     # Housekeeping the CLI also runs on each invocation — must be done

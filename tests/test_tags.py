@@ -171,3 +171,33 @@ def test_downsample_hires_env_var_compat(monkeypatch):
     settings_store._apply({"COMPRESS_ENABLED": True})
     assert cfg.DOWNSAMPLE_HIRES_ENABLED is True
     assert cfg.COMPRESS_ENABLED is True
+
+
+def test_downsample_hires_typo_warns_instead_of_silently_off(monkeypatch, capsys):
+    # Beta-test finding: a typo'd DOWNSAMPLE_HIRES_ENABLED used to silently
+    # resolve to False with no warning, while LYRICS_FORMAT=banana correctly
+    # warned. Route both through _env_bool so the contract matches. _warn
+    # writes to stderr; capture there.
+    monkeypatch.delenv("COMPRESS_ENABLED", raising=False)
+    monkeypatch.setenv("DOWNSAMPLE_HIRES_ENABLED", "banana")
+    import importlib
+
+    from qobuz_librarian import config as cfg
+    importlib.reload(cfg)
+    err = capsys.readouterr().err
+    assert cfg.DOWNSAMPLE_HIRES_ENABLED is False
+    assert "DOWNSAMPLE_HIRES_ENABLED" in err and "banana" in err
+
+
+def test_artist_scan_workers_clamps_an_absurd_high_value(monkeypatch, capsys):
+    # Beta-test finding: a typo'd ARTIST_SCAN_WORKERS=999999 used to slip
+    # through (only the floor at 1 was enforced) and would spawn a 999999-
+    # thread pool. _env_num_min now takes a maximum too.
+    monkeypatch.setenv("ARTIST_SCAN_WORKERS", "999999")
+    import importlib
+
+    from qobuz_librarian import config as cfg
+    importlib.reload(cfg)
+    err = capsys.readouterr().err
+    assert cfg.ARTIST_SCAN_WORKERS == 16  # clamped to the new ceiling
+    assert "ARTIST_SCAN_WORKERS" in err and "above the maximum" in err

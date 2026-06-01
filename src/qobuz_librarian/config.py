@@ -68,19 +68,28 @@ def _env_path(key, default: Path) -> Path:
     return Path(val) if val else default
 
 
-def _env_num_min(key, default, minimum):
-    """A numeric env value floored at `minimum`, warning when it has to clamp.
+def _env_num_min(key, default, minimum, maximum=None):
+    """A numeric env value floored at `minimum`, optionally ceilinged at
+    `maximum`, warning when it has to clamp.
 
-    Two bad-override failure modes share this guard. A thread-pool size of 0 or
-    negative crashes the pool constructor at startup. A negative delay/cooldown
-    handed to time.sleep raises ValueError and takes down the worker thread, and
-    a negative subprocess timeout makes every download time out instantly. Clamp
-    loudly at the boundary so no consumer has to defend against it.
+    Two bad-override failure modes share the floor guard. A thread-pool size
+    of 0 or negative crashes the pool constructor at startup. A negative
+    delay/cooldown handed to time.sleep raises ValueError and takes down the
+    worker thread, and a negative subprocess timeout makes every download
+    time out instantly. Clamp loudly at the boundary so no consumer has to
+    defend against it.
+
+    The optional `maximum` guards against the dual case — `ARTIST_SCAN_WORKERS
+    =999999` would otherwise spawn thousands of threads at scan start. Clamp +
+    warn there too so a typo'd value doesn't take the box down.
     """
     val = _env(key, default)
     if val < minimum:
         _warn(f"{key}={val!r} is below the minimum of {minimum}; using {minimum}.")
         return minimum
+    if maximum is not None and val > maximum:
+        _warn(f"{key}={val!r} is above the maximum of {maximum}; using {maximum}.")
+        return maximum
     return val
 
 
@@ -335,7 +344,7 @@ ARTIST_API_DELAY = _env_num_min("ARTIST_API_DELAY", 0.0, 0.0)
 # session, so this is real parallelism; kept modest so the request rate stays
 # polite (the 429 retry/back-off in api/client is the backstop). 1 restores
 # the old sequential behaviour.
-ARTIST_SCAN_WORKERS = _env_num_min("ARTIST_SCAN_WORKERS", 4, 1)
+ARTIST_SCAN_WORKERS = _env_num_min("ARTIST_SCAN_WORKERS", 4, 1, 16)
 
 # Cache get_album() responses on disk (DATA_DIR/album_cache.db). An album's track
 # list is immutable, so this turns the per-owned-album fetch — the dominant cost
@@ -421,15 +430,14 @@ AUTO_UPGRADE_ENABLED = _env_bool("AUTO_UPGRADE_ENABLED", False)
 # Read both at startup: an explicit COMPRESS_ENABLED=1 still wins, but new
 # users should reach for the clearer name.
 def _resolve_downsample_flag():
-    new = os.environ.get("DOWNSAMPLE_HIRES_ENABLED")
-    if new is not None:
-        return new.strip().lower() in ("1", "true", "yes")
-    old = os.environ.get("COMPRESS_ENABLED")
-    if old is not None:
-        # The previous name described an effect that wasn't quite
-        # "compress" — it's a downsample. The env name still works; the
-        # log doesn't need to scold the user about it.
-        return old.strip().lower() in ("1", "true", "yes")
+    # Route through _env_bool so a typo'd value ('banana') warns instead of
+    # silently degrading to False — same contract as every other bool knob.
+    # An explicit DOWNSAMPLE_HIRES_ENABLED wins; otherwise check the legacy
+    # COMPRESS_ENABLED alias so existing .env files keep working.
+    if os.environ.get("DOWNSAMPLE_HIRES_ENABLED") is not None:
+        return _env_bool("DOWNSAMPLE_HIRES_ENABLED", False)
+    if os.environ.get("COMPRESS_ENABLED") is not None:
+        return _env_bool("COMPRESS_ENABLED", False)
     return False
 
 
