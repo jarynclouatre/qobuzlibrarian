@@ -861,7 +861,7 @@ def cleanup_duplicate_art(album_dir: Path) -> int:
     return removed
 
 
-def _prompt_migration_conflict(src_dir: Path, dest_dir: Path, args):
+def _prompt_migration_conflict(src_dir: Path, dest_dir: Path):
     """Two albums for the same Qobuz release exist — one in the multi-artist
     folder we just imported into, one in the primary-artist folder. Show
     track count + quality side-by-side and ask whether to merge.
@@ -1015,8 +1015,11 @@ def _sync_beets_db_after_move(old_dir: Path, new_dir: Path) -> None:
     except (ValueError, OSError):
         # Not under MUSIC_ROOT — beets doesn't track these.
         return
-    old_prefix = str(old_rel).encode("utf-8") + b"/"
-    new_prefix = str(new_rel).encode("utf-8") + b"/"
+    # os.fsencode (not UTF-8) to match how beets stores items.path — a
+    # UTF-8 prefix never matches a non-UTF-8 filename's BLOB, silently leaving
+    # the DB pointing at the pre-move path. Same convention as the sibling syncs.
+    old_prefix = os.fsencode(str(old_rel)) + b"/"
+    new_prefix = os.fsencode(str(new_rel)) + b"/"
     import sqlite3
     try:
         with sqlite3.connect(str(db_path)) as conn:
@@ -1030,7 +1033,7 @@ def _sync_beets_db_after_move(old_dir: Path, new_dir: Path) -> None:
                 (new_prefix, len(old_prefix) + 1, len(old_prefix), old_prefix),
             )
             conn.commit()
-    except sqlite3.Error as e:
+    except (sqlite3.Error, OSError, ValueError) as e:
         log.info(fmt(C.YELLOW,
             f"  ⚠  beets DB path sync failed ({e}). "
             "Run `beet update` to re-scan."))
@@ -1042,6 +1045,12 @@ def _sync_beets_db_after_merge(old_dir: Path, new_dir: Path) -> None:
     row already exists at that path (a file collision the merge resolved), where
     the source row is dropped instead. A blind prefix rewrite would otherwise
     leave two items rows pointing at one file and break the next `beet update`.
+
+    Reconciles only rows whose source file actually moved — i.e. is gone from
+    its old path on disk. A merge that hits a permission/space error (or a
+    collision the user declined to replace) leaves the file, and its correct
+    row, at the old path; repointing it blindly would point the DB at a file
+    that isn't there while orphaning the one that is.
     """
     db_path = getattr(config, "BEETS_DB_PATH", None)
     if not db_path:
@@ -1051,30 +1060,45 @@ def _sync_beets_db_after_merge(old_dir: Path, new_dir: Path) -> None:
         return
     music_root = Path(str(config.MUSIC_ROOT))
     try:
-        old_rel = old_dir.resolve().relative_to(music_root.resolve())
-        new_rel = new_dir.resolve().relative_to(music_root.resolve())
+        music_root_res = music_root.resolve()
+        old_rel = old_dir.resolve().relative_to(music_root_res)
+        new_rel = new_dir.resolve().relative_to(music_root_res)
     except (ValueError, OSError):
         return
-    old_prefix = str(old_rel).encode("utf-8") + b"/"
-    new_prefix = str(new_rel).encode("utf-8") + b"/"
+    # Match beets' own os.fsencode (filesystem encoding + surrogateescape) so
+    # non-UTF-8 filenames compare correctly rather than building a UTF-8 prefix
+    # that misses them.
+    old_prefix = os.fsencode(str(old_rel)) + b"/"
+    new_prefix = os.fsencode(str(new_rel)) + b"/"
     import sqlite3
     try:
         with sqlite3.connect(str(db_path)) as conn:
-            # Drop source rows whose target path already has a row (collision).
-            conn.execute(
-                "DELETE FROM items WHERE SUBSTR(path, 1, ?) = ? AND EXISTS ("
-                " SELECT 1 FROM items b "
-                " WHERE b.path = CAST(? || SUBSTR(items.path, ?) AS BLOB))",
-                (len(old_prefix), old_prefix, new_prefix, len(old_prefix) + 1),
-            )
-            # Repoint the rest (no pre-existing row at the new path).
-            conn.execute(
-                "UPDATE items SET path = CAST(? || SUBSTR(path, ?) AS BLOB) "
-                "WHERE SUBSTR(path, 1, ?) = ?",
-                (new_prefix, len(old_prefix) + 1, len(old_prefix), old_prefix),
-            )
+            rows = conn.execute(
+                "SELECT path FROM items WHERE SUBSTR(path, 1, ?) = ?",
+                (len(old_prefix), old_prefix)).fetchall()
+            for (path_b,) in rows:
+                # Skip rows whose file is still at the old path — that move
+                # didn't happen, so the row is already correct. If the path
+                # can't be stat'd (permission/stale mount), stay conservative
+                # and leave the row alone rather than repoint a file we can't
+                # confirm has moved.
+                old_abs = music_root / Path(os.fsdecode(path_b))
+                try:
+                    if old_abs.exists():
+                        continue
+                except OSError:
+                    continue
+                new_path_b = new_prefix + path_b[len(old_prefix):]
+                collides = conn.execute(
+                    "SELECT 1 FROM items WHERE path = ?",
+                    (new_path_b,)).fetchone()
+                if collides:
+                    conn.execute("DELETE FROM items WHERE path = ?", (path_b,))
+                else:
+                    conn.execute("UPDATE items SET path = ? WHERE path = ?",
+                                 (new_path_b, path_b))
             conn.commit()
-    except sqlite3.Error as e:
+    except (sqlite3.Error, OSError, ValueError) as e:
         log.info(fmt(C.YELLOW,
             f"  ⚠  beets DB merge sync failed ({e}). "
             "Run `beet update` to re-scan."))
@@ -1102,13 +1126,16 @@ def _sync_beets_db_after_file_move(old_file: Path, new_file: Path) -> None:
         return
     import sqlite3
     try:
+        # os.fsencode (not UTF-8) to match how beets stores items.path, so a
+        # non-UTF-8 filename's row is actually matched. Same as the sibling
+        # _sync_beets_db_after_merge / _after_move.
         with sqlite3.connect(str(db_path)) as conn:
             conn.execute(
                 "UPDATE items SET path = ? WHERE path = ?",
-                (str(new_rel).encode("utf-8"), str(old_rel).encode("utf-8")),
+                (os.fsencode(str(new_rel)), os.fsencode(str(old_rel))),
             )
             conn.commit()
-    except sqlite3.Error as e:
+    except (sqlite3.Error, OSError, ValueError) as e:
         log.info(fmt(C.YELLOW,
             f"  ⚠  beets DB path sync failed ({e}). "
             "Run `beet update` to re-scan."))
@@ -1166,7 +1193,7 @@ def prompt_and_migrate_multi_artist_folder(album, args):
     new_dir = new_parent / cur.name
 
     if new_dir.exists():
-        if not _prompt_migration_conflict(cur, new_dir, args):
+        if not _prompt_migration_conflict(cur, new_dir):
             return cur
         # User chose to merge: handle file-by-file, prompting on collisions.
         ok = _merge_album_dirs(cur, new_dir)
