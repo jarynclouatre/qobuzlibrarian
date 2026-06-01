@@ -17,10 +17,13 @@ Quality settings:
 """
 import os
 import shutil
+import stat
 import subprocess
 import tempfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
+
+from qobuz_librarian.integrations.rip import flac_audio_offset
 
 # Downsampling needs ffmpeg to resample AND flac to verify the result. The
 # overwrite is in-place and irreversible, so without the verifier there's no way
@@ -159,29 +162,6 @@ def target_rate(sr):
     return None
 
 
-def _flac_audio_offset(path):
-    """Byte offset of the first audio frame (the fLaC marker plus every metadata
-    block). Lets a caller separate the audio stream from metadata/embedded art,
-    which don't shrink on resample. Returns 0 when the file isn't a plain FLAC or
-    the header is unreadable, so the caller falls back to the whole-file size."""
-    try:
-        with open(path, "rb") as fh:
-            if fh.read(4) != b"fLaC":
-                return 0
-            offset = 4
-            while True:
-                header = fh.read(4)
-                if len(header) < 4:
-                    return 0
-                is_last = bool(header[0] & 0x80)
-                offset += 4 + int.from_bytes(header[1:4], "big")
-                fh.seek(offset)
-                if is_last:
-                    return offset
-    except OSError:
-        return 0
-
-
 def scan_dir_for_hires(directory):
     """List the high-sample-rate FLACs under `directory` (recursive) that the
     resampler would shrink — without touching anything.
@@ -209,7 +189,7 @@ def scan_dir_for_hires(directory):
             size = p.stat().st_size
         except OSError:
             continue
-        offset = _flac_audio_offset(p)
+        offset = flac_audio_offset(p)
         audio_size = max(0, size - offset) if offset else size
         hires.append({"path": str(p), "sr": sr, "target": rate,
                       "size": size, "audio_size": audio_size})
@@ -241,6 +221,25 @@ def _decode_ok(path):
 _TMP_PREFIX = ".compress-"
 
 
+def _encode_opts_for_bps(bps, af_filter):
+    """ffmpeg options that keep the output FLAC at the source bit depth.
+
+    Returns (af, sample_fmt, depth_args). The encoder, not the s16/s32 sample
+    format alone, sets the FLAC bit depth: a 24-bit source fed as s32 is written
+    as a 32-bit stream unless -bits_per_raw_sample 24 says otherwise, which would
+    inflate the master (larger file, wrong reported depth). 16-bit uses s16; any
+    other known depth (8/24/32) is pinned via -bits_per_raw_sample so the output
+    keeps the source depth instead of being silently padded. An unknown depth
+    (0, unreadable) keeps the conservative s32 default with no pin.
+    """
+    if bps == 16:
+        return af_filter, "s16", []
+    if bps in (8, 24, 32):
+        return (f"{af_filter},aformat=sample_fmts=s32", "s32",
+                ["-bits_per_raw_sample", str(bps)])
+    return af_filter, "s32", []
+
+
 def resample_one(rel, sr, rate, af_filter, *, base_dir=None):
     """Resample one file. Returns (rel, sr, rate, saved_bytes, error_msg).
 
@@ -258,10 +257,12 @@ def resample_one(rel, sr, rate, af_filter, *, base_dir=None):
     # the only lossless copy.
     tmp = None
     try:
-        in_size = src.stat().st_size
+        st = src.stat()
+        in_size = st.st_size
+        src_mode = stat.S_IMODE(st.st_mode)
 
         bps = read_local_bit_depth(src)
-        sample_fmt = "s16" if bps == 16 else "s32"
+        af, sample_fmt, depth_args = _encode_opts_for_bps(bps, af_filter)
 
         fd, tmp_name = tempfile.mkstemp(
             dir=str(src.parent), prefix=_TMP_PREFIX, suffix=".flac")
@@ -272,9 +273,10 @@ def resample_one(rel, sr, rate, af_filter, *, base_dir=None):
             [
                 "ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin",
                 "-i", str(src),
-                "-af", af_filter,
+                "-af", af,
                 "-ar", str(rate),
                 "-sample_fmt", sample_fmt,
+                *depth_args,
                 "-c:a", "flac",
                 "-map_metadata", "0",
                 "-y", str(tmp),
@@ -288,6 +290,23 @@ def resample_one(rel, sr, rate, af_filter, *, base_dir=None):
         # must never replace a good original.
         if not _decode_ok(tmp):
             return (rel, sr, rate, None, "resampled file failed verification")
+        # Never let a resample silently change the bit depth — a 24-bit master
+        # must not come back 32-bit, nor an 8-bit file get padded to 24. Checked
+        # for any known source depth; an unknown depth (bps == 0, unreadable)
+        # can't be verified and falls through. Original untouched on a mismatch.
+        if bps:
+            out_bps = read_local_bit_depth(tmp)
+            if out_bps != bps:
+                return (rel, sr, rate, None,
+                        f"resampled to {out_bps}-bit, expected {bps}-bit; "
+                        "left the original untouched")
+        # tempfile.mkstemp makes the temp 0o600; carry the source's mode across
+        # the swap so a downsample doesn't quietly tighten a 0o644 library file
+        # to owner-only (an annoyance on shared/NAS libraries).
+        try:
+            os.chmod(str(tmp), src_mode)
+        except OSError:
+            pass
         os.replace(str(tmp), str(src))
         tmp = None
         return (rel, sr, rate, in_size - out_size, None)
