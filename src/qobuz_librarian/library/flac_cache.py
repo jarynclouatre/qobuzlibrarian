@@ -144,10 +144,10 @@ def put(path, payload, sig=None) -> None:
     it changes again. Falls back to statting now when the caller omits it.
 
     Writes are buffered and flushed in batches (see ``flush_pending``) so a
-    cold library scan doesn't commit once per file. ``get()`` on a path whose
-    write is still buffered returns None — the caller re-parses, which is
-    wasted work but never wrong; scanner traversals don't read the same file
-    twice within a flush window in practice.
+    cold library scan doesn't commit once per file. ``get()`` reads the
+    buffer before falling back to disk, so a `put()` immediately followed by
+    `get()` on the same path is still a hit — the put→get visibility scans
+    depend on is preserved across the buffering boundary.
     """
     if not isinstance(payload, dict) or not _ensure():
         return

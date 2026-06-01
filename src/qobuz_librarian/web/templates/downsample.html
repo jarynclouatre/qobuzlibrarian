@@ -37,9 +37,11 @@
   <button type="submit" class="btn btn-primary"
           data-confirm="Scan the library for hi-res files? You review and pick what to shrink before anything changes.">Start downsample scan</button>
 </form>
+{% if creds_ok %}
 <p class="text-xs text-base-content/50 mt-3">
   Just one artist? <a href="/artist" class="link">Use the Artist page</a> — same scan, scoped to their albums only.
 </p>
+{% endif %}
 {% else %}
 <div class="alert alert-warning">
   <span>Downsampling isn't available on this server (the resample helper is missing).</span>

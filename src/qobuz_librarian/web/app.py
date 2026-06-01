@@ -1387,9 +1387,11 @@ async def upgrade_scan(request: Request):
 
 @app.post("/upgrade/artist")
 async def upgrade_scan_artist(request: Request, artist: str = Form("")):
-    """Scan one artist's library folder for quality upgrades. Same flow as the
-    whole-library scan, scoped to one artist's albums — review-then-execute,
-    same Hidden-Upgrade store opt-out (but per-artist requests don't apply it)."""
+    """Scan one artist's library folder for quality upgrades. Same review-then-
+    execute flow as the whole-library scan, scoped to one artist's albums.
+    The Hidden-Upgrade store is deliberately NOT consulted here — asking for
+    an artist by name is a 'show me everything for this artist' request, same
+    convention scan_artist (find-missing) already followed."""
     busy = _lock_busy_response(request)
     if busy is not None:
         return busy
@@ -1421,9 +1423,14 @@ async def upgrade_scan_artist(request: Request, artist: str = Form("")):
 async def downsample_page(request: Request):
     from qobuz_librarian.integrations.downsample_engine import HAVE_DOWNSAMPLE
     from qobuz_librarian.library import hidden as hidden_mod
+    # creds_ok gates the "Just one artist?" hint — /artist hides its whole
+    # form when no Qobuz creds are set, so promising a per-artist downsample
+    # there would be a dead link for a no-creds user (downsample itself is
+    # credential-free, so they CAN still use the whole-library button here).
     return _tr(request, "downsample.html", {
         "page": "downsample",
         "have_downsample": HAVE_DOWNSAMPLE,
+        "creds_ok": bool(_read_creds().get("auth_token")),
         "hidden_count": hidden_mod.count(hidden_mod.SCOPE_DOWNSAMPLE)})
 
 
@@ -1572,9 +1579,13 @@ async def repair_history(request: Request):
 async def lyrics_page(request: Request):
     from qobuz_librarian.integrations.lyric_fetch import AVAILABLE
     providers = ", ".join(cfg.LYRICS_PROVIDERS) or "Lrclib, NetEase, Musixmatch"
+    # creds_ok gates the "Just one artist?" hint — see downsample_page for the
+    # full story: /artist hides its form without creds, so the hint would be
+    # a dead link there for a no-creds user.
     return _tr(request, "lyrics.html", {
         "page": "lyrics",
         "have_lyrics": AVAILABLE,
+        "creds_ok": bool(_read_creds().get("auth_token")),
         "lyrics_format": (cfg.LYRICS_FORMAT or "embed").lower(),
         "providers": providers,
     })
