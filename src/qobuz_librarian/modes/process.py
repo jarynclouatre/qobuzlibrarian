@@ -1,6 +1,4 @@
-"""Core album processing — detect gaps, prompt, download, import, consolidate.
-
-"""
+"""Core album processing — detect gaps, prompt, download, import, consolidate."""
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
@@ -304,7 +302,6 @@ def process_album(album, args, *, allow_force=True, label=None,
     # --force cleanup is deferred until AFTER the download confirm
     # below: deleting here would mean a 'no' at the download prompt
     # leaves the user with their folder already wiped.
-    force_cleaned = True
     if use_force:
         _, album_dir = find_existing_tracks(album)
         existing = []
@@ -1013,7 +1010,6 @@ def process_album(album, args, *, allow_force=True, label=None,
         "broken_titles": broken_tracks,
         "imported": imported,
         "force": bool(use_force),
-        "force_cleaned": force_cleaned,
         "auto_upgrade": bool(auto_upgrade_active),
         "upgrade_backup_path": str(upgrade_backup_path) if upgrade_backup_path else None,
         "upgrade_restored": upgrade_restored,

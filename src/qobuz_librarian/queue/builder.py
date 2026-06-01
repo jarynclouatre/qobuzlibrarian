@@ -1,6 +1,4 @@
-"""Queue item construction.
-
-"""
+"""Queue item construction."""
 
 
 def _build_queue_item(*, album, album_dir, label, missing, present,

@@ -1,6 +1,4 @@
-"""Interactive prompts, display helpers, and fetch-log functions.
-
-"""
+"""Interactive prompts, display helpers, and fetch-log functions."""
 import json
 import sys
 

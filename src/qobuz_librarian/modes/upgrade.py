@@ -1,6 +1,4 @@
-"""Upgrade walk mode — scan every artist for quality upgrade candidates.
-
-"""
+"""Upgrade walk mode — scan every artist for quality upgrade candidates."""
 import sys
 import time
 

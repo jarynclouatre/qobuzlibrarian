@@ -1,6 +1,4 @@
-"""Album consolidation — find and remove duplicate sibling folders.
-
-"""
+"""Album consolidation — find and remove duplicate sibling folders."""
 from pathlib import Path
 
 from qobuz_librarian import config
