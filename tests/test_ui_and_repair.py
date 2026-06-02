@@ -196,6 +196,40 @@ def test_scan_isrc_repairs_records_no_isrc_with_file_size(tmp_path):
     assert entry["size_bytes"] == 5_000 and "likely-corrupted" in entry["diagnostic"]
 
 
+def test_deep_scan_flags_normal_size_no_isrc_file_that_wont_decode(tmp_path):
+    # A non-Qobuz library (no ISRC tags) with a corrupt-but-normal-size FLAC: the
+    # cheap size check passes, so only the local decode probe catches it. A deep
+    # scan must surface it as damaged without needing a token or an ISRC.
+    flac = tmp_path / "ok-size.flac"
+    flac.write_bytes(b"\x00" * 200_000)
+    track = _track(isrc="", length=180.0, path=str(flac))
+    with patch("qobuz_librarian.repair_log.read_album_dir", return_value=[track]), \
+         patch("qobuz_librarian.repair_log._flac_decode_ok", return_value=False):
+        result = scan_dir_for_isrc_repairs(tmp_path, "token", deep=True)
+    entry = result["no_isrc_tag"][0]
+    assert "won't decode" in entry["diagnostic"]
+    # A clean file of the same shape is left alone.
+    with patch("qobuz_librarian.repair_log.read_album_dir", return_value=[track]), \
+         patch("qobuz_librarian.repair_log._flac_decode_ok", return_value=True):
+        ok = scan_dir_for_isrc_repairs(tmp_path, "token", deep=True)
+    assert not ok["no_isrc_tag"][0].get("diagnostic")
+
+
+def test_deep_scan_flags_unmatched_isrc_file_that_wont_decode(tmp_path):
+    # Tagged with an ISRC Qobuz can't match (Apple Music rip / delisted) AND
+    # corrupt: it can't be ID-refilled, but a deep scan still diagnoses it as
+    # damaged rather than filing it as a benign "no Qobuz match".
+    flac = tmp_path / "unmatched.flac"
+    flac.write_bytes(b"\x00" * 200_000)
+    track = _track(isrc="US1234567890", length=180.0, path=str(flac))
+    with patch("qobuz_librarian.repair_log.read_album_dir", return_value=[track]), \
+         patch("qobuz_librarian.repair_log.find_qobuz_track_by_isrc", return_value=None), \
+         patch("qobuz_librarian.repair_log._flac_decode_ok", return_value=False):
+        result = scan_dir_for_isrc_repairs(tmp_path, "token", deep=True)
+    assert not result["isrc_no_match"]
+    assert "won't decode" in result["no_isrc_tag"][0]["diagnostic"]
+
+
 def test_scan_isrc_repairs_byte_size_short_catches_tail_truncation(tmp_path):
     # mutagen reads `length` from STREAMINFO which survives tail truncation —
     # so a tail-truncated FLAC reports the original duration. The byte-size
@@ -233,10 +267,10 @@ def test_scan_isrc_repairs_sweep_mode_skips_qobuz_for_healthy_files(tmp_path):
     assert len(r["verified_truncated"]) == 1
 
 
-def test_flac_metadata_size_walks_blocks_and_bails_on_non_flac(tmp_path):
+def test_flac_audio_offset_walks_blocks_and_bails_on_non_flac(tmp_path):
     # The byte-size gate trims metadata off before comparing, so the helper
     # must walk the block chain on a real FLAC and bail on anything else.
-    from qobuz_librarian.repair_log import _flac_metadata_size
+    from qobuz_librarian.integrations.rip import flac_audio_offset
 
     real = tmp_path / "ok.flac"
     real.write_bytes(
@@ -245,11 +279,11 @@ def test_flac_metadata_size_walks_blocks_and_bails_on_non_flac(tmp_path):
         + b"\x84\x00\x00\x0a" + b"\x00" * 10   # VORBIS_COMMENT, last-bit on
         + b"frame data"
     )
-    assert _flac_metadata_size(str(real)) == 4 + (4 + 34) + (4 + 10)
+    assert flac_audio_offset(str(real)) == 4 + (4 + 34) + (4 + 10)
 
     fake = tmp_path / "no.mp3"
     fake.write_bytes(b"ID3\x04\x00" + b"\x00" * 50)
-    assert _flac_metadata_size(str(fake)) == 0
+    assert flac_audio_offset(str(fake)) == 0
 
 
 # ── Real-FLAC integration: catches both decode-probe and silence cases ─
@@ -440,10 +474,32 @@ def test_repair_relocates_refilled_track_back_to_album_dir(tmp_path, monkeypatch
                                     if d == landed_dir and refill.exists() else []))
     monkeypatch.setattr(repair, "_sync_beets_db_after_file_move", lambda *a: None)
     moved = repair._relocate_refilled_into_album_dir(
-        album_dir, landed_dir, {"GBCFB1300101"}, before_paths=set(), landed_was_new=True)
+        album_dir, landed_dir, {"GBCFB1300101"}, before_names=set(), landed_was_new=True)
     assert moved == 1
     assert (album_dir / "01 - First Fires.flac").exists() and not refill.exists()
     assert not landed_dir.exists()  # invented folder removed wholesale
+
+
+def test_refills_present_in_counts_duplicate_isrcs(tmp_path, monkeypatch):
+    # Two truncated originals sharing one ISRC (a .1.flac collision pair, or the
+    # same recording on two discs) both go to backup. The presence gate must
+    # require BOTH back before the backup is trusted as redundant — a set-based
+    # check passed when only one returned, deleting the backup and losing the
+    # other file.
+    from collections import Counter
+
+    from qobuz_librarian.modes import repair
+    wanted = Counter({"GBCFB1300101": 2})
+
+    # Only one file with the ISRC is back → not yet present.
+    monkeypatch.setattr(repair, "read_album_dir",
+                        lambda d: [{"isrc": "GBCFB1300101"}])
+    assert repair._refills_present_in(tmp_path, wanted) is False
+
+    # Both back → present.
+    monkeypatch.setattr(repair, "read_album_dir",
+                        lambda d: [{"isrc": "GBCFB1300101"}, {"isrc": "gbcfb1300101"}])
+    assert repair._refills_present_in(tmp_path, wanted) is True
 
 
 def test_repair_leaves_a_preexisting_track_sharing_the_recording_alone(tmp_path, monkeypatch):
@@ -463,7 +519,7 @@ def test_repair_leaves_a_preexisting_track_sharing_the_recording_alone(tmp_path,
     monkeypatch.setattr(repair, "_sync_beets_db_after_file_move", lambda *a: None)
     moved = repair._relocate_refilled_into_album_dir(
         album_dir, owned_dir, {"GBCFB1300101"},
-        before_paths={str(owned)}, landed_was_new=False)
+        before_names={"01 - First Fires.flac"}, landed_was_new=False)
     assert moved == 0 and owned.exists()
     assert not (album_dir / "01 - First Fires.flac").exists()
 
@@ -661,6 +717,11 @@ def _call_repair_album_dir(tmp_path, monkeypatch, *, n_ok, n_fail, imported,
     monkeypatch.setattr("qobuz_librarian.config.REPAIR_LOG_PATH", tmp_path / "repair.log")
     monkeypatch.setattr(repair_mod, "get_album",
                         lambda aid, tok: {"id": aid, "title": "Album", "tracks": {"items": []}})
+    # Parent-album resolution prefers the folder match; with none, it falls back
+    # to the most-common ISRC album (get_album above). Stub it so the test stays
+    # off the network and focused on backup resolution.
+    monkeypatch.setattr(repair_mod, "find_qobuz_album_for_dir",
+                        lambda *a, **k: None)
 
     def fake_execute(queue, args, token):
         for qi in queue:
@@ -728,6 +789,10 @@ def test_repair_backup_kept_when_downloads_fail_and_skipped_when_backup_fails(tm
     album_dir.mkdir(parents=True)
     track = album_dir / "01 - Track.flac"
     track.write_bytes(b"\x00" * 200)
+    monkeypatch.setattr(repair_mod, "find_qobuz_album_for_dir",
+                        lambda *a, **k: None)
+    monkeypatch.setattr(repair_mod, "get_album",
+                        lambda aid, tok: {"id": aid, "title": "Album", "tracks": {"items": []}})
     monkeypatch.setattr(repair_mod, "backup_gap_fill_files", lambda paths, d: None)
     monkeypatch.setattr(repair_mod, "_execute_download_queue",
                         lambda *a: (_ for _ in ()).throw(

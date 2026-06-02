@@ -1,6 +1,4 @@
-"""Album repair mode — ISRC-anchored refill of truncated FLACs.
-
-"""
+"""Album repair mode — ISRC-anchored refill of truncated FLACs."""
 import shutil
 import sys
 from collections import Counter
@@ -11,9 +9,11 @@ from qobuz_librarian.api.auth import AuthLost, QobuzError, QobuzUnavailable
 from qobuz_librarian.api.search import get_album
 from qobuz_librarian.library.backup import backup_gap_fill_files, restore_gap_fill_backup
 from qobuz_librarian.library.catalog import (
+    _norm_isrc,
     _paths_equal,
     _sync_beets_db_after_file_move,
     find_album_dir_filesystem,
+    find_qobuz_album_for_dir,
     maybe_remove_empty_dir,
 )
 from qobuz_librarian.library.discovery import resolve_artist_dir
@@ -37,19 +37,178 @@ def _format_mmss(secs):
     return f"{s // 60}:{s % 60:02d}"
 
 
-def _norm_isrc(raw):
-    return (raw or "").replace("-", "").upper().strip()
+try:
+    from mutagen.flac import FLAC as _FLAC
+except Exception:
+    _FLAC = None
+
+
+def _snapshot_flac_metadata(path):
+    """Full Vorbis-comment + embedded-picture snapshot of a FLAC, or None when
+    it can't be read (mutagen missing, not a FLAC, unreadable)."""
+    if _FLAC is None or not path:
+        return None
+    try:
+        f = _FLAC(path)
+    except Exception:
+        return None
+    return {
+        "tags": {k: list(v) for k, v in (f.tags or {}).items()},
+        "pictures": list(f.pictures),
+    }
+
+
+def _restore_flac_metadata(path, snap):
+    """Replace a refilled FLAC's tags + embedded art with the snapshot from the
+    truncated original it replaces, so only the audio changed — album, track
+    number, title and art stay exactly as the user had them. Returns True on a
+    successful write."""
+    if _FLAC is None or not snap:
+        return False
+    try:
+        f = _FLAC(path)
+    except Exception:
+        return False
+    if f.tags is None:
+        f.add_tags()
+    else:
+        f.tags.clear()
+    for k, vals in snap["tags"].items():
+        f.tags[k] = vals
+    # Only swap embedded art when the original actually had some. A truncated
+    # original downloaded without art (or with less) must not strip the
+    # freshly-downloaded refill's Qobuz cover — that would downgrade the result.
+    if snap["pictures"]:
+        f.clear_pictures()
+        for pic in snap["pictures"]:
+            try:
+                f.add_picture(pic)
+            except Exception:
+                pass
+    try:
+        f.save()
+    except Exception:
+        return False
+    return True
+
+
+def _backup_source_by_isrc(verified_truncated, album_dir, backup_path):
+    """Map each truncated track's ISRC to where its original now lives in the
+    backup dir, so the refill can inherit the original's tags + embedded art by
+    reading from disk at retag time. backup_gap_fill_files preserves each file's
+    path relative to album_dir, so the backup copy is at the same relative spot.
+
+    Keeping only paths (not the decoded art) means a fully-truncated hi-res
+    album's covers aren't all held in memory across the whole re-download."""
+    out = {}
+    for b in verified_truncated:
+        isrc = _norm_isrc(b.get("isrc"))
+        src = b.get("path") or ""
+        if not isrc or not src:
+            continue
+        try:
+            rel = Path(src).relative_to(album_dir)
+        except ValueError:
+            rel = Path(Path(src).name)
+        cand = backup_path / rel
+        if cand.exists():
+            out[isrc] = cand
+    return out
+
+
+def _retag_refills_in_staging(staged_dirs, source_by_isrc):
+    """Carry the truncated originals' tags + art onto the matching refills (by
+    ISRC) while they're still in staging — before beets files them. A recording
+    that also appears on a compilation is downloaded by its track ID (so the
+    audio is the right recording) but tagged by Qobuz for whatever album it
+    files that ISRC under; without this the refill would import as the
+    compilation, contradicting the folder it lives in.
+
+    The originals' metadata is read from their backup copies on disk here,
+    one at a time, rather than held in memory from before the download."""
+    if _FLAC is None or not source_by_isrc:
+        return
+    for d in staged_dirs:
+        for fp in sorted(Path(d).rglob("*.flac")):
+            try:
+                isrc = _norm_isrc((_FLAC(fp).get("isrc") or [""])[0])
+            except Exception:
+                continue
+            src = source_by_isrc.get(isrc)
+            if src is None:
+                continue
+            snap = _snapshot_flac_metadata(src)
+            if snap and _restore_flac_metadata(fp, snap):
+                log.info(fmt(C.GRAY,
+                    f"  ⤷  Kept original tags on refilled "
+                    f"{truncate(fp.name, 40)}"))
+
+
+def _resolve_parent_album(album_dir, artist_name, verified_truncated,
+                          wanted_isrcs, token):
+    """Pick the Qobuz album that should drive where the refill is filed.
+
+    Qobuz files a recording under whichever album it returns first for the
+    ISRC — often a compilation the track also appears on — so the most-common
+    ISRC album can be the wrong edition. Prefer the album whose predicted path
+    is the folder being repaired, but only when it actually contains every
+    truncated recording (so a remaster that's missing them can't win). Fall
+    back to the most-common ISRC album, then to a synthetic dict off the folder
+    name. This only steers placement; the refill's tags come from the
+    originals, so a wrong guess here can't mistag the result.
+
+    AuthLost / QobuzUnavailable propagate so a token loss or outage aborts the
+    repair before anything is moved.
+    """
+    try:
+        match = find_qobuz_album_for_dir(
+            album_dir, artist_name, token,
+            prefer_hires=cfg.PREFER_HIRES, target_dir=album_dir)
+    except (AuthLost, QobuzUnavailable):
+        raise
+    except Exception:
+        match = None
+    if match and wanted_isrcs:
+        have = {_norm_isrc(t.get("isrc"))
+                for t in (match.get("tracks") or {}).get("items") or []}
+        if wanted_isrcs.issubset(have):
+            return match
+
+    parent_ids = []
+    for b in verified_truncated:
+        aid = (b["qobuz_track"].get("album") or {}).get("id")
+        if aid:
+            parent_ids.append(aid)
+    if parent_ids:
+        most_common_aid = Counter(parent_ids).most_common(1)[0][0]
+        try:
+            album = get_album(most_common_aid, token)
+            if album:
+                return album
+        except QobuzError as e:
+            log.info(fmt(C.GRAY,
+                f"  (parent-album lookup failed: {e}; using the folder name)"))
+
+    return {
+        "id": "repair",
+        "title": album_dir.name,
+        "artist": {"name": artist_name},
+        "tracks": {"items": []},
+    }
 
 
 def _relocate_refilled_into_album_dir(album_dir, landed_dir, wanted_isrcs,
-                                      before_paths, landed_was_new):
+                                      before_names, landed_was_new):
     """Move refilled tracks beets filed elsewhere back into album_dir.
 
     beets places imports by their tags, so a refilled EP/compilation/bonus
     track whose canonical Qobuz album differs from the folder being repaired
     lands in a separate folder instead of going home. Only newly-imported
-    files (not in before_paths) whose ISRC we set out to refill are moved, so
-    a pre-existing track that happens to share the recording is left alone.
+    files (whose filename wasn't already in landed_dir before the download)
+    whose ISRC we set out to refill are moved, so a pre-existing track that
+    happens to share the recording is left alone. The pre-existing set is keyed
+    by filename, not full path, so a multi-artist folder migration that renames
+    landed_dir mid-import can't make a pre-existing track look new.
 
     landed_was_new flags a folder beets created solely for this misfiled
     import — once emptied of audio it (and any stray cover art it picked up)
@@ -61,7 +220,7 @@ def _relocate_refilled_into_album_dir(album_dir, landed_dir, wanted_isrcs,
     moved = 0
     for et in read_album_dir(landed_dir):
         src = et.get("path") or ""
-        if not src or src in before_paths:
+        if not src or Path(src).name in before_names:
             continue
         if _norm_isrc(et.get("isrc")) not in wanted_isrcs:
             continue
@@ -93,12 +252,19 @@ def _relocate_refilled_into_album_dir(album_dir, landed_dir, wanted_isrcs,
     return moved
 
 
-def _refills_present_in(album_dir, wanted_isrcs):
-    """True once every refilled ISRC has a file back in album_dir."""
-    if not wanted_isrcs:
+def _refills_present_in(album_dir, wanted_counts):
+    """True once at least as many files carry each wanted ISRC as were backed up.
+
+    ``wanted_counts`` is a Counter of ISRC → how many truncated originals with
+    that ISRC went to backup. A plain set membership test would pass when only
+    ONE of two same-ISRC originals came back (e.g. a Track.flac + Track.1.flac
+    pair, or the same recording on two discs), letting the backup holding both
+    be deleted and silently losing the second file — so compare counts, not
+    just presence."""
+    if not wanted_counts:
         return True
-    present = {_norm_isrc(et.get("isrc")) for et in read_album_dir(album_dir)}
-    return wanted_isrcs.issubset(present)
+    present = Counter(_norm_isrc(et.get("isrc")) for et in read_album_dir(album_dir))
+    return all(present.get(isrc, 0) >= n for isrc, n in wanted_counts.items())
 
 
 def _refills_intact(album_dir, wanted_isrcs, token):
@@ -215,34 +381,24 @@ def repair_album_dir(album_dir, verified_truncated, artist_name, args, token):
         # originals are still in place. If the parent-album lookup hits a
         # transient outage the repair aborts cleanly with nothing moved,
         # rather than stranding the only copies in the backup dir.
-        parent_ids = []
-        for b in verified_truncated:
-            aid = ((b["qobuz_track"].get("album") or {}).get("id"))
-            if aid:
-                parent_ids.append(aid)
-        most_common_aid = (Counter(parent_ids).most_common(1)[0][0]
-                           if parent_ids else None)
+        # Snapshot the album beets is likely to file these into — a track's
+        # canonical Qobuz album can differ from album_dir — so a freshly
+        # refilled file can be told apart from tracks already living there.
+        wanted_isrcs = {_norm_isrc(b.get("isrc")) for b in verified_truncated}
+        wanted_isrcs.discard("")
+        # Per-ISRC counts of the originals going to backup — the presence gate
+        # needs the multiset, not just the set, so two same-ISRC truncated files
+        # (a .1.flac collision pair, or the same recording on two discs) aren't
+        # treated as repaired when only one refill lands.
+        wanted_counts = Counter(_norm_isrc(b.get("isrc")) for b in verified_truncated)
+        wanted_counts.pop("", None)
 
-        album = None
-        if most_common_aid is not None:
-            try:
-                album = get_album(most_common_aid, token)
-            except QobuzError as e:
-                # A genuine no-match is recoverable — the per-track ISRC
-                # matches drive the refill, so fall back to a synthetic album
-                # dict. AuthLost / QobuzUnavailable are not QobuzError; they
-                # propagate and abort before anything is moved.
-                log.info(fmt(C.GRAY,
-                    f"  (parent-album lookup failed: {e}; "
-                    "falling back to synthetic album dict)"))
-                album = None
-        if album is None:
-            album = {
-                "id": most_common_aid or "repair",
-                "title": album_dir.name,
-                "artist": {"name": artist_name},
-                "tracks": {"items": []},
-            }
+        album = _resolve_parent_album(album_dir, artist_name,
+                                      verified_truncated, wanted_isrcs, token)
+        # A synthetic fallback has no real catalog id, so it can't predict an
+        # on-disk landing dir — skip the prediction in that case.
+        real_album_id = (album.get("id")
+                         if album.get("id") not in (None, "repair") else None)
 
         qobuz_tracks_full = (album.get("tracks") or {}).get("items") or []
         missing_tracks = [b["qobuz_track"] for b in verified_truncated]
@@ -264,16 +420,13 @@ def repair_album_dir(album_dir, verified_truncated, artist_name, args, token):
             force_track_by_track=True,
         )
 
-        # Snapshot the album beets is likely to file these into — a track's
-        # canonical Qobuz album can differ from album_dir — so a freshly
-        # refilled file can be told apart from tracks already living there.
-        wanted_isrcs = {_norm_isrc(b.get("isrc")) for b in verified_truncated}
-        wanted_isrcs.discard("")
         landed_pre = (find_album_dir_filesystem(album)
-                      if most_common_aid is not None else None)
-        before_paths = set()
+                      if real_album_id is not None else None)
+        before_names = set()
         if landed_pre is not None and not _paths_equal(landed_pre, album_dir):
-            before_paths = {et.get("path") for et in read_album_dir(landed_pre)}
+            before_names = {Path(et.get("path") or "").name
+                            for et in read_album_dir(landed_pre)}
+            before_names.discard("")
 
         # ── Back up the truncated originals (plan in hand) ───────────────
         broken_paths = [b["path"] for b in verified_truncated]
@@ -286,6 +439,20 @@ def repair_album_dir(album_dir, verified_truncated, artist_name, args, token):
         log.info(fmt(C.GRAY,
             f"  ⟳  Moved {len(verified_truncated)} broken file(s) "
             f"to backup: {backup_path.name}"))
+
+        # Carry the truncated originals' own tags + art onto the refills before
+        # beets files them. The audio is fetched by track ID (the right
+        # recording), but Qobuz returns its compilation/single album for that
+        # ISRC, so without this the refill would import tagged + named for a
+        # different album than the folder it lives in. The originals now live in
+        # the backup dir; the retag reads their tags + art from there at apply
+        # time, so nothing is held in memory across the download.
+        retag_sources = _backup_source_by_isrc(
+            verified_truncated, album_dir, backup_path)
+        if retag_sources:
+            qi["pre_import_retag"] = (
+                lambda staged_dirs: _retag_refills_in_staging(
+                    staged_dirs, retag_sources))
 
         try:
             _execute_download_queue([qi], args, token)
@@ -323,7 +490,7 @@ def repair_album_dir(album_dir, verified_truncated, artist_name, args, token):
         _relocate_refilled_into_album_dir(
             album_dir,
             Path(landed_post) if landed_post else None,
-            wanted_isrcs, before_paths, landed_was_new=landed_pre is None)
+            wanted_isrcs, before_names, landed_was_new=landed_pre is None)
 
         n_fail_final = qi.get("n_fail", 0)
         n_ok_final = qi.get("n_ok", 0)
@@ -333,7 +500,7 @@ def repair_album_dir(album_dir, verified_truncated, artist_name, args, token):
         # additionally requires they're verifiably NOT still truncated — a
         # presence check alone would let a short re-rip pass, and "no ISRC to
         # verify by" is unproven, not proven.
-        back_in_place = download_clean and _refills_present_in(album_dir, wanted_isrcs)
+        back_in_place = download_clean and _refills_present_in(album_dir, wanted_counts)
         repaired = (back_in_place and bool(wanted_isrcs)
                     and _refills_intact(album_dir, wanted_isrcs, token))
 

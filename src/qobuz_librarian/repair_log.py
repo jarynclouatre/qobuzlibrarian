@@ -18,7 +18,7 @@ from pathlib import Path
 
 from qobuz_librarian import config as cfg
 from qobuz_librarian.api.search import find_qobuz_track_by_isrc
-from qobuz_librarian.integrations.rip import flac_audio_ok
+from qobuz_librarian.integrations.rip import flac_audio_ok, flac_audio_offset
 from qobuz_librarian.library.scanner import read_album_dir
 from qobuz_librarian.ui_cli.colors import C, fmt
 from qobuz_librarian.ui_cli.logging import log
@@ -33,30 +33,6 @@ from qobuz_librarian.ui_cli.logging import log
 # eating >15% of expected_uncompressed, a real partial download could
 # slip past a whole-file ratio check.
 _BYTE_SIZE_TRUNCATED_RATIO = 0.15
-
-
-def _flac_metadata_size(path):
-    """Byte offset of the first audio frame (== total metadata size,
-    including the ``fLaC`` marker). Returns 0 when the file isn't a
-    FLAC or the header is unreadable, so callers fall back to a
-    whole-file comparison rather than a wrong answer."""
-    try:
-        with open(path, "rb") as fh:
-            if fh.read(4) != b"fLaC":
-                return 0
-            offset = 4
-            while True:
-                header = fh.read(4)
-                if len(header) < 4:
-                    return 0
-                is_last = bool(header[0] & 0x80)
-                size = int.from_bytes(header[1:4], "big")
-                fh.seek(size, 1)
-                offset += 4 + size
-                if is_last:
-                    return offset
-    except OSError:
-        return 0
 
 # Verifying every FLAC frame's CRC costs a full read per file. Worth it for an
 # explicit repair scan: the cheap size+duration gates can't see small tail-
@@ -132,6 +108,19 @@ def scan_dir_for_isrc_repairs(album_dir, token,
                 entry["diagnostic"] = (
                     f"likely-corrupted ({size_bytes:,} B); hand-verify "
                     "before refilling")
+            # A no-ISRC file can't be ISRC-refilled, but it can still be
+            # *broken* — a normal-size FLAC with frame-CRC damage or a middle-
+            # zero gap passes the size check yet won't decode. On a deep scan
+            # (single album, or a whole-FLAC pass) probe it locally so a clean
+            # non-Qobuz library still gets its corrupt files surfaced — no token
+            # or ISRC needed. The whole-library sweep (deep=False) skips this to
+            # stay fast; a corrupt file there still trips the byte-size gate
+            # below once it has an ISRC, and a deep single-album scan catches
+            # the rest. (No-op when the flac tool is absent.)
+            elif deep and path and not _flac_decode_ok(path):
+                entry["diagnostic"] = (
+                    "won't decode (frame-CRC or mid-file damage); "
+                    "re-download or replace from another source")
             report["no_isrc_tag"].append(entry)
             continue
 
@@ -150,7 +139,7 @@ def scan_dir_for_isrc_repairs(album_dir, token,
             actual_size = os.path.getsize(path) if path else 0
         except OSError:
             actual_size = 0
-        audio_size = max(0, actual_size - _flac_metadata_size(path)) if path else 0
+        audio_size = max(0, actual_size - flac_audio_offset(path)) if path else 0
         looks_byte_short = (
             sample_rate > 0 and bits > 0 and flen > 0 and audio_size > 0
             and audio_size < flen * sample_rate * channels * (bits / 8)
@@ -161,9 +150,19 @@ def scan_dir_for_isrc_repairs(album_dir, token,
 
         qt = find_qobuz_track_by_isrc(isrc, token)
         if qt is None:
-            report["isrc_no_match"].append({
-                "path": path, "title": title, "isrc": isrc,
-            })
+            entry = {"path": path, "title": title, "isrc": isrc}
+            # Tagged but not on Qobuz (Apple Music rip, delisted release, …) so
+            # it can't be ISRC-refilled — but a deep scan still decode-probes it
+            # so a corrupt-but-unmatched file is surfaced rather than silently
+            # passed. Routed to no_isrc_tag's diagnostic channel (same as a
+            # broken untagged file), since the byID refill can't apply here.
+            if deep and path and not _flac_decode_ok(path):
+                entry["diagnostic"] = (
+                    "won't decode (frame-CRC or mid-file damage); "
+                    "re-download or replace from another source")
+                report["no_isrc_tag"].append(entry)
+            else:
+                report["isrc_no_match"].append(entry)
             continue
 
         try:
