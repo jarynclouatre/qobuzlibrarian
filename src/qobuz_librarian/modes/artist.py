@@ -332,7 +332,11 @@ def run_artist_gap_fill(artist_name, artist_dir, args, token, *,
         # an expanded edition that keeps them rather than a wipe-and-replace.
         if m.status == "complete":
             has_extras = False
-            if existing and not getattr(args, "no_upgrade", False):
+            # --dry-run is preview-only: skip the interactive expanded-edition
+            # pick entirely — it prompts and would queue + persist an item, both
+            # of which a dry run must not do.
+            if (existing and not getattr(args, "no_upgrade", False)
+                    and not getattr(args, "dry_run", False)):
                 qual = compare_album_quality(existing, album)
                 if qual["classification"] in ("all_lower", "mixed_below"):
                     extra_albums = find_extras_in_existing(qobuz_tracks, existing)

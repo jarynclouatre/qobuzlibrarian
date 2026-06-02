@@ -335,7 +335,7 @@ def run_album_walk_mode(args, token):
     finally:
         args.consolidate = saved_consolidate
 
-    if shared_queue and not interrupted:
+    if shared_queue and not interrupted and not args.dry_run:
         try:
             _q = input(fmt(C.CYAN,
                 f"\n  Walk done. {len(shared_queue)} album(s) still queued."
@@ -536,7 +536,10 @@ def run_walk_queued_mode(args, token):
                     f"  Unrecognized: {r!r}. Use y/N/p/s/f."))
                 continue
 
-            if decided:
+            # --dry-run is preview-only: don't record the artist as decided, or
+            # the next real walk would silently skip it (mirrors the album walk's
+            # dry-run skip and --reset-walk-seen's dry-run guard).
+            if decided and not args.dry_run:
                 record_walk_seen(d.name, seen)
             i += 1
     finally:
