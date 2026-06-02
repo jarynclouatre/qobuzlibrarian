@@ -79,6 +79,12 @@ STREAM_END = "__DONE__"
 # emits a separate `event: progress` the page renders as a live header.
 PROGRESS_PREFIX = "\x00PROGRESS\x00"
 
+# Sentinel fanned out when a review's selection or candidate set changes, so
+# other open tabs of the same review refresh live. Like PROGRESS_PREFIX it
+# starts with a NUL push_line() can't produce, so the SSE layer can tell it
+# apart from log output and emit a distinct `event: review`.
+REVIEW_CHANGED = "\x00REVIEW\x00"
+
 
 def _new_id() -> str:
     return uuid.uuid4().hex[:8]
@@ -127,14 +133,8 @@ class Job:
     # that drops candidates mid-scan can't collide with a candidate the scan
     # appends afterwards (a length-based id would).
     _cand_seq: int = field(default=0, repr=False)
-
-    @property
-    def finished_at_str(self) -> str:
-        """Human-readable local time, for templates."""
-        if not self.finished_at:
-            return ""
-        from datetime import datetime
-        return datetime.fromtimestamp(self.finished_at).strftime("%Y-%m-%d %H:%M")
+    # Set once a scan hits JOB_CANDIDATE_CAP and stops listing further finds.
+    _candidate_cap_noted: bool = field(default=False, repr=False)
 
     # ── logging / streaming ──────────────────────────────────────────────────
     def _fan_out(self, line: str):
@@ -209,6 +209,14 @@ class Job:
             payload["hit"] = hit
         self._fan_out(PROGRESS_PREFIX + json.dumps(payload))
 
+    def notify_review_changed(self):
+        """Tell every open review tab that selection/candidates changed, so a
+        second tab (or phone) reflects a tick/untick/hide without a manual
+        reload. Fanned out as a distinct event the SSE layer maps to
+        `event: review`; carries nothing but a nudge — the tab re-fetches the
+        authoritative counts itself."""
+        self._fan_out(REVIEW_CHANGED)
+
     def _progress_snapshot(self) -> str:
         return PROGRESS_PREFIX + json.dumps({
             "phase": self.progress_phase, "current": self.progress_current,
@@ -258,22 +266,84 @@ class Job:
                 pass
 
     # ── candidates ───────────────────────────────────────────────────────────
+    from qobuz_librarian import config as _cfg3
+    CANDIDATE_CAP = _cfg3.JOB_CANDIDATE_CAP
+    del _cfg3
+
     def add_candidate(self, kind, title, artist="", detail="", payload=None,
                       selected=True):
         # Locked: a live scan appends from the worker thread while the request
         # thread may be reading/dropping candidates via the review screen.
+        capped = False
         with self._lock:
-            seq = self._cand_seq
-            self._cand_seq += 1
-            self.candidates.append({
-                "cid": f"c{seq}", "seq": seq, "kind": kind, "title": title,
-                "artist": artist, "detail": detail, "payload": payload or {},
-                "selected": selected,
-            })
+            # Bound the in-memory (and persisted) candidate list so a runaway
+            # whole-library scan can't exhaust memory. Past the cap, drop new
+            # finds and flag it once so the user knows to narrow the scan.
+            if len(self.candidates) >= self.CANDIDATE_CAP:
+                capped = not self._candidate_cap_noted
+                self._candidate_cap_noted = True
+            else:
+                seq = self._cand_seq
+                self._cand_seq += 1
+                self.candidates.append({
+                    "cid": f"c{seq}", "seq": seq, "kind": kind, "title": title,
+                    "artist": artist, "detail": detail, "payload": payload or {},
+                    "selected": selected,
+                })
+        if self._candidate_cap_noted:
+            if capped:  # log once, outside the lock (push_line takes it itself)
+                self.push_line(
+                    f"Reached the {self.CANDIDATE_CAP:,}-result cap — further "
+                    "finds aren't listed. Narrow the scan (scan by artist) to "
+                    "see the rest.")
+            return None
         return f"c{seq}"
 
     def selected_candidates(self) -> list:
         return [c for c in self.candidates if c.get("selected")]
+
+    # ── selection (server-backed; the review UI no longer trusts form ticks) ──
+    def set_selected(self, cid: str, on: bool) -> bool:
+        """Flip one candidate's selected flag. Returns True if a row changed."""
+        with self._lock:
+            for c in self.candidates:
+                if c.get("cid") == cid:
+                    changed = bool(c.get("selected")) != bool(on)
+                    c["selected"] = bool(on)
+                    return changed
+        return False
+
+    def set_all_selected(self, on: bool, cids=None) -> int:
+        """Set selected across every candidate, or just those in ``cids`` (a
+        single page). Returns how many rows changed."""
+        want = set(cids) if cids is not None else None
+        n = 0
+        with self._lock:
+            for c in self.candidates:
+                if want is not None and c.get("cid") not in want:
+                    continue
+                if bool(c.get("selected")) != bool(on):
+                    c["selected"] = bool(on)
+                    n += 1
+        return n
+
+    def selection_counts(self) -> dict:
+        """Authoritative review tallies for the UI — computed server-side so a
+        paginated page (which holds only some checkboxes) still shows the true
+        whole-set numbers. ``reclaimable`` sums est_saving over selected
+        candidates for the downsample review's "space reclaimed" figure."""
+        with self._lock:
+            cands = list(self.candidates)
+        selected = [c for c in cands if c.get("selected")]
+        artists = {c.get("artist") for c in cands}
+        reclaimable = sum(int((c.get("payload") or {}).get("est_saving") or 0)
+                          for c in selected)
+        return {
+            "total": len(cands),
+            "artists": len(artists),
+            "selected": len(selected),
+            "reclaimable": reclaimable,
+        }
 
 
 class JobRegistry:
@@ -646,11 +716,14 @@ def submit_scan(job: Job, scan_fn, execute_fn):
     return job
 
 
-def approve(job: Job, selected_ids) -> bool:
-    """Resume a reviewed job: run execute_fn over the chosen candidates.
+def approve(job: Job, selected_ids=None) -> bool:
+    """Resume a reviewed job: run execute_fn over the selected candidates.
 
-    selected_ids is the set of candidate ids the user kept. Returns False if
-    the job isn't awaiting review or has no execute function.
+    Selection is server-backed — each tick is saved as it happens — so the web
+    approve passes selected_ids=None and the already-saved `selected` flags
+    drive the run. selected_ids is still honoured when given (the CLI/tests set
+    the selection at approve time); None means "use whatever is already saved."
+    Returns False if the job isn't awaiting review or has no execute function.
     """
     # Flip the status under the job lock so a second concurrent approve
     # (double-click, two tabs) loses the check and can't enqueue the execute
@@ -662,10 +735,10 @@ def approve(job: Job, selected_ids) -> bool:
             return False
         job.status = JobStatus.PENDING
         job.finished_at = None
-        keep = set(selected_ids)
-        for c in job.candidates:
-            c["selected"] = c["cid"] in keep
-        chosen = job.selected_candidates()
+        if selected_ids is not None:
+            keep = set(selected_ids)
+            for c in job.candidates:
+                c["selected"] = c["cid"] in keep
     job_persistence.persist(job)
 
     def _execute(j: Job):
@@ -675,6 +748,14 @@ def approve(job: Job, selected_ids) -> bool:
         if j.cancel_requested:
             return
         j.phase = "execute"
+        # Read the selection at run time, not at approve time. A hide/dismiss
+        # can land in the window between approve flipping the status and the
+        # worker starting this (its own status guard and mutation straddle an
+        # await), and dismiss drops those candidates from j.candidates under the
+        # same lock. Reading here means an album hidden in that window isn't
+        # downloaded — a stale approve-time snapshot would queue it anyway.
+        with j._lock:
+            chosen = j.selected_candidates()
         if not chosen:
             j.push_line("No candidates selected — nothing to do.")
             j.status = JobStatus.DONE

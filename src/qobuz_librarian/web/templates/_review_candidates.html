@@ -1,41 +1,44 @@
-<div id="review-candidates">
+<div id="review-candidates"
+     data-job-id="{{ job.id }}"
+     data-review-total="{{ review_counts.total }}"
+     data-review-selected="{{ review_counts.selected }}">
   {% set triage = job.execute_kind in ('library', 'upgrade', 'new_releases', 'downsample') %}
   {% set preselected = job.execute_kind in ('repair', 'migration') %}
   {% set _hidden_url = '/upgrade/hidden' if job.execute_kind == 'upgrade'
                        else '/downsample/hidden' if job.execute_kind == 'downsample'
                        else '/library/hidden' %}
-  {% set _groups = job.candidates | groupby('artist') %}
-  {% set _n = job.candidates | length %}
   <div id="review-summary-row"
-       class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between mb-3{% if not job.candidates %} hidden{% endif %}">
+       class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between mb-3{% if not review_counts.total %} hidden{% endif %}">
     <p class="text-base-content/70">
-      <span data-summary-count>{{ _n }} album{% if _n != 1 %}s{% endif %} across {{ _groups | length }} artist{% if _groups | length != 1 %}s{% endif %}</span> —
+      <span data-summary-count>{{ review_counts.total }} album{% if review_counts.total != 1 %}s{% endif %} across {{ review_counts.artists }} artist{% if review_counts.artists != 1 %}s{% endif %}</span> —
       {% if job.execute_kind == 'new_releases' %}new since your last check and pre-ticked — untick any you don't want, or hide one to stop it resurfacing.
-      {% elif job.execute_kind == 'downsample' %}tick the albums to shrink to CD rate, or hide one to keep it hi-res.<span data-downsample-total class="font-semibold ml-1"></span>
+      {% elif job.execute_kind == 'downsample' %}tick the albums to shrink to CD rate, or hide one to keep it hi-res.<span data-downsample-total class="font-semibold ml-1">{% if review_reclaimable_label %} · ~{{ review_reclaimable_label }} reclaimable{% endif %}</span>
       {% elif triage %}tick the albums you want, or hide an artist you don't.
       {% elif preselected %}everything's selected by default; untick anything to skip.
       {% else %}tick the albums you want.{% endif %}
     </p>
     <div class="flex gap-2 shrink-0">
-      <button type="button" class="btn btn-xs" aria-label="Select every album"
-              data-check="all" data-check-within="#review-candidates .cb">All</button>
-      <button type="button" class="btn btn-xs" aria-label="Deselect every album"
-              data-check="none" data-check-within="#review-candidates .cb">None</button>
+      <button type="button" class="btn btn-xs" aria-label="Select every album across all pages"
+              data-select-all="1">All</button>
+      <button type="button" class="btn btn-xs" aria-label="Deselect every album across all pages"
+              data-select-all="0">None</button>
+      <button type="button" class="btn btn-xs" aria-label="Select every album on this page"
+              data-select-page="1">This page</button>
     </div>
   </div>
 
-  {% if triage and job.candidates %}
+  {% if triage and review_counts.total %}
   <p class="text-xs text-base-content/40 mb-3">
-    This review is saved — close the tab and come back whenever; the list keeps your place.
+    This review is saved — close the tab and come back whenever; the list keeps your ticks and your place.
   </p>
   {% endif %}
-  {# A triage list spanning many artists is unnavigable; app.js reveals this
-     filter once there are enough groups. Filtering is a view only — a ticked
-     album stays selected and still downloads even when filtered out of sight. #}
-  <div id="review-filter-row" class="hidden mb-3">
+  {# Filter spans the WHOLE result set (server-side), not just the page on
+     screen, so a ticked album stays selected and still downloads even when
+     filtered out of view. app.js reveals this once there are enough artists. #}
+  <div id="review-filter-row" class="{% if review_counts.artists < 4 %}hidden {% endif %}mb-3">
     <input type="search" id="review-filter" autocomplete="off"
            placeholder="Filter by artist or album…"
-           aria-label="Filter the review list by artist or album"
+           aria-label="Filter the whole review list by artist or album"
            class="input input-bordered input-sm w-full sm:max-w-xs">
   </div>
 
@@ -47,16 +50,13 @@
   </div>
   {% endif %}
 
-  <div id="review-groups" class="space-y-2">
-    {% for artist, items in _groups %}
-    {% with open = (_groups | length == 1) %}{% include "_review_group.html" %}{% endwith %}
-    {% endfor %}
+  {# The paginated page (groups + pager) — swapped wholesale by app.js on
+     Prev/Next, filter, and hide so only this inner block re-renders. #}
+  <div id="review-page">
+    {% include "_review_page.html" %}
   </div>
 
-  <p id="review-filter-none" class="hidden text-center py-6 text-base-content/50 text-sm">
-    No artists or albums match your filter.</p>
-
-  <div id="review-empty" class="text-center py-8 text-base-content/60{% if job.candidates %} hidden{% endif %}">
+  <div id="review-empty" class="text-center py-8 text-base-content/60{% if review_counts.total %} hidden{% endif %}">
     <p class="font-medium">Nothing left to review.</p>
     <p class="text-sm mt-1">Everything here has been queued or hidden.
       <a href="{{ _hidden_url }}" class="link">Manage hidden albums</a>.</p>

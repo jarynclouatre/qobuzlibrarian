@@ -164,32 +164,33 @@ def _flag_new_since_last_scan(job, mode):
     _save_scan_seen(mode, seen_now)
 
 
-def dismiss_albums(job, artist, keep_cids, scope=hidden_mod.SCOPE_MISSING):
-    """Hide every album for `artist` that isn't in `keep_cids`, in `scope`.
+def dismiss_albums(job, artist, scope=hidden_mod.SCOPE_MISSING):
+    """Hide ``artist``'s albums that aren't currently selected, in ``scope``.
+
+    Selection is server-backed (saved as the user ticks), so "hide the rest"
+    means: of this artist's candidates, hide the ones whose saved `selected`
+    flag is off and keep the ticked ones. Other artists' candidates and their
+    selections are never touched — critical now that pagination means most of
+    them aren't even on the page that triggered the hide.
 
     The hidden albums are recorded in the durable store so future bulk walks of
-    that scope skip them, then dropped from this job's review list. Independent
-    of downloading — the kept candidates stay for the normal approve flow.
-    Returns the number hidden.
+    that scope skip them, then dropped from this job's review list. Returns the
+    number hidden.
     """
     from qobuz_librarian.web import job_persistence
 
-    keep = set(keep_cids)
     # Snapshot + mutate under the lock in one go: a live scan appends candidates
     # from the worker thread, so reading job.candidates and replacing it in
     # separate steps could drop a concurrently-added album.
     with job._lock:
         to_hide = [c for c in job.candidates
-                   if c.get("artist") == artist and c.get("cid") not in keep]
+                   if c.get("artist") == artist and not c.get("selected")]
         if not to_hide:
             return 0
         drop = {c["cid"] for c in to_hide}
-        survivors = [c for c in job.candidates if c["cid"] not in drop]
-        # The hide POST carries the currently-ticked cids; mirror them onto the
-        # survivors so "hide the rest" keeps the album the user meant to download.
-        for c in survivors:
-            c["selected"] = c["cid"] in keep
-        job.candidates = survivors
+        # Only this artist's unselected candidates leave; every other
+        # candidate (and its saved selection) is preserved untouched.
+        job.candidates = [c for c in job.candidates if c["cid"] not in drop]
         specs = [(c.get("artist"), c.get("title"),
                   (c.get("payload") or {}).get("year")) for c in to_hide]
     # File write + persist outside the lock — neither needs it, and hide does
@@ -264,6 +265,8 @@ def scan_library(job, token, partial_only=False):
     clear_scan_caches()
     artists = list_library_artists()
     if not artists:
+        job.summary = ("No artist folders found under MUSIC_ROOT — check that "
+                       "QL_MUSIC_DIR points at your library.")
         log.info("No artist folders found under MUSIC_ROOT.")
         log.info("  Expected layout: $MUSIC_ROOT/<Artist>/<Album (Year)>/<track>.flac")
         log.info("  Check that QL_MUSIC_DIR in your .env points at the right place.")
@@ -364,10 +367,18 @@ def scan_library(job, token, partial_only=False):
         if not new_releases_mod.is_baseline_complete():
             new_releases_mod.seed_baseline(baseline_seen)
         scan_checkpoint.clear(kind)
-    if partial_only:
-        log.info(f"Done. {plural(total, 'album')} with track gaps across the library.")
+    if job.cancel_requested:
+        job.summary = (f"Stopped early — {plural(total, 'album')} found so far."
+                       if total else "Stopped before anything turned up.")
+    elif partial_only:
+        job.summary = (f"{plural(total, 'album')} with track gaps across the library."
+                       if total else "No track gaps found in your owned albums.")
     else:
-        log.info(f"Done. {plural(total, 'missing album')} across the library.")
+        job.summary = (f"{plural(total, 'missing album')} across the library."
+                       if total else
+                       "No missing albums — your library matches each artist's "
+                       "Qobuz catalog.")
+    log.info(job.summary)
 
 
 def scan_new_releases(job, token):
@@ -505,8 +516,14 @@ def execute_albums(job, chosen, token):
             failed += 1
         time.sleep(cfg.ARTIST_API_DELAY)
     if job.cancel_requested:
-        log.info(f"Cancelled — {ok} downloaded, {len(chosen) - processed} not started.")
+        job.summary = (f"Stopped early — {ok} downloaded, "
+                       f"{len(chosen) - processed} not started.")
+        log.info(job.summary)
         return
+    parts = [f"{ok}/{plural(len(chosen), 'album')} downloaded and imported"]
+    if partial:
+        parts.append(f"{plural(partial, 'album')} only partly (some tracks failed)")
+    job.summary = "Finished — " + ", ".join(parts) + "."
     log.info(f"Finished — {ok}/{plural(len(chosen), 'album')} downloaded and imported.")
     if partial:
         log.info(f"  {plural(partial, 'album')} downloaded only partly "
@@ -536,6 +553,8 @@ def scan_upgrades(job, token):
     artists = [d for d in list_library_artists()
                if normalize(d.name) not in VA_NORMALIZED]
     if not artists:
+        job.summary = ("No artist folders found under MUSIC_ROOT — check that "
+                       "QL_MUSIC_DIR points at your library.")
         log.info("No artist folders found under MUSIC_ROOT.")
         log.info("  Check that QL_MUSIC_DIR in your .env points at the right place.")
         return
@@ -607,7 +626,15 @@ def scan_upgrades(job, token):
                 log.info(f"  {name} — {plural(added, 'album')} to upgrade")
     if not job.cancel_requested:
         _flag_new_since_last_scan(job, "upgrade")
-    log.info(f"Done. {plural(total, 'upgradeable album')} found.")
+    if job.cancel_requested:
+        job.summary = (f"Stopped early — {plural(total, 'album')} found so far."
+                       if total else "Stopped before anything turned up.")
+    else:
+        job.summary = (f"{plural(total, 'upgradeable album')} Qobuz can serve "
+                       "at higher quality." if total else
+                       "No upgrades — every album is already at the best quality "
+                       "Qobuz offers.")
+    log.info(job.summary)
 
 
 def scan_upgrades_for_artist(job, artist_name, token):
@@ -730,12 +757,15 @@ def execute_upgrades(job, chosen, token):
             failed += 1
         time.sleep(cfg.ARTIST_API_DELAY)
     if job.cancel_requested:
-        log.info(f"Cancelled — {ok} upgraded, {len(chosen) - processed} not started.")
+        job.summary = (f"Stopped early — {ok} upgraded, "
+                       f"{len(chosen) - processed} not started.")
+        log.info(job.summary)
         return
     msg = f"Finished — upgraded {ok}/{plural(len(chosen), 'album')}."
     if kept:
         msg += (f" {kept} kept the original (upgrade couldn't be verified "
                 f"complete — backup retained).")
+    job.summary = msg
     log.info(msg)
     if failed:
         job.error = f"{failed} of {plural(len(chosen), 'album')} couldn't be upgraded — see the log."
@@ -757,6 +787,8 @@ def scan_downsamples(job):
     artists = [d for d in list_library_artists()
                if normalize(d.name) not in VA_NORMALIZED]
     if not artists:
+        job.summary = ("No artist folders found under MUSIC_ROOT — check that "
+                       "QL_MUSIC_DIR points at your library.")
         log.info("No artist folders found under MUSIC_ROOT.")
         log.info("  Check that QL_MUSIC_DIR in your .env points at the right place.")
         return
@@ -802,7 +834,14 @@ def scan_downsamples(job):
             log.info(f"  {name} — {plural(added, 'album')} above CD rate")
     if not job.cancel_requested:
         _flag_new_since_last_scan(job, "downsample")
-    log.info(f"Done. {plural(total, 'album')} above CD rate.")
+    if job.cancel_requested:
+        job.summary = (f"Stopped early — {plural(total, 'album')} found so far."
+                       if total else "Stopped before anything turned up.")
+    else:
+        job.summary = (f"{plural(total, 'album')} stored above CD rate."
+                       if total else
+                       "No hi-res files — every album is already at CD rate or lower.")
+    log.info(job.summary)
 
 
 def scan_downsamples_for_artist(job, artist_name):
@@ -889,14 +928,16 @@ def execute_downsamples(job, chosen):
         total_saved += res.get("saved_bytes", 0)
         total_errors += res.get("errors", 0)
     if job.cancel_requested:
-        log.info(f"Cancelled — shrank {plural(shrunk, 'album')} "
-                 f"({format_size(total_saved)} reclaimed), "
-                 f"{len(chosen) - processed} not started.")
+        job.summary = (f"Stopped early — shrank {plural(shrunk, 'album')} "
+                       f"({format_size(total_saved)} reclaimed), "
+                       f"{len(chosen) - processed} not started.")
+        log.info(job.summary)
         return
     summary = (f"Finished — shrank {plural(shrunk, 'album')}, "
                f"reclaimed {format_size(total_saved)}.")
     if skipped:
         summary += f" {plural(skipped, 'album')} skipped (no longer on disk)."
+    job.summary = summary
     log.info(summary)
     if total_errors:
         job.error = (f"{plural(total_errors, 'file')} couldn't be downsampled "
@@ -912,6 +953,8 @@ def scan_repairs(job, token):
     clear_scan_caches()
     artists = list_library_artists()
     if not artists:
+        job.summary = ("No artist folders found under MUSIC_ROOT — check that "
+                       "QL_MUSIC_DIR points at your library.")
         log.info("No artist folders found under MUSIC_ROOT.")
         log.info("  Check that QL_MUSIC_DIR in your .env points at the right place.")
         return
@@ -935,6 +978,8 @@ def scan_repairs(job, token):
     since_save = 0
     for artist_dir in todo:
         if job.cancel_requested:
+            job.summary = (f"Stopped early — {plural(total, 'album')} flagged so far."
+                           if total else "Stopped before anything was flagged.")
             log.info("Cancelled — stopping scan.")
             scan_checkpoint.clear("repair")
             return
@@ -944,6 +989,8 @@ def scan_repairs(job, token):
         job.push_progress("Checking for damaged files", done, n, name, found=total)
         for album_dir in album_dirs:
             if job.cancel_requested:
+                job.summary = (f"Stopped early — {plural(total, 'album')} flagged so far."
+                               if total else "Stopped before anything was flagged.")
                 log.info("Cancelled — stopping scan.")
                 scan_checkpoint.clear("repair")
                 return
@@ -1003,7 +1050,10 @@ def scan_repairs(job, token):
             scan_checkpoint.save("repair", scanned, job.candidates, {})
         time.sleep(cfg.ARTIST_API_DELAY)
     scan_checkpoint.clear("repair")
-    log.info(f"Done. {plural(total, 'album')} flagged.")
+    job.summary = (f"{plural(total, 'album')} flagged with damaged files."
+                   if total else
+                   "No damaged files found — every ISRC-tagged track verified intact.")
+    log.info(job.summary)
 
 
 def scan_repairs_for_artist(job, artist_name, token):
@@ -1013,7 +1063,6 @@ def scan_repairs_for_artist(job, artist_name, token):
     needs it because it goes for hours; this one is over in seconds. ISRC
     misses get the same whole-album redownload fallback the library scan does.
     """
-    from qobuz_librarian.library.catalog import find_qobuz_album_for_dir
     from qobuz_librarian.library.discovery import resolve_artist_dir
     from qobuz_librarian.repair_log import scan_dir_for_isrc_repairs
 
@@ -1150,8 +1199,6 @@ def _redownload_damaged_album(payload, token):
 def execute_repairs(job, chosen, token):
     """Refill ISRC-verified truncated tracks, or re-download whole albums
     whose damage couldn't be ID-verified — depending on each candidate."""
-    from pathlib import Path
-
     from qobuz_librarian.modes.repair import repair_album_dir
     from qobuz_librarian.web.jobs import staging_lock
 
@@ -1189,9 +1236,12 @@ def execute_repairs(job, chosen, token):
             failed += 1
         time.sleep(cfg.ARTIST_API_DELAY)
     if job.cancel_requested:
-        log.info(f"Cancelled — {fixed} repaired, {len(chosen) - processed} not started.")
+        job.summary = (f"Stopped early — {fixed} repaired, "
+                       f"{len(chosen) - processed} not started.")
+        log.info(job.summary)
         return
-    log.info(f"Finished — repaired {fixed}/{plural(len(chosen), 'album')}.")
+    job.summary = f"Finished — repaired {fixed}/{plural(len(chosen), 'album')}."
+    log.info(job.summary)
     if failed:
         job.error = f"{failed} of {plural(len(chosen), 'album')} couldn't be repaired — see the log."
 
@@ -1207,11 +1257,14 @@ def run_lyric_retry(job, token):
 
     paths = load_lyric_retry()
     if not paths:
-        log.info("No tracks queued for lyric retry.")
+        job.summary = "No tracks were queued for lyric retry."
+        log.info(job.summary)
         return
 
     if not lyric_fetch.AVAILABLE:
-        log.info("The syncedlyrics provider library isn't installed — manifest preserved.")
+        job.summary = ("The syncedlyrics library isn't installed — manifest "
+                       "preserved for a later retry.")
+        log.info(job.summary)
         return
 
     existing = [Path(p) for p in paths if Path(p).exists()]
@@ -1220,7 +1273,8 @@ def run_lyric_retry(job, token):
         log.info(f"{dropped} queued path(s) no longer on disk — skipping.")
     if not existing:
         save_lyric_retry([])
-        log.info("All queued files are missing; manifest cleared.")
+        job.summary = "All queued files are gone from disk; manifest cleared."
+        log.info(job.summary)
         return
 
     log.info(f"Retrying lyrics on {plural(len(existing), 'track')} ...")
@@ -1233,17 +1287,23 @@ def run_lyric_retry(job, token):
             should_stop=lambda: job.cancel_requested,
         )
     except Exception as e:
-        log.info(f"Retry failed: {e} — manifest preserved.")
+        job.error = f"Lyric retry failed: {e} — manifest preserved."
+        job.summary = "Lyric retry failed — manifest preserved, will retry next time."
+        log.info(job.error)
         return
 
     _refresh_lyric_retry(existing)
     remaining = load_lyric_retry()
+    resolved = len(existing) - len(remaining)
     if job.cancel_requested:
-        log.info(f"Stopped — {plural(len(remaining), 'track')} still queued for retry.")
+        job.summary = (f"Stopped — resolved {resolved}, "
+                       f"{plural(len(remaining), 'track')} still queued for retry.")
     elif remaining:
-        log.info(f"{plural(len(remaining), 'track')} still unresolved — will retry next time.")
+        job.summary = (f"Resolved {resolved} — {plural(len(remaining), 'track')} "
+                       "still unresolved, will retry next time.")
     else:
-        log.info("All retried tracks resolved.")
+        job.summary = f"All {plural(len(existing), 'retried track')} resolved."
+    log.info(job.summary)
 
 
 def run_library_lyrics(job, *, rescan=False, synced_only=False):
@@ -1354,6 +1414,9 @@ def scan_migration(job, src, dest, *, use_acoustid, in_place=False):
         cancel_check=lambda: job.cancel_requested,
         progress=job.push_progress)
     if job.cancel_requested:
+        n = len(items) if items else 0
+        job.summary = (f"Stopped early — {plural(n, 'file')} scanned so far."
+                       if n else "Stopped before anything was scanned.")
         return
     plan = engine.build_plan(items, dest)
 

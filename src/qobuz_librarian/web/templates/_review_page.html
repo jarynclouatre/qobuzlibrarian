@@ -1,0 +1,29 @@
+{# One page of the review: the current page's artist groups plus a pager.
+   Rendered standalone for Prev/Next/filter/hide swaps, so it carries only what
+   the page needs and reads its checked state from each candidate's saved flag.
+   Context: review_groups (list of (artist, items)), review_page, review_pages,
+   review_query, triage. #}
+{% set triage = job.execute_kind in ('library', 'upgrade', 'new_releases', 'downsample') %}
+<div id="review-groups" class="space-y-2"
+     data-page="{{ review_page }}" data-pages="{{ review_pages }}"
+     data-query="{{ review_query }}">
+  {% for artist, items in review_groups %}
+  {% with open = (review_groups | length == 1) %}{% include "_review_group.html" %}{% endwith %}
+  {% endfor %}
+</div>
+
+{% if not review_groups %}
+<p class="text-center py-6 text-base-content/50 text-sm">
+  {% if review_query %}No artists or albums match your filter.{% else %}Nothing on this page.{% endif %}
+</p>
+{% endif %}
+
+{% if review_pages > 1 %}
+<nav id="review-pager" class="flex items-center justify-center gap-3 mt-4 text-sm" aria-label="Review pages">
+  <button type="button" class="btn btn-sm btn-ghost" data-page-prev
+          {% if review_page <= 1 %}disabled{% endif %}>‹ Prev</button>
+  <span class="text-base-content/60 tabular-nums">Page {{ review_page }} of {{ review_pages }}</span>
+  <button type="button" class="btn btn-sm btn-ghost" data-page-next
+          {% if review_page >= review_pages %}disabled{% endif %}>Next ›</button>
+</nav>
+{% endif %}

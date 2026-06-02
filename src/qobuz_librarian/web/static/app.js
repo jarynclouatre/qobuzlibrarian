@@ -280,9 +280,9 @@
   }
 
   // The single-job page (#job-content). data-job-view picks the shape:
-  // "progress" = a running/scanning job's live log + progress bar; "review" =
-  // the candidate list, which for a still-running library/upgrade/downsample
-  // scan also streams in groups as the walk finds them.
+  // "progress" = a running/scanning job's live log + progress bar (a scan shows
+  // only this — the tickable list appears once it finishes); "review" = the
+  // paginated, server-backed candidate list for an awaiting-review job.
   function initJobContent() {
     var jc = document.getElementById("job-content");
     if (!jc || jc.dataset.jobWired === "1") return;
@@ -290,7 +290,7 @@
     var id = jc.dataset.jobId;
     if (!view || !id) return;
     jc.dataset.jobWired = "1";
-    if (view === "review") wireReview(id, jc.dataset.scanning === "1");
+    if (view === "review") wireReview(id);
     else if (view === "progress") wireProgress(id);
   }
 
@@ -302,9 +302,21 @@
     var bar = document.getElementById("prog-bar");
     var item = document.getElementById("prog-item");
     var activity = document.getElementById("job-activity");
+    var foundEl = document.getElementById("scan-found");
     var reconnect = document.getElementById("sse-reconnect");
     var baseTitle = document.title;
     var titleSet = false;
+    // Running tally of artists that turned up a hit, fed by progress 'hit'
+    // events — lets the scanning view show "N albums across M artists found"
+    // without rendering the (potentially huge) list while the walk runs.
+    var foundAlbums = 0, foundArtists = 0;
+    function plural(n, w) { return n + " " + w + (n === 1 ? "" : "s"); }
+    function showFound() {
+      if (!foundEl) return;
+      foundEl.textContent = foundAlbums
+        ? "Found " + plural(foundAlbums, "album") + " across " + plural(foundArtists, "artist") + " so far…"
+        : "";
+    }
     var src = new EventSource("/api/jobs/" + id + "/stream");
     src.onmessage = function (e) {
       if (!titleSet) { document.title = "▶ " + baseTitle; titleSet = true; }
@@ -321,58 +333,135 @@
       if (card) card.classList.remove("hidden");
       if (label) label.textContent = p.phase || "Working";
       var ct = p.total > 0 ? p.current + " / " + p.total : (p.current ? String(p.current) : "");
-      if (p.found > 0) ct += (ct ? " · " : "") + p.found + " with gaps";
       if (count) count.textContent = ct;
       if (bar) { if (p.total > 0) { bar.max = 100; bar.value = Math.round(p.current / p.total * 100); } else { bar.removeAttribute("value"); } }
       if (item) item.textContent = p.item || "";
+      // p.found is the running album tally; p.hit marks one artist with hits.
+      if (typeof p.found === "number" && p.found > foundAlbums) foundAlbums = p.found;
+      if (p.hit && p.hit.albums > 0) { foundArtists += 1; showFound(); }
+      else if (typeof p.found === "number") showFound();
     });
     src.addEventListener("done", function () {
       src.close();
       document.title = baseTitle;
       if (window.qlDismissAllFlashes) window.qlDismissAllFlashes();
+      // Scan finished → load the (now-final) server-rendered body, which for a
+      // triage scan is the paginated review. One render path: the server's.
       if (window.htmx) {
         window.htmx.ajax("GET", "/jobs/" + id + "/content", { target: "#job-content", swap: "outerHTML" });
       } else { location.reload(); }
     });
   }
 
-  function wireReview(id, scanning) {
+  // Paginated, server-backed review. Selection lives on the server (each tick
+  // saves immediately), so it persists across pages, reloads, and tabs, and
+  // the download acts on the saved set — never on whatever checkboxes happen to
+  // be in the DOM. The list is one page of artist groups; Prev/Next, the
+  // whole-set filter, and a hide each re-fetch a fresh page from the server.
+  function wireReview(id) {
+    var cont = document.getElementById("review-candidates");
     var form = document.getElementById("review-form");
-    if (!form) return;
+    if (!cont || !form) return;
     var submit = document.getElementById("review-submit");
     var countEl = submit ? submit.querySelector("[data-count]") : null;
-    var groupsBox = document.getElementById("review-groups");
     var summaryRow = document.getElementById("review-summary-row");
     var summaryCount = document.querySelector("#review-candidates [data-summary-count]");
     var emptyBox = document.getElementById("review-empty");
     var filterRow = document.getElementById("review-filter-row");
     var filterInput = document.getElementById("review-filter");
-    var filterNone = document.getElementById("review-filter-none");
-    var scanDone = !scanning;
+    var dsTotal = document.querySelector("[data-downsample-total]");
+    var kind = form.getAttribute("data-review-kind") || "";
 
     function plural(n, w) { return n + " " + w + (n === 1 ? "" : "s"); }
-    function fmtBytes(n) {
-      n = Number(n) || 0;
-      var units = ["B", "KB", "MB", "GB"];
-      for (var i = 0; i < units.length; i++) {
-        if (n < 1024) return (units[i] === "B" ? Math.floor(n) : n.toFixed(1)) + units[i];
-        n /= 1024;
-      }
-      return n.toFixed(1) + "TB";
+    function csrf() {
+      var m = document.querySelector('meta[name="csrf-token"]');
+      return m ? m.content : "";
     }
-    var dsTotal = document.querySelector("[data-downsample-total]");
-    function refresh() {
-      var checked = form.querySelectorAll(".cb:checked").length;
-      if (countEl) countEl.textContent = checked ? " " + checked : "";
-      if (submit) submit.disabled = !scanDone || checked === 0;
-      if (dsTotal) {
-        var bytes = 0;
-        form.querySelectorAll(".cb:checked").forEach(function (cb) {
-          bytes += parseInt(cb.dataset.saving || "0", 10) || 0;
-        });
-        dsTotal.textContent = bytes > 0 ? " · ~" + fmtBytes(bytes) + " reclaimable" : "";
+    function pageBox() { return document.getElementById("review-groups"); }
+    function curPage() { var g = pageBox(); return g ? parseInt(g.dataset.page || "1", 10) : 1; }
+    function curQuery() { return (filterInput && filterInput.value || "").trim(); }
+
+    // Apply authoritative counts from a /select or /hide response to the header,
+    // submit button, and downsample total — never recounted from the partial
+    // DOM, which only holds one page.
+    function applyCounts(c) {
+      if (!c) return;
+      if (countEl) countEl.textContent = c.selected ? " " + c.selected : "";
+      if (submit) submit.disabled = c.selected === 0;
+      if (summaryCount) {
+        summaryCount.textContent = plural(c.total, "album") + " across " + plural(c.artists, "artist");
       }
-      form.querySelectorAll("[data-hide]").forEach(function (btn) {
+      if (summaryRow) summaryRow.classList.toggle("hidden", c.total === 0);
+      if (emptyBox) emptyBox.classList.toggle("hidden", c.total > 0);
+      if (filterRow && !curQuery()) filterRow.classList.toggle("hidden", c.artists < 4);
+      if (dsTotal) {
+        dsTotal.textContent = c.reclaimable_label
+          ? " · ~" + c.reclaimable_label + " reclaimable" : "";
+      }
+      cont.dataset.reviewTotal = c.total;
+      cont.dataset.reviewSelected = c.selected;
+    }
+
+    function post(url, body) {
+      return fetch(url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded",
+          "X-CSRF-Token": csrf(),
+        },
+        body: body,
+      });
+    }
+
+    // Save one tick to the server, then refresh counts from its response.
+    function saveTick(cb) {
+      var body = "cid=" + encodeURIComponent(cb.value) + "&checked=" + (cb.checked ? "1" : "0");
+      post("/jobs/" + id + "/select", body)
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (c) { if (c) applyCounts(c); updateHideLabels(); })
+        .catch(function () { /* a dropped tick just isn't saved; the box reflects intent until retried */ });
+    }
+
+    function bulkSelect(on, scope) {
+      var body = "on=" + (on ? "1" : "0") + "&scope=" + scope;
+      if (scope === "page") {
+        pageBox() && pageBox().querySelectorAll(".cb").forEach(function (cb) {
+          body += "&cid=" + encodeURIComponent(cb.value);
+        });
+      }
+      return post("/jobs/" + id + "/select-all", body)
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (c) {
+          if (c) applyCounts(c);
+          // Reflect the change on whatever's currently on screen.
+          var on2 = on;
+          if (scope === "all" || scope === "page") {
+            pageBox() && pageBox().querySelectorAll(".cb").forEach(function (cb) { cb.checked = on2; });
+          }
+          updateHideLabels();
+        });
+    }
+
+    function groupSelect(det, on) {
+      var cbs = det.querySelectorAll(".cb");
+      var chain = Promise.resolve(null);
+      cbs.forEach(function (cb) {
+        if (cb.checked !== on) {
+          cb.checked = on;
+          chain = post("/jobs/" + id + "/select",
+            "cid=" + encodeURIComponent(cb.value) + "&checked=" + (on ? "1" : "0"))
+            .then(function (r) { return r.ok ? r.json() : null; });
+        }
+      });
+      chain.then(function (c) { if (c) applyCounts(c); updateHideLabels(); });
+    }
+
+    // The per-artist Hide button hides everything not ticked, so label it for
+    // what it'll actually drop and hide it when the whole group is ticked.
+    function updateHideLabels() {
+      var box = pageBox();
+      if (!box) return;
+      box.querySelectorAll("[data-hide]").forEach(function (btn) {
         var det = btn.closest("details");
         var lbl = btn.querySelector("[data-hide-label]");
         if (!det || !lbl) return;
@@ -381,138 +470,99 @@
         btn.classList.toggle("hidden", total > 0 && picked === total);
         lbl.textContent = picked ? "Hide other " + (total - picked) : "Hide all " + total;
       });
-      var albums = groupsBox ? groupsBox.querySelectorAll(".cb").length : 0;
-      var artists = groupsBox ? groupsBox.querySelectorAll(":scope > details").length : 0;
-      if (summaryCount) summaryCount.textContent = plural(albums, "album") + " across " + plural(artists, "artist");
-      if (summaryRow) summaryRow.classList.toggle("hidden", albums === 0);
-      if (emptyBox) emptyBox.classList.toggle("hidden", albums > 0 || !scanDone);
-      if (filterRow) filterRow.classList.toggle("hidden", artists < 4);
-      applyFilter();
     }
-    form.addEventListener("change", function (e) {
-      if (e.target.classList && e.target.classList.contains("cb")) refresh();
-    });
-    form.addEventListener("click", function (e) {
-      // A Hide button sits inside <summary>; keep its click from toggling the
-      // disclosure. htmx still fires the hx-post.
-      if (e.target.closest("[data-hide]")) e.preventDefault();
-      // All/None flip checkboxes without firing a change event.
-      if (e.target.closest("button")) setTimeout(refresh, 0);
-    });
-    form.addEventListener("htmx:afterSwap", refresh);
-    document.body.addEventListener("qlHidden", function () { setTimeout(refresh, 0); });
 
-    // Client-side filter over the rendered groups — a view only, so a ticked
-    // album stays in the submit set even when filtered out of sight. refresh()
-    // reveals the box once there are enough groups and re-applies it as a live
-    // scan appends more.
-    function applyFilter() {
-      if (!groupsBox) return;
-      var q = (filterInput ? filterInput.value : "").trim().toLowerCase();
-      var shown = 0;
-      groupsBox.querySelectorAll(":scope > details").forEach(function (g) {
-        var hay = g.getAttribute("data-artist") || "";
-        g.querySelectorAll("label .font-medium").forEach(function (s) { hay += " " + s.textContent; });
-        if (!q || hay.toLowerCase().indexOf(q) !== -1) { g.classList.remove("hidden"); shown++; }
-        else { g.classList.add("hidden"); }
-      });
-      if (filterNone) filterNone.classList.toggle("hidden", shown > 0 || !q);
-    }
-    if (filterInput) filterInput.addEventListener("input", applyFilter);
-
-    refresh();
-
-    if (!scanning) return;
-
-    // ── Live scan: stream log + progress, append artists as the walk finds
-    //    them, leaving on-screen groups (and their state) untouched. ──────
-    var logEl = document.getElementById("log");
-    var card = document.getElementById("progress-card");
-    var label = document.getElementById("prog-label");
-    var count = document.getElementById("prog-count");
-    var bar = document.getElementById("prog-bar");
-    var item = document.getElementById("prog-item");
-    var scanHeader = document.getElementById("scan-header");
-    var reconnect = document.getElementById("sse-reconnect");
-    var baseTitle = document.title;
-    var titleSet = false;
-    var after = -1;
-    form.querySelectorAll(".cb[data-seq]").forEach(function (cb) {
-      after = Math.max(after, parseInt(cb.dataset.seq, 10));
-    });
-    var pulling = false;
-    function pullGroups(done) {
-      if (pulling) { if (done) done(); return; }
-      pulling = true;
-      fetch("/jobs/" + id + "/groups?after=" + after, { headers: { "HX-Request": "true" } })
-        .then(function (r) { return r.text(); })
+    // Fetch + swap one page of the review (Prev/Next, filter, hide-refresh).
+    var loading = false;
+    function loadPage(page, query) {
+      if (loading) return;
+      loading = true;
+      var url = "/jobs/" + id + "/review?page=" + (page || 1) +
+                "&q=" + encodeURIComponent(query || "");
+      fetch(url, { headers: { "HX-Request": "true" } })
+        .then(function (r) { return r.ok ? r.text() : null; })
         .then(function (txt) {
-          pulling = false;
-          var t = txt.trim();
-          if (t && groupsBox) {
-            var tmp = document.createElement("div");
-            tmp.innerHTML = t;
-            tmp.querySelectorAll(":scope > details[data-artist]").forEach(function (g) {
-              var a = g.getAttribute("data-artist");
-              var sel = 'details[data-artist="' + (window.CSS && CSS.escape ? CSS.escape(a) : a) + '"]';
-              var existing = groupsBox.querySelector(sel);
-              if (existing) {
-                existing.replaceWith(g);
-              } else {
-                g.classList.add("ql-enter");
-                groupsBox.appendChild(g);
-                setTimeout(function () { g.classList.remove("ql-enter"); }, 260);
-              }
-              g.querySelectorAll(".cb[data-seq]").forEach(function (cb) {
-                after = Math.max(after, parseInt(cb.dataset.seq, 10));
-              });
-            });
-            if (window.htmx) window.htmx.process(groupsBox);
+          loading = false;
+          if (txt == null) return;
+          var host = document.getElementById("review-page");
+          if (host) {
+            host.innerHTML = txt;
+            if (window.htmx) window.htmx.process(host);
+            updateHideLabels();
           }
-          refresh();
-          if (done) done();
         })
-        .catch(function () { pulling = false; if (done) done(); });
+        .catch(function () { loading = false; });
     }
 
-    var src = new EventSource("/api/jobs/" + id + "/stream");
-    src.onmessage = function (e) {
-      if (!titleSet) { document.title = "▶ " + baseTitle; titleSet = true; }
-      if (logEl) { logEl.appendChild(document.createTextNode(e.data + "\n")); logEl.scrollTop = logEl.scrollHeight; }
-    };
-    src.onopen = function () { if (reconnect) reconnect.classList.add("hidden"); };
-    src.onerror = function () {
-      if (reconnect && src.readyState !== EventSource.CLOSED) reconnect.classList.remove("hidden");
-    };
-    src.addEventListener("progress", function (e) {
-      var p; try { p = JSON.parse(e.data); } catch (_) { return; }
-      if (window.qlDismissAllFlashes) window.qlDismissAllFlashes();
-      if (card) card.classList.remove("hidden");
-      if (label) label.textContent = p.phase || "Working";
-      var ct = p.total > 0 ? p.current + " / " + p.total : (p.current ? String(p.current) : "");
-      if (p.found > 0) ct += (ct ? " · " : "") + p.found + " with gaps";
-      if (count) count.textContent = ct;
-      if (bar) { if (p.total > 0) { bar.max = 100; bar.value = Math.round(p.current / p.total * 100); } else { bar.removeAttribute("value"); } }
-      if (item) item.textContent = p.item || "";
-      if (p.hit) pullGroups();
+    // ── Wire interactions (delegated so swapped-in pages keep working) ──────
+    cont.addEventListener("change", function (e) {
+      if (e.target.classList && e.target.classList.contains("cb")) saveTick(e.target);
     });
-    src.addEventListener("done", function (e) {
-      src.close();
-      document.title = baseTitle;
-      if (window.qlDismissAllFlashes) window.qlDismissAllFlashes();
-      if (e.data === "awaiting_review") {
-        // Scan finished with results: enable downloading in place, keeping
-        // every tick/expansion the user made while it ran.
-        if (card) card.classList.add("hidden");
-        if (scanHeader) scanHeader.classList.add("hidden");
-        var badge = document.getElementById("job-status-badge");
-        if (badge) { badge.textContent = "awaiting review"; badge.className = "badge whitespace-nowrap shrink-0 badge-info"; }
-        pullGroups(function () { scanDone = true; refresh(); });
-      } else if (window.htmx) {
-        window.htmx.ajax("GET", "/jobs/" + id + "/content", { target: "#job-content", swap: "outerHTML" });
-      } else {
-        location.reload();
+    cont.addEventListener("click", function (e) {
+      var t = e.target;
+      if (t.closest("[data-hide]")) { e.preventDefault(); return; }  // htmx handles the post
+      var allBtn = t.closest("[data-select-all]");
+      if (allBtn) { bulkSelect(allBtn.getAttribute("data-select-all") === "1", "all"); return; }
+      var pageBtn = t.closest("[data-select-page]");
+      if (pageBtn) { bulkSelect(true, "page"); return; }
+      var gsel = t.closest("[data-group-select]");
+      if (gsel) {
+        var det = gsel.closest("details");
+        if (det) groupSelect(det, gsel.getAttribute("data-group-select") === "1");
+        return;
       }
+      if (t.closest("[data-page-prev]")) { loadPage(curPage() - 1, curQuery()); return; }
+      if (t.closest("[data-page-next]")) { loadPage(curPage() + 1, curQuery()); return; }
+    });
+
+    // Whole-set filter — re-paginate from the server (debounced) so it spans
+    // every page, not just the one on screen.
+    var filterTimer = null;
+    if (filterInput) {
+      filterInput.addEventListener("input", function () {
+        if (filterTimer) clearTimeout(filterTimer);
+        filterTimer = setTimeout(function () { loadPage(1, curQuery()); }, 250);
+      });
+    }
+
+    // A hide returns the affected group (or empty) and an HX-Trigger carrying
+    // fresh counts; refresh counts and, if a page emptied, reload it.
+    document.body.addEventListener("qlHidden", function (e) {
+      var d = e.detail || {};
+      if (d.counts) applyCounts(d.counts);
+      var box = pageBox();
+      if (box && box.querySelectorAll(":scope > details").length === 0) {
+        var p = curPage();
+        loadPage(p > 1 ? p - 1 : 1, curQuery());
+      } else {
+        updateHideLabels();
+      }
+    });
+
+    updateHideLabels();
+
+    // ── Multi-tab live sync. A second tab/device ticking, hiding, or
+    //    selecting-all fires a `review` event here; refresh this page from the
+    //    server so every open view stays in step. When the job leaves review
+    //    (someone approved/cancelled it elsewhere), reload to the new state. ──
+    var rsrc = new EventSource("/api/jobs/" + id + "/review-stream");
+    rsrc.addEventListener("review", function () {
+      // Re-fetch the current page (picks up others' ticks/hides) and the counts.
+      loadPage(curPage(), curQuery());
+      post("/jobs/" + id + "/select", "cid=&checked=0")  // no-op tick → returns counts
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (c) { if (c) applyCounts(c); });
+    });
+    rsrc.addEventListener("closed", function (e) {
+      rsrc.close();
+      // "inactive" = this job isn't live in the registry (a restored/archived
+      // review): it still works, just without cross-tab sync — don't reload, or
+      // we'd loop. Any other reason means the job left review elsewhere, so
+      // refresh to the new state.
+      if ((e.data || "") === "inactive") return;
+      if (window.htmx) {
+        window.htmx.ajax("GET", "/jobs/" + id + "/content", { target: "#job-content", swap: "outerHTML" });
+      } else { location.reload(); }
     });
   }
 

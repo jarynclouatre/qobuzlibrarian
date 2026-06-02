@@ -2,12 +2,10 @@
   <summary class="flex items-center justify-between gap-2 px-3 py-2.5 cursor-pointer select-none transition-colors hover:bg-base-300/30 group-open:border-b group-open:border-base-300/50">
     <span class="font-medium min-w-0 truncate">{{ artist or 'Unknown artist' }}<span class="text-base-content/50 font-normal"> — {{ items | length }} album{% if items | length != 1 %}s{% endif %}</span></span>
     {% if triage %}
-    {# artist via hx-vals (single, escaped) — htmx folds the whole review form
-       into the POST, so a hidden <input name=artist> per group would arrive
-       multi-valued and the wrong artist would be hidden. The ticked cids still
-       ride along from the form and form the keep set. Target this group only so
-       a hide leaves the rest of the (possibly still-filling) list untouched. #}
-    <button type="button" data-hide
+    {# Hide drops this artist's UNticked albums (selection is saved server-side,
+       so no cids need to ride along). Target this group only so the rest of the
+       page is untouched. #}
+    <button type="button" data-hide data-artist="{{ artist }}"
             aria-label="Hide albums by {{ artist or 'this artist' }}"
             hx-post="/jobs/{{ job.id }}/hide"
             hx-vals='{{ {"artist": artist}|tojson }}'
@@ -19,9 +17,9 @@
   <div class="px-3 pb-3 pt-1 space-y-1">
     <div class="flex gap-2 mb-1">
       <button type="button" class="btn btn-xs" aria-label="Select all albums by {{ artist or 'this artist' }}"
-              data-check="all" data-check-closest="details" data-check-within=".cb">All</button>
+              data-group-select="1">All</button>
       <button type="button" class="btn btn-xs" aria-label="Deselect all albums by {{ artist or 'this artist' }}"
-              data-check="none" data-check-closest="details" data-check-within=".cb">None</button>
+              data-group-select="0">None</button>
     </div>
     {% for c in items %}
     <label class="flex items-center gap-3 px-3 py-2 bg-base-100 border border-base-300/40 rounded-lg cursor-pointer transition-colors hover:border-base-content/20">

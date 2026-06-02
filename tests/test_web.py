@@ -51,11 +51,6 @@ def test_slow_subscriber_keeps_live_tail_and_close_marker():
     assert [x for x in drained if x != jm.STREAM_END][-1] == "line9"
 
 
-# ── jobs.py: JobRegistry ──────────────────────────────────────────────────────
-
-
-
-
 # ── jobs.py: JobLogHandler ────────────────────────────────────────────────────
 
 def test_log_handler_strips_ansi_and_pushes():
@@ -296,6 +291,29 @@ def test_downsample_scan_needs_no_credentials(client, monkeypatch):
     assert r.status_code == 303
     assert "/jobs/" in r.headers["location"]
     assert captured["job"].execute_kind == "downsample"
+
+
+def test_second_downsample_scan_folds_onto_the_active_one(client, monkeypatch):
+    # A double-submit (double-click, or auto-trigger racing a manual click) must
+    # fold onto the in-flight scan, not stack a duplicate. The check + submit run
+    # atomically under the lock, so even back-to-back POSTs dedupe.
+    import qobuz_librarian.web.app as app_mod
+
+    submitted = []
+
+    def fake_submit(job, scan_fn, execute_fn):
+        # Stand in for the worker: register the job as active so the next POST's
+        # _active_scan sees it (the real worker flips it to SCANNING).
+        job.status = jm.JobStatus.SCANNING
+        submitted.append(job)
+    monkeypatch.setattr(app_mod.job_mgr, "submit_scan", fake_submit)
+    monkeypatch.setattr(app_mod.job_mgr.registry, "pending_and_running",
+                        lambda: list(submitted))
+
+    first = client.post("/downsample", follow_redirects=False).headers["location"]
+    second = client.post("/downsample", follow_redirects=False).headers["location"]
+    assert first == second                # second folded onto the first
+    assert len(submitted) == 1            # only one scan ever submitted
 
 
 def test_lyrics_scan_needs_no_credentials(client, monkeypatch):
@@ -598,7 +616,7 @@ def test_settings_save_defers_apply_when_job_is_active(tmp_path, monkeypatch):
     with ss._pending_lock:
         ss._pending_apply = None
 
-    ok = ss.save({"AUTO_UPGRADE_ENABLED": True})
+    ok, _ = ss.save({"AUTO_UPGRADE_ENABLED": True})
     assert ok is True
     assert (tmp_path / "s.json").exists()
     assert cfg.AUTO_UPGRADE_ENABLED is False  # not yet applied
@@ -958,7 +976,7 @@ def test_unreachable_qobuz_saves_token_but_flags_unverified(client, monkeypatch)
 
 def test_settings_behavior_persist_failure_redirects_with_error(client, monkeypatch):
     from qobuz_librarian.web import settings_store
-    monkeypatch.setattr(settings_store, "save", lambda *_: False)
+    monkeypatch.setattr(settings_store, "save", lambda *_: (False, []))
     r = client.post("/settings/behavior", data={}, follow_redirects=False)
     assert r.status_code == 303
     assert "error=persist" in r.headers["location"]
@@ -1184,12 +1202,12 @@ def test_review_list_groups_candidates_by_artist(client):
         assert "<details open" not in t
         assert "3 albums across 2 artists" in flat
         assert "2 albums" in flat          # the Beatles group's count
-        # Every candidate is still its own submittable checkbox.
+        # Every candidate is still its own checkbox (server-backed selection).
         for cid in ("c0", "c1", "c2"):
             assert f'value="{cid}"' in t
         # Per-artist select-all scoped to its group (the delegated handler in
-        # app.js reads data-check-closest to bound the toggle to this details).
-        assert 'data-check-closest="details"' in t
+        # app.js reads data-group-select to bound the toggle to this details).
+        assert 'data-group-select="1"' in t and 'data-group-select="0"' in t
     finally:
         _remove_job(job)
 
@@ -1209,10 +1227,13 @@ def test_library_hide_then_restore_round_trip(client, monkeypatch, tmp_path):
     job.add_candidate(kind="album", title="Untrue", artist="Burial",
                       payload={"year": "2007"}, selected=False)
     try:
-        # "Hide the rest" with Dummy ticked: only Third is hidden, only for
-        # Portishead — Burial is untouched and the kept Dummy stays ticked.
-        r = client.post(f"/jobs/{job.id}/hide",
-                        data={"artist": "Portishead", "cid": c_dummy})
+        # Selection is server-backed: tick Dummy via the select endpoint, then
+        # "hide the rest" drops only Portishead's unselected album (Third),
+        # keeps the ticked Dummy, and never touches Burial.
+        r = client.post(f"/jobs/{job.id}/select",
+                        data={"cid": c_dummy, "checked": "1"})
+        assert r.status_code == 200 and r.json()["selected"] == 1
+        r = client.post(f"/jobs/{job.id}/hide", data={"artist": "Portishead"})
         assert r.status_code == 200
         survivors = {c["artist"] + "/" + c["title"]: c["selected"]
                      for c in job.candidates}
@@ -1430,9 +1451,13 @@ def test_new_release_hide_writes_missing_scope(client, monkeypatch, tmp_path):
 
     job = _inject_job(jm.JobStatus.AWAITING_REVIEW)
     job.execute_kind = "new_releases"
-    job.add_candidate(kind="album", title="Hit Me Hard And Soft",
-                      artist="Billie Eilish", payload={"year": "2024"}, selected=True)
+    cid = job.add_candidate(kind="album", title="Hit Me Hard And Soft",
+                            artist="Billie Eilish", payload={"year": "2024"},
+                            selected=True)
     try:
+        # New releases arrive pre-ticked; you untick before hiding (the Hide
+        # button only offers to drop what you're not taking).
+        client.post(f"/jobs/{job.id}/select", data={"cid": cid, "checked": "0"})
         r = client.post(f"/jobs/{job.id}/hide", data={"artist": "Billie Eilish"})
         assert r.status_code == 200
         assert hidden.is_hidden(hidden.SCOPE_MISSING, "Billie Eilish",
@@ -1454,19 +1479,50 @@ def test_candidate_ids_stay_unique_after_a_drop():
     assert len({x["cid"] for x in job.candidates}) == len(job.candidates)
 
 
-def test_groups_endpoint_returns_only_newer_artists(client):
-    """The live scan page pulls /groups?after=<seq> to append just the artists
-    found since its cursor, leaving on-screen groups untouched."""
-    job = _inject_job(jm.JobStatus.SCANNING)
+def test_review_page_paginates_by_artist_and_filters_whole_set(client, monkeypatch):
+    """The review page is server-paginated by artist; the filter spans the whole
+    set, not just the page on screen."""
+    monkeypatch.setattr("qobuz_librarian.web.app.REVIEW_PAGE_ARTISTS", 2)
+    job = _inject_job(jm.JobStatus.AWAITING_REVIEW)
     job.execute_kind = "library"
-    job.add_candidate("album", "Old", "Alpha", payload={})   # seq 0
-    job.add_candidate("album", "New", "Beta", payload={})    # seq 1
+    for name in ["Alpha", "Beta", "Gamma", "Delta", "Epsilon"]:
+        job.add_candidate("album", name + " LP", name, payload={}, selected=False)
     try:
-        r = client.get(f"/jobs/{job.id}/groups?after=0")
+        # Alphabetical: page 1 = Alpha,Beta; page 2 = Delta,Epsilon; page 3 = Gamma.
+        r = client.get(f"/jobs/{job.id}/review?page=1")
         assert r.status_code == 200
-        assert "Beta" in r.text and "Alpha" not in r.text
-        r = client.get(f"/jobs/{job.id}/groups?after=-1")
-        assert "Alpha" in r.text and "Beta" in r.text
+        assert "Alpha" in r.text and "Beta" in r.text and "Gamma" not in r.text
+        assert "Page 1 of 3" in r.text
+        r = client.get(f"/jobs/{job.id}/review?page=2")
+        assert "Delta" in r.text and "Epsilon" in r.text and "Alpha" not in r.text
+        # An out-of-range page clamps into range rather than 500ing.
+        r = client.get(f"/jobs/{job.id}/review?page=99")
+        assert r.status_code == 200 and "Page 3 of 3" in r.text and "Gamma" in r.text
+        # Filter spans the whole set (Epsilon would be on page 2 unfiltered).
+        r = client.get(f"/jobs/{job.id}/review?q=epsilon")
+        assert "Epsilon" in r.text and "Alpha" not in r.text
+    finally:
+        _remove_job(job)
+
+
+def test_select_persists_and_counts_are_authoritative(client):
+    """Ticking saves server-side and the response carries whole-set counts."""
+    job = _inject_job(jm.JobStatus.AWAITING_REVIEW)
+    job.execute_kind = "library"
+    c1 = job.add_candidate("album", "A", "Alpha", payload={}, selected=False)
+    job.add_candidate("album", "B", "Beta", payload={}, selected=False)
+    try:
+        r = client.post(f"/jobs/{job.id}/select", data={"cid": c1, "checked": "1"})
+        assert r.status_code == 200
+        body = r.json()
+        assert body["selected"] == 1 and body["total"] == 2 and body["artists"] == 2
+        # The flag actually persisted on the candidate.
+        assert next(c for c in job.candidates if c["cid"] == c1)["selected"] is True
+        # Select-all flips everything; deselect-all clears it.
+        assert client.post(f"/jobs/{job.id}/select-all",
+                           data={"on": "1", "scope": "all"}).json()["selected"] == 2
+        assert client.post(f"/jobs/{job.id}/select-all",
+                           data={"on": "0", "scope": "all"}).json()["selected"] == 0
     finally:
         _remove_job(job)
 
@@ -1478,7 +1534,9 @@ def test_hide_works_while_still_scanning(client, monkeypatch, tmp_path):
     monkeypatch.setattr("qobuz_librarian.config.HIDDEN_FILE", tmp_path / "h.json")
     job = _inject_job(jm.JobStatus.SCANNING)
     job.execute_kind = "library"
-    job.add_candidate("album", "Dummy", "Portishead", payload={"year": "1994"})
+    # Triage scans add candidates unticked; "Hide all" drops the unselected.
+    job.add_candidate("album", "Dummy", "Portishead", payload={"year": "1994"},
+                      selected=False)
     try:
         r = client.post(f"/jobs/{job.id}/hide", data={"artist": "Portishead"})
         assert r.status_code == 200
@@ -1497,7 +1555,7 @@ def test_upgrade_hide_writes_upgrade_scope_only(client, monkeypatch, tmp_path):
     job = _inject_job(jm.JobStatus.AWAITING_REVIEW)
     job.execute_kind = "upgrade"
     job.add_candidate("upgrade", "Dummy", "Portishead",
-                      payload={"year": "1994", "candidate": {}})
+                      payload={"year": "1994", "candidate": {}}, selected=False)
     try:
         r = client.post(f"/jobs/{job.id}/hide", data={"artist": "Portishead"})
         assert r.status_code == 200
@@ -1737,20 +1795,6 @@ def test_download_dedups_against_queued_jobs_and_scan_candidates(client, monkeyp
         assert r.status_code == 303 and scan.id in r.headers["location"]
     finally:
         _remove_job(scan)
-
-
-# ── POST /jobs/{id}/approve for nonexistent job redirects ──────────
-
-
-
-# ── queue badge count ───────────────────────────────────────────────
-
-
-
-# ── jobs without artist field render safely ─────────────────────────
-
-
-# ── first-run no-credentials CTA ────────────────────────────────────
 
 
 # ── SSE stream event delivery ───────────────────────────────────────
@@ -2583,12 +2627,35 @@ def test_settings_save_rejects_out_of_enum_quality(tmp_path, monkeypatch):
     monkeypatch.setattr(ss, "_any_active_job", lambda: False)
     monkeypatch.setattr(cfg, "STREAMRIP_QUALITY", 4)
 
-    assert ss.save({"STREAMRIP_QUALITY": "99"}) is True
+    assert ss.save({"STREAMRIP_QUALITY": "99"})[0] is True
     on_disk = json.loads((tmp_path / "s.json").read_text())
     assert on_disk.get("STREAMRIP_QUALITY") != "99"
     # A valid value still persists.
-    assert ss.save({"STREAMRIP_QUALITY": "2"}) is True
+    assert ss.save({"STREAMRIP_QUALITY": "2"})[0] is True
     assert json.loads((tmp_path / "s.json").read_text())["STREAMRIP_QUALITY"] == "2"
+
+
+def test_settings_drops_uninstalled_beets_plugins_and_reports(tmp_path, monkeypatch):
+    # A plugin name beets can't load would break every import; it's dropped at
+    # save time and called out, instead of silently persisting and poisoning
+    # imports library-wide.
+    import json
+
+    from qobuz_librarian import config as cfg
+    from qobuz_librarian.web import settings_store as ss
+    monkeypatch.setattr(ss, "SETTINGS_FILE", tmp_path / "s.json")
+    monkeypatch.setattr(ss, "_any_active_job", lambda: False)
+    monkeypatch.setattr(cfg, "BEETS_PLUGINS", [])
+    # Pin the installed set so the test doesn't ride on what beets ships.
+    monkeypatch.setattr(ss, "_available_beets_plugins",
+                        lambda: {"fetchart", "lastgenre", "scrub"})
+
+    ok, warnings = ss.save({"BEETS_PLUGINS": "fetchart, nope, LastGenre"})
+    assert ok is True
+    # Known names survive (LastGenre canonicalised); the bogus one is gone.
+    assert cfg.BEETS_PLUGINS == ["fetchart", "lastgenre"]
+    assert json.loads((tmp_path / "s.json").read_text())["BEETS_PLUGINS"] == "fetchart,lastgenre"
+    assert warnings and "nope" in warnings[0]
 
 
 # ── search results render cover art ────────────────────────────────────────────

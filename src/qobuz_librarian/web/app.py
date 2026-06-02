@@ -709,6 +709,21 @@ def _active_scan(*kinds, statuses=("pending", "scanning")):
     return None
 
 
+def _submit_scan_deduped(job, scan_fn, execute_fn, *kinds, statuses=("pending", "scanning")):
+    """Submit a scan only if one of ``kinds`` isn't already active, atomically.
+
+    Checking _active_scan and submitting in one locked step closes the window
+    where two near-simultaneous POSTs (a double-click, or the auto-trigger
+    landing with a manual click) both pass the check and stack duplicate scans.
+    Returns the job to redirect to — the new one, or the in-flight duplicate."""
+    with _auto_check_lock:
+        existing = _active_scan(*kinds, statuses=statuses)
+        if existing is not None:
+            return existing
+        job_mgr.submit_scan(job, scan_fn, execute_fn)
+        return job
+
+
 def _active_library_scan():
     """A library scan that's already pending/crawling, or None."""
     return _active_scan("library")
@@ -1162,6 +1177,16 @@ async def queue_download(request: Request, album_id: str = Form(""),
                         f'<div class="alert alert-warning" data-flash>Already queued — '
                         f'<a href="/jobs/{dup.id}" class="link">view job</a>.</div>')
                 return RedirectResponse(url=f"/jobs/{dup.id}", status_code=303)
+            # Re-check the run-lock right before submitting. The album fetch
+            # above awaited, and set_mode could have handed the lock to the
+            # terminal in that window — while this not-yet-registered job was
+            # invisible to set_mode's active-job check, so it wouldn't have
+            # refused the handoff. There's no await between here and submit, so
+            # this read and the registry add are atomic on the event loop: once
+            # the job is registered the handoff sees it and is refused instead.
+            busy = _lock_busy_response(request)
+            if busy is not None:
+                return busy
             job_mgr.submit(job, _make_download_run(
                 album, token, treat_as_new=download_as_new_edition))
         if _is_htmx(request):
@@ -1253,11 +1278,11 @@ async def artist_scan(request: Request, artist: str = Form("")):
     from qobuz_librarian.web import flows
     job = job_mgr.Job(title="Artist scan", artist=name)
     job.execute_kind = "album"
-    job_mgr.submit_scan(
+    job = _submit_scan_deduped(
         job,
         lambda j: flows.scan_artist(j, name, _get_token()),
         lambda j, chosen: flows.execute_albums(j, chosen, _get_token()),
-    )
+        "album")
     return RedirectResponse(url=f"/jobs/{job.id}", status_code=303)
 
 
@@ -1315,6 +1340,11 @@ def _hidden_view(request, scope, *, page, restore_action, back_url):
 
 
 async def _restore_hidden(request, scope, redirect):
+    # Mutates the hidden store, so it honours the run-lock like every other
+    # state-changing POST — a restore mustn't race a CLI run or another job.
+    busy = _lock_busy_response(request)
+    if busy is not None:
+        return busy
     from qobuz_librarian.library import hidden as hidden_mod
     form = await request.form()
     artists = form.getlist("artist")[:10000]
@@ -1370,18 +1400,15 @@ async def upgrade_scan(request: Request):
         _get_token()
     except (SystemExit, NoCredsError):
         return _no_creds_response(request)
-    existing = _active_scan("upgrade")
-    if existing is not None:
-        return RedirectResponse(url=f"/jobs/{existing.id}", status_code=303)
     from qobuz_librarian.web import flows
     job = job_mgr.Job(title="Quality upgrade scan")
     job.execute_kind = "upgrade"
     job.review_verb = "Upgrade"  # the action re-rips, not a fresh download
-    job_mgr.submit_scan(
+    job = _submit_scan_deduped(
         job,
         lambda j: flows.scan_upgrades(j, _get_token()),
         lambda j, chosen: flows.execute_upgrades(j, chosen, _get_token()),
-    )
+        "upgrade")
     return RedirectResponse(url=f"/jobs/{job.id}", status_code=303)
 
 
@@ -1402,20 +1429,17 @@ async def upgrade_scan_artist(request: Request, artist: str = Form("")):
         _get_token()
     except (SystemExit, NoCredsError):
         return _no_creds_response(request)
-    existing = _active_scan("upgrade")
-    if existing is not None:
-        return RedirectResponse(url=f"/jobs/{existing.id}", status_code=303)
     from qobuz_librarian.web import flows
     # title is the scan kind only; the job-page header prepends `artist` already
     # (the existing /artist library scan follows the same convention).
     job = job_mgr.Job(title="Quality upgrade scan", artist=name)
     job.execute_kind = "upgrade"
     job.review_verb = "Upgrade"
-    job_mgr.submit_scan(
+    job = _submit_scan_deduped(
         job,
         lambda j: flows.scan_upgrades_for_artist(j, name, _get_token()),
         lambda j, chosen: flows.execute_upgrades(j, chosen, _get_token()),
-    )
+        "upgrade")
     return RedirectResponse(url=f"/jobs/{job.id}", status_code=303)
 
 
@@ -1455,18 +1479,15 @@ async def downsample_scan(request: Request):
     busy = _lock_busy_response(request)
     if busy is not None:
         return busy
-    existing = _active_scan("downsample")
-    if existing is not None:
-        return RedirectResponse(url=f"/jobs/{existing.id}", status_code=303)
     from qobuz_librarian.web import flows
     job = job_mgr.Job(title="Downsample scan")
     job.execute_kind = "downsample"
     job.review_verb = "Downsample"  # the action rewrites files, not a download
-    job_mgr.submit_scan(
+    job = _submit_scan_deduped(
         job,
         lambda j: flows.scan_downsamples(j),
         lambda j, chosen: flows.execute_downsamples(j, chosen),
-    )
+        "downsample")
     return RedirectResponse(url=f"/jobs/{job.id}", status_code=303)
 
 
@@ -1480,18 +1501,15 @@ async def downsample_scan_artist(request: Request, artist: str = Form("")):
     name, err = _clean_artist_name(artist)
     if err is not None:
         return err
-    existing = _active_scan("downsample")
-    if existing is not None:
-        return RedirectResponse(url=f"/jobs/{existing.id}", status_code=303)
     from qobuz_librarian.web import flows
     job = job_mgr.Job(title="Downsample scan", artist=name)
     job.execute_kind = "downsample"
     job.review_verb = "Downsample"
-    job_mgr.submit_scan(
+    job = _submit_scan_deduped(
         job,
         lambda j: flows.scan_downsamples_for_artist(j, name),
         lambda j, chosen: flows.execute_downsamples(j, chosen),
-    )
+        "downsample")
     return RedirectResponse(url=f"/jobs/{job.id}", status_code=303)
 
 
@@ -1517,17 +1535,14 @@ async def repair_scan(request: Request):
         _get_token()
     except (SystemExit, NoCredsError):
         return _no_creds_response(request)
-    existing = _active_scan("repair")
-    if existing is not None:
-        return RedirectResponse(url=f"/jobs/{existing.id}", status_code=303)
     from qobuz_librarian.web import flows
     job = job_mgr.Job(title="Repair scan")
     job.execute_kind = "repair"
-    job_mgr.submit_scan(
+    job = _submit_scan_deduped(
         job,
         lambda j: flows.scan_repairs(j, _get_token()),
         lambda j, chosen: flows.execute_repairs(j, chosen, _get_token()),
-    )
+        "repair")
     return RedirectResponse(url=f"/jobs/{job.id}", status_code=303)
 
 
@@ -1546,17 +1561,14 @@ async def repair_scan_artist(request: Request, artist: str = Form("")):
         _get_token()
     except (SystemExit, NoCredsError):
         return _no_creds_response(request)
-    existing = _active_scan("repair")
-    if existing is not None:
-        return RedirectResponse(url=f"/jobs/{existing.id}", status_code=303)
     from qobuz_librarian.web import flows
     job = job_mgr.Job(title="Repair scan", artist=name)
     job.execute_kind = "repair"
-    job_mgr.submit_scan(
+    job = _submit_scan_deduped(
         job,
         lambda j: flows.scan_repairs_for_artist(j, name, _get_token()),
         lambda j, chosen: flows.execute_repairs(j, chosen, _get_token()),
-    )
+        "repair")
     return RedirectResponse(url=f"/jobs/{job.id}", status_code=303)
 
 
@@ -1690,9 +1702,6 @@ async def migrate_scan(request: Request):
             "page": "migrate", "src": src, "dest": dest,
             "configured": bool(src and dest), "error": err,
             "migrate_checks": _migrate_checks(src, dest)})
-    existing = _active_scan("migration")
-    if existing is not None:
-        return RedirectResponse(url=f"/jobs/{existing.id}", status_code=303)
     form = await request.form()
     use_acoustid = form.get("acoustid") == "on"
     in_place = form.get("in_place") == "on"
@@ -1704,13 +1713,13 @@ async def migrate_scan(request: Request):
     # source folders on an in-place move (the live execute below gets it too).
     job.execute_args = {"dest": str(dest), "in_place": bool(in_place),
                         "src": str(src)}
-    job_mgr.submit_scan(
+    job = _submit_scan_deduped(
         job,
         lambda j: flows.scan_migration(j, src, dest, use_acoustid=use_acoustid,
                                        in_place=in_place),
         lambda j, chosen: flows.execute_migration(j, chosen, dest,
                                                   in_place=in_place, src=src),
-    )
+        "migration")
     return RedirectResponse(url=f"/jobs/{job.id}", status_code=303)
 
 
@@ -1728,7 +1737,7 @@ async def audit_redirect_post():
 
 @app.get("/jobs/{job_id}", response_class=HTMLResponse)
 async def job_page(request: Request, job_id: str, approved: bool = False,
-                   stale: bool = False):
+                   stale: bool = False, page: int = 1):
     job = job_mgr.registry.get(job_id)
     historical = False
     if not job:
@@ -1736,14 +1745,37 @@ async def job_page(request: Request, job_id: str, approved: bool = False,
         if job is None:
             return RedirectResponse(url="/queue", status_code=303)
         historical = True
-    return _tr(request, "job.html", {"job": job, "page": "queue",
-                                     "approved": approved, "stale": stale,
-                                     "historical": historical,
-                                     "JobStatus": job_mgr.JobStatus})
+    ctx = {"job": job, "page": "queue",
+           "approved": approved, "stale": stale,
+           "historical": historical,
+           "JobStatus": job_mgr.JobStatus}
+    ctx.update(_review_context(job, page))
+    return _tr(request, "job.html", ctx)
+
+
+def _review_context(job, page=1, query=""):
+    """Template vars for a paginated awaiting-review body: the current page's
+    artist groups, the page number/count, and the authoritative whole-set
+    counts. Cheap no-op for non-review states (no candidates → one empty page).
+    """
+    from qobuz_librarian.ui_cli.colors import format_size
+    groups = _review_artist_groups(job, query)
+    page_groups, page, n_pages = _paginate_groups(groups, page)
+    counts = job.selection_counts()
+    return {
+        "review_groups": page_groups,
+        "review_page": page,
+        "review_pages": n_pages,
+        "review_query": query,
+        "review_counts": counts,
+        "review_reclaimable_label": (format_size(counts["reclaimable"])
+                                     if counts["reclaimable"] else ""),
+        "review_page_size": REVIEW_PAGE_ARTISTS,
+    }
 
 
 @app.get("/jobs/{job_id}/content", response_class=HTMLResponse)
-async def job_content(request: Request, job_id: str):
+async def job_content(request: Request, job_id: str, page: int = 1):
     """The job page's state-specific body, on its own. The live page swaps
     this in when the SSE stream reports the job finished, so the terminal
     view has one render path — the server's — instead of a faked-up bar."""
@@ -1752,8 +1784,25 @@ async def job_content(request: Request, job_id: str):
         job = job_mgr.load_historical_job(job_id)
         if job is None:
             return HTMLResponse("", status_code=404)
-    return _tr(request, "_job_body.html", {"job": job,
-                                           "JobStatus": job_mgr.JobStatus})
+    ctx = {"job": job, "JobStatus": job_mgr.JobStatus}
+    ctx.update(_review_context(job, page))
+    return _tr(request, "_job_body.html", ctx)
+
+
+@app.get("/jobs/{job_id}/review", response_class=HTMLResponse)
+async def job_review_page(request: Request, job_id: str, page: int = 1,
+                          q: str = ""):
+    """One page of the paginated review list (groups + pager + summary), for
+    Prev/Next and the whole-set artist filter. Rendered from saved selection
+    flags, so ticks persist and span pages."""
+    job = job_mgr.registry.get(job_id)
+    if not job:
+        job = job_mgr.load_historical_job(job_id)
+        if job is None:
+            return HTMLResponse("", status_code=404)
+    ctx = {"job": job, "JobStatus": job_mgr.JobStatus}
+    ctx.update(_review_context(job, page, q))
+    return _tr(request, "_review_page.html", ctx)
 
 
 @app.post("/jobs/{job_id}/approve")
@@ -1764,10 +1813,10 @@ async def job_approve(request: Request, job_id: str):
     job = job_mgr.registry.get(job_id)
     if not job:
         return RedirectResponse(url="/queue", status_code=303)
-    form = await request.form()
-    # Cap at 10k cids — defensive against a forged form with megabytes of ids.
-    selected = form.getlist("cid")[:10000]
-    approved = job_mgr.approve(job, selected)
+    # Selection is saved server-side as the user ticks (the paginated review no
+    # longer carries every checkbox in the form), so approve runs against the
+    # saved flags — passing None keeps them as-is rather than reading the form.
+    approved = job_mgr.approve(job, None)
     flag = "approved=1" if approved else "stale=1"
     return RedirectResponse(url=f"/jobs/{job_id}?{flag}", status_code=303)
 
@@ -1785,6 +1834,105 @@ def _hide_scope(execute_kind):
     if execute_kind == "downsample":
         return hidden_mod.SCOPE_DOWNSAMPLE
     return hidden_mod.SCOPE_MISSING
+
+
+# Artist groups per review page. A huge gap scan can surface thousands of
+# albums; rendering them all is what made the review page tank, so the server
+# pages by whole artist groups (an album never splits across a page).
+REVIEW_PAGE_ARTISTS = 25
+
+
+def _review_artist_groups(job, query=""):
+    """Candidates grouped by artist for the review screen, in a deterministic
+    order so pagination is stable across reloads. ``query`` filters across the
+    WHOLE set (artist name or any album title), so the filter spans pages, not
+    just the one on screen. Returns a list of (artist, items) pairs."""
+    with job._lock:
+        cands = list(job.candidates)
+    q = (query or "").strip().lower()
+    groups: dict = {}
+    for c in cands:
+        artist = c.get("artist") or ""
+        if q:
+            hay = artist + " " + (c.get("title") or "")
+            if q not in hay.lower():
+                continue
+        groups.setdefault(artist, []).append(c)
+    # Sort groups by artist (case-insensitive), tracks by their stable seq.
+    ordered = []
+    for artist in sorted(groups, key=lambda a: a.casefold()):
+        items = sorted(groups[artist], key=lambda c: c.get("seq", 0))
+        ordered.append((artist, items))
+    return ordered
+
+
+def _paginate_groups(groups, page):
+    """Slice artist groups into one page. Returns (page_groups, page, n_pages).
+    ``page`` is clamped into range so a stale/empty page lands somewhere valid."""
+    n_pages = max(1, (len(groups) + REVIEW_PAGE_ARTISTS - 1) // REVIEW_PAGE_ARTISTS)
+    page = max(1, min(int(page or 1), n_pages))
+    start = (page - 1) * REVIEW_PAGE_ARTISTS
+    return groups[start:start + REVIEW_PAGE_ARTISTS], page, n_pages
+
+
+def _get_reviewable_job(job_id):
+    """A job from the live registry, or rehydrated from disk if it has been
+    evicted — so a restored/archived awaiting-review job's selection and pager
+    keep working, not just the page render. Returns None if it's nowhere."""
+    job = job_mgr.registry.get(job_id)
+    if job is None:
+        job = job_mgr.load_historical_job(job_id)
+    return job
+
+
+def _selection_payload(job):
+    """JSON the selection/hide endpoints return so every open tab can refresh
+    its counts from the server instead of recounting a partial DOM."""
+    from qobuz_librarian.ui_cli.colors import format_size
+    c = job.selection_counts()
+    return {
+        "selected": c["selected"],
+        "total": c["total"],
+        "artists": c["artists"],
+        "reclaimable": c["reclaimable"],
+        "reclaimable_label": format_size(c["reclaimable"]) if c["reclaimable"] else "",
+    }
+
+
+@app.post("/jobs/{job_id}/select")
+async def job_select(request: Request, job_id: str):
+    """Persist a single tick/untick. The review page no longer trusts the
+    posted checkboxes (pagination means most aren't in the DOM), so each toggle
+    saves immediately and the saved flags are the source of truth at download."""
+    job = _get_reviewable_job(job_id)
+    if not job or job.execute_kind not in _TRIAGE_KINDS + ("repair", "migration"):
+        return JSONResponse({"error": "not found"}, status_code=404)
+    from qobuz_librarian.web import job_persistence
+    form = await request.form()
+    cid = (form.get("cid") or "").strip()
+    on = (form.get("checked") or "").strip().lower() in ("1", "true", "on", "yes")
+    if cid and job.set_selected(cid, on):
+        job_persistence.persist(job)
+        job.notify_review_changed()
+    return JSONResponse(_selection_payload(job))
+
+
+@app.post("/jobs/{job_id}/select-all")
+async def job_select_all(request: Request, job_id: str):
+    """Bulk select/deselect. scope=all flips every candidate across all pages;
+    scope=page flips only the cids posted (the visible page)."""
+    job = _get_reviewable_job(job_id)
+    if not job or job.execute_kind not in _TRIAGE_KINDS + ("repair", "migration"):
+        return JSONResponse({"error": "not found"}, status_code=404)
+    from qobuz_librarian.web import job_persistence
+    form = await request.form()
+    on = (form.get("on") or "").strip().lower() in ("1", "true", "on", "yes")
+    scope = (form.get("scope") or "all").strip().lower()
+    cids = form.getlist("cid")[:100000] if scope == "page" else None
+    if job.set_all_selected(on, cids=cids):
+        job_persistence.persist(job)
+        job.notify_review_changed()
+    return JSONResponse(_selection_payload(job))
 
 
 @app.post("/jobs/{job_id}/hide", response_class=HTMLResponse)
@@ -1806,10 +1954,14 @@ async def job_hide(request: Request, job_id: str):
         from qobuz_librarian.web import flows
         form = await request.form()
         artist = (form.get("artist") or "").strip()
-        keep = form.getlist("cid")[:10000]
-        n = flows.dismiss_albums(job, artist, keep,
-                                 scope=_hide_scope(job.execute_kind))
-        remaining = [c for c in job.candidates if c.get("artist") == artist]
+        # Selection is server-backed, so hide keeps this artist's ticked albums
+        # and drops the rest — no form keep-set, which under pagination would
+        # only carry the visible page and clobber other pages' selections.
+        n = flows.dismiss_albums(job, artist, scope=_hide_scope(job.execute_kind))
+        if n:
+            job.notify_review_changed()  # keep other open tabs in sync
+        with job._lock:
+            remaining = [c for c in job.candidates if c.get("artist") == artist]
         if remaining:
             resp = _tr(request, "_review_group.html",
                        {"job": job, "artist": artist, "items": remaining,
@@ -1817,33 +1969,13 @@ async def job_hide(request: Request, job_id: str):
         else:
             resp = HTMLResponse("")  # whole artist hidden — outerHTML drops it
         if n:
-            resp.headers["HX-Trigger"] = '{"qlHidden": %d}' % n
+            # Carry the fresh authoritative counts so the page updates the
+            # summary/selected/reclaimable without recounting a partial DOM.
+            import json as _json
+            resp.headers["HX-Trigger"] = _json.dumps(
+                {"qlHidden": {"n": n, "counts": _selection_payload(job)}})
         return resp
     return HTMLResponse("")
-
-
-@app.get("/jobs/{job_id}/groups", response_class=HTMLResponse)
-async def job_groups(request: Request, job_id: str, after: int = -1):
-    """Render artist groups whose albums are newer than ``after`` (candidate
-    seq). The live scan page polls this to append artists as the walk finds
-    them, leaving the groups already on screen — and their tick/expand state —
-    untouched."""
-    job = job_mgr.registry.get(job_id)
-    if not job or job.execute_kind not in _TRIAGE_KINDS:
-        return HTMLResponse("")
-    with job._lock:
-        cands = list(job.candidates)
-    by_artist: dict = {}
-    for c in cands:
-        by_artist.setdefault(c.get("artist"), []).append(c)
-    fresh = [a for a, items in by_artist.items()
-             if any(c.get("seq", -1) > after for c in items)]
-    if not fresh:
-        return HTMLResponse("")
-    tmpl = templates.env.get_template("_review_group.html")
-    parts = [tmpl.render(job=job, artist=a, items=by_artist[a],
-                         triage=True, open=False) for a in fresh]
-    return HTMLResponse("\n".join(parts))
 
 
 @app.post("/jobs/{job_id}/retry")
@@ -2078,7 +2210,7 @@ def _resolve_host_path(container_path: str) -> tuple[str, bool]:
 
 def _settings_response(request, *, saved=False, queued=False, connected=False,
                        unverified=False, error="", mode="", user_id=None,
-                       auth_token_prefill="", diagnostics=None):
+                       auth_token_prefill="", diagnostics=None, warnings=None):
     from qobuz_librarian.web import settings_store
     creds = _read_creds()
     values = settings_store.current()
@@ -2100,6 +2232,7 @@ def _settings_response(request, *, saved=False, queued=False, connected=False,
         "connected": connected,
         "unverified": unverified,
         "error": error,
+        "warnings": warnings or [],
         "page": "settings",
         "library_paths": [
             {"label": label, "container": cp,
@@ -2228,10 +2361,19 @@ async def save_behavior(request: Request):
     for k in settings_store.TEXT_KEYS:
         if k in form:
             values[k] = form.get(k, "")
-    ok = settings_store.save(values)
+    ok, warnings = settings_store.save(values)
     # Applied in-memory regardless; error only means it won't persist.
     if not ok:
         return RedirectResponse(url="/settings?error=persist", status_code=303)
+    if warnings:
+        # Re-render in place so we can name exactly which entries were dropped
+        # (a misspelt provider, an uninstalled beets plugin) without smuggling
+        # user-typed values through the redirect URL.
+        loop = asyncio.get_running_loop()
+        diags = await loop.run_in_executor(None, _diagnostics)
+        return _settings_response(request, saved=True,
+                                  queued=settings_store._any_active_job(),
+                                  warnings=warnings, diagnostics=diags)
     suffix = "&queued=1" if settings_store._any_active_job() else ""
     return RedirectResponse(url=f"/settings?saved=1{suffix}", status_code=303)
 
@@ -2346,6 +2488,8 @@ async def job_stream(job_id: str):
                         yield ("event: progress\ndata: "
                                + line[len(job_mgr.PROGRESS_PREFIX):] + "\n\n")
                         continue
+                    if line == job_mgr.REVIEW_CHANGED:
+                        continue  # review-sync nudge — handled by the review stream
                     escaped = line.replace("\n", " ").replace("\r", "")
                     yield f"data: {escaped}\n\n"
                 except _queue.Empty:
@@ -2370,7 +2514,58 @@ async def job_stream(job_id: str):
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
-def _job_to_dict(job, *, log_tail: int = 50, with_candidates: bool = False):
+@app.get("/api/jobs/{job_id}/review-stream")
+async def job_review_stream(job_id: str):
+    """Live channel for an awaiting-review page: emits `event: review` whenever
+    selection or candidates change (a tick/untick/hide in this or another tab),
+    so every open view stays in sync. Closes once the job leaves review (the
+    page then reloads to show the executing/finished state). Separate from the
+    progress stream, which closes the moment a scan finishes."""
+    # Only a LIVE job (in the registry) has a producer that fans out review
+    # nudges; a historical/evicted review still renders and saves selection via
+    # the disk fallback, but can't receive live cross-tab updates — so end its
+    # stream cleanly rather than 404 (which surfaces as a console error) or hold
+    # a socket that never gets a nudge.
+    job = job_mgr.registry.get(job_id)
+
+    async def _generator():
+        import queue as _queue
+        yield "retry: 1000\n\n"
+        if job is None or job.status != job_mgr.JobStatus.AWAITING_REVIEW:
+            yield "event: closed\ndata: inactive\n\n"
+            return
+        sub = job.subscribe()
+        loop = asyncio.get_running_loop()
+        empty_ticks = 0
+        try:
+            while True:
+                try:
+                    line = await loop.run_in_executor(
+                        _SSE_EXECUTOR, lambda: sub.get(timeout=0.5))
+                    if line == job_mgr.REVIEW_CHANGED:
+                        yield "event: review\ndata: changed\n\n"
+                    # All other fanned-out lines (log/progress/end) are ignored
+                    # here — this channel only carries review-sync nudges.
+                except _queue.Empty:
+                    if job.status != job_mgr.JobStatus.AWAITING_REVIEW:
+                        yield f"event: closed\ndata: {job.status.value}\n\n"
+                        break
+                    empty_ticks += 1
+                    if empty_ticks >= _SSE_HEARTBEAT_TICKS:
+                        empty_ticks = 0
+                        yield ": ping\n\n"
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    break
+        finally:
+            job.unsubscribe(sub)
+
+    return StreamingResponse(_generator(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+def _job_to_dict(job, *, log_tail: int = 50):
     out = {
         "id": job.id,
         "status": job.status.value,
@@ -2383,8 +2578,6 @@ def _job_to_dict(job, *, log_tail: int = 50, with_candidates: bool = False):
     }
     if log_tail:
         out["log_lines"] = job.log_lines[-log_tail:]
-    if with_candidates and getattr(job, "candidates", None):
-        out["candidates"] = job.candidates
     return out
 
 

@@ -1,5 +1,5 @@
 <div id="job-content" data-job-id="{{ job.id }}"
-  {%- if job.status.value == 'awaiting_review' or (job.execute_kind in ('library', 'upgrade', 'downsample') and job.status.value == 'scanning') %} data-job-view="review"{% if job.status.value == 'scanning' %} data-scanning="1"{% endif %}
+  {%- if job.status.value == 'awaiting_review' %} data-job-view="review"
   {%- elif job.status.value in ('pending', 'scanning', 'running') %} data-job-view="progress"{% endif %}>
   <div class="flex items-center justify-between gap-3 mb-1">
     <h1 class="text-2xl font-bold">{% if job.artist %}{{ job.artist }} — {% endif %}{{ job.title }}</h1>
@@ -14,40 +14,17 @@
 
   {% set s = job.status.value %}
 
-  {# ── Live review — also drives a running Library scan, so its results fill
-       in and become hideable/tickable while the walk is still going. ─────── #}
-  {% if s == 'awaiting_review' or (job.execute_kind in ('library', 'upgrade', 'downsample') and s == 'scanning') %}
-    {% set scanning = (s == 'scanning') %}
-    {% if scanning %}
-    <div id="scan-header" class="flex items-center justify-between mb-3">
-      <p class="text-base-content/60">Scanning
-        {% if job.cancel_requested %}<span class="badge badge-ghost badge-sm ml-2">stopping</span>{% endif %}
-        <span id="sse-reconnect" class="badge badge-warning badge-sm ml-2 hidden" role="status" aria-live="polite">connection lost — reconnecting…</span>
-      </p>
-      {% if not job.cancel_requested %}
-      <form action="/jobs/{{ job.id }}/cancel" method="post">
-        <input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}">
-        <button type="submit" class="btn btn-sm btn-ghost">Cancel</button>
-      </form>
-      {% endif %}
-    </div>
-    <div id="progress-card" class="card bg-base-200 mb-3 hidden">
-      <div class="card-body py-4">
-        <div class="flex items-baseline justify-between gap-3 mb-2">
-          <span id="prog-label" class="font-medium"></span>
-          <span id="prog-count" class="text-sm text-base-content/50 shrink-0 tabular-nums"></span>
-        </div>
-        <progress id="prog-bar" class="progress progress-primary w-full" aria-labelledby="prog-label"></progress>
-        <p id="prog-item" class="text-xs text-base-content/50 mt-2 truncate"></p>
-      </div>
-    </div>
-    {% endif %}
-
+  {# ── Review (scan finished, results to triage). A big library makes this
+       list huge, so it is paginated by artist and only shown once the scan is
+       DONE — while scanning we show the lightweight progress view below, which
+       keeps the page light no matter how many albums turn up. ────────────── #}
+  {% if s == 'awaiting_review' %}
     {% if job.summary %}
     <div class="alert alert-info mb-4"><span class="break-words">{{ job.summary }}</span></div>
     {% endif %}
 
-    <form id="review-form" action="/jobs/{{ job.id }}/approve" method="post">
+    <form id="review-form" action="/jobs/{{ job.id }}/approve" method="post"
+          data-job-id="{{ job.id }}" data-review-kind="{{ job.execute_kind }}">
       <input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}">
       {% include "_review_candidates.html" %}
       {# Sticky so the action stays reachable while triaging a long list — tick
@@ -55,10 +32,10 @@
       <div class="sticky bottom-0 z-20 -mx-4 mt-4 flex flex-wrap items-center gap-2
                   border-t border-base-300 bg-base-100/95 px-4 py-3
                   supports-[backdrop-filter]:bg-base-100/75 supports-[backdrop-filter]:backdrop-blur">
-        <button type="submit" id="review-submit" class="btn btn-primary"{% if scanning %} disabled{% endif %}
+        <button type="submit" id="review-submit" class="btn btn-primary"{% if not review_counts.selected %} disabled{% endif %}
           {%- if job.execute_kind == 'downsample' %} data-confirm="Downsample the selected albums now? Each file is rewritten in place at CD rate — the hi-res original is not kept and this cannot be undone."
           {%- elif job.execute_kind == 'migration' and job.review_verb == 'Move' %} data-confirm="Move the selected files now? This relocates your originals instead of copying them, and removes the folders it empties."
-          {%- endif %}>{{ job.review_verb }}<span data-count></span> selected</button>
+          {%- endif %}>{{ job.review_verb }}<span data-count>{% if review_counts.selected %} {{ review_counts.selected }}{% endif %}</span> selected</button>
         <button type="submit" formaction="/jobs/{{ job.id }}/cancel" class="btn btn-ghost">Cancel</button>
         {% if job.execute_kind == 'upgrade' %}
         <a href="/upgrade/hidden" class="btn btn-ghost btn-sm sm:ml-auto">Hidden upgrades</a>
@@ -70,12 +47,7 @@
       </div>
     </form>
 
-    {% if scanning %}
-    <details class="mt-3">
-      <summary class="text-sm text-base-content/50 cursor-pointer select-none">Show scan log</summary>
-      <div class="log-console mt-2" id="log"></div>
-    </details>
-    {% elif job.log_lines %}
+    {% if job.log_lines %}
     <div class="divider text-base-content/30 text-xs">log</div>
     <div class="log-console" style="max-height:min(40vh,600px)">
       {%- for line in job.log_lines %}{{ line }}
@@ -83,7 +55,8 @@
     </div>
     {% endif %}
 
-  {# ── Scanning (other modes) / running / pending: live log ─────────────── #}
+  {# ── Scanning / running / pending: live progress only (no interactive list,
+       so the page stays light however large the library). ───────────────── #}
   {% elif s in ('pending', 'scanning', 'running') %}
     <div class="flex items-center justify-between mb-3">
       <p class="text-base-content/60">
@@ -112,6 +85,12 @@
         <p id="prog-item" class="text-xs text-base-content/50 mt-2 truncate"></p>
       </div>
     </div>
+
+    {% if s == 'scanning' and job.execute_kind in ('library', 'upgrade', 'downsample', 'new_releases') %}
+    {# Live tally while the scan runs — the full tickable list only appears once
+       it finishes, so a giant library never floods this page mid-scan. #}
+    <p id="scan-found" class="text-sm text-base-content/60 mb-3" aria-live="polite"></p>
+    {% endif %}
 
     <details class="mt-1">
       <summary class="text-sm text-base-content/50 cursor-pointer select-none">Show details</summary>
