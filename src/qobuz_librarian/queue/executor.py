@@ -1,6 +1,4 @@
-"""Queue executor — download, pre-import hooks, beets, backup resolution.
-
-"""
+"""Queue executor — download, pre-import hooks, beets, backup resolution."""
 import errno
 import re
 import shutil
@@ -384,18 +382,33 @@ def _resolve_queue_item(item, args, imported_globally):
     # Drop on success; restore in place if the queue item failed.
     gfb = item.get("gap_fill_backup_path")
     if gfb is not None and gfb.exists():
-        # Require zero lossy-deletes too: if a re-ripped present track came
-        # back lossy and was deleted, the backed-up original must be restored,
-        # not cleared (mirrors the full-album gap-fill gate in process.py).
-        gap_fill_succeeded = (had_any_success
-                              and item.get("n_fail", 0) == 0
-                              and item.get("n_lossy", 0) == 0)
-        if gap_fill_succeeded:
+        # Drop the moved-aside present tracks only when the re-rip imported
+        # cleanly — _item_strict_success requires n_fail == 0 AND n_lossy == 0,
+        # so a lossy/short re-rip of a present track can't clear the original
+        # (mirrors the full-album gap-fill gate in process.py). That signal is
+        # independent of whether we then *located* the filled folder, which
+        # matters: a clean import beets filed where the matcher can't find it
+        # must NOT be treated as a failure and restored over itself.
+        if _item_strict_success and album_has_content:
             try:
                 shutil.rmtree(gfb)
             except OSError as e:
                 log.info(fmt(C.YELLOW,
                     f"  ⚠  Gap-fill complete but couldn't remove backup: {e}"))
+        elif _item_strict_success:
+            # Imported cleanly, but beets filed the album where the matcher
+            # couldn't find it (renamed past the fuzzy gate, or under an
+            # unexpected albumartist), so post_dir fell back to the now-empty
+            # album_dir. Restoring the backed-up tracks here would strand them
+            # beside the fresh import and destroy the only backup — keep it and
+            # let the user reconcile, exactly as the upgrade branch above does.
+            log.info(fmt(C.YELLOW,
+                f"  ⚠  {truncate(album_dir.name, 40)}: filled, but the new "
+                f"folder couldn't be located — keeping the backed-up tracks "
+                f"rather than restoring them as a duplicate."))
+            log.info(fmt(C.GRAY,
+                f"     Backup at {gfb}; remove it once you've confirmed the "
+                f"fill landed."))
         else:
             _restore_target = album_dir or post_dir
             if _restore_target is None:
@@ -404,7 +417,7 @@ def _resolve_queue_item(item, args, imported_globally):
                     f"Backed-up tracks at: {gfb}"))
             else:
                 if args.no_import:
-                    # --no-import skips beets, so had_any_success is always
+                    # --no-import skips beets, so the success gate is always
                     # False here even when the download landed fine. Restoring
                     # the moved-aside present tracks is right, but it's not a
                     # failure — say so instead of "gap-fill did not succeed".
@@ -416,9 +429,14 @@ def _resolve_queue_item(item, args, imported_globally):
                         f"  ⚠  {truncate(_restore_target.name, 40)}: gap-fill "
                         f"did not succeed; restoring backed-up tracks…"))
                 _n_back = restore_gap_fill_backup(gfb, _restore_target)
-                log.info(fmt(C.GREEN,
-                    f"  ✓  Restored {_n_back} track(s) to "
-                    f"{truncate(_restore_target.name, 50)}"))
+                if _n_back:
+                    log.info(fmt(C.GREEN,
+                        f"  ✓  Restored {_n_back} track(s) to "
+                        f"{truncate(_restore_target.name, 50)}"))
+                else:
+                    log.info(fmt(C.RED,
+                        f"  ✗  Couldn't restore the backed-up tracks. They're "
+                        f"preserved at:\n     {gfb}"))
 
     n_ok = item.get("n_ok", 0)
     n_fail = item.get("n_fail", 0)
@@ -630,6 +648,17 @@ def _execute_download_queue(queue, args, token, *, on_progress=None):
                 log.info(fmt(C.YELLOW,
                     "    ⚠  No staged audio dir found for this album — skipping beets."))
             else:
+                # Repair carries a callback that re-tags the staged refills
+                # with the originals' own metadata before beets files them, so
+                # a recording that also lives on a compilation comes back tagged
+                # for the album the user owns. No-op for every other queue item.
+                retag = item.get("pre_import_retag")
+                if callable(retag):
+                    try:
+                        retag(album_dirs)
+                    except Exception as _e_rt:
+                        log.info(fmt(C.YELLOW,
+                            f"  ⚠  repair retag step failed: {_e_rt}"))
                 try:
                     sigs = _run_pre_import_hooks_for_dirs(album_dirs, args)
                     queue_transient_lyric_sigs.extend(sigs)
@@ -703,8 +732,13 @@ def _execute_download_queue(queue, args, token, *, on_progress=None):
             and auth_lost_exc is None
             and not interrupted):
         try:
+            # Search the imported folders first, then the staging tree: in a
+            # mixed batch, an album that imported cleanly is matched in its
+            # post_dir, while one whose import failed is parked under
+            # STAGING_DIR/.beets_retry/ — without the staging fallback here its
+            # transient-lyric sigs would be silently dropped and never retried.
             resolved = _resolve_signatures_to_paths(
-                queue_transient_lyric_sigs, _post_dirs)
+                queue_transient_lyric_sigs, _post_dirs + [cfg.STAGING_DIR])
             if resolved:
                 _record_post_import_lyric_retry(resolved)
                 vlog(f"lyric retry: queued {len(resolved)} "
