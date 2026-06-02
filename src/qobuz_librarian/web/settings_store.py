@@ -92,8 +92,9 @@ TEXT_FIELDS = [
     ("BEETS_PLUGINS", "beets plugins",
      "Comma-separated list of beets plugins to enable. Replaces the list "
      "in /config/beets/config.yaml entirely. Empty = honour that file "
-     "(seeded with fetchart only). Examples: lastgenre, replaygain, "
-     "scrub, edit.",
+     "(seeded with fetchart only). Names that aren't installed here are "
+     "dropped (and called out) so a typo can't break every import. "
+     "Examples: lastgenre, replaygain, scrub, edit.",
      "list", None, "fetchart,lastgenre,replaygain"),
     ("ARTIST_CATALOG_CACHE_TTL", "Album-list freshness",
      "How long the library and artist gap scans reuse a fetched discography "
@@ -169,10 +170,59 @@ def _normalize_list_choices(items, choices):
     for it in items:
         c = canon.get(str(it).strip().lower())
         if c is None:
-            dropped.append(it)
+            dropped.append(str(it).strip())
         elif c not in kept:
             kept.append(c)
     return kept, dropped
+
+
+def _available_beets_plugins():
+    """Plugin names beets can actually import on this server (submodules of the
+    beetsplug namespace). Returns None when the set can't be determined — beets
+    isn't importable from here, or enumeration failed — so the caller validates
+    nothing rather than dropping every plugin the user typed."""
+    try:
+        import pkgutil
+
+        import beetsplug
+    except Exception:
+        return None
+    try:
+        names = {m.name for m in pkgutil.iter_modules(beetsplug.__path__)
+                 if not m.name.startswith("_")}
+    except Exception:
+        return None
+    return names or None
+
+
+def _validate_list(key, items):
+    """Sanitise a comma-separated list setting. Returns (kept, dropped).
+
+    LYRICS_PROVIDERS is matched against the providers lyric_fetch can drive;
+    BEETS_PLUGINS against the plugins beets can actually load here — a name
+    that can't load would otherwise break every import silently. Both
+    normalise spelling case-insensitively, drop unknowns, and de-dupe. Fields
+    with no known set (free-text lists) just de-dupe."""
+    if key == "LYRICS_PROVIDERS":
+        return _normalize_list_choices(items, LYRICS_PROVIDER_CHOICES)
+    if key == "BEETS_PLUGINS":
+        avail = _available_beets_plugins()
+        if avail:
+            return _normalize_list_choices(items, sorted(avail))
+        return list(dict.fromkeys(i.strip() for i in items if i.strip())), []
+    return list(dict.fromkeys(i.strip() for i in items if i.strip())), []
+
+
+def _dropped_warning(key, dropped):
+    names = ", ".join(dropped)
+    if key == "LYRICS_PROVIDERS":
+        return (f"Ignored unrecognised lyrics provider(s): {names}. "
+                f"Known providers are {', '.join(LYRICS_PROVIDER_CHOICES)}.")
+    if key == "BEETS_PLUGINS":
+        return (f"Ignored beets plugin(s) not installed on this server: {names}. "
+                "They were dropped so imports keep working — check the spelling, "
+                "or install them and add them back.")
+    return f"Ignored unrecognised value(s) for {key}: {names}."
 
 
 def current() -> dict:
@@ -231,8 +281,7 @@ def _apply(values: dict):
         raw = values[key]
         if kind == "list":
             items = _str_to_list(raw) if isinstance(raw, str) else list(raw or [])
-            if choices:
-                items, _ = _normalize_list_choices(items, choices)
+            items, _ = _validate_list(key, items)
             setattr(cfg, key, items)
         elif kind == "enum":
             v = str(raw or "").strip().lower()
@@ -299,21 +348,25 @@ def drain_pending():
 _save_lock = threading.Lock()
 
 
-def save(values: dict) -> bool:
-    """Apply settings and persist them atomically.
+def save(values: dict):
+    """Apply settings and persist them atomically. Returns (ok, warnings).
 
     If a job is already active, the in-memory apply is deferred until the
     worker idles (drain_pending). Persistence to disk still happens
-    immediately so the new values survive a restart. Returns False only
-    if persistence failed. The whole read-merge-write is serialised so
-    concurrent saves don't lose each other's keys.
+    immediately so the new values survive a restart. `ok` is False only if
+    persistence failed; `warnings` lists any list-field entries that were
+    dropped as unknown (e.g. a misspelt lyrics provider or an uninstalled
+    beets plugin) so the caller can tell the user instead of silently eating
+    them. The whole read-merge-write is serialised so concurrent saves don't
+    lose each other's keys.
     """
     with _save_lock:
         return _save_locked(values)
 
 
-def _save_locked(values: dict) -> bool:
+def _save_locked(values: dict):
     merged = current()
+    warnings = []
     # Map the legacy COMPRESS_ENABLED key onto the canonical name so
     # callers passing the old key still flip the flag.
     if "COMPRESS_ENABLED" in values and "DOWNSAMPLE_HIRES_ENABLED" not in values:
@@ -325,7 +378,7 @@ def _save_locked(values: dict) -> bool:
     for key, _, _, kind, choices, _ in TEXT_FIELDS:
         if key not in values:
             continue
-        # Enum/list choices are validated here too (not just in _apply), so a
+        # Enum/list values are validated here too (not just in _apply), so a
         # forged POST can't persist a value the loader would reject — the
         # on-disk file stays consistent with cfg.
         if kind == "enum" and choices:
@@ -334,11 +387,13 @@ def _save_locked(values: dict) -> bool:
                 continue
             merged[key] = v  # persist the normalised value, matching cfg
             continue
-        elif kind == "list" and choices:
+        elif kind == "list":
             raw = values[key]
             items = _str_to_list(raw) if isinstance(raw, str) else list(raw or [])
-            items, _ = _normalize_list_choices(items, choices)
-            merged[key] = ",".join(items)
+            kept, dropped = _validate_list(key, items)
+            merged[key] = ",".join(kept)
+            if dropped:
+                warnings.append(_dropped_warning(key, dropped))
             continue
         merged[key] = values[key]
 
@@ -365,6 +420,6 @@ def _save_locked(values: dict) -> bool:
         finally:
             if os.path.exists(tmp):
                 os.unlink(tmp)
-        return True
+        return True, warnings
     except OSError:
-        return False
+        return False, warnings
