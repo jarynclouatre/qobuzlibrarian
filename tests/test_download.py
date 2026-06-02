@@ -59,6 +59,35 @@ def test_full_album_lossy_counts_once_not_as_failed(monkeypatch, tmp_path):
     assert r["failed_tracks"] == ["T7"]            # T6 stays in the lossy bucket only
 
 
+def test_full_album_with_present_tracks_counts_fail_against_total(monkeypatch, tmp_path):
+    # Full-album rip re-downloads the WHOLE album (present tracks too), so n_fail
+    # must be reconciled against n_tracks_total, not len(missing). Otherwise a
+    # re-rip that drops a track reads as clean (n_fail=0) and the executor would
+    # be cleared to delete a sibling / drop the gap-fill backup holding it.
+    tracks = [{"id": i, "title": f"T{i}", "track_number": i} for i in range(1, 11)]
+    missing = tracks[3:]          # 6 missing, 4 present → full-album strategy
+    present = tracks[:4]
+    album = tmp_path / "Artist" / "Album (2020)"
+    album.mkdir(parents=True)
+    # 8 of 10 land clean; 2 genuinely failed to re-rip.
+    landed = [tmp_path / f"{i:02d} - T{i}.flac" for i in range(1, 9)]
+    for p in landed:
+        p.write_bytes(b"x")
+    _patch(monkeypatch,
+           rip=lambda *a, **k: (0, ""),
+           added=lambda _s: landed,
+           cleanup=lambda f: (list(f), [], []))
+    monkeypatch.setattr(dl, "backup_gap_fill_files", lambda paths, d: None)
+    monkeypatch.setattr(dl, "read_album_dir", lambda d: [])
+
+    r = dl.run_album_download(album=_album(tracks), missing=missing,
+                              present=present, album_dir=album, snapshot=set())
+    assert r["download_full_album"] is True
+    assert r["n_ok"] == 8
+    assert r["n_fail"] == 2          # 10 total - 8 ok, NOT max(0, 6-8)=0
+    assert r["n_ok"] + r["n_lossy"] + r["n_fail"] == 10
+
+
 def test_edition_suffix_track_that_landed_is_not_flagged_failed(monkeypatch, tmp_path):
     tracks = [{"id": i, "title": t, "track_number": i} for i, t in enumerate(
         ["A", "B", "C", "D", "Hungry Heart (Single Version)", "Outro"], 1)]

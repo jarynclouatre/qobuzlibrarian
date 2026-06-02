@@ -270,9 +270,15 @@ def run_album_download(*, album, missing, present, album_dir, snapshot,
                 f"post-processing error — counting as success."))
 
     if download_full_album and full_album_rc is not None:
-        # A lossy fallback counts once, in the lossy bucket, so n_ok + n_lossy
-        # + n_fail stays equal to the number of tracks attempted.
-        n_fail = max(0, len(missing) - n_ok - n_lossy)
+        # A full-album rip re-downloads the WHOLE album URL (all n_tracks_total
+        # tracks), including the already-present ones we moved to the gap-fill
+        # backup — so n_ok (every clean FLAC that landed) is counted against the
+        # total, NOT len(missing). Using len(missing) here let a present track's
+        # re-rip failure clamp n_fail to 0, which would (a) read an incomplete
+        # fill as clean and (b) let the executor drop the gap-fill backup or a
+        # sibling that still holds the missing track. A lossy fallback counts
+        # once in the lossy bucket, so n_ok + n_lossy + n_fail == tracks attempted.
+        n_fail = max(0, n_tracks_total - n_ok - n_lossy)
         if n_fail > 0:
             surviving_norms = {match_key_from_stem(p) for p in kept}
             lossy_norms = {match_key_from_stem(stem) for stem in lossy_tracks}
