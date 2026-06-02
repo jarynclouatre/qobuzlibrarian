@@ -98,7 +98,7 @@ services:
       # ── Tuning (defaults are sensible; uncomment to override) ─────────────
       # RIP_TIMEOUT:               "900"   # per-album rip subprocess timeout (s)
       # DELAY_BETWEEN:             "1.0"   # pause between consecutive album downloads (s)
-      # ARTIST_API_DELAY:          "0.4"   # pause between Qobuz API calls during library walks (s)
+      # ARTIST_API_DELAY:          "0.0"   # pause between Qobuz API calls during library walks (s)
       # SEARCH_LIMIT:              "8"     # search results per query
       # ARTIST_CATALOG_LIMIT:      "500"   # max albums fetched per artist
       # MISSING_ALBUMS_MIN_TRACKS: "4"     # hide singles / very short EPs in the missing-albums step
