@@ -327,7 +327,9 @@ RATE_LIMIT_COOLDOWN = _env_num_min("RATE_LIMIT_COOLDOWN", 30.0, 0.0)
 # NAS keeps printing beets progress, so it is never killed no matter how
 # long it runs. Only true silence this long means a genuinely hung
 # import (DB lock, prompt, deadlocked plugin) — killing it stops the
-# single web job worker from freezing forever. 0 disables the guard.
+# single web job worker from freezing forever. 0 disables the guard
+# entirely (no timeout on any beets call), so a stuck import can hang the
+# worker until restart — only set 0 if you'd rather never risk a false kill.
 BEETS_TIMEOUT    = _env_num_min("BEETS_TIMEOUT", 600, 0)
 # Per-album import: retry on idle-timeout up to N times with a short
 # pause between, so a single transient stall doesn't strand the album.
@@ -392,11 +394,16 @@ WEB_TEST_AUTH_TIMEOUT = _env_num_min("QL_WEB_TEST_AUTH_TIMEOUT", 8.0,  1.0)
 # 0.5s queue-empty ticks pass before a `: ping` keepalive — reverse
 # proxies with short idle timeouts (60s default on most) want a lower
 # value.
-JOB_LOG_CAP          = _env("JOB_LOG_CAP",          5000)
-JOB_LOG_REPLAY_TAIL  = _env("JOB_LOG_REPLAY_TAIL",  500)
-POST_JOB_HOOK_TIMEOUT = _env("POST_JOB_HOOK_TIMEOUT", 10)
+JOB_LOG_CAP          = _env_num_min("JOB_LOG_CAP",         5000, 1)
+JOB_LOG_REPLAY_TAIL  = _env_num_min("JOB_LOG_REPLAY_TAIL",  500, 0)
+# Ceiling on candidates a single review job holds in memory (and persists/
+# rehydrates). A whole-library gap scan on a very large collection could
+# otherwise grow this unbounded; past the cap the scan stops adding and notes
+# how many it dropped, so the box stays safe and the user narrows the scan.
+JOB_CANDIDATE_CAP    = _env_num_min("JOB_CANDIDATE_CAP",  20000, 1)
+POST_JOB_HOOK_TIMEOUT = _env_num_min("POST_JOB_HOOK_TIMEOUT", 10, 1)
 SSE_MAX_WORKERS      = _env_num_min("SSE_MAX_WORKERS", 16, 1)
-SSE_HEARTBEAT_TICKS  = _env("SSE_HEARTBEAT_TICKS",  30)
+SSE_HEARTBEAT_TICKS  = _env_num_min("SSE_HEARTBEAT_TICKS", 30, 1)
 
 # ── Fuzzy-match thresholds ────────────────────────────────────────────────────
 FUZZY_DIR_THRESH           = _env("FUZZY_DIR_THRESH",           0.78)
