@@ -10,12 +10,14 @@ from qobuz_librarian.library.tags import (
 )
 
 
-def test_clean_qobuz_string_trims_and_unquotes():
-    # Outer quotes around an already-quoted title come back stripped, but
-    # inner quotes are kept and whitespace collapses.
-    assert clean_qobuz_string('"Heroes" ') == "Heroes"
-    assert clean_qobuz_string("'Heroes'") == "Heroes"
+def test_clean_qobuz_string_trims_but_keeps_intentional_quotes():
+    # Quotes are part of the real title for some releases (Bowie's "Heroes"),
+    # and Qobuz returns them that way — so they are preserved, not stripped.
+    assert clean_qobuz_string('"Heroes" ') == '"Heroes"'
+    assert clean_qobuz_string("'Heroes'") == "'Heroes'"
     assert clean_qobuz_string('the "wall" album') == 'the "wall" album'
+    # Trailing/internal whitespace is still normalised.
+    assert clean_qobuz_string("Hunky Dory ") == "Hunky Dory"
     assert clean_qobuz_string("Hunky  Dory") == "Hunky Dory"
     # None / non-string fed in from a Qobuz API field that was null.
     assert clean_qobuz_string(None) == ""

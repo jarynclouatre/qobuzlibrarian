@@ -32,29 +32,27 @@ _BEETS_REPLACEMENTS = (
 
 
 def clean_qobuz_string(s):
-    """Trim surrounding whitespace, collapse internal whitespace runs, and
-    strip a single pair of matching outer quotes from a Qobuz response field.
+    """Trim surrounding whitespace and collapse internal whitespace runs in a
+    Qobuz response field.
 
     Qobuz titles and artist names occasionally arrive with trailing spaces
-    (e.g. ``"Hunky Dory "``) or wrapped in literal quotes (e.g. ``'"Heroes"'``).
-    Leaving those in place produces folder names like ``Hunky Dory  (1971)/``
-    or ``_Heroes_ (1977)/`` after beets sanitizes the quotes. Normalising at
-    the API response boundary means downstream consumers (process, queue,
-    web, beets) all get the clean form for free.
+    (e.g. ``"Hunky Dory "``), which otherwise produce folder names like
+    ``Hunky Dory  (1971)/`` after beets sanitizes them. Normalising at the API
+    response boundary means downstream consumers (process, queue, web, beets)
+    all get the clean form for free.
+
+    Outer quotes are deliberately NOT stripped: Qobuz returns genuinely
+    quoted titles as-is — David Bowie's ``"Heroes"`` comes back as ``'"Heroes"'``
+    with the quotes part of the title — so removing them would corrupt the name
+    on exactly the releases where the quotes are intentional. Qobuz's rare stray
+    wrapping quote is the lesser evil to leave in place.
 
     Returns the empty string for None or non-string input so callers can rely
-    on a usable str. Matching outer quotes are stripped only when both sides
-    of the string carry them; quoted text inside a longer string is preserved
-    (``the "wall" album`` is left alone).
+    on a usable str.
     """
     if not isinstance(s, str):
         return ""
-    out = _WHITESPACE_RUN_RE.sub(" ", s).strip()
-    if len(out) >= 2:
-        first, last = out[0], out[-1]
-        if (first == '"' and last == '"') or (first == "'" and last == "'"):
-            out = out[1:-1].strip()
-    return out
+    return _WHITESPACE_RUN_RE.sub(" ", s).strip()
 
 # Normalized forms of the "Various Artists" placeholder used by Qobuz and
 # many libraries. Matched after normalize() (lowercased, alphanum-only)
