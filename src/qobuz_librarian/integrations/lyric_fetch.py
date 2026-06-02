@@ -15,6 +15,7 @@ writes synced (or plain) lyrics into FLAC tags or .lrc sidecars.
 
 from __future__ import annotations
 
+import fcntl
 import json
 import logging
 import os
@@ -25,6 +26,7 @@ import threading
 import time
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterable, Optional
@@ -200,7 +202,34 @@ def load_state(path: Path = DEFAULT_STATE_FILE) -> dict[str, TrackState]:
         return {}
 
 
-def save_state(state: dict[str, TrackState], path: Path = DEFAULT_STATE_FILE) -> None:
+@contextmanager
+def _state_file_lock(path: Path):
+    """Hold an exclusive cross-process lock for the state file while reading +
+    writing it. The state file is shared by a CLI import hook and the web
+    worker (separate processes), so a threading.Lock can't serialise them; an
+    flock on a sidecar lock file does. Best-effort — if the lock file can't be
+    opened we proceed unlocked rather than block a lyric save."""
+    lock_path = path.parent / (path.name + ".lock")
+    fh = None
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fh = open(lock_path, "w", encoding="utf-8")
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+    except OSError:
+        if fh is not None:
+            fh.close()
+            fh = None
+    try:
+        yield
+    finally:
+        if fh is not None:
+            try:
+                fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+            finally:
+                fh.close()
+
+
+def _write_state_unlocked(state: dict[str, TrackState], path: Path) -> None:
     # Unique temp + atomic replace: a shared ".tmp" name let two concurrent
     # checkpoints (a web lyrics pass alongside a CLI import hook) clobber each
     # other's write, and a failed write left the temp orphaned beside the state.
@@ -221,6 +250,24 @@ def save_state(state: dict[str, TrackState], path: Path = DEFAULT_STATE_FILE) ->
         except OSError:
             pass
         raise
+
+
+def save_state(state: dict[str, TrackState], path: Path = DEFAULT_STATE_FILE) -> None:
+    with _state_file_lock(path):
+        _write_state_unlocked(state, path)
+
+
+def update_state(mutator, path: Path = DEFAULT_STATE_FILE) -> None:
+    """Atomically read-modify-write the state file under the cross-process lock.
+
+    `mutator(state)` receives the freshly-loaded dict and mutates it in place.
+    Loading and saving inside one lock hold is what makes a prune safe against a
+    concurrent checkpoint: a plain load→modify→save (outside the lock) can write
+    back a snapshot that drops entries another process added in between."""
+    with _state_file_lock(path):
+        state = load_state(path)
+        mutator(state)
+        _write_state_unlocked(state, path)
 
 
 def prune_missing(state: dict[str, TrackState]) -> int:

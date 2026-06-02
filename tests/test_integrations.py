@@ -268,6 +268,26 @@ def test_lyric_state_prune_drops_entries_for_vanished_files(tmp_path):
     assert str(here) in state and gone not in state
 
 
+def test_update_state_reloads_inside_the_lock(tmp_path):
+    # update_state must read the file fresh inside the lock and write the
+    # mutated result — so a value another process appended before the lock was
+    # acquired survives the mutation instead of being clobbered by a stale
+    # in-memory snapshot.
+    from qobuz_librarian.integrations import lyric_fetch
+    sf = tmp_path / "state.json"
+    lyric_fetch.save_state({"a": lyric_fetch.TrackState(status="synced")}, sf)
+    # Simulate a concurrent writer landing a new key after the caller's last read
+    # but before the prune runs.
+    cur = lyric_fetch.load_state(sf)
+    cur["b"] = lyric_fetch.TrackState(status="transient")
+    lyric_fetch.save_state(cur, sf)
+
+    lyric_fetch.update_state(lambda s: s.pop("a", None), sf)
+    out = lyric_fetch.load_state(sf)
+    assert "a" not in out          # the mutation applied
+    assert "b" in out              # the concurrent writer's key was not clobbered
+
+
 # ── beets: override YAML safety + dedup detection ──────────────────────────
 
 def test_yaml_sq_quotes_safely_and_blocks_injection():
@@ -613,9 +633,10 @@ def test_prepare_staging_tags_sets_aside_untagged_keeps_tagged(tmp_path, monkeyp
     assert len(list((data / ".untagged_staging").rglob("*.flac"))) == 2
 
 
-def test_prepare_staging_tags_strips_trailing_space_and_quotes(tmp_path, monkeypatch, _need_ffmpeg):
-    # streamrip writes tags from its own fetch, so 'Hunky Dory ' and '"Heroes"'
-    # survive into the folder unless cleaned before beets import.
+def test_prepare_staging_tags_trims_space_but_keeps_quotes(tmp_path, monkeypatch, _need_ffmpeg):
+    # streamrip writes tags from its own fetch, so 'Hunky Dory ' survives into
+    # the folder unless trimmed before beets import. A genuinely quoted title
+    # like '"Heroes"' is kept intact — the quotes are part of the name.
     from mutagen.flac import FLAC
 
     from qobuz_librarian.integrations import beets
@@ -627,7 +648,7 @@ def test_prepare_staging_tags_strips_trailing_space_and_quotes(tmp_path, monkeyp
     f.save()
     beets._prepare_staging_tags()
     out = FLAC(str(flac))
-    assert out["album"] == ["Hunky Dory"] and out["title"] == ["Heroes"]
+    assert out["album"] == ["Hunky Dory"] and out["title"] == ['"Heroes"']
 
 
 # ── beets: artwork override YAML ──────────────────────────────────────────

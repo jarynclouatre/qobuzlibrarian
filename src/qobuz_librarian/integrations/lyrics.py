@@ -1,9 +1,10 @@
-"""Lyric fetch integration — pre-import hook, retry manifest, state pruning.
-
-"""
+"""Lyric fetch integration — pre-import hook, retry manifest, state pruning."""
+import fcntl
 import json
 import os
+import shutil
 import tempfile
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 
@@ -217,7 +218,19 @@ def write_post_import_sidecars(album_dirs):
                 try:
                     if "lyrics" in f.tags:
                         del f.tags["lyrics"]
-                        f.save()
+                        # Atomic save (temp copy + os.replace) like
+                        # lyric_fetch.write_lyrics — a bare in-place save can
+                        # corrupt the library file if a crash interrupts mutagen
+                        # while it rewrites the metadata block.
+                        fd, tmp = tempfile.mkstemp(suffix=".flac", dir=str(fp.parent))
+                        os.close(fd)
+                        try:
+                            shutil.copy2(str(fp), tmp)
+                            f.save(tmp)
+                            os.replace(tmp, str(fp))
+                        finally:
+                            if os.path.exists(tmp):
+                                os.unlink(tmp)
                 except Exception as e:
                     vlog(f"sidecar: tag strip failed {fp}: {e}")
     if written:
@@ -238,43 +251,77 @@ def _record_post_import_lyric_retry(post_paths):
     `_refresh_lyric_retry` itself is still used by
     `offer_resume_lyric_retry` after the resume's lyric_fetch run —
     by then state is keyed by post-import paths so it works correctly."""
-    try:
-        existing = load_lyric_retry()
-    except Exception as e:
-        vlog(f"_record_post_import_lyric_retry: load failed: {e}")
-        existing = []
-    fresh = [p for p in existing if Path(p).exists()]
-    fresh = sorted(set(fresh) | set(post_paths))
-    save_lyric_retry(fresh)
+    # Load→modify→save under the manifest lock so a concurrent retry-run prune
+    # in the other worker lane can't clobber the entries we add here.
+    with _manifest_lock():
+        try:
+            existing = load_lyric_retry()
+        except Exception as e:
+            vlog(f"_record_post_import_lyric_retry: load failed: {e}")
+            existing = []
+        fresh = [p for p in existing if Path(p).exists()]
+        fresh = sorted(set(fresh) | set(post_paths))
+        save_lyric_retry(fresh)
 
 
 def _prune_lyric_state_orphans():
     """Drop staging-path keys from lyric_fetch's state file —
-    they're orphaned the moment beets moves the file out of staging."""
+    they're orphaned the moment beets moves the file out of staging.
+
+    Done as one atomic read-modify-write under the state lock: a plain
+    load→modify→save here can clobber an entry a concurrent import-hook
+    checkpoint just added (a CLI run and the web worker write the same file),
+    losing that track's lyric-retry bookkeeping."""
     if not HAVE_LYRIC_FETCH:
-        return
-    try:
-        state = lyric_fetch.load_state(cfg.LYRIC_FETCH_STATE_FILE)
-    except Exception as e:
-        vlog(f"_prune_lyric_state_orphans: load failed: {e}")
         return
     staging_prefix = str(cfg.STAGING_DIR)
     if not staging_prefix.endswith("/"):
         staging_prefix += "/"
     pruned = 0
-    for k in list(state.keys()):
-        if k.startswith(staging_prefix):
+
+    def _drop_staging(state):
+        nonlocal pruned
+        for k in [k for k in state if k.startswith(staging_prefix)]:
             del state[k]
             pruned += 1
+
+    try:
+        lyric_fetch.update_state(_drop_staging, cfg.LYRIC_FETCH_STATE_FILE)
+    except Exception as e:
+        vlog(f"_prune_lyric_state_orphans: update failed: {e}")
+        return
     if pruned:
-        try:
-            lyric_fetch.save_state(state, cfg.LYRIC_FETCH_STATE_FILE)
-            vlog(f"pruned {pruned} orphan lyric-state entry(ies) (staging-keyed)")
-        except Exception as e:
-            vlog(f"_prune_lyric_state_orphans: save failed: {e}")
+        vlog(f"pruned {pruned} orphan lyric-state entry(ies) (staging-keyed)")
 
 
 # ── Lyric retry manifest ──────────────────────────────────────────────────────
+
+@contextmanager
+def _manifest_lock():
+    """Exclusive lock for a read-modify-write of the retry manifest. The two web
+    worker lanes (an import-hook recording transient files, a retry run pruning
+    resolved ones) both load→modify→save this file; without serialising, one's
+    save clobbers the other's just-added entry. Best-effort — if the lock file
+    can't be opened, proceed unlocked rather than block a lyric save."""
+    lock_path = cfg.LYRIC_RETRY_FILE.parent / (cfg.LYRIC_RETRY_FILE.name + ".lock")
+    fh = None
+    try:
+        cfg.LYRIC_RETRY_FILE.parent.mkdir(parents=True, exist_ok=True)
+        fh = open(lock_path, "w", encoding="utf-8")
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+    except OSError:
+        if fh is not None:
+            fh.close()
+            fh = None
+    try:
+        yield
+    finally:
+        if fh is not None:
+            try:
+                fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+            finally:
+                fh.close()
+
 
 def load_lyric_retry():
     """Return list of file paths queued for a lyric retry. Empty list if the
@@ -357,20 +404,25 @@ def _refresh_lyric_retry(flacs_just_processed):
         vlog(f"_refresh_lyric_retry: couldn't load lyric state: {e}")
         return
 
-    candidates = set(load_lyric_retry())
-    candidates.update(str(p) for p in (flacs_just_processed or []))
+    # Read→reconcile→save under the manifest lock so the read here and the save
+    # below can't straddle a concurrent import-hook record (which would drop the
+    # entry that hook just added). The just-processed flacs are merged back in
+    # regardless, so they're never lost.
+    with _manifest_lock():
+        candidates = set(load_lyric_retry())
+        candidates.update(str(p) for p in (flacs_just_processed or []))
 
-    still_transient = []
-    for p in candidates:
-        st = state.get(p)
-        if st is None:
-            # File no longer tracked (maybe deleted, maybe state was reset);
-            # drop it from the manifest.
-            continue
-        if st.status == "transient":
-            still_transient.append(p)
+        still_transient = []
+        for p in candidates:
+            st = state.get(p)
+            if st is None:
+                # File no longer tracked (maybe deleted, maybe state was reset);
+                # drop it from the manifest.
+                continue
+            if st.status == "transient":
+                still_transient.append(p)
 
-    save_lyric_retry(still_transient)
+        save_lyric_retry(still_transient)
 
 
 def offer_resume_lyric_retry(args, token):
