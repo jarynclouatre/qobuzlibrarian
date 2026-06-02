@@ -1,6 +1,4 @@
-"""Upgrade and gap-fill backup/restore functions.
-
-"""
+"""Upgrade and gap-fill backup/restore functions."""
 import os
 import re
 import shutil
@@ -13,11 +11,19 @@ from qobuz_librarian.ui_cli.colors import C, fmt
 from qobuz_librarian.ui_cli.logging import log
 
 
-def _upgrade_backup_path_for(album_dir: Path) -> Path:
-    cfg.UPGRADE_BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+def _backup_dir_name(album_dir: Path, *, kind: str = "") -> str:
+    # Shared name for upgrade and gap-fill backup dirs: "<ts>[_<kind>]_<safe>".
+    # The retention sweep parses this shape back out, so the writers here and
+    # the sweep have to agree on it.
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     safe = re.sub(r"[^\w\-_. ]", "_", album_dir.name)[:80]
-    return cfg.UPGRADE_BACKUP_DIR / f"{ts}_{safe}"
+    infix = f"{kind}_" if kind else ""
+    return f"{ts}_{infix}{safe}"
+
+
+def _upgrade_backup_path_for(album_dir: Path) -> Path:
+    cfg.UPGRADE_BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+    return cfg.UPGRADE_BACKUP_DIR / _backup_dir_name(album_dir)
 
 
 def _same_filesystem(a: Path, b: Path) -> bool:
@@ -64,12 +70,25 @@ def _tree_stats(d: Path):
 # for free; restore strips it so it never lands in the live library.
 _ORIGIN_SIDECAR = ".ql_backup_origin"
 
+# Dropped into a backup when a restore left some originals behind (a partial
+# restore). The leftover originals are the ONLY copy of those tracks, but once
+# the successfully-restored files land in the origin, the file-count heuristic in
+# _backup_is_only_copy can no longer tell the backup still holds un-restored
+# tracks — so this marker says "never reap, the user must reconcile by hand."
+_PARTIAL_RESTORE_SENTINEL = ".ql_partial_restore"
 
-def _write_backup_origin(bp: Path, origin: Path) -> None:
+
+def _write_backup_origin(bp: Path, origin: Path) -> bool:
+    """Write the protective origin sidecar. Returns True only if it's actually
+    on disk afterwards — the sidecar is the sole signal that keeps the age sweep
+    from reaping a backup that's the only surviving copy, so a caller about to
+    delete the original must treat a False here as a backup failure, not ignore
+    it."""
     try:
         (bp / _ORIGIN_SIDECAR).write_text(str(origin), encoding="utf-8")
+        return (bp / _ORIGIN_SIDECAR).is_file()
     except OSError:
-        pass
+        return False
 
 
 def _read_backup_origin(bp: Path):
@@ -80,22 +99,37 @@ def _read_backup_origin(bp: Path):
         return None
 
 
-def _backup_is_only_copy(bp: Path) -> bool:
-    """True when ``bp`` must not be reaped: its recorded origin is gone or holds
-    fewer files than the backup, so the operation that took it never finished
-    putting the content back. A legacy backup with no sidecar returns False so
-    the age-based sweep still applies to it."""
-    origin = _read_backup_origin(bp)
-    if origin is None:
+def _backup_safe_to_reap(bp: Path) -> bool:
+    """True ONLY when ``bp`` is provably redundant — every track it holds is
+    confirmed back at its origin. The age sweep reaps on this, so the burden of
+    proof is on "safe to delete", not on "must keep": any uncertainty (no
+    sidecar, unreadable origin, can't count either tree, a partial-restore
+    marker) means we cannot prove redundancy and the backup is KEPT.
+
+    This is deliberately the inverse of a "protect if marked" scheme. A backup
+    can become the only surviving copy whenever the originals were moved into it
+    and not fully put back, and the protective sidecar/sentinel writes are
+    best-effort — on the exact filesystem failures that strand a sole copy
+    (ENOSPC, RO remount, EACCES) those writes can themselves fail. Making
+    "keep" the default means no protective write has to succeed for the data to
+    be safe; the worst case of a missing marker is a stranded backup the user
+    clears by hand, never silent loss."""
+    # An explicit partial-restore marker: definitely still the only copy.
+    if (bp / _PARTIAL_RESTORE_SENTINEL).is_file():
         return False
-    if not origin.exists():
-        return True
+    origin = _read_backup_origin(bp)
+    if origin is None or not origin.exists():
+        return False                       # can't locate origin → can't prove redundant
     o = _tree_stats(origin)
     b = _tree_stats(bp)
     if o is None or b is None:
-        return True
-    backup_files = b[0] - (1 if (bp / _ORIGIN_SIDECAR).is_file() else 0)
-    return o[0] < backup_files
+        return False                       # can't count → can't prove redundant
+    sidecars = sum(1 for s in (_ORIGIN_SIDECAR, _PARTIAL_RESTORE_SENTINEL)
+                   if (bp / s).is_file())
+    backup_files = b[0] - sidecars
+    # Reap only when the origin holds at least as many files as the backup —
+    # i.e. the content was put back. A short origin means it wasn't.
+    return o[0] >= backup_files
 
 
 def find_only_copy_backups():
@@ -108,7 +142,7 @@ def find_only_copy_backups():
         return out
     try:
         for entry in cfg.UPGRADE_BACKUP_DIR.iterdir():
-            if entry.is_dir() and _backup_is_only_copy(entry):
+            if entry.is_dir() and not _backup_safe_to_reap(entry):
                 out.append((entry, _read_backup_origin(entry)))
     except OSError:
         pass
@@ -137,7 +171,21 @@ def backup_album_dir(album_dir: Path):
     if _same_filesystem(album_dir, cfg.UPGRADE_BACKUP_DIR):
         try:
             shutil.move(str(album_dir), str(bp))
-            _write_backup_origin(bp, album_dir)
+            if not _write_backup_origin(bp, album_dir):
+                # The move already emptied album_dir, so bp is now the only
+                # copy — but with no sidecar the age sweep could reap it. Undo
+                # the move (put the album back) and report failure rather than
+                # leave an unprotected sole copy.
+                log.info(fmt(C.RED,
+                    f"  ✗  Couldn't record backup origin for {album_dir.name}; "
+                    "moving the album back and aborting backup."))
+                try:
+                    shutil.move(str(bp), str(album_dir))
+                except (OSError, shutil.Error) as e2:
+                    log.info(fmt(C.RED,
+                        f"  ✗  Couldn't restore {album_dir} after the failed "
+                        f"origin write: {e2}. Files are at {bp}."))
+                return None
             return bp
         except (OSError, shutil.Error) as e:
             from qobuz_librarian.ui_cli.errors import oserr_hint
@@ -180,10 +228,22 @@ def backup_album_dir(album_dir: Path):
         shutil.rmtree(str(bp_partial), ignore_errors=True)
         return None
 
-    # Backup is committed. Remove the original; on failure, the rmtree
-    # may have already deleted some files, leaving album_dir in a partial
-    # state that a later scan would mis-treat. Restore from the backup
-    # we just made so the caller is back to the pre-call state.
+    # Backup is committed — record its origin BEFORE the destructive remove.
+    # If the rmtree (and the auto-restore below) then fail, the album is
+    # half-deleted and this backup is its only intact copy; without the sidecar
+    # the age-cleanup sweep can't tell it's protected and would reap it. So if
+    # the sidecar can't be written, do NOT remove the original — keep both
+    # copies and report failure rather than risk an unprotected sole copy.
+    if not _write_backup_origin(bp, album_dir):
+        log.info(fmt(C.RED,
+            f"  ✗  Backup copied but couldn't record its origin; leaving the "
+            f"original at {album_dir} in place and discarding the backup."))
+        shutil.rmtree(str(bp), ignore_errors=True)
+        return None
+    # Remove the original; on failure, the rmtree may have already deleted some
+    # files, leaving album_dir in a partial state that a later scan would
+    # mis-treat. Restore from the backup we just made so the caller is back to
+    # the pre-call state.
     try:
         shutil.rmtree(str(album_dir))
     except OSError as e:
@@ -202,7 +262,6 @@ def backup_album_dir(album_dir: Path):
         log.info(fmt(C.RED,
             f"     Manual: rm -rf {album_dir} && mv {bp} {album_dir}"))
         return None
-    _write_backup_origin(bp, album_dir)
     return bp
 
 
@@ -224,9 +283,7 @@ def backup_gap_fill_files(file_paths, album_dir: Path):
     were deleted and the new versions never arrived. The backup gives
     the caller a recovery path."""
     cfg.UPGRADE_BACKUP_DIR.mkdir(parents=True, exist_ok=True)
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    safe = re.sub(r"[^\w\-_. ]", "_", album_dir.name)[:80]
-    bp = cfg.UPGRADE_BACKUP_DIR / f"{ts}_gapfill_{safe}"
+    bp = cfg.UPGRADE_BACKUP_DIR / _backup_dir_name(album_dir, kind="gapfill")
     try:
         bp.mkdir(parents=True, exist_ok=True)
     except OSError as e:
@@ -285,7 +342,33 @@ def backup_gap_fill_files(file_paths, album_dir: Path):
             return None
     except OSError:
         pass
-    _write_backup_origin(bp, album_dir)
+    # The sidecar is the only thing that keeps the age sweep from reaping this
+    # backup once it becomes a sole copy (a repair that doesn't restore). If it
+    # can't be written, move the backed-up originals home and fail rather than
+    # hand back an unprotected backup.
+    if not _write_backup_origin(bp, album_dir):
+        log.info(fmt(C.RED,
+            f"  ✗  Couldn't record gap-fill backup origin for {album_dir.name}; "
+            "restoring the originals and aborting backup."))
+        restore_gap_fill_backup(bp, album_dir)
+
+        def _still_has_tracks():
+            try:
+                return any(p.is_file() and p.name != _ORIGIN_SIDECAR
+                           for p in bp.rglob("*"))
+            except OSError:
+                return True  # can't tell → assume tracks remain, don't lose them
+        if _still_has_tracks():
+            # Restore couldn't put every original back, so bp is the only copy
+            # of what's left. Hand it back so the caller records it and recovery
+            # stays reachable, and retry the sidecar so the age sweep protects
+            # it — returning None here would orphan these files.
+            _write_backup_origin(bp, album_dir)
+            log.info(fmt(C.RED,
+                f"  ✗  Couldn't restore all originals to {album_dir}; the "
+                f"surviving copies are kept at {bp} (the only copy)."))
+            return bp
+        return None  # everything restored to album_dir; bp is empty
     return bp
 
 
@@ -314,10 +397,29 @@ def restore_gap_fill_backup(backup_path: Path, album_dir: Path) -> int:
     n_restored = 0
     n_failed = 0
     for f in backup_path.rglob("*"):
-        if not f.is_file() or f.name == _ORIGIN_SIDECAR:
+        if not f.is_file() or f.name in (_ORIGIN_SIDECAR, _PARTIAL_RESTORE_SENTINEL):
             continue
         rel = f.relative_to(backup_path)
         dst = album_dir / rel
+        # Never clobber a destination that already holds at least as many bytes
+        # as the backup copy. The backup here is the pre-repair (truncated)
+        # original, which is by definition SMALLER than a good refill; if a
+        # fresh, larger file already sits at dst (e.g. a refill beets imported
+        # under the same name in a same-ISRC/dedup edge), restoring the smaller
+        # original over it would be a downgrade. Leave the good file in place.
+        try:
+            if dst.exists() and dst.stat().st_size >= f.stat().st_size:
+                log.info(fmt(C.GRAY,
+                    f"  · Keeping the file already at {dst.name} "
+                    f"(>= the backed-up copy) rather than restoring over it."))
+                try:
+                    f.unlink()
+                except OSError:
+                    pass
+                n_restored += 1
+                continue
+        except OSError:
+            pass
         tmp = dst.with_name(dst.name + ".restore_tmp")
         try:
             dst.parent.mkdir(parents=True, exist_ok=True)
@@ -355,6 +457,15 @@ def restore_gap_fill_backup(backup_path: Path, album_dir: Path) -> int:
     # restore — on the path that exists to prevent data loss. Preserve it
     # and tell the user where it is.
     if n_failed:
+        # Mark it so the age sweep never reaps this backup — after a partial
+        # restore the leftover files are the only copy, but the file-count
+        # heuristic can't tell (the restored files now inflate the origin).
+        try:
+            (backup_path / _PARTIAL_RESTORE_SENTINEL).write_text(
+                "partial restore — un-restored originals are the only copy",
+                encoding="utf-8")
+        except OSError:
+            pass
         log.info(fmt(C.RED + C.BOLD,
             f"  ✗  {n_failed} track(s) could NOT be restored. Originals are "
             f"PRESERVED at:\n     {backup_path}\n"
@@ -535,15 +646,15 @@ def cleanup_old_upgrade_backups(retention_days: int = None,
                 f"timestamp prefix; leaving it alone."))
             continue
         if ts < cutoff:
-            if _backup_is_only_copy(entry):
-                # The folder this backup came from is gone or still short of it,
-                # so a hard kill skipped the caller's restore/delete and this may
-                # be the only copy of those tracks. Retention must never reap the
-                # last copy; the web diagnostic surfaces it for the user to
-                # reconcile (restore or remove by hand).
+            if not _backup_safe_to_reap(entry):
+                # We can't PROVE this backup is redundant (origin gone/short, or
+                # uncountable, or marked partial-restore), so it may be the only
+                # copy of the tracks it holds. Retention must never reap the last
+                # copy; keep it and let the web diagnostic surface it for the
+                # user to reconcile (restore or remove by hand).
                 log.info(fmt(C.YELLOW,
-                    f"  ⚠  Keeping backup {entry.name!r} past retention — its "
-                    f"original is still missing the tracks it holds."))
+                    f"  ⚠  Keeping backup {entry.name!r} past retention — can't "
+                    f"confirm its tracks are back in the original folder."))
                 continue
             try:
                 shutil.rmtree(entry)
