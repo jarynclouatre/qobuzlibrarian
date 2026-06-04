@@ -174,7 +174,7 @@ def normalize_tags(tags: Mapping, stem: str, ext: str) -> dict:
     fallback when no title tag is present.
     """
     albumartist = _first(tags, "albumartist", "album artist", "artist")
-    track, track_total = _num_and_total(_first(tags, "tracknumber", "track"))
+    track, _ = _num_and_total(_first(tags, "tracknumber", "track"))
     disc, disc_total_inline = _num_and_total(_first(tags, "discnumber", "disc"))
     disc_total, _ = _num_and_total(_first(tags, "disctotal", "totaldiscs"))
     return {

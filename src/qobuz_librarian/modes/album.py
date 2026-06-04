@@ -125,8 +125,8 @@ def _interactive_album_action(album, args, token, album_queue, flush_queue):
         except EOFError:
             r = "s"
 
-        if r in ("q", "queue"):
-            qi = _build_queue_item(
+        if r in ("q", "queue", "f", "flush"):
+            album_queue.append(_build_queue_item(
                 album=album,
                 album_dir=album_dir,
                 label=(f"{(album.get('artist') or {}).get('name') or '?'}"
@@ -135,23 +135,12 @@ def _interactive_album_action(album, args, token, album_queue, flush_queue):
                 present=present,
                 upgrade_only=False,
                 auto_upgrade=False,
-            )
-            album_queue.append(qi)
-            log.info(fmt(C.CYAN,
-                f"  ✓  Queued. ({len(album_queue)} album(s) in queue)"))
-        elif r in ("f", "flush"):
-            qi = _build_queue_item(
-                album=album,
-                album_dir=album_dir,
-                label=(f"{(album.get('artist') or {}).get('name') or '?'}"
-                       f" — {album.get('title') or '?'}"),
-                missing=missing,
-                present=present,
-                upgrade_only=False,
-                auto_upgrade=False,
-            )
-            album_queue.append(qi)
-            flush_queue()
+            ))
+            if r in ("f", "flush"):
+                flush_queue()
+            else:
+                log.info(fmt(C.CYAN,
+                    f"  ✓  Queued. ({len(album_queue)} album(s) in queue)"))
         elif r in ("s", "skip"):
             log.info(fmt(C.GRAY, "  Skipped."))
         else:
