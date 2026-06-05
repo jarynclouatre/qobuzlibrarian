@@ -1,9 +1,7 @@
 """beets import integration and staging pre-flight.
 
-``beets_import_paths`` calls ``beet`` directly when it's in PATH (the
-bundled / Docker case). For dev setups where beets lives in a separate
-compose service, it falls back to ``docker compose exec`` so the same
-function still works end-to-end.
+``beets_import_paths`` runs ``beet import`` directly and errors out if
+``beet`` isn't on PATH — the staging pre-flight checks for it first.
 
 Two non-obvious behaviours kept here:
 
@@ -273,6 +271,10 @@ def _build_import_override_yaml():
     # `fetchart` default) and add what the art mode needs.
     _plugins = list(cfg.BEETS_PLUGINS) if cfg.BEETS_PLUGINS else ["fetchart"]
     _art = getattr(cfg, "ARTWORK", "sidecar")
+    # fetchart saves cover.jpg for sidecar too, so a custom BEETS_PLUGINS list
+    # that omits it (and replaces config.yaml's) mustn't silently turn art off.
+    if _art in ("sidecar", "embed", "both") and "fetchart" not in _plugins:
+        _plugins.append("fetchart")
     if _art in ("embed", "both"):
         for _p in ("fetchart", "embedart"):
             if _p not in _plugins:
@@ -726,7 +728,10 @@ def _consolidate_duplicate_albums():
         return
     beet_env = {**os.environ, "BEETSDIR": str(cfg.BEETS_CONFIG_DIR)}
     base = ["beet", "-c", str(override_path)]
-    idle = cfg.BEETS_TIMEOUT if cfg.BEETS_TIMEOUT and cfg.BEETS_TIMEOUT > 0 else 600
+    # Wall-clock cap for the consolidation imports. BEETS_TIMEOUT <= 0 means
+    # "no guard" (subprocess.run's sentinel is None, not 0 — 0 would fire
+    # instantly), matching how the main per-album import path honours 0.
+    idle = cfg.BEETS_TIMEOUT if cfg.BEETS_TIMEOUT and cfg.BEETS_TIMEOUT > 0 else None
 
     def _drop_override():
         try:
