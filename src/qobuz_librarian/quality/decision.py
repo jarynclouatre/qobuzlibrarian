@@ -1,6 +1,4 @@
-"""Quality comparison helpers and upgrade detection.
-
-"""
+"""Quality comparison helpers and upgrade detection."""
 import json
 import time
 from datetime import datetime, timedelta, timezone
@@ -148,24 +146,30 @@ def load_capped():
         return {}
 
 
-def save_capped(data):
-    # Prune entries past CAPPED_RETENTION_DAYS before
-    # writing. is_album_capped already treats stale entries as "not
-    # capped" but never removes them, so the file accumulates dead
-    # weight on every mark_album_capped call. Cheap to clean here.
+def _capped_ts(entry):
+    # Parse an entry's "ts" into a tz-aware datetime, or None if missing/bad.
+    try:
+        ts = datetime.fromisoformat((entry or {}).get("ts", ""))
+    except (ValueError, TypeError, AttributeError):
+        return None
+    return ts.replace(tzinfo=timezone.utc) if ts.tzinfo is None else ts
+
+
+def _capped_is_fresh(ts):
+    # Single staleness boundary shared by the read and write paths, so an
+    # entry can't read as still-capped but get pruned on write (or the
+    # reverse) right at the edge of the retention window.
+    if ts is None:
+        return False
     cutoff = datetime.now(timezone.utc) - timedelta(days=cfg.CAPPED_RETENTION_DAYS)
-    fresh = {}
-    for k, v in (data or {}).items():
-        try:
-            ts = datetime.fromisoformat((v or {}).get("ts", ""))
-            if ts.tzinfo is None:
-                ts = ts.replace(tzinfo=timezone.utc)
-            if ts >= cutoff:
-                fresh[k] = v
-        except (ValueError, TypeError, AttributeError):
-            # Unparseable entry — is_album_capped already treats
-            # these as "not capped"; no point keeping them on disk.
-            pass
+    return ts >= cutoff
+
+
+def save_capped(data):
+    # Prune stale entries before writing. is_album_capped treats them as "not
+    # capped" but never removes them, so the file would otherwise accumulate
+    # dead weight on every mark_album_capped call. Cheap to clean here.
+    fresh = {k: v for k, v in (data or {}).items() if _capped_is_fresh(_capped_ts(v))}
     try:
         tmp = cfg.CAPPED_FILE.with_suffix(cfg.CAPPED_FILE.suffix + ".tmp")
         with open(tmp, "w", encoding="utf-8") as f:
@@ -178,18 +182,7 @@ def save_capped(data):
 def is_album_capped(album_id, capped):
     if not album_id:
         return False
-    e = capped.get(str(album_id))
-    if not e:
-        return False
-    try:
-        ts = datetime.fromisoformat(e.get("ts", ""))
-        if ts.tzinfo is None:
-            ts = ts.replace(tzinfo=timezone.utc)
-        if (datetime.now(timezone.utc) - ts).days > cfg.CAPPED_RETENTION_DAYS:
-            return False
-    except (ValueError, TypeError):
-        return False
-    return True
+    return _capped_is_fresh(_capped_ts(capped.get(str(album_id))))
 
 
 def mark_album_capped(album_id, qobuz_album, post_qual):
@@ -217,7 +210,7 @@ def scan_artist_for_upgrades(artist_name, artist_dir, token, args, capped=None):
     minimise API round-trips. Falls back to per-folder search on catalog miss.
 
     Returns a list of dicts (one per upgradeable album):
-      {qobuz_album, album_dir, n_upgradeable,
+      {qobuz_album, album_dir, n_below,
        existing_quality_label, target_quality_label}
 
     Only includes albums where:
@@ -354,7 +347,6 @@ def scan_artist_for_upgrades(artist_name, artist_dir, token, args, capped=None):
         candidates.append({
             "qobuz_album":            qobuz_album,
             "album_dir":              album_dir,
-            "n_upgradeable":          qual["n_below"],
             "n_present":              len(existing),
             "n_total":                len(qobuz_tracks),
             "n_below":                qual["n_below"],
