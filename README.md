@@ -29,23 +29,13 @@ smaller files instead? Drop to CD lossless or 320 kbps with one setting (see
 ## Contents
 
 - [Features](#features)
-- [How it ships](#how-it-ships)
-- [How you use it](#how-you-use-it)
 - [Quick start (Docker)](#quick-start-docker)
 - [Pointing it at an existing library](#pointing-it-at-an-existing-library)
-- [Migrating an existing library into the layout](#migrating-an-existing-library-into-the-layout)
-- [Bringing your existing beets database](#bringing-your-existing-beets-database)
-- [Tagging an untagged collection (AcoustID)](#tagging-an-untagged-collection-acoustid)
-- [Default beets config](#default-beets-config)
-- [First scan on a big library](#first-scan-on-a-big-library)
-- [What it will and won't touch](#what-it-will-and-wont-touch-on-its-own)
-- [Running on a NAS](#running-on-a-nas)
 - [Using the CLI](#using-the-cli)
 - [Troubleshooting](#troubleshooting)
 - [Security and deployment shape](#security-and-deployment-shape)
 - [Limitations](#limitations)
 - [Development](#development)
-- [Acknowledgements](#acknowledgements)
 - [License](#license)
 
 ## Features
@@ -106,7 +96,10 @@ missing them.
 - Handles multi-artist and "Various Artists" directory layouts
 - Edition- and decoration-aware album-name matching and version dedup
 - ISRC-anchored repair: finds truncated or short FLACs and refills the exact
-  missing tracks, leaving good files untouched
+  missing tracks, leaving good files untouched. A deep (single-album) scan also
+  flags FLACs that won't decode — frame-CRC or mid-file damage — even without an
+  ISRC tag or a Qobuz match, so a library brought from elsewhere still gets its
+  corrupt files surfaced
 - One-time migration of a messy or untagged collection into the
   `Artist/Album (Year)/` layout — tags first, optional AcoustID, copies by
   default so the originals are never touched
@@ -265,7 +258,7 @@ in `.env` (see the login note below).
 
 From there:
 
-1. Open **Settings**, paste your `user_auth_token`, click **Test**, then **Save**.
+1. Open **Settings**, paste your `user_auth_token`, and click **Save & connect** (it validates the token against Qobuz before saving).
 2. Use the search bar on the dashboard to find an album.
 3. Click **Download** — the job page streams the live log as it imports.
 
@@ -686,7 +679,7 @@ scraping HTML.
 |---|---|
 | `GET /api/jobs` | List all jobs, most recent first. Optional `?status=running` filter (`pending`, `running`, `scanning`, `awaiting_review`, `done`, `failed`, `canceled`). Optional `?limit=N` (max 500, default 50). Returns `{"jobs": [...], "count": N}`. |
 | `GET /api/jobs/{id}/status` | Single job as JSON — same shape as one element of the list above. 404 if not found. |
-| `GET /api/jobs/{id}/stream` | SSE stream for a live job. Events: `log` (one log line), `done` (job finished, close the stream). |
+| `GET /api/jobs/{id}/stream` | SSE stream for a live job. Each log line arrives as a default `message` event; a `done` event signals the job finished (close the stream). `progress` events and `: ping` keepalives may also appear. |
 
 All endpoints require the session cookie when login is enabled. A missing or
 invalid cookie returns `401 {"detail": "authentication required"}` rather than
@@ -708,7 +701,7 @@ curl -s -b 'qf_session=<your-cookie>' http://localhost:8666/api/jobs?status=runn
 | Container exits immediately on `docker compose up` | `.env` missing from the compose dir, or a required `QL_*` var is unset. `docker compose logs qobuz-librarian` shows which. |
 | `Volume not writable` (Settings → Diagnostics shows FAIL) | `PUID`/`PGID` don't match the host owner of the bind mount — `chown -R $(id -u):$(id -g) ./music ./staging` or set `PUID`/`PGID` in `.env`. |
 | Web UI loads but Library scan says "no artist folders found" | `/music` is mounted at an empty directory or one level off — make sure `QL_MUSIC_DIR` points at the artist-level folder, not the parent. |
-| Token rejected (Settings → Test) | Token expired, copied with surrounding quotes, or pasted with trailing whitespace — re-grab it from play.qobuz.com (dev tools → Local Storage → `localuser` → `token`; Chrome/Edge: Application tab, Firefox: Storage tab), paste clean. |
+| Token rejected (Settings → Save & connect) | Token expired, copied with surrounding quotes, or pasted with trailing whitespace — re-grab it from play.qobuz.com (dev tools → Local Storage → `localuser` → `token`; Chrome/Edge: Application tab, Firefox: Storage tab), paste clean. |
 | Download stalls in "Importing into beets…" | A beets plugin is loaded without its required config block (e.g. lastgenre API key, replaygain backend). Disable it via `BEETS_PLUGINS` or add the block to `/config/beets/config.yaml`. |
 | `docker compose pull` 404 | Image hasn't been published under that tag yet — build from source (see [Building from source](#building-from-source)). |
 | Healthcheck failing but port reachable | Container couldn't reach its own `/healthz` — check container resource limits and `docker logs qobuz-librarian`. |
@@ -784,8 +777,9 @@ npm ci && npm run build      # writes static/dist/app.css
 ```
 
 `ruff check src tests` runs in CI; keep it clean before opening a PR.
-`scripts/smoke_test.sh` boots the container and exercises the main CLI
-modes against a temp music dir — run it before tagging a release.
+`scripts/smoke_test.sh` builds the image, boots the container, checks the web
+routes respond, and confirms the bundled tools (rip/beet/ffmpeg/flac) are
+present — run it before tagging a release.
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the rest.
 
 ## Acknowledgements
