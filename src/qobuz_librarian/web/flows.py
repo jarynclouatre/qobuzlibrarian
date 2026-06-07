@@ -211,7 +211,7 @@ def scan_artist(job, query, token):
     seen = new_releases_mod.load().get("seen") or {}
     result = find_missing_for_artist(
         query, token=token, opts=DiscoveryOpts(prefer_hires=cfg.PREFER_HIRES),
-        fresh=True)
+        single_store=hidden_mod.load(), fresh=True)
     if not result.artist_id:
         log.info(f"  No confident Qobuz match for '{query}'.")
         job.summary = (f"No Qobuz match for “{query}”. Check the spelling, or "
@@ -251,7 +251,8 @@ def _scan_library_artist(artist_dir, token, partial_only, hidden):
     result = find_missing_for_artist(
         artist_dir.name, token=token,
         opts=DiscoveryOpts(prefer_hires=cfg.PREFER_HIRES),
-        artist_dir=artist_dir, hidden=hidden, want_missing=not partial_only)
+        artist_dir=artist_dir, hidden=hidden, single_store=hidden,
+        want_missing=not partial_only)
     artist_id = str(result.artist_id) if result.artist_id else None
     catalog_ids = [str(a["id"]) for a in result.catalog
                    if is_lossless_album(a) and a.get("id") is not None]
@@ -409,7 +410,7 @@ def scan_new_releases(job, token):
                             thread_name_prefix="newrel") as ex:
         futures = {ex.submit(find_new_releases_for_artist, ad.name, token=token,
                              opts=opts, seen_by_id=seen, hidden=hidden,
-                             artist_dir=ad): ad
+                             single_store=hidden, artist_dir=ad): ad
                    for ad in artists}
         for fut in as_completed(futures):
             if job.cancel_requested:

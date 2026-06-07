@@ -78,7 +78,8 @@ def run_check_new_releases_mode(args):
                                 thread_name_prefix="newrel") as ex:
             futures = {ex.submit(find_new_releases_for_artist, ad.name,
                                  token=token, opts=opts, seen_by_id=seen,
-                                 hidden=hidden, artist_dir=ad): ad
+                                 hidden=hidden, single_store=hidden,
+                                 artist_dir=ad): ad
                        for ad in artists}
             for fut in as_completed(futures):
                 ad = futures[fut]
