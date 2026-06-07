@@ -213,6 +213,7 @@ class DiscoveryResult:
     artist_name: str | None
     gaps: list = field(default_factory=list)          # AlbumGap (partials + fully-missing)
     complete: list = field(default_factory=list)      # {dir, qobuz_album, existing}
+    singles: list = field(default_factory=list)       # {dir, qobuz_album, present, missing} — grabbed singles, not gaps
     skipped: list = field(default_factory=list)       # {dir, reason, qobuz_title, ...}
     unmatched_dirs: list = field(default_factory=list)  # folders no Qobuz album matched
     catalog: list = field(default_factory=list)       # the fetched catalog (callers may reuse)
@@ -264,6 +265,21 @@ def _owned_by_name(owned_titles, album):
 def _is_hidden(hidden, artist_name, album):
     return hidden is not None and hidden_mod.is_hidden(
         hidden_mod.SCOPE_MISSING, artist_name, album.get("title"), hidden)
+
+
+def _is_single(single_store, artist_name, album):
+    return (single_store is not None and album is not None
+            and hidden_mod.is_single(artist_name, album.get("title"), single_store))
+
+
+def _collecting(single_store, artist_name, album_dirs):
+    """An artist is 'collected' — surfaced by the bulk catalog walk and the
+    new-release check — only when they own at least one album folder that isn't
+    just a grabbed single. No single store (an explicit single-artist request)
+    means show everything."""
+    if single_store is None:
+        return True
+    return len(album_dirs) > hidden_mod.n_singles_for(artist_name, single_store)
 
 
 def _materialize_tracks(album, token):
@@ -397,8 +413,8 @@ def discover_fully_missing(artist_name, catalog, opts, *, hidden=None,
 
 
 def find_missing_for_artist(query, *, token, opts=None, artist_dir=None,
-                            hidden=None, want_missing=True, skip_dir=None,
-                            fresh=False):
+                            hidden=None, single_store=None, want_missing=True,
+                            skip_dir=None, fresh=False):
     """Find what's missing for one artist.
 
     query        — artist name (or folder name) used to resolve the Qobuz artist.
@@ -439,10 +455,14 @@ def find_missing_for_artist(query, *, token, opts=None, artist_dir=None,
             continue
         m = match_album_dir(ad, artist_name, token,
                             catalog=catalog, prefer_hires=opts.prefer_hires)
-        classify_owned_match(result, m, hidden, artist_name,
+        classify_owned_match(result, m, hidden, single_store, artist_name,
                              handled_ids, resolved_dirs)
 
-    if want_missing:
+    # Skip the catalog walk for an artist you own only grabbed singles by — they
+    # aren't one you're collecting, so their back catalogue shouldn't surface.
+    # hidden is None on an explicit single-artist request, which always sees all.
+    if want_missing and (hidden is None
+                         or _collecting(single_store, artist_name, album_dirs)):
         result.gaps.extend(discover_fully_missing(
             artist_name, catalog, opts, hidden=hidden, handled_ids=handled_ids,
             resolved_dirs=resolved_dirs, owned_titles=owned_titles, token=token))
@@ -455,7 +475,7 @@ def find_missing_for_artist(query, *, token, opts=None, artist_dir=None,
 
 
 def find_new_releases_for_artist(query, *, token, opts=None, seen_by_id=None,
-                                 hidden=None, artist_dir=None):
+                                 hidden=None, single_store=None, artist_dir=None):
     """Albums new to this artist's Qobuz catalog since the last check that the
     user doesn't own and hasn't hidden — the cheap "what's new" path.
 
@@ -486,6 +506,13 @@ def find_new_releases_for_artist(query, *, token, opts=None, seen_by_id=None,
     lossless = [a for a in catalog if is_lossless_album(a)]
     current_ids = [str(a["id"]) for a in lossless if a.get("id") is not None]
 
+    album_dirs = list_artist_album_dirs(artist_dir) if artist_dir else []
+    # Still record the baseline so a later real album doesn't dump the back
+    # catalogue as "new" — but an artist you own only singles by isn't one
+    # you're collecting, so don't surface their releases.
+    if not _collecting(single_store, artist_name, album_dirs):
+        return NewReleaseResult(artist_id, artist_name, [], current_ids)
+
     seen = (seen_by_id or {}).get(artist_id)
     if seen is None:
         return NewReleaseResult(artist_id, artist_name, [], current_ids)
@@ -495,14 +522,13 @@ def find_new_releases_for_artist(query, *, token, opts=None, seen_by_id=None,
     if not fresh:
         return NewReleaseResult(artist_id, artist_name, [], current_ids)
 
-    album_dirs = list_artist_album_dirs(artist_dir) if artist_dir else []
     new_gaps = discover_fully_missing(
         artist_name, fresh, opts, hidden=hidden,
         owned_titles=owned_album_titles(album_dirs), token=token, quick=True)
     return NewReleaseResult(artist_id, artist_name, new_gaps, current_ids)
 
 
-def classify_owned_match(result, m, hidden, artist_name,
+def classify_owned_match(result, m, hidden, single_store, artist_name,
                          handled_ids, resolved_dirs):
     """Fold one DirMatch into the running DiscoveryResult, recording which
     catalog ids and folders the owned pass has now accounted for. A false or
@@ -539,6 +565,12 @@ def classify_owned_match(result, m, hidden, artist_name,
                                "n_existing": len(m.existing), "n_qobuz": n_qobuz})
         return
     if m.status == "partial":
+        if _is_single(single_store, artist_name, m.qobuz_album):
+            # A track the user grabbed on purpose. Its album id is already in
+            # handled_ids (added above), so the missing pass won't re-offer it.
+            result.singles.append({"dir": ad, "qobuz_album": m.qobuz_album,
+                                   "present": m.present, "missing": m.missing})
+            return
         if _is_hidden(hidden, artist_name, m.qobuz_album):
             return
         result.gaps.append(AlbumGap(m.qobuz_album, ad, m.missing, m.present))
