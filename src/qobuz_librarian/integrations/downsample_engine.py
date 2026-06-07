@@ -283,6 +283,9 @@ def resample_one(rel, sr, rate, af_filter, *, base_dir=None):
             ],
             check=True,
             capture_output=True,
+            # A hung NFS/FUSE mount must not freeze the worker forever; cap the
+            # encode. Generous even for a long 24/192 file on slow hardware.
+            timeout=600,
         )
         out_size = tmp.stat().st_size
         # Verify the encode decodes before it overwrites the source. A
@@ -310,6 +313,9 @@ def resample_one(rel, sr, rate, af_filter, *, base_dir=None):
         os.replace(str(tmp), str(src))
         tmp = None
         return (rel, sr, rate, in_size - out_size, None)
+    except subprocess.TimeoutExpired:
+        return (rel, sr, rate, None,
+                "ffmpeg timed out (slow storage?); left the original untouched")
     except subprocess.CalledProcessError as e:
         err = (e.stderr.decode(errors="replace")[:200] if e.stderr else "").strip()
         return (rel, sr, rate, None, err)
