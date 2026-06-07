@@ -7,6 +7,7 @@ from qobuz_librarian import config as cfg
 from qobuz_librarian.api.auth import AuthLost, QobuzError
 from qobuz_librarian.api.search import get_artist_albums, search_artists
 from qobuz_librarian.integrations.downsample_engine import HAVE_DOWNSAMPLE
+from qobuz_librarian.library import hidden as hidden_mod
 from qobuz_librarian.library.catalog import (
     album_quality_label,
     compute_missing,
@@ -239,6 +240,8 @@ def scan_artist_for_upgrades(artist_name, artist_dir, token, args, capped=None):
     except QobuzError:
         pass
 
+    # Grabbed singles sit out the upgrade walk unless the user opted in.
+    single_store = None if cfg.UPGRADE_SINGLES_ENABLED else hidden_mod.load()
     candidates = []
     for album_dir in album_dirs:
         try:
@@ -255,6 +258,10 @@ def scan_artist_for_upgrades(artist_name, artist_dir, token, args, capped=None):
             continue
 
         if qobuz_album is None or not is_lossless_album(qobuz_album):
+            continue
+
+        if single_store is not None and hidden_mod.is_single(
+                artist_name, qobuz_album.get("title"), single_store):
             continue
 
         # Skip albums Qobuz can't actually deliver at target.

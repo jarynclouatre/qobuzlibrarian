@@ -430,6 +430,10 @@ CAPPED_RETENTION_DAYS         = _env("CAPPED_RETENTION_DAYS",         90)
 
 # ── Feature flags ─────────────────────────────────────────────────────────────
 AUTO_UPGRADE_ENABLED = _env_bool("AUTO_UPGRADE_ENABLED", False)
+# Whether the Upgrade walk re-rips tracks you grabbed as singles. Off by
+# default: a grabbed single is a deliberate one-off, not part of a collection
+# you're keeping at best quality, so the walk leaves it alone unless you opt in.
+UPGRADE_SINGLES_ENABLED = _env_bool("UPGRADE_SINGLES_ENABLED", False)
 # Off by default: most people want the file Qobuz delivers. Opt in if you
 # prefer to grab hi-res mixes and downsample them to 44.1/48 kHz to save space.
 # DOWNSAMPLE_HIRES_ENABLED is the canonical name; COMPRESS_ENABLED is the
