@@ -153,6 +153,8 @@ case "${1:-web}" in
             --host "${WEB_HOST:-0.0.0.0}" \
             --port "${WEB_PORT:-8666}" \
             --workers 1 \
+            --proxy-headers \
+            --forwarded-allow-ips "${FORWARDED_ALLOW_IPS:-127.0.0.1}" \
             --no-server-header
         ;;
     cli)
