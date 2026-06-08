@@ -8,17 +8,34 @@
     <form action="/search" method="post"
           hx-post="/search" hx-target="#results" hx-swap="innerHTML"
           hx-indicator="#search-spinner"
-          class="flex gap-2">
+          class="flex flex-col gap-2">
       <input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}">
-      <input type="text" name="q" value="{{ q or '' }}"
-             aria-label="Search Qobuz"
-             placeholder="Artist, album, or Qobuz URL"
-             inputmode="search" enterkeyhint="search" autocapitalize="off" spellcheck="false" maxlength="500"
-             class="input input-bordered flex-1" autocomplete="off" autofocus>
-      <button type="submit" class="btn btn-primary gap-2">
-        <span id="search-spinner" class="loading loading-spinner loading-sm htmx-indicator"></span>
-        Search
-      </button>
+      <div class="flex gap-2">
+        <div class="join" role="group" aria-label="Search for">
+          <label class="join-item btn btn-sm has-[:checked]:btn-primary">
+            <input type="radio" name="kind" value="album" class="hidden" {% if kind != 'track' %}checked{% endif %}
+                   hx-post="/search" hx-target="#results" hx-swap="innerHTML" hx-include="closest form">
+            Albums
+          </label>
+          <label class="join-item btn btn-sm has-[:checked]:btn-primary">
+            <input type="radio" name="kind" value="track" class="hidden" {% if kind == 'track' %}checked{% endif %}
+                   hx-post="/search" hx-target="#results" hx-swap="innerHTML" hx-include="closest form">
+            Tracks
+          </label>
+        </div>
+        <input type="text" name="q" value="{{ q or '' }}"
+               aria-label="Search Qobuz"
+               placeholder="{% if kind == 'track' %}Song or artist{% else %}Artist, album, or Qobuz URL{% endif %}"
+               inputmode="search" enterkeyhint="search" autocapitalize="off" spellcheck="false" maxlength="500"
+               class="input input-bordered flex-1" autocomplete="off" autofocus>
+        <button type="submit" class="btn btn-primary gap-2">
+          <span id="search-spinner" class="loading loading-spinner loading-sm htmx-indicator"></span>
+          Search
+        </button>
+      </div>
+      <p class="text-xs text-base-content/50 px-1">
+        {% if kind == 'track' %}Tracks — grab a single song. It won't nag you to finish the album, and won't pull the artist's whole catalogue into your scans.{% else %}Albums fill out your library. Switch to <strong>Tracks</strong> to grab just one song.{% endif %}
+      </p>
     </form>
   </div>
 </div>

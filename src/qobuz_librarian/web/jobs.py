@@ -96,6 +96,12 @@ class Job:
     title: str        = ""
     artist: str       = ""
     album_id: str     = ""
+    # Single-track-grab undo info, set by the Get-track flow: the resolved album
+    # dir, the grabbed track's isrc/number, and whether it marked the album a
+    # single / created a new folder — enough for /undo to cleanly reverse it.
+    # Empty for every other job; its presence is also how the UI knows to hide
+    # Cancel (a one-track grab finishes before you could catch it) and show Undo.
+    single: dict      = field(default_factory=dict)
     kind: str         = "download"          # download | scan
     status: JobStatus = JobStatus.PENDING
     phase: str        = ""                  # "", scan, execute

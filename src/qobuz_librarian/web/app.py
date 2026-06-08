@@ -856,28 +856,36 @@ async def lyric_retry(request: Request):
 
 
 @app.get("/search", response_class=HTMLResponse)
-async def search_page(request: Request, q: str = Query("", max_length=500)):
+async def search_page(request: Request, q: str = Query("", max_length=500),
+                      kind: str = Query("album")):
     if q.strip():
-        return await do_search(request, q=q)
+        return await do_search(request, q=q, kind=kind)
     creds_ok = bool(_read_creds().get("auth_token"))
     return _tr(request, "search.html", {
         "q": "", "results": [], "error": None,
+        "kind": "track" if kind == "track" else "album",
         "creds_ok": creds_ok, "page": "search",
     })
 
 
 @app.post("/search", response_class=HTMLResponse)
-async def do_search(request: Request, q: str = Form("", max_length=500)):
+async def do_search(request: Request, q: str = Form("", max_length=500),
+                    kind: str = Form("album")):
     results = []
     error = None
     query = q.strip()
+    kind = "track" if str(kind).strip().lower() == "track" else "album"
     if query:
         # Imported before the try so the except clauses below can always name
         # them, even if a failure happens before the request reaches the API.
         from qobuz_librarian.api.auth import AuthLost, QobuzError, QobuzUnavailable
         try:
             token = _get_token()
-            from qobuz_librarian.api.search import get_album, search_albums
+            from qobuz_librarian.api.search import (
+                get_album,
+                search_albums,
+                search_tracks,
+            )
             from qobuz_librarian.cli import parse_qobuz_url
             from qobuz_librarian.library.catalog import album_quality_label, album_year
 
@@ -930,11 +938,12 @@ async def do_search(request: Request, q: str = Form("", max_length=500)):
                 error = ("Only Qobuz album URLs are supported here. "
                          "Paste an album URL, or search by artist/title.")
             else:
+                _search_fn = search_tracks if kind == "track" else search_albums
                 try:
                     raw = await asyncio.wait_for(
                         loop.run_in_executor(
                             None,
-                            lambda: call_within(cfg.WEB_FETCH_TIMEOUT, search_albums,
+                            lambda: call_within(cfg.WEB_FETCH_TIMEOUT, _search_fn,
                                                 query, token, limit=cfg.SEARCH_LIMIT),
                         ),
                         timeout=cfg.WEB_FETCH_TIMEOUT,
@@ -942,7 +951,31 @@ async def do_search(request: Request, q: str = Form("", max_length=500)):
                 except asyncio.TimeoutError:
                     error = "Timed out reaching the Qobuz API."
 
-            for a in raw:
+            for t in (raw if kind == "track" else []):
+                alb = t.get("album") or {}
+                if not t.get("id") or not alb.get("id"):
+                    continue
+                _tbd = (t.get("maximum_bit_depth")
+                        or alb.get("maximum_bit_depth") or 0)
+                _timg = alb.get("image") or {}
+                _tcover = _timg.get("small") or _timg.get("thumbnail") or ""
+                _perf = (t.get("performer") or {}).get("name")
+                results.append({
+                    "track_id":    t.get("id"),
+                    "album_id":    alb.get("id"),
+                    "title":       t.get("title") or "?",
+                    "version":     t.get("version") or "",
+                    "artist":      (alb.get("artist") or {}).get("name") or _perf or "?",
+                    "album_title": alb.get("title") or "?",
+                    "year":        album_year(alb) or "?",
+                    "track_n":     t.get("track_number") or "?",
+                    "total":       alb.get("tracks_count") or "?",
+                    "hires":       _tbd >= 24,
+                    "lossy":       _tbd == 0,
+                    "cover":       _tcover if _tcover.startswith(
+                        "https://static.qobuz.com/") else "",
+                })
+            for a in (raw if kind == "album" else []):
                 if not a.get("id"):
                     continue
                 _bd = a.get("maximum_bit_depth") or 0
@@ -980,7 +1013,7 @@ async def do_search(request: Request, q: str = Form("", max_length=500)):
                 "search failed for %r", query)
             error = "Search failed — try again."
     creds_ok = bool(_read_creds().get("auth_token"))
-    ctx = {"q": query, "results": results, "error": error,
+    ctx = {"q": query, "results": results, "error": error, "kind": kind,
            "creds_ok": creds_ok, "page": "search"}
     if _is_htmx(request):
         return _tr(request, "_search_results.html", ctx)
@@ -1061,17 +1094,93 @@ def _make_download_run(album, token, *, treat_as_new=False):
         summary = _summarize_download_result(r)
         if summary:
             j.summary = summary
+        # Claiming/completing the album the normal way graduates it out of the
+        # "grabbed single" state, so the rest stops being suppressed in scans.
+        if r.get("imported"):
+            from qobuz_librarian.library import hidden as hidden_mod
+            hidden_mod.unmark_single(
+                (album.get("artist") or {}).get("name") or "?",
+                album.get("title") or "?")
+    return run
+
+
+def _make_single_track_run(album, track, token):
+    """Run a single-track grab: download just ``track`` via the per-track queue
+    path (the same isolation repair uses — never a whole-album rip), then mark
+    the album as a deliberately-grabbed single so scans leave the partial folder
+    — and a sample-only artist's catalogue — alone."""
+    def run(j):
+        from qobuz_librarian.library import hidden as hidden_mod
+        from qobuz_librarian.library.catalog import (
+            album_year,
+            compute_missing,
+            find_existing_tracks,
+        )
+        from qobuz_librarian.queue.builder import _build_queue_item
+        from qobuz_librarian.queue.executor import _execute_download_queue
+        from qobuz_librarian.ui_cli.errors import plural
+        from qobuz_librarian.web.flows import build_args
+        artist = (album.get("artist") or {}).get("name") or "?"
+        title = album.get("title") or "?"
+        t_title = track.get("title") or "?"
+        qobuz_tracks = (album.get("tracks") or {}).get("items") or []
+        existing, album_dir = find_existing_tracks(album)
+        missing, _present = compute_missing(qobuz_tracks, existing)
+        missing_ids = {str(t.get("id")) for t in missing}
+        # Already own this exact track? Don't re-rip it — that just lands a beets
+        # ".1.flac" duplicate beside the copy you have — and don't mark anything.
+        if str(track.get("id")) not in missing_ids:
+            j.summary = f"You already have “{t_title}” — nothing downloaded."
+            return
+        qi = _build_queue_item(
+            album=album, album_dir=album_dir,
+            label=f"{artist} — {t_title}  [single]",
+            missing=[track], present=existing,
+            upgrade_only=False, auto_upgrade=False,
+            force_track_by_track=True,
+        )
+        with job_mgr.staging_lock():
+            _execute_download_queue([qi], build_args(), token)
+        if not (qi.get("n_ok", 0) > 0 and qi.get("imported", False)
+                and qi.get("n_fail", 0) == 0):
+            j.status = job_mgr.JobStatus.FAILED
+            j.error = (f"{plural(qi.get('n_fail', 1), 'track')} failed"
+                       if qi.get("n_fail") else "download or import failed")
+            return
+        # Only mark it a single if the album is still partial after this grab. If
+        # this was the album's last missing track, you now own the whole thing —
+        # that's a normal complete album, not a single, so leave it unmarked.
+        marked = len(missing) > 1
+        if marked:
+            hidden_mod.mark_single(artist, title, album_year(album), album.get("id"))
+            j.summary = (f"Got “{t_title}” — filed under {artist} / {title}. "
+                         "The rest of the album stays out of your scans.")
+        else:
+            j.summary = (f"Got “{t_title}” — that completed {title}, so it's "
+                         "filed as a full album.")
+        # Record what this grab added so /undo can cleanly reverse it.
+        j.single = {
+            "album_id": str(album.get("id") or ""),
+            "track_id": str(track.get("id") or ""),
+            "dir": qi.get("_resolved_post_dir") or (str(album_dir) if album_dir else ""),
+            "isrc": track.get("isrc") or "",
+            "track_no": track.get("track_number"),
+            "title": t_title, "artist": artist, "album": title,
+            "marked": marked, "new_folder": album_dir is None,
+        }
     return run
 
 
 @app.post("/download", response_class=HTMLResponse)
 async def queue_download(request: Request, album_id: str = Form(""),
                          force: str = Form(""),
-                         as_new_edition: str = Form("")):
+                         as_new_edition: str = Form(""),
+                         track_id: str = Form("")):
     busy = _lock_busy_response(request)
     if busy is not None:
         return busy
     album_id = album_id.strip()
+    track_id = track_id.strip()
     if not album_id:
         msg = "Missing album id."
         if _is_htmx(request):
@@ -1109,7 +1218,7 @@ async def queue_download(request: Request, album_id: str = Form(""),
                 lambda: call_within(cfg.WEB_FETCH_TIMEOUT, get_album, album_id, token)),
             timeout=cfg.WEB_FETCH_TIMEOUT,
         )
-        if not force_redownload and not download_as_new_edition:
+        if not force_redownload and not download_as_new_edition and not track_id:
             def _already_complete():
                 from qobuz_librarian.library.catalog import (
                     compute_missing,
@@ -1165,7 +1274,27 @@ async def queue_download(request: Request, album_id: str = Form(""),
                     status_code=303)
         title  = album.get("title") or "?"
         artist = (album.get("artist") or {}).get("name") or "?"
-        job = job_mgr.Job(title=title, artist=artist, album_id=album_id)
+        single_track = None
+        if track_id:
+            _tracks = (album.get("tracks") or {}).get("items") or []
+            single_track = next(
+                (t for t in _tracks if str(t.get("id")) == track_id), None)
+            if single_track is None:
+                msg = "That track isn't on this album."
+                if _is_htmx(request):
+                    return HTMLResponse(
+                        f'<div class="alert alert-error" data-flash>{msg}</div>',
+                        status_code=400)
+                return RedirectResponse(
+                    url="/queue?error=" + urllib.parse.quote(msg), status_code=303)
+        job = job_mgr.Job(
+            title=(single_track.get("title") or title) if single_track else title,
+            artist=artist, album_id=album_id)
+        if single_track:
+            # Flagging it now (before the run fills in the undo details) is what
+            # tells the UI to hide Cancel on this job — a one-track grab is done
+            # before you could catch it.
+            job.single = {"album_id": album_id, "track_id": str(track_id)}
 
         # Re-check under the lock right before submitting: closes the race with
         # a concurrent /download for the same album across the get_album await.
@@ -1187,8 +1316,11 @@ async def queue_download(request: Request, album_id: str = Form(""),
             busy = _lock_busy_response(request)
             if busy is not None:
                 return busy
-            job_mgr.submit(job, _make_download_run(
-                album, token, treat_as_new=download_as_new_edition))
+            run_fn = (_make_single_track_run(album, single_track, token)
+                      if single_track
+                      else _make_download_run(
+                          album, token, treat_as_new=download_as_new_edition))
+            job_mgr.submit(job, run_fn)
         if _is_htmx(request):
             return _tr(request, "_job_queued.html", {"job": job})
         # Land on the new job's page so the user sees their download starting.
@@ -2003,8 +2135,16 @@ async def job_retry(request: Request, job_id: str):
         )
         title = album.get("title") or job.title or "?"
         artist = (album.get("artist") or {}).get("name") or job.artist or "?"
-        new_job = job_mgr.Job(title=title, artist=artist, album_id=album_id)
-        job_mgr.submit(new_job, _make_download_run(album, token))
+        # Re-check for a duplicate under the submit lock: the await above yielded
+        # the event loop, so a second Retry for the same album could have raced
+        # in between the pre-check and here. Same guard queue_download uses, so
+        # two quick retries can't double-queue the same album.
+        with _DOWNLOAD_SUBMIT_LOCK:
+            duplicate = _find_job_touching_album(album_id)
+            if duplicate:
+                return RedirectResponse(url=f"/jobs/{duplicate.id}", status_code=303)
+            new_job = job_mgr.Job(title=title, artist=artist, album_id=album_id)
+            job_mgr.submit(new_job, _make_download_run(album, token))
         return RedirectResponse(url=f"/jobs/{new_job.id}", status_code=303)
     except (SystemExit, NoCredsError):
         return RedirectResponse(url="/settings?error=creds", status_code=303)
@@ -2013,6 +2153,73 @@ async def job_retry(request: Request, job_id: str):
             url="/queue?error=" + urllib.parse.quote("Retry failed — check your token."),
             status_code=303,
         )
+
+
+@app.post("/jobs/{job_id}/undo")
+async def job_undo(request: Request, job_id: str):
+    """Reverse a single-track grab: delete the track it added, drop the beets row
+    for it, undo the single mark, and remove a folder the grab created if it's
+    now empty. Available while the job is still in memory."""
+    job = job_mgr.registry.get(job_id)
+    info = dict(getattr(job, "single", None) or {}) if job else {}
+    if not job or not info.get("dir") or info.get("removed"):
+        if _is_htmx(request):
+            return HTMLResponse("")
+        return RedirectResponse(url="/queue", status_code=303)
+
+    def _reverse():
+        from pathlib import Path
+
+        from qobuz_librarian.integrations.beets import forget_beets_entries
+        from qobuz_librarian.library import hidden as hidden_mod
+        from qobuz_librarian.library.scanner import read_album_dir
+        d = Path(info["dir"])
+        want = (info.get("isrc") or "").replace("-", "").upper().strip()
+        removed = None
+        try:
+            for et in read_album_dir(d):
+                ei = (et.get("isrc") or "").replace("-", "").upper().strip()
+                same = ((want and ei == want)
+                        or (not want and et.get("track") == info.get("track_no")))
+                if same:
+                    p = Path(et.get("path") or "")
+                    if p.exists():
+                        p.unlink()
+                        removed = p
+                    break
+        except OSError:
+            pass
+        if removed is not None:
+            forget_beets_entries([removed])
+        if info.get("marked"):
+            hidden_mod.unmark_single(info.get("artist") or "", info.get("album") or "")
+        # If the grab created a brand-new folder and it now holds no audio, take
+        # it back out so a one-off sample doesn't leave an empty album dir behind.
+        try:
+            if (info.get("new_folder") and d.is_dir()
+                    and not any(x.suffix.lower() == ".flac" for x in d.iterdir())):
+                import shutil
+                shutil.rmtree(d, ignore_errors=True)
+        except OSError:
+            pass
+        return removed is not None
+
+    def _reverse_under_lock():
+        # Take the lock inside the worker thread, never on the event loop —
+        # holding a threading.Lock on the loop would freeze every other request
+        # while a download worker (which may rip for minutes) holds it.
+        with job_mgr.staging_lock():
+            return _reverse()
+
+    loop = asyncio.get_running_loop()
+    removed = await loop.run_in_executor(None, _reverse_under_lock)
+    job.single = {**info, "removed": True}
+    job.summary = (f"Removed “{info.get('title')}” and undid the single."
+                   if removed else
+                   f"“{info.get('title')}” was already gone — cleared the single mark.")
+    if _is_htmx(request):
+        return _tr(request, "_job_body.html", {"job": job})
+    return RedirectResponse(url=f"/jobs/{job.id}", status_code=303)
 
 
 @app.post("/jobs/{job_id}/cancel")

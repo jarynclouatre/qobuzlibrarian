@@ -9,6 +9,37 @@
   <div class="card-body p-0">
     <div class="divide-y divide-base-300">
       {% for r in results %}
+      {% if kind == 'track' %}
+      <div class="flex flex-col sm:flex-row sm:items-center gap-3 sm:gap-4 px-4 py-3">
+        <div class="flex items-center gap-3 min-w-0 flex-1">
+          {% if r.cover %}
+          <img src="{{ r.cover }}" alt="" loading="lazy" width="48" height="48"
+               class="shrink-0 w-12 h-12 rounded object-cover bg-base-300">
+          {% endif %}
+          <div class="min-w-0 flex-1">
+            <p class="font-semibold truncate">{{ r.title }}{% if r.version %} <span class="font-normal text-base-content/50">({{ r.version }})</span>{% endif %}</p>
+            <p class="text-sm text-base-content/60 truncate">
+              {{ r.artist }}
+              <span class="text-base-content/40">· {{ r.album_title }}{% if r.year and r.year != '?' %} ({{ r.year }}){% endif %}{% if r.track_n != '?' and r.total != '?' %} · track {{ r.track_n }} of {{ r.total }}{% endif %}</span>
+            </p>
+          </div>
+        </div>
+        <div class="shrink-0 flex items-center gap-2 self-end sm:self-auto">
+          {% if r.hires %}<span class="badge badge-sm quality-hires border border-current">Hi-Res</span>
+          {% elif r.lossy %}<span class="badge badge-sm quality-lossy border border-current">Lossy</span>
+          {% else %}<span class="badge badge-sm quality-cd border border-current">CD</span>{% endif %}
+          <form method="post" action="/download" hx-post="/download" hx-target="#download-toast"
+                hx-swap="innerHTML" hx-disabled-elt="find button[type=submit]"
+                hx-confirm='Get just "{{ r.title }}" by {{ r.artist }}? The rest of the album stays out of your scans.'
+                data-queue-button>
+            <input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}">
+            <input type="hidden" name="album_id" value="{{ r.album_id }}">
+            <input type="hidden" name="track_id" value="{{ r.track_id }}">
+            <button type="submit" class="btn btn-sm btn-primary">Get track</button>
+          </form>
+        </div>
+      </div>
+      {% else %}
       <div class="flex flex-col sm:flex-row sm:items-center gap-3 sm:gap-4 px-4 py-3">
         <div class="flex items-center gap-3 min-w-0 flex-1">
           {% if r.cover %}
@@ -51,6 +82,7 @@
           </form>
         </div>
       </div>
+      {% endif %}
       {% endfor %}
     </div>
   </div>
