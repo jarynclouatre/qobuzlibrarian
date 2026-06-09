@@ -67,7 +67,7 @@
         {% if job.cancel_requested %}<span class="badge badge-ghost badge-sm ml-2">stopping</span>{% endif %}
         <span id="sse-reconnect" class="badge badge-warning badge-sm ml-2 hidden" role="status" aria-live="polite">connection lost — reconnecting…</span>
       </p>
-      {% if not job.cancel_requested %}
+      {% if not job.cancel_requested and not job.single %}
       <form action="/jobs/{{ job.id }}/cancel" method="post">
         <input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}">
         <button type="submit" class="btn btn-sm btn-ghost">Cancel</button>
@@ -116,6 +116,14 @@
       <form action="/jobs/{{ job.id }}/retry" method="post">
         <input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}">
         <button type="submit" class="btn btn-primary btn-sm">Retry</button>
+      </form>
+      {% endif %}
+      {% if s == 'done' and job.single and job.single.get('dir') and not job.single.get('removed') %}
+      <form action="/jobs/{{ job.id }}/undo" method="post"
+            hx-post="/jobs/{{ job.id }}/undo" hx-target="#job-content" hx-swap="outerHTML"
+            data-confirm="Remove the track this grab added and undo the single?">
+        <input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}">
+        <button type="submit" class="btn btn-sm btn-outline btn-warning">Undo — remove track</button>
       </form>
       {% endif %}
       <a href="/queue" class="btn btn-ghost btn-sm">Back to queue</a>
