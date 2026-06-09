@@ -78,5 +78,7 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 # Tests pull in patches/fixtures whose imports are used by `with patch(...)`
-# blocks; ruff can't always see those uses.
-"tests/*" = ["F401"]
+# blocks; ruff can't always see those uses. F811 fires when a fixture imported
+# from another test module is also taken as a parameter — the pytest way to
+# share one.
+"tests/*" = ["F401", "F811"]

@@ -987,7 +987,8 @@ def test_check_new_releases_mode_tallies_and_marks_run_unless_dry_run(tmp_path, 
     Result = namedtuple("Result",
                         "artist_id artist_name new_gaps current_ids")
 
-    def fake_find(name, *, token, opts, seen_by_id, hidden, artist_dir):
+    def fake_find(name, *, token, opts, seen_by_id, hidden, artist_dir,
+                  single_store=None):
         Gap = types.SimpleNamespace(qobuz_album={
             "id": "555", "title": "A Newly-Found Release",
             "release_date_original": "2026-05-28"})
