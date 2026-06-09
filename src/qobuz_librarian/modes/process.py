@@ -22,6 +22,7 @@ from qobuz_librarian.integrations.rip import (
 )
 from qobuz_librarian.library.backup import (
     backup_album_dir,
+    pin_unverified_upgrade_backup,
     restore_gap_fill_backup,
     restore_upgrade_backup,
 )
@@ -800,12 +801,13 @@ def process_album(album, args, *, allow_force=True, label=None,
                 # verifiably as complete as the original — keep the only full
                 # copy instead of deleting it.
                 upgrade_unverified = True
+                pin_unverified_upgrade_backup(upgrade_backup_path)
                 log.info(fmt(C.YELLOW,
                     "\n  ⚠  Upgrade couldn't be verified as complete; "
                     "keeping your original."))
                 log.info(fmt(C.GRAY,
                     f"     Original preserved at {upgrade_backup_path} "
-                    f"(auto-cleaned after {cfg.UPGRADE_BACKUP_RETENTION_DAYS} days)."))
+                    f"(kept until you confirm the upgrade landed)."))
                 log.info(fmt(C.WHITE,
                     f"     Restore: mv {upgrade_backup_path!s} {album_dir!s}"))
             elif download_phase_completed and args.no_import:

@@ -27,6 +27,7 @@ from qobuz_librarian.integrations.rip import (
 )
 from qobuz_librarian.library.backup import (
     backup_album_dir,
+    pin_unverified_upgrade_backup,
     restore_gap_fill_backup,
     restore_upgrade_backup,
 )
@@ -347,12 +348,13 @@ def _resolve_queue_item(item, args, imported_globally):
                     log.info(fmt(C.YELLOW,
                         f"  ⚠  Couldn't remove backup for {truncate(album_dir.name, 40)}: {e}"))
             else:
+                pin_unverified_upgrade_backup(bp)
                 log.info(fmt(C.YELLOW,
                     f"  ⚠  {truncate(album_dir.name, 40)}: upgrade couldn't be "
                     f"verified as complete — keeping your original."))
                 log.info(fmt(C.GRAY,
                     f"     Original preserved at {bp} "
-                    f"(auto-cleaned after {cfg.UPGRADE_BACKUP_RETENTION_DAYS} days)."))
+                    f"(kept until you confirm the upgrade landed)."))
         elif _item_strict_success:
             # The download and import succeeded cleanly, but the imported album
             # couldn't be relocated (beets renamed the folder past what the

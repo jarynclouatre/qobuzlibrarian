@@ -71,11 +71,21 @@ def _tree_stats(d: Path):
 _ORIGIN_SIDECAR = ".ql_backup_origin"
 
 # Dropped into a backup when a restore left some originals behind (a partial
-# restore). The leftover originals are the ONLY copy of those tracks, but once
-# the successfully-restored files land in the origin, the file-count heuristic in
-# _backup_is_only_copy can no longer tell the backup still holds un-restored
-# tracks — so this marker says "never reap, the user must reconcile by hand."
+# restore). The leftover originals are the ONLY copy of those tracks; this marker
+# says "never reap, the user must reconcile by hand." Content-presence reaping
+# already keeps such a backup (the un-restored tracks aren't back at the origin),
+# so this is an explicit belt-and-braces signal, not the sole protection.
 _PARTIAL_RESTORE_SENTINEL = ".ql_partial_restore"
+
+# Dropped into an upgrade backup kept because the re-rip couldn't be verified as
+# complete (e.g. a track came back truncated-but-decodable, so playtime dropped).
+# The backup is then the only fully-verified copy. A same-count, larger hi-res
+# re-rip can leave the origin looking redundant by bytes, so the sweep needs this
+# explicit "don't reap" marker on top of the content-presence proof.
+_UNVERIFIED_UPGRADE_SENTINEL = ".ql_upgrade_unverified"
+
+# Files a backup carries that aren't backed-up tracks.
+_SIDECARS = (_ORIGIN_SIDECAR, _PARTIAL_RESTORE_SENTINEL, _UNVERIFIED_UPGRADE_SENTINEL)
 
 
 def _write_backup_origin(bp: Path, origin: Path) -> bool:
@@ -103,8 +113,14 @@ def _backup_safe_to_reap(bp: Path) -> bool:
     """True ONLY when ``bp`` is provably redundant — every track it holds is
     confirmed back at its origin. The age sweep reaps on this, so the burden of
     proof is on "safe to delete", not on "must keep": any uncertainty (no
-    sidecar, unreadable origin, can't count either tree, a partial-restore
-    marker) means we cannot prove redundancy and the backup is KEPT.
+    sidecar, unreadable origin, a keep marker, a track not proven back) means we
+    cannot prove redundancy and the backup is KEPT.
+
+    Redundancy is proved by CONTENT, not file count: every track in the backup
+    must be back at the origin under the same relative path and at least as
+    large. A bare count match is fooled when restored or gap-filled files
+    inflate the origin's count while one of the backup's own tracks is still
+    missing or short there — exactly the case that strands the only good copy.
 
     This is deliberately the inverse of a "protect if marked" scheme. A backup
     can become the only surviving copy whenever the originals were moved into it
@@ -114,22 +130,40 @@ def _backup_safe_to_reap(bp: Path) -> bool:
     "keep" the default means no protective write has to succeed for the data to
     be safe; the worst case of a missing marker is a stranded backup the user
     clears by hand, never silent loss."""
-    # An explicit partial-restore marker: definitely still the only copy.
-    if (bp / _PARTIAL_RESTORE_SENTINEL).is_file():
+    # Explicit keep markers: a partial restore, or an upgrade kept because it
+    # couldn't be verified complete — never reap either.
+    if (bp / _PARTIAL_RESTORE_SENTINEL).is_file() or (bp / _UNVERIFIED_UPGRADE_SENTINEL).is_file():
         return False
+    try:
+        tracks = [f for f in bp.rglob("*") if f.is_file() and f.name not in _SIDECARS]
+    except OSError:
+        return False                       # can't read the backup → can't prove redundant
+    if not tracks:
+        return True                        # holds no tracks → nothing to lose → reap the husk
     origin = _read_backup_origin(bp)
     if origin is None or not origin.exists():
         return False                       # can't locate origin → can't prove redundant
-    o = _tree_stats(origin)
-    b = _tree_stats(bp)
-    if o is None or b is None:
-        return False                       # can't count → can't prove redundant
-    sidecars = sum(1 for s in (_ORIGIN_SIDECAR, _PARTIAL_RESTORE_SENTINEL)
-                   if (bp / s).is_file())
-    backup_files = b[0] - sidecars
-    # Reap only when the origin holds at least as many files as the backup —
-    # i.e. the content was put back. A short origin means it wasn't.
-    return o[0] >= backup_files
+    for f in tracks:
+        try:
+            dst = origin / f.relative_to(bp)
+            if not dst.is_file() or dst.stat().st_size < f.stat().st_size:
+                return False               # this track isn't proven back at the origin
+        except OSError:
+            return False
+    return True
+
+
+def pin_unverified_upgrade_backup(bp: Path) -> None:
+    """Mark an upgrade backup as the only fully-verified copy so the age sweep
+    leaves it alone. Best-effort: content-presence reaping already keeps a backup
+    whose tracks aren't all proven back at the origin, but a same-count larger
+    hi-res re-rip can defeat the byte check, so this is the explicit signal."""
+    try:
+        (bp / _UNVERIFIED_UPGRADE_SENTINEL).write_text(
+            "upgrade kept — replacement not verified complete; the only full copy",
+            encoding="utf-8")
+    except OSError:
+        pass
 
 
 def find_only_copy_backups():
@@ -647,11 +681,11 @@ def cleanup_old_upgrade_backups(retention_days: int = None,
             continue
         if ts < cutoff:
             if not _backup_safe_to_reap(entry):
-                # We can't PROVE this backup is redundant (origin gone/short, or
-                # uncountable, or marked partial-restore), so it may be the only
-                # copy of the tracks it holds. Retention must never reap the last
-                # copy; keep it and let the web diagnostic surface it for the
-                # user to reconcile (restore or remove by hand).
+                # We can't PROVE this backup is redundant (origin gone, a track
+                # not back at it, unreadable, or an explicit keep marker), so it
+                # may be the only copy of the tracks it holds. Retention must
+                # never reap the last copy; keep it and let the web diagnostic
+                # surface it for the user to reconcile (restore or remove by hand).
                 log.info(fmt(C.YELLOW,
                     f"  ⚠  Keeping backup {entry.name!r} past retention — can't "
                     f"confirm its tracks are back in the original folder."))

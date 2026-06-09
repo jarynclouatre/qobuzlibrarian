@@ -175,6 +175,66 @@ def test_age_sweep_keeps_any_backup_it_cannot_prove_redundant(tmp_path, monkeypa
     assert any(e == bp for e, _origin in bk.find_only_copy_backups())
 
 
+def test_age_sweep_keeps_a_count_match_when_a_track_is_missing_at_origin(tmp_path, monkeypatch):
+    # Redundancy is proved by content, not file count. An origin that gained a
+    # DIFFERENT file (so the count matches) while one of the backup's own tracks
+    # never returned must still be KEPT — a bare count check would reap the only
+    # surviving copy of that track.
+    import qobuz_librarian.library.backup as bk
+    monkeypatch.setattr(bk.cfg, "UPGRADE_BACKUP_DIR", tmp_path / "backups")
+    monkeypatch.setattr(bk.cfg, "DATA_DIR", tmp_path / "data")
+    (tmp_path / "data").mkdir()
+
+    album = tmp_path / "music" / "Album (2020)"
+    album.mkdir(parents=True)
+    (album / "01 - A.flac").write_bytes(b"a" * 3000)
+    (album / "02 - B.flac").write_bytes(b"b" * 3000)
+    bp = bk.backup_album_dir(album)
+    assert bp is not None and not album.exists()
+
+    # Origin comes back with the same file COUNT (2) but track B never returned —
+    # a new file C took its slot.
+    album.mkdir(parents=True, exist_ok=True)
+    (album / "01 - A.flac").write_bytes(b"a" * 5000)
+    (album / "03 - C.flac").write_bytes(b"c" * 5000)
+    assert not bk._backup_safe_to_reap(bp)
+
+    aged = bp.with_name("20200101_000000_aged")
+    bp.rename(aged)
+    assert bk.cleanup_old_upgrade_backups(force=True) == 0
+    assert (aged / "02 - B.flac").exists()      # the only copy of B survives
+
+
+def test_unverified_upgrade_backup_is_pinned_from_age_sweep(tmp_path, monkeypatch):
+    # An upgrade kept because it couldn't be verified complete (a truncated-but-
+    # decodable track drops playtime) leaves the backup as the only full copy.
+    # The re-rip can land at the same names but larger hi-res bytes, so content
+    # alone reads as redundant — the explicit pin must keep the sweep off it.
+    import qobuz_librarian.library.backup as bk
+    monkeypatch.setattr(bk.cfg, "UPGRADE_BACKUP_DIR", tmp_path / "backups")
+    monkeypatch.setattr(bk.cfg, "DATA_DIR", tmp_path / "data")
+    (tmp_path / "data").mkdir()
+
+    album = tmp_path / "music" / "Album (2020)"
+    album.mkdir(parents=True)
+    (album / "01 - A.flac").write_bytes(b"a" * 3000)
+    (album / "02 - B.flac").write_bytes(b"b" * 3000)
+    bp = bk.backup_album_dir(album)
+    assert bp is not None
+
+    album.mkdir(parents=True, exist_ok=True)
+    (album / "01 - A.flac").write_bytes(b"A" * 9000)
+    (album / "02 - B.flac").write_bytes(b"B" * 9000)
+    assert bk._backup_safe_to_reap(bp)          # by content/bytes alone, redundant
+    bk.pin_unverified_upgrade_backup(bp)
+    assert not bk._backup_safe_to_reap(bp)      # pinned → kept
+
+    aged = bp.with_name("20200101_000000_aged")
+    bp.rename(aged)
+    assert bk.cleanup_old_upgrade_backups(force=True) == 0
+    assert (aged / "01 - A.flac").exists()
+
+
 def test_backup_refuses_rather_than_leave_unprotected_sole_copy(tmp_path, monkeypatch):
     # The origin sidecar is the only thing that stops the age sweep reaping a
     # backup that's a sole copy. If it can't be written, the backup helpers must
