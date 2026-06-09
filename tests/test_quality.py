@@ -94,6 +94,16 @@ def test_quality_change_summary_counts_upgrades_and_losses():
     assert quality_change_summary([(t(24, 96000), t(16, 44100))])["losing_hires"] == 1
 
 
+def test_quality_change_summary_flags_unreadable_sibling_as_unknown():
+    # A sibling FLAC whose quality can't be read reads as (0, 0); it could be
+    # hi-res, so it must count as unknown (and trip the delete confirmation),
+    # not as a safe lower-quality drop.
+    t = lambda b, r: {"bits": b, "sample_rate": r}
+    qc = quality_change_summary([(t(0, 0), t(16, 44100))])
+    assert qc["unknown"] == 1
+    assert qc["upgrading"] == 0 and qc["losing_hires"] == 0
+
+
 def test_is_album_capped_honours_ttl_and_tolerates_garbage():
     fresh_ts = datetime.now(timezone.utc).isoformat()
     expired_ts = (datetime.now(timezone.utc) - timedelta(days=91)).isoformat()

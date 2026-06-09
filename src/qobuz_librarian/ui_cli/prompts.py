@@ -470,6 +470,10 @@ def print_consolidation_overview(summaries):
         if qc["losing_hires"]:
             log.info(fmt(C.RED + C.BOLD,
                 f"      ⚠  {qc['losing_hires']} track(s) here are HIGHER quality than primary."))
+        if qc["unknown"]:
+            log.info(fmt(C.RED + C.BOLD,
+                f"      ⚠  {qc['unknown']} track(s) here have unreadable quality — "
+                "can't confirm they're safe to delete."))
 
 
 def print_per_track_consolidation(summary):
@@ -487,10 +491,11 @@ def print_per_track_consolidation(summary):
         sib_q = format_quality(st.get("bits", 0), st.get("sample_rate", 0))
         pri_q = format_quality(pt.get("bits", 0), pt.get("sample_rate", 0))
 
-        cmp = _track_quality_cmp(st, pt)
-        if cmp > 0:
+        if (st.get("bits") or 0, st.get("sample_rate") or 0) == (0, 0):
+            badge = fmt(C.RED + C.BOLD, "delete (quality unreadable)")
+        elif _track_quality_cmp(st, pt) > 0:
             badge = fmt(C.RED + C.BOLD, "delete (HIGHER quality)")
-        elif cmp < 0:
+        elif _track_quality_cmp(st, pt) < 0:
             badge = fmt(C.GREEN, "delete (lower quality)")
         else:
             badge = fmt(C.GRAY, "delete (same quality)")

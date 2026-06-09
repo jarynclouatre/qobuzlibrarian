@@ -165,15 +165,22 @@ def consolidate_albums(album, args):
             continue
 
         qc = quality_change_summary(s["overlap"])
-        warning = qc["losing_hires"] > 0
+        risky = qc["losing_hires"] + qc["unknown"]
+        warning = risky > 0
 
         print()
         log.info(fmt(C.BOLD + C.WHITE, f"  Sibling: {truncate(sib_dir.name, 55)}"))
         log.info(fmt(C.GRAY,
             f"    {n_over} track(s) overlap • {len(s['unique'])} bonus track(s) will remain"))
         if warning:
-            log.info(fmt(C.RED + C.BOLD,
-                f"    ⚠  {qc['losing_hires']} track(s) here are HIGHER quality than primary!"))
+            if qc["unknown"]:
+                log.info(fmt(C.RED + C.BOLD,
+                    f"    ⚠  {risky} track(s) here could lose quality "
+                    f"({qc['losing_hires']} higher than primary, "
+                    f"{qc['unknown']} unreadable)!"))
+            else:
+                log.info(fmt(C.RED + C.BOLD,
+                    f"    ⚠  {qc['losing_hires']} track(s) here are HIGHER quality than primary!"))
             print_per_track_consolidation(s)
 
         log.info(fmt(C.WHITE, "    [d] delete overlapping tracks (default)"))
@@ -198,7 +205,8 @@ def consolidate_albums(album, args):
             if choice == "d":
                 if warning:
                     log.info(fmt(C.YELLOW + C.BOLD,
-                        f"    Type 'DELETE' to confirm losing hi-res on {qc['losing_hires']} track(s):"))
+                        f"    Type 'DELETE' to confirm a possible quality loss "
+                        f"on {risky} track(s):"))
                     try:
                         typed = input(fmt(C.CYAN, "    > ")).strip()
                     except EOFError:

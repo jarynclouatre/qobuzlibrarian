@@ -119,9 +119,16 @@ def _track_quality_cmp(t1, t2):
 
 
 def quality_change_summary(overlap):
-    """Count tracks that would be a downgrade if deleted."""
-    losing_hires = same = upgrading = 0
+    """Count tracks that would be a downgrade if deleted. A sibling track whose
+    own quality can't be read — a FLAC with no usable STREAMINFO/title falls back
+    to (0, 0) — is counted as ``unknown``: it could be hi-res, so deleting it must
+    clear the same confirmation as a known hi-res loss rather than reading as a
+    safe lower-quality drop."""
+    losing_hires = same = upgrading = unknown = 0
     for st, pt in overlap:
+        if (st.get("bits") or 0, st.get("sample_rate") or 0) == (0, 0):
+            unknown += 1
+            continue
         cmp = _track_quality_cmp(st, pt)
         if cmp > 0:
             losing_hires += 1
@@ -129,7 +136,8 @@ def quality_change_summary(overlap):
             upgrading += 1
         else:
             same += 1
-    return {"losing_hires": losing_hires, "same": same, "upgrading": upgrading}
+    return {"losing_hires": losing_hires, "same": same,
+            "upgrading": upgrading, "unknown": unknown}
 
 
 # ── Upgrade-cap persistence ───────────────────────────────────────────────────
