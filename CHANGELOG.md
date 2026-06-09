@@ -4,6 +4,32 @@ All notable changes to Qobuz Librarian are recorded here, newest first. The
 project follows [semantic versioning](https://semver.org/); dates are when each
 version was tagged during local development.
 
+## [0.6.0] - 2026-06-09
+
+- **Get one song.** Search has a Tracks mode and a *Get track* button that pulls
+  a single track instead of the whole album. It lands in the right
+  `Artist/Album (Year)/` folder over the same per-track path repair uses — never
+  a full-album rip — and the partial folder it leaves is recorded so the bulk
+  scans don't nag you to finish that album. An artist you own only a grabbed
+  sample by isn't read as one you're collecting, so their back catalogue stays
+  out of the scans and the new-release check too. If the grabbed track was the
+  album's last missing one you now own the whole thing and it's filed as a
+  normal complete album; finishing the album the usual way later clears the mark
+  the same way. Asking for a track you already have downloads nothing. The
+  Upgrade walk leaves grabbed singles alone unless you set
+  `UPGRADE_SINGLES_ENABLED`. A finished grab carries an **Undo** that deletes the
+  track, drops its beets row, clears the mark, and removes the folder if the grab
+  created it and it's now empty.
+- Two quick retries of the same album can no longer double-queue it — retry now
+  re-checks for a job already touching that album under the submit lock, the same
+  way the download route does.
+- The downsample step caps the ffmpeg encode at ten minutes, so a track on a hung
+  NFS or FUSE mount fails with a clear message and leaves the original untouched
+  instead of pinning a worker forever.
+- Behind a reverse proxy the entrypoint passes `--proxy-headers` and honours
+  `FORWARDED_ALLOW_IPS`, so the login rate-limiter sees each client's real
+  address instead of the proxy's and stops locking everyone out at once.
+
 ## [0.5.0] - 2026-06-05
 
 First public release. The big additions over the private 0.4 line:
