@@ -54,6 +54,14 @@ mix like the Giles Martin Beatles reissues? Search for it and choose **Download
 this edition too**; it imports into its own folder next to the original instead
 of being skipped as a duplicate.
 
+**Just one track.** Flip search from **Albums** to **Tracks** to grab a single
+song. It files under its album like any other download, but the album is marked
+as a deliberate single — so a gap scan won't nag you to finish it, and an artist
+you own *only* singles by won't have their whole catalogue surfaced as "missing".
+Want the rest later? Download the album the normal way and it quietly graduates
+back to a full album. (The Upgrade walk leaves singles alone unless you set
+`UPGRADE_SINGLES_ENABLED=true`.)
+
 **Best available quality by default.** New downloads come in at the highest
 quality Qobuz offers for that release. Already have an album in a lower quality? The
 **Upgrade** mode finds everything Qobuz can now serve better and re-rips just
@@ -206,6 +214,10 @@ Off by default because they change your files:
   only touches *new* downloads — to shrink hi-res that's **already** in your
   library, use the on-demand [Downsample](#how-you-use-it) mode instead, which
   needs no setting and asks before it changes anything.
+- **Upgrade grabbed singles too** (`UPGRADE_SINGLES_ENABLED`): by default the
+  Upgrade walk leaves tracks you pulled in as singles alone — you grabbed one
+  song on purpose, not a low-quality album to re-rip. Turn this on if you'd
+  rather it re-fetch those single folders at the better quality as well.
 
 ## Quick start (Docker)
 
