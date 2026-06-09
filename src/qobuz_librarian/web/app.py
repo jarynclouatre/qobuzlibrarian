@@ -1156,6 +1156,11 @@ def _make_single_track_run(album, track, token):
             j.summary = (f"Got “{t_title}” — filed under {artist} / {title}. "
                          "The rest of the album stays out of your scans.")
         else:
+            # This grab completed the album — it's a normal full album now, so
+            # clear any single mark an earlier partial grab of it left behind.
+            # Without this the stale mark keeps the artist out of bulk scans and
+            # the new-release check even though nothing is partial any more.
+            hidden_mod.unmark_single(artist, title)
             j.summary = (f"Got “{t_title}” — that completed {title}, so it's "
                          "filed as a full album.")
         # Record what this grab added so /undo can cleanly reverse it.
@@ -2179,8 +2184,13 @@ async def job_undo(request: Request, job_id: str):
         try:
             for et in read_album_dir(d):
                 ei = (et.get("isrc") or "").replace("-", "").upper().strip()
+                # read_album_dir keys the track number as "tracknumber"; match on
+                # that, and only fall back to it when there's no ISRC AND we have a
+                # real number to compare — two missing numbers must never read as
+                # equal, or the fallback would delete an unrelated track.
                 same = ((want and ei == want)
-                        or (not want and et.get("track") == info.get("track_no")))
+                        or (not want and info.get("track_no") is not None
+                            and et.get("tracknumber") == info.get("track_no")))
                 if same:
                     p = Path(et.get("path") or "")
                     if p.exists():
