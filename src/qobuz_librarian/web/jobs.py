@@ -854,9 +854,15 @@ def restore_jobs(execute_registry: dict) -> None:
             # (neutral) with a note in the summary, not a red error. A library
             # scan keeps a checkpoint and continues from where it stopped.
             job.status = JobStatus.CANCELED
+            # Library scans auto-resume from their checkpoint when the app next
+            # opens; the whole-library repair sweep also checkpoints but only
+            # picks up when its scan is started again; every other kind restarts.
             if job.execute_kind == "library":
                 job.summary = ("Interrupted by a restart — it resumes from where "
                                "it left off the next time you open the app.")
+            elif job.execute_kind == "repair":
+                job.summary = ("Interrupted by a restart — start the repair scan "
+                               "again and it continues from where it left off.")
             else:
                 job.summary = "Interrupted by a restart — run the scan again to retry."
             job.finished_at = time.time()
