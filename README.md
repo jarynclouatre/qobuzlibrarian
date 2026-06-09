@@ -464,13 +464,15 @@ services:
 
 Then either:
 
-- **Web:** open the **Migrate** page, optionally tick *fingerprint unidentified
-  files*, and click **Preview migration**. Review the per-artist list (and the
-  count of anything that couldn't be placed), then **Copy selected**.
+- **Web:** open the **Migrate** page, optionally tick *Fingerprint files my
+  tags can't place*, and click **Preview migration**. Review the per-artist
+  list (and the count of anything that couldn't be placed), then **Copy N
+  selected** (the button reads **Move N selected** in move mode).
 - **CLI:** `docker compose run --rm qobuz-librarian cli --migrate` — add
-  `--acoustid` for the fingerprint pass, or `--dry-run` to preview only. Source
-  and destination come from the env vars above, or pass `--migrate-src` /
-  `--migrate-dest`.
+  `--acoustid` for the fingerprint pass, `--in-place` to move the originals
+  instead of copying them (it relocates the files and prunes the folders it
+  empties), or `--dry-run` to preview only. Source and destination come from
+  the env vars above, or pass `--migrate-src` / `--migrate-dest`.
 
 When it finishes, point `QL_MUSIC_DIR` at the new destination and run a normal
 Library scan to pick it up.
@@ -624,11 +626,12 @@ They flow straight into the container — no need to edit `compose.yaml`. If
 you genuinely need the app to run as root, set `PUID=0` / `PGID=0`.
 
 The app drops to that user at startup and warns in the logs if a mounted
-path isn't writable by it. Only the small `config`/`data` volumes are
-chowned automatically; grant that user write access for `/music` and
-`/staging`. If your music share is read-only on the NAS, append `:ro` to the
-`/music` bind in `compose.yaml` — the app will refuse to mutate but scans and
-upgrade detection still work.
+path isn't writable by it. On boot it chowns the app-managed volumes
+(`config`, `data`, `staging`, `upgrade_backups`) to that user; only `/music`
+— which can be a large NAS mount — is deliberately left alone, so make sure
+the run user can write to it yourself. If your music share is read-only on the
+NAS, append `:ro` to the `/music` bind in `compose.yaml` — the app will refuse
+to mutate but scans and upgrade detection still work.
 
 If the bind dirs already exist (typical: Compose auto-created them as root
 on first `up`), `chown` them to your `PUID`/`PGID` before enabling those
@@ -690,7 +693,7 @@ scraping HTML.
 | Endpoint | Description |
 |---|---|
 | `GET /api/jobs` | List all jobs, most recent first. Optional `?status=running` filter (`pending`, `running`, `scanning`, `awaiting_review`, `done`, `failed`, `canceled`). Optional `?limit=N` (max 500, default 50). Returns `{"jobs": [...], "count": N}`. |
-| `GET /api/jobs/{id}/status` | Single job as JSON — same shape as one element of the list above. 404 if not found. |
+| `GET /api/jobs/{id}/status` | Single job as JSON — the same fields as a list element, plus a `log_lines` array (the last 50 log lines). 404 if not found. |
 | `GET /api/jobs/{id}/stream` | SSE stream for a live job. Each log line arrives as a default `message` event; a `done` event signals the job finished (close the stream). `progress` events and `: ping` keepalives may also appear. |
 
 All endpoints require the session cookie when login is enabled. A missing or
@@ -781,11 +784,11 @@ python -m pytest -q
 PowerShell activation is `.venv\Scripts\Activate.ps1` instead of `source`.
 
 Running the web UI from a source checkout (rather than the Docker image) needs
-the CSS built once — `static/dist/` is gitignored, so only the image build
-produces it:
+the CSS built once — `src/qobuz_librarian/web/static/dist/` is gitignored, so
+only the image build produces it:
 
 ```bash
-npm ci && npm run build      # writes static/dist/app.css
+npm ci && npm run build      # writes src/qobuz_librarian/web/static/dist/app.css
 ```
 
 `ruff check src tests` runs in CI; keep it clean before opening a PR.

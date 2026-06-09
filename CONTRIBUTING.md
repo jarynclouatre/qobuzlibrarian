@@ -52,9 +52,11 @@ surprises):
 docker buildx build --platform linux/amd64 -t qobuz-librarian:dev .
 ```
 
-**Smoke test.** `scripts/smoke_test.sh` runs a lightweight end-to-end
-check against a live container. Read the script header for required env
-vars before running.
+**Smoke test.** `scripts/smoke_test.sh` builds the image, boots the
+container, and checks the web routes respond and the bundled tools are
+present — no credentials needed (override the test port with `PORT=...`).
+It's a "the release isn't fundamentally broken" check, not an end-to-end
+download test.
 
 **Logo.** `scripts/make_logo.py` regenerates `assets/logo.png`. It
 requires `Pillow`; run it outside the container.
@@ -63,7 +65,7 @@ requires `Pillow`; run it outside the container.
 `conftest.py` fixture that redirects `DATA_DIR` won't redirect `MUSIC_ROOT`
 — any test that resolves a path relative to `MUSIC_ROOT` may touch real
 files. The safe workaround is to run tests in a fresh shell where
-`QL_MUSIC_ROOT` is not set and no `/music` directory is present.
+`MUSIC_ROOT` is not set and no `/music` directory is present.
 
 ## Behavioral changes
 
