@@ -18,7 +18,7 @@ from pathlib import Path
 
 from qobuz_librarian import config as cfg
 from qobuz_librarian.api.search import find_qobuz_track_by_isrc
-from qobuz_librarian.integrations.rip import flac_audio_ok, flac_audio_offset
+from qobuz_librarian.integrations.rip import flac_audio_offset, flac_audio_ok
 from qobuz_librarian.library.scanner import read_album_dir
 from qobuz_librarian.ui_cli.colors import C, fmt
 from qobuz_librarian.ui_cli.logging import log
