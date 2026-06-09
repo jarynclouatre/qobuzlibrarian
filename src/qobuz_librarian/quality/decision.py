@@ -268,9 +268,14 @@ def scan_artist_for_upgrades(artist_name, artist_dir, token, args, capped=None):
         if qobuz_album is None or not is_lossless_album(qobuz_album):
             continue
 
-        if single_store is not None and hidden_mod.is_single(
-                artist_name, qobuz_album.get("title"), single_store):
-            continue
+        # Key the single check on the matched Qobuz artist name — that's what
+        # mark_single stored. The folder name (artist_name) can differ from it
+        # ("Beatles" on disk vs "The Beatles" on Qobuz), which would miss the
+        # mark and leak the grabbed single into the upgrade scan.
+        if single_store is not None:
+            q_artist = (qobuz_album.get("artist") or {}).get("name") or artist_name
+            if hidden_mod.is_single(q_artist, qobuz_album.get("title"), single_store):
+                continue
 
         # Skip albums Qobuz can't actually deliver at target.
         if capped and is_album_capped(qobuz_album.get("id"), capped):
