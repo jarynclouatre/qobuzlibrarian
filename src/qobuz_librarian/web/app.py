@@ -2539,9 +2539,12 @@ async def save_settings(request: Request, user_id: str = Form(""), auth_token: s
         except asyncio.TimeoutError:
             verdict = "unreachable"
     if verdict == "rejected":
+        # Re-render with the real token still in the (password-type, so
+        # visually masked) field so the user can fix a paste slip without
+        # re-typing it — same as the needuser/empty/creds branches.
         return _settings_response(request, error="rejected",
                                   user_id=user_id.strip(),
-                                  auth_token_prefill=_mask_token(auth_token.strip()),
+                                  auth_token_prefill=auth_token.strip(),
                                   diagnostics=diags)
     ok = _write_creds(new_uid, new_token)
     if not ok:
@@ -2831,14 +2834,6 @@ async def jobs_list(status: str = "", limit: int = 50):
 def _get_token():
     from qobuz_librarian.api.auth import load_qobuz_token
     return load_qobuz_token()[1]
-
-
-def _mask_token(token: str) -> str:
-    """Show only the first 8 and last 4 chars — enough to verify a paste
-    without exposing the full credential in the page source."""
-    if len(token) <= 12:
-        return token
-    return token[:8] + "•" * min(len(token) - 12, 20) + token[-4:]
 
 
 def _format_age(ts: float) -> str:
