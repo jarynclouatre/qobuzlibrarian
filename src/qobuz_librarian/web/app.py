@@ -2165,6 +2165,13 @@ async def job_undo(request: Request, job_id: str):
     """Reverse a single-track grab: delete the track it added, drop the beets row
     for it, undo the single mark, and remove a folder the grab created if it's
     now empty. Available while the job is still in memory."""
+    # Undo deletes files and touches the beets DB, so it needs the same run-lock
+    # gate every other mutating route has — the in-process staging lock below
+    # can't keep it off the library while a CLI session holds the cross-process
+    # lock (handed-off mode, or another instance).
+    busy = _lock_busy_response(request)
+    if busy is not None:
+        return busy
     job = job_mgr.registry.get(job_id)
     info = dict(getattr(job, "single", None) or {}) if job else {}
     if not job or not info.get("dir") or info.get("removed"):
