@@ -902,7 +902,13 @@ async def do_search(request: Request, q: str = Form("", max_length=500),
             raw = []
             loop = asyncio.get_running_loop()
             from qobuz_librarian.api.client import call_within
-            if parsed and parsed[0] == "album":
+            if parsed and parsed[0] == "album" and kind == "track":
+                # An album URL only resolves in Albums mode; in Tracks mode it
+                # would fetch the album and then be dropped as not-a-track,
+                # leaving a blank "No results". Point the user at the toggle.
+                error = ("That's an album URL — switch to Albums to download it, "
+                         "or paste a single track to grab one song.")
+            elif parsed and parsed[0] == "album":
                 try:
                     raw = [await asyncio.wait_for(
                         loop.run_in_executor(
