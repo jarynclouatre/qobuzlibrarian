@@ -665,6 +665,15 @@ def _scan_report_repair(album_dir, artist_name, args, token, deep=True,
                 f" / {_format_mmss(b['qobuz_duration']):>5}"
                 f"  {b['isrc']}"))
 
+    # Repair moves the truncated originals aside before re-ripping, so it has to
+    # stop here under --dry-run — reaching repair_album_dir would mutate the
+    # filesystem (and an interrupt mid-repair could strand the originals).
+    if getattr(args, "dry_run", False):
+        log.info(fmt(C.YELLOW,
+            f"\n  --dry-run: would re-download {len(verified_truncated)} "
+            "ISRC-verified track(s). Nothing changed."))
+        return "skipped"
+
     if not args.yes:
         try:
             r = input(fmt(C.CYAN,

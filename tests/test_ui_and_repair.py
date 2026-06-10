@@ -948,6 +948,34 @@ def test_scan_report_classifies_repair_outcomes(tmp_path, monkeypatch):
                              yes=False, input_return="n") == "skipped"
 
 
+def test_scan_report_repair_is_a_noop_under_dry_run(tmp_path, monkeypatch):
+    # Repair moves the truncated originals aside before re-ripping, so --dry-run
+    # must stop before repair_album_dir is ever called — even with --yes.
+    from argparse import Namespace
+
+    import qobuz_librarian.modes.repair as repair_mod
+    from qobuz_librarian.modes.repair import _scan_report_repair
+    album_dir = tmp_path / "Artist" / "Album (2022)"
+    album_dir.mkdir(parents=True)
+    (album_dir / "01 Track.flac").write_bytes(b"\x00" * 200)
+    monkeypatch.setattr(repair_mod, "scan_dir_for_isrc_repairs", lambda *a, **k: {
+        "verified_truncated": [{"path": str(album_dir / "01 Track.flac"),
+                                "title": "Track 01", "isrc": "USRC12345678",
+                                "track_number": 1, "file_length": 5.0,
+                                "qobuz_duration": 180.0,
+                                "qobuz_track": {"id": 1, "title": "Track 01",
+                                                "album": {"id": "A1"}}}],
+        "verified_ok": 0, "isrc_no_match": [], "no_isrc_tag": []})
+
+    def _boom(*a, **k):
+        raise AssertionError("dry-run repair must not touch the filesystem")
+    monkeypatch.setattr(repair_mod, "repair_album_dir", _boom)
+    monkeypatch.setattr(repair_mod, "section", lambda *a: None)
+    args = Namespace(force=False, yes=True, prefer_hires=False, consolidate=False,
+                     no_upgrade=False, dry_run=True)
+    assert _scan_report_repair(album_dir, "Artist", args, "tok") == "skipped"
+
+
 # ── Mode entry points: clean returns on misses/cancels ─────────────────
 
 def test_album_mode_returns_none_on_catalog_miss():
