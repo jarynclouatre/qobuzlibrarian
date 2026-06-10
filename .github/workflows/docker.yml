@@ -42,20 +42,40 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
+      # Decide whether this release should move :latest. metadata-action's
+      # latest=auto only checks the tag has no prerelease suffix — it does NOT
+      # compare against other tags, so backfilling an old release (publishing
+      # v0.5.1 after v0.7.0) would still clobber :latest with old code. Tag
+      # :latest only when this release is the highest stable semver in the repo.
+      - name: Is this the newest release?
+        id: newest
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ github.event.release.tag_name }}
+          PRERELEASE: ${{ github.event.release.prerelease }}
+        run: |
+          # `|| true` so a repo with no stable vX.Y.Z tag yet (e.g. the first
+          # release is a prerelease) doesn't abort the step under pipefail.
+          highest=$(gh api --paginate "repos/$REPO/tags" --jq '.[].name' \
+            | { grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' || true; } | sort -V | tail -1)
+          if [ "$PRERELEASE" != 'true' ] && [ "$TAG" = "$highest" ]; then
+            echo "is_latest=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "is_latest=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "tag=$TAG highest=$highest prerelease=$PRERELEASE"
+
       - name: Extract version tag
         id: meta
         uses: docker/metadata-action@v5
         with:
           images: dinkeyes/qobuz-librarian
-          # flavor=latest=auto tags :latest only for the highest non-prerelease
-          # semver, so backfilling an OLD release (publishing v0.5.1 after v0.7.0
-          # has shipped) builds the versioned image without clobbering :latest
-          # with old code. Replaces the previous type=raw line that just gated on
-          # the event being a release.
           flavor: |
-            latest=auto
+            latest=false
           tags: |
             type=semver,pattern={{version}}
+            type=raw,value=latest,enable=${{ steps.newest.outputs.is_latest == 'true' }}
 
       - name: Build and push
         uses: docker/build-push-action@v5
