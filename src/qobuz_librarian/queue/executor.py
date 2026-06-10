@@ -243,10 +243,10 @@ def _reimport_parked_albums():
                 f"  ⏭  {len(kept)} parked album(s) in {truncate(group.name, 50)} "
                 f"still hold tracks — left for a later run."))
         else:
-            try:
-                group.rmdir()
-            except OSError as e:
-                vlog(f"couldn't clear parked group {group}: {e}")
+            # Every album in the group moved out, so the group holds no tracks —
+            # clear it (and any stray non-audio leftover) rather than leaving an
+            # empty husk to be rescanned each flush.
+            shutil.rmtree(group, ignore_errors=True)
     return any_ok
 
 
