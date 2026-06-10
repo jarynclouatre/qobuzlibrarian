@@ -133,6 +133,13 @@ def consolidate_albums(album, args):
     from qobuz_librarian.library.scanner import read_album_dir as _rad
 
     section("Consolidate similar album folders")
+    # Consolidation deletes overlapping sibling tracks, so it must never run
+    # under --dry-run — including on the "already complete" album path, which
+    # reaches here before process_album's own dry-run stop.
+    if getattr(args, "dry_run", False):
+        log.info(fmt(C.GRAY,
+            "  --dry-run: skipping consolidation (it would delete overlapping tracks)."))
+        return 0
 
     primary_dir = find_album_dir_filesystem(album)
     if primary_dir is None:

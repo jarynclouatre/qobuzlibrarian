@@ -729,3 +729,23 @@ def test_execute_consolidation_deletes_and_counts_failures(tmp_path, monkeypatch
     deleted, n_fail = execute_consolidation(summary)
     assert [p.name for p in deleted] == ["track.flac"] and n_fail == 1
     assert not f_ok.exists() and f_locked.exists()
+
+
+def test_consolidate_albums_is_a_noop_under_dry_run(monkeypatch):
+    # Consolidation deletes files, so under --dry-run it must stop before it even
+    # looks for the album on disk — the "already complete" album path reaches it
+    # ahead of process_album's own dry-run stop. consolidate_albums imports
+    # find_album_dir_filesystem locally from catalog, so patch it there: the
+    # guard must return before that lookup is reached.
+    from argparse import Namespace
+
+    import qobuz_librarian.library.catalog as catmod
+    import qobuz_librarian.modes.consolidate as cmod
+
+    def _boom(*a, **k):
+        raise AssertionError("dry-run consolidation must not look up or touch files")
+    monkeypatch.setattr(catmod, "find_album_dir_filesystem", _boom)
+
+    album = {"id": "x", "title": "Revolver", "artist": {"name": "The Beatles"}}
+    assert cmod.consolidate_albums(album, Namespace(dry_run=True, consolidate=True,
+                                                    yes=False)) == 0
