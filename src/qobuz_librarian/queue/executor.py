@@ -191,6 +191,15 @@ def _move_to_beets_retry(album_dirs, label):
             f"— will re-import on the next download run."))
 
 
+def _dir_has_audio(d):
+    """True if any audio file remains under d — i.e. beets didn't move it out."""
+    try:
+        return any(f.is_file() and f.suffix.lower() in cfg.AUDIO_EXTS
+                   for f in d.rglob("*"))
+    except OSError:
+        return True  # can't tell → assume tracks remain, never delete blindly
+
+
 def _reimport_parked_albums():
     """Re-attempt beets import on albums an earlier batch parked under
     ``STAGING_DIR/<BEETS_RETRY_DIR>/``. A park almost always means a transient
@@ -214,16 +223,30 @@ def _reimport_parked_albums():
             continue
         log.info(fmt(C.GRAY,
             f"  ↻  Re-importing parked album(s): {truncate(group.name, 50)}"))
-        if _import_album_with_retry(album_dirs):
-            any_ok = True
+        _import_album_with_retry(album_dirs)
+        # Trust the disk, not the return value. The import-success check counts
+        # audio before/after, but it can't see inside the retry tree — so a
+        # beets run that exits 0 while skipping a parked album (a library
+        # duplicate under `duplicate_action: skip`) would look successful even
+        # though it moved nothing. Removing only the album dirs whose tracks
+        # actually left keeps the skipped ones parked instead of deleting the
+        # only copy.
+        kept = []
+        for d in album_dirs:
+            if _dir_has_audio(d):
+                kept.append(d)
+            else:
+                any_ok = True
+                shutil.rmtree(d, ignore_errors=True)
+        if kept:
+            log.info(fmt(C.YELLOW,
+                f"  ⏭  {len(kept)} parked album(s) in {truncate(group.name, 50)} "
+                f"still hold tracks — left for a later run."))
+        else:
             try:
-                shutil.rmtree(group)
+                group.rmdir()
             except OSError as e:
                 vlog(f"couldn't clear parked group {group}: {e}")
-        else:
-            log.info(fmt(C.YELLOW,
-                f"  ⏭  Still can't import {truncate(group.name, 50)} "
-                f"— left parked for a later run."))
     return any_ok
 
 

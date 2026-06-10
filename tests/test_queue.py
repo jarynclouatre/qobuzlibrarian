@@ -322,25 +322,37 @@ def test_executor_keeps_only_failed_downloads_for_retry(monkeypatch, tmp_path):
     assert saves                   # progress persisted as the item dropped
 
 
-def test_reimport_parked_albums_clears_successes_and_keeps_failures(monkeypatch, tmp_path):
-    """Parked albums get an import-only retry on the next flush: the ones that
-    import are cleared from the parking dir, the ones that still fail stay put."""
+def test_reimport_parked_albums_clears_moved_and_keeps_skipped(monkeypatch, tmp_path):
+    """A parked album is cleared only when its audio actually leaves disk on the
+    retry import. A beets run that exits 0 while skipping the album (e.g. a
+    library duplicate) leaves the files in place — the parked copy must be kept,
+    not deleted on the strength of the exit code, since it's the only copy."""
     from qobuz_librarian import config as cfg
     from qobuz_librarian.queue import executor
 
     staging = tmp_path / "staging"
     monkeypatch.setattr(cfg, "STAGING_DIR", staging)
     good = staging / cfg.BEETS_RETRY_DIR / "20260101_000000-good"
-    bad = staging / cfg.BEETS_RETRY_DIR / "20260101_000001-bad"
+    skipped = staging / cfg.BEETS_RETRY_DIR / "20260101_000001-skipped"
     (good / "Good Album").mkdir(parents=True)
-    (bad / "Bad Album").mkdir(parents=True)
+    (skipped / "Dup Album").mkdir(parents=True)
+    good_flac = good / "Good Album" / "01.flac"
+    skipped_flac = skipped / "Dup Album" / "01.flac"
+    good_flac.write_bytes(b"flac")
+    skipped_flac.write_bytes(b"flac")
 
-    monkeypatch.setattr(executor, "beets_import_albums",
-                        lambda dirs: "ok" if "good" in str(dirs[0]) else "error")
+    def fake_import(dirs):
+        # beets moves audio into the library on a real import; simulate that for
+        # the good album and leave the skipped one's files where they are.
+        if "good" in str(dirs[0]):
+            good_flac.unlink()
+        return "ok"  # exit 0 either way — the disk, not this, decides cleanup
+    monkeypatch.setattr(executor, "beets_import_albums", fake_import)
 
     assert executor._reimport_parked_albums() is True
-    assert not good.exists()      # re-imported cleanly → parking dir cleared
-    assert bad.exists()           # still unimportable → left parked
+    assert not good.exists()           # audio moved out → parking dir cleared
+    assert skipped.exists()            # files remain → kept parked, not deleted
+    assert skipped_flac.exists()       # the only copy of the skipped track survives
 
 
 def test_push_progress_streams_separately_and_stays_out_of_the_log():
