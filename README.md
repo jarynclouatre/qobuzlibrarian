@@ -825,7 +825,9 @@ This project's own code is **MIT** — see [LICENSE](LICENSE).
 
 The Docker image redistributes the third-party tools listed under
 [Acknowledgements](#acknowledgements), each of which keeps its own license.
-Notably **streamrip (GPL-3.0)** and **mutagen (GPL-2.0-or-later)** are
-copyleft — if you redistribute the image or a derivative, review their
-terms. Qobuz Librarian invokes streamrip as a separate program (subprocess),
-not as a linked library; see each project for authoritative license text.
+Two are copyleft, and they're coupled differently: **streamrip (GPL-3.0)** is
+invoked as a separate program (a subprocess), not linked into this code, while
+**mutagen (GPL-2.0-or-later)** is imported as a Python library — linked
+in-process — for reading and writing FLAC tags. If you redistribute the image
+or a derivative, honour both projects' terms accordingly; see each project for
+authoritative license text.
