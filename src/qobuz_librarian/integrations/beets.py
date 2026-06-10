@@ -235,15 +235,20 @@ def _build_import_override_yaml():
     """The beets config override the import runs with, as a YAML string.
 
     Forces the keys the import contract depends on — library/directory,
-    non-interactive, non-incremental, and autotag off — and lets everything
-    else fall through to the user's config.yaml. Autotag is forced off because
-    streamrip already wrote authoritative Qobuz tags; matching them against
-    MusicBrainz would, on anything but a confident match, skip the album
-    outright under quiet mode and leave the files stranded in staging.
-    Optional path templates, a plugins list, and album-art handling are
-    derived from config. Emitting `plugins:` REPLACES the config.yaml list
-    (beets doesn't merge lists), so it's only emitted when a plugins override
-    or a non-default art mode requires it.
+    non-interactive, non-incremental, autotag off, and move on — and lets
+    everything else fall through to the user's config.yaml. Autotag is forced
+    off because streamrip already wrote authoritative Qobuz tags; matching them
+    against MusicBrainz would, on anything but a confident match, skip the album
+    outright under quiet mode and leave the files stranded in staging. Move is
+    forced on because the rest of the pipeline is move-based — staging is scratch
+    space that gets pruned, and the import-success check infers success from the
+    tracks leaving it, so a copy-mode import (files left behind) would read as a
+    failure and park every album. `move: yes` relocates within a filesystem and
+    copies-then-deletes across one, so it covers a separate-filesystem /music too.
+    Optional path templates, a plugins list, and album-art handling are derived
+    from config. Emitting `plugins:` REPLACES the config.yaml list (beets doesn't
+    merge lists), so it's only emitted when a plugins override or a non-default
+    art mode requires it.
     """
     import re as _re
     override_yaml = (
@@ -253,6 +258,7 @@ def _build_import_override_yaml():
         "  quiet: yes\n"
         "  incremental: no\n"
         "  autotag: no\n"
+        "  move: yes\n"
     )
     # Path templates are deployer-supplied and can contain single quotes
     # (e.g. `$albumartist's stuff/$album`); _yaml_sq keeps the scalar safe.

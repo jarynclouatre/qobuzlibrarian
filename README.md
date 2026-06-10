@@ -557,13 +557,17 @@ on first import:
 
 | Setting | Default | Why this default | When to change it |
 |---------|---------|------------------|-------------------|
-| `autotag` | `no` | Keeps Qobuz's tags; the downloader already produces tagged FLACs. | Turn on if you trust MusicBrainz over Qobuz for tagging, or want auto-cover-art beyond what Qobuz embeds. |
-| `move` | `yes` | Files leave staging and land in `MUSIC_ROOT` cleanly. | Switch to `copy` if `/music` and `/staging` are on different filesystems and you want to keep the staging copy. |
+| `autotag` | `no` | Keeps Qobuz's tags; the downloader already produces tagged FLACs. | Pinned for downloads (see below). Set it for your own `beet` runs if you trust MusicBrainz over Qobuz, or want auto-cover-art beyond what Qobuz embeds. |
+| `move` | `yes` | Files leave staging (scratch space) and land in `MUSIC_ROOT` cleanly. | Pinned for downloads. `move: yes` already handles a `/music` on a different filesystem from `/staging` — it copies, then deletes — so there's no need to switch to `copy` (which would leave files piling up in staging). |
 | `duplicate_action` | `merge` | Gap-fill merges new tracks into an existing album folder. | Use `skip` to skip anything that collides; `keep` to keep both copies on disk. |
-| `incremental` | `no` | Always rescans staging so a retry sees the same files. | Turn on to skip already-seen staging dirs. |
+| `incremental` | `no` | Always rescans staging so a retry sees the same files. | Pinned for downloads. Set it for your own `beet` runs to skip already-seen dirs. |
 
 Edit `/config/beets/config.yaml` and the changes apply on the next import
-— no restart needed.
+— no restart needed. The one exception: the download-importer **pins
+`move: yes`, `autotag: no`, and `incremental: no`** for its own runs (it needs
+the tracks to leave staging, keeps Qobuz's tags, and always rescans), so those
+three take effect only for `beet` commands you run yourself. Everything else —
+paths, plugins, artwork, `duplicate_action` — comes straight from your config.
 
 ## First scan on a big library
 
