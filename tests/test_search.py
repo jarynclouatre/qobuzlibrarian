@@ -162,6 +162,38 @@ def test_album_cache_trims_to_the_cap(tmp_path, monkeypatch):
         album_cache._reset_for_tests()
 
 
+def test_album_cache_heals_on_corrupt_db(tmp_path, monkeypatch):
+    # Data-page corruption (unclean power-off) can pass connect + CREATE TABLE
+    # and only surface on a row read, leaving the cache permanently dead. A
+    # corrupt read must discard the file and rebuild rather than swallow forever.
+    import qobuz_librarian.config as cfg
+    from qobuz_librarian.api import album_cache
+    monkeypatch.setattr(cfg, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(cfg, "ALBUM_CACHE_ENABLED", True)
+    album_cache._reset_for_tests()
+    try:
+        album_cache.put("123", {"id": "123"})
+        assert album_cache.get("123") == {"id": "123"}
+
+        db = tmp_path / "album_cache.db"
+        assert db.exists()
+        # Replace the on-disk db with a non-database: _ensure already passed
+        # (init flag set), so the next access opens a fresh connection and the
+        # SELECT raises "file is not a database".
+        album_cache._reset_for_tests()
+        album_cache._initialized = True
+        db.write_bytes(b"not a sqlite database" * 200)
+
+        assert album_cache.get("123") is None      # corrupt read -> heal
+        assert album_cache._initialized is False    # forced rebuild next access
+
+        # Cache works again and repopulates from scratch.
+        album_cache.put("123", {"id": "123"})
+        assert album_cache.get("123") == {"id": "123"}
+    finally:
+        album_cache._reset_for_tests()
+
+
 def test_get_artist_albums_cached_within_ttl(tmp_path, monkeypatch):
     import qobuz_librarian.config as cfg
     from qobuz_librarian.api import album_cache, search

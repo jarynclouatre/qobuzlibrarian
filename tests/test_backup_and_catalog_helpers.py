@@ -694,6 +694,64 @@ def test_match_sibling_track_isrc_beats_title():
     assert match_sibling_track(t(title="Track A"), [t(title="Track B")]) is None
 
 
+def test_match_sibling_track_requires_duration_to_confirm_a_duplicate():
+    # Title + disc + position is not recording identity without an ISRC/MBID — a
+    # distinct recording sharing the slot (a live setlist replayed on another
+    # date) must never be deleted. Matching now requires the durations to agree,
+    # for tagged AND untagged tracks; file size is too weak a tiebreak to use.
+    t = lambda **kw: {"isrc": "", "mb_trackid": "", "title": "Intro",
+                      "discnumber": 1, "tracknumber": 0, "length": 0.0,
+                      "size": 0, **kw}
+    # Same duration → duplicate.
+    assert match_sibling_track(t(length=30.0), [t(length=30.4)]) is not None
+    # Different duration → distinct recording → kept.
+    assert match_sibling_track(t(length=30.0), [t(length=120.0)]) is None
+    # No readable duration on either side → no evidence → kept, even when the
+    # file sizes happen to be close (the old size fallback is gone).
+    assert match_sibling_track(t(length=0.0, size=5_000_000),
+                               [t(length=0.0, size=5_050_000)]) is None
+    # Tagged: same slot but DIFFERENT duration is two takes → kept; same slot AND
+    # duration is a duplicate; a different slot never matches.
+    tag = lambda n, ln: {"isrc": "", "mb_trackid": "", "title": "Song",
+                         "discnumber": 1, "tracknumber": n, "length": ln, "size": 0}
+    assert match_sibling_track(tag(3, 200.0), [tag(3, 260.0)]) is None
+    assert match_sibling_track(tag(3, 200.0), [tag(3, 200.5)]) is not None
+    assert match_sibling_track(tag(3, 200.0), [tag(4, 200.0)]) is None
+
+
+def test_find_sibling_album_dirs_does_not_group_distinct_years(tmp_path, monkeypatch):
+    # Two live albums recorded on different dates share a name but are different
+    # works — consolidation deletes "duplicate" tracks, so they must NOT be
+    # grouped. A one-sided year (the same release re-tagged) still groups.
+    from qobuz_librarian.modes import consolidate as c
+    artist = tmp_path / "Queen"
+    primary = artist / "Live at Wembley 1990"
+    other = artist / "Live at Wembley 1992"
+    same = artist / "Live at Wembley"
+    for d in (primary, other, same):
+        d.mkdir(parents=True)
+    album = {"title": "Live at Wembley 1990"}
+    sibs = {d.name for d, _ in c.find_sibling_album_dirs(album, primary)}
+    assert "Live at Wembley 1992" not in sibs   # distinct year → not grouped
+    assert "Live at Wembley" in sibs            # one-sided year → still grouped
+
+
+def test_prompt_migration_conflict_is_headless_safe(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from qobuz_librarian.library import catalog
+    src = tmp_path / "src"
+    dst = tmp_path / "dst"
+    src.mkdir()
+    dst.mkdir()
+    # No terminal (the web executor reaches this): must NOT block on input() —
+    # leave both folders for manual review.
+    monkeypatch.setattr(catalog.sys, "stdin", SimpleNamespace(isatty=lambda: False))
+    assert catalog._prompt_migration_conflict(src, dst, auto_yes=False) is False
+    # --yes merges without a terminal.
+    assert catalog._prompt_migration_conflict(src, dst, auto_yes=True) is True
+
+
 def test_find_sibling_album_dirs_finds_remasters_and_sorts(tmp_path, monkeypatch):
     monkeypatch.setattr("qobuz_librarian.config.CONSOLIDATE_THRESH", 0.70)
     artist = tmp_path / "Artist"

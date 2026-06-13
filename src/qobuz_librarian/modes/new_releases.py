@@ -72,43 +72,54 @@ def run_check_new_releases_mode(args):
     current_seen = {}
     total_new = 0
     artists_with_news = 0
+    had_failure = False
 
+    # Managed explicitly rather than via `with ... as ex` so a Ctrl-C / AuthLost
+    # doesn't get stuck in the context manager's implicit shutdown(wait=True),
+    # which blocks until every in-flight network call returns (seconds-to-minutes
+    # against a slow/rate-limited Qobuz). The finally instead discards queued
+    # tasks and lets the few running requests finish detached.
+    ex = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="newrel")
     try:
-        with ThreadPoolExecutor(max_workers=workers,
-                                thread_name_prefix="newrel") as ex:
-            futures = {ex.submit(find_new_releases_for_artist, ad.name,
-                                 token=token, opts=opts, seen_by_id=seen,
-                                 hidden=hidden, single_store=hidden,
-                                 artist_dir=ad): ad
-                       for ad in artists}
-            for fut in as_completed(futures):
-                ad = futures[fut]
-                try:
-                    result = fut.result()
-                except (AuthLost, QobuzUnavailable):
-                    for f in futures:
-                        f.cancel()
-                    raise
-                except Exception as e:
-                    log.info(fmt(C.GRAY, f"    skipped {ad.name}: {e}"))
-                    continue
-                if result.artist_id:
-                    current_seen[result.artist_id] = result.current_ids
-                if result.new_gaps:
-                    artists_with_news += 1
-                    log.info(fmt(C.GREEN,
-                        f"  {result.artist_name} — "
-                        f"{plural(len(result.new_gaps), 'new release')}"))
-                    for gap in result.new_gaps:
-                        a = gap.qobuz_album
-                        title = a.get("title") or "?"
-                        year = (str(a.get("release_date_original") or "")[:4]
-                                or "?")
-                        log.info(fmt(C.WHITE, f"    • {title} ({year})"))
-                    total_new += len(result.new_gaps)
+        futures = {ex.submit(find_new_releases_for_artist, ad.name,
+                             token=token, opts=opts, seen_by_id=seen,
+                             hidden=hidden, single_store=hidden,
+                             artist_dir=ad): ad
+                   for ad in artists}
+        for fut in as_completed(futures):
+            ad = futures[fut]
+            try:
+                result = fut.result()
+            except (AuthLost, QobuzUnavailable):
+                raise
+            except Exception as e:
+                log.info(fmt(C.GRAY, f"    skipped {ad.name}: {e}"))
+                had_failure = True
+                continue
+            if result.artist_id and not getattr(result, "fetch_failed", False):
+                current_seen[result.artist_id] = result.current_ids
+            else:
+                had_failure = True
+            if result.new_gaps:
+                artists_with_news += 1
+                log.info(fmt(C.GREEN,
+                    f"  {result.artist_name} — "
+                    f"{plural(len(result.new_gaps), 'new release')}"))
+                for gap in result.new_gaps:
+                    a = gap.qobuz_album
+                    title = a.get("title") or "?"
+                    year = (str(a.get("release_date_original") or "")[:4]
+                            or "?")
+                    log.info(fmt(C.WHITE, f"    • {title} ({year})"))
+                total_new += len(result.new_gaps)
     except KeyboardInterrupt:
         log.info(fmt(C.YELLOW, "\n  ⚠  Cancelled — not recording this run."))
         raise
+    finally:
+        # wait=False: never block on in-flight calls. cancel_futures discards
+        # any not-yet-started task. On the success path every future is already
+        # done, so this is just a clean teardown.
+        ex.shutdown(wait=False, cancel_futures=True)
 
     flush_resolve_cache()
     log.info("")
@@ -125,5 +136,9 @@ def run_check_new_releases_mode(args):
 
     if not args.dry_run:
         # Merge over the existing baseline so an artist that errored doesn't
-        # lose its prior 'seen' set — matches the web flow's semantics.
-        new_releases_mod.mark_run({**seen, **current_seen}, complete=True)
+        # lose its prior 'seen' set — matches the web flow's semantics. Only
+        # claim a COMPLETE baseline when the crawl actually reached artists
+        # cleanly: marking complete after an all-skipped/errored run would seed
+        # an empty baseline and permanently defeat the library scan's seeding.
+        complete = not had_failure and bool(current_seen)
+        new_releases_mod.mark_run({**seen, **current_seen}, complete=complete)

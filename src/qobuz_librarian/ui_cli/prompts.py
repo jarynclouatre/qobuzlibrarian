@@ -1,5 +1,7 @@
 """Interactive prompts, display helpers, and fetch-log functions."""
+import fcntl
 import json
+import re
 import sys
 
 from qobuz_librarian import config as cfg
@@ -24,7 +26,25 @@ from qobuz_librarian.ui_cli.sentinels import MORE, URL_QUERY
 _FETCH_LOG_MAX_BYTES = 5 * 1024 * 1024
 
 
+def _fetch_log_lock():
+    """Exclusive cross-process lock for the fetch-log read-modify-write. Both web
+    worker lanes and concurrent CLI runs call log_fetch on the same file; without
+    serialising the migrate/rotate/append sequence, a tmp.replace can discard an
+    entry another writer appended between its read and its replace, and two
+    rotations can race. Returns an open fd to keep referenced (closing releases
+    the lock), or None if the lock can't be taken (degrade to best-effort)."""
+    try:
+        lock_path = cfg.FETCH_LOG_FILE.parent / (cfg.FETCH_LOG_FILE.name + ".lock")
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        fp = open(lock_path, "a+", encoding="utf-8")
+        fcntl.flock(fp.fileno(), fcntl.LOCK_EX)
+        return fp
+    except OSError:
+        return None
+
+
 def log_fetch(entry):
+    lock = _fetch_log_lock()
     try:
         cfg.FETCH_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
         if cfg.FETCH_LOG_FILE.exists():
@@ -47,6 +67,12 @@ def log_fetch(entry):
         # Surface in --verbose instead of silently lying about
         # a successful log write. Still doesn't crash the run.
         vlog(f"log_fetch failed: {e}")
+    finally:
+        if lock is not None:
+            try:
+                lock.close()
+            except OSError:
+                pass
 
 
 def _rotate_fetch_log_if_needed():
@@ -228,7 +254,7 @@ def prompt_album_selection(albums, prefer_hires=False, can_load_more=False):
         )
 
     print()
-    log.info(fmt(C.BOLD + C.WHITE, "  Qobuz search results:"))
+    print(fmt(C.BOLD + C.WHITE, "  Qobuz search results:"))
     print()
     # 120 is a comfortable max for a desktop terminal; on a narrow or
     # mobile terminal, term_width() already returns ~60 and title_max
@@ -253,7 +279,7 @@ def prompt_album_selection(albums, prefer_hires=False, can_load_more=False):
         print(line1)
         print(line2)
     if can_load_more:
-        log.info(fmt(C.GRAY, "  m) Load more results"))
+        print(fmt(C.GRAY, "  m) Load more results"))
     print()
     hint = (f"1-{len(albums)}, m=more, q/Enter=cancel" if can_load_more
             else f"1-{len(albums)}, q/Enter=cancel")
@@ -261,7 +287,7 @@ def prompt_album_selection(albums, prefer_hires=False, can_load_more=False):
         try:
             r = input(fmt(C.CYAN, f"  Pick a number ({hint}): ")).strip().lower()
         except EOFError:
-            log.info(fmt(C.GRAY, "  stdin closed — cancelling."))
+            print(fmt(C.GRAY, "  stdin closed — cancelling."))
             return None
         if r in ("q", "quit", "exit", ""):
             return None
@@ -271,7 +297,7 @@ def prompt_album_selection(albums, prefer_hires=False, can_load_more=False):
             idx = int(r)
             if 1 <= idx <= len(albums):
                 return albums[idx - 1]
-        log.info(fmt(C.GRAY, f"  Enter a number{', m,' if can_load_more else ''} or q."))
+        print(fmt(C.GRAY, f"  Enter a number{', m,' if can_load_more else ''} or q."))
 
 
 def parse_number_list(s, max_n):
@@ -282,7 +308,9 @@ def parse_number_list(s, max_n):
     if s in ("a", "all"):
         return list(range(1, max_n + 1))
     selected = set()
-    for tok in s.replace(" ", "").split(","):
+    # Split on commas AND whitespace so the natural "1 3" reads as two picks,
+    # not the single token "13" (which would select the wrong album, or nothing).
+    for tok in re.split(r"[\s,]+", s):
         if not tok:
             continue
         if "-" in tok:

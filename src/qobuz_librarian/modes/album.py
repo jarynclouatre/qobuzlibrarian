@@ -67,13 +67,14 @@ def resolve_album_from_args(args, token):
         if sel[0] == URL_QUERY:
             parsed = parse_qobuz_url(sel[1])
             if parsed and parsed[0] == "track":
-                die(fmt(C.RED,
-                    "✗  That's a track URL — Qobuz Librarian works on albums.\n"
-                    "   Paste the album URL instead, or use `rip url <track-url>` for a single track."),
-                    EXIT_GENERAL)
+                # Recoverable, not fatal: in the menu loop this re-prompts (and
+                # keeps any albums already queued) instead of die()ing the whole
+                # session over one mistyped paste.
+                raise CatalogMiss(
+                    "That's a track URL — paste the album URL instead, or use "
+                    "`rip url <track-url>` for a single track.")
             if not parsed:
-                die(fmt(C.RED, "✗  Bad Qobuz URL — paste an album URL."),
-                    EXIT_GENERAL)
+                raise CatalogMiss("Bad Qobuz URL — paste an album URL.")
             return get_album(parsed[1], token)
         artist, album = sel
         query = f"{artist} {album}".strip()
@@ -125,17 +126,31 @@ def _interactive_album_action(album, args, token, album_queue, flush_queue):
         except EOFError:
             r = "s"
 
-        if r in ("q", "queue", "f", "flush"):
-            album_queue.append(_build_queue_item(
-                album=album,
-                album_dir=album_dir,
-                label=(f"{(album.get('artist') or {}).get('name') or '?'}"
-                       f" — {album.get('title') or '?'}"),
-                missing=missing,
-                present=present,
-                upgrade_only=False,
-                auto_upgrade=False,
-            ))
+        if r in ("q", "queue") or (r in ("f", "flush") and album_queue):
+            # 'f'/'flush' is only shown when album_queue is non-empty; guard
+            # here so an accidental 'f' on an empty queue doesn't silently
+            # queue+flush without the user seeing the option advertised.
+            #
+            # --force means "re-download every track". A complete album has
+            # missing=[], so without this the queued item would download nothing
+            # and never drain from the queue. Queue the full track list so it
+            # actually re-rips the album.
+            _missing = (list((album.get("tracks") or {}).get("items") or [])
+                        if args.force else missing)
+            album_id = album.get("id")
+            if any(qi["album"].get("id") == album_id for qi in album_queue):
+                log.info(fmt(C.GRAY, "  (already in queue — skipping duplicate)"))
+            else:
+                album_queue.append(_build_queue_item(
+                    album=album,
+                    album_dir=album_dir,
+                    label=(f"{(album.get('artist') or {}).get('name') or '?'}"
+                           f" — {album.get('title') or '?'}"),
+                    missing=_missing,
+                    present=present,
+                    upgrade_only=False,
+                    auto_upgrade=False,
+                ))
             if r in ("f", "flush"):
                 flush_queue()
             else:
@@ -172,6 +187,10 @@ def run_album_mode(args, token, *, query_args=None, loop=False):
         if not album_queue:
             return
         banner(f"Executing queue — {len(album_queue)} album(s)", C.GREEN)
+        # _execute_download_queue drops finished items from album_queue in place
+        # and leaves the unfinished ones for a retry, so DON'T clear it — what
+        # remains is exactly the work to re-offer. len() after the call is the
+        # count still outstanding.
         _, drained = _execute_download_queue(album_queue, args, token)
         if not args.dry_run and not drained:
             log.info(fmt(C.YELLOW,

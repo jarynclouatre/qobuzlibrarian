@@ -73,11 +73,9 @@ def _lock_busy_response(request):
         return None
     if _is_htmx(request):
         return HTMLResponse(
-            f'<div class="alert alert-error">{html.escape(msg)}</div>',
+            f'<div class="alert alert-error" data-flash>{html.escape(msg)}</div>',
             status_code=200)
-    return templates.TemplateResponse(
-        request=request, name="lock_busy.html",
-        context={"msg": msg}, status_code=503)
+    return _tr(request, "lock_busy.html", {"msg": msg}, status_code=503)
 
 
 # Populated at startup. Empty list means OK; non-empty means destructive
@@ -159,6 +157,13 @@ async def _lifespan(_app: FastAPI):
         elif cred_status == "failed":
             _log.warning("Couldn't write the web login from the environment; "
                          "the data volume may not be writable.")
+        if not web_auth.credentials_configured():
+            _log.warning(
+                "No web login configured — the open /setup screen is reachable "
+                "to whoever hits the port first, who would then own the admin "
+                "account. Seed WEB_AUTH_USER / WEB_AUTH_PASSWORD (compose) to "
+                "close this window, and complete setup promptly on a trusted "
+                "network.")
     from qobuz_librarian import run_lock
     from qobuz_librarian.api.auth import sync_streamrip_creds_from_env
     from qobuz_librarian.web import settings_store
@@ -203,6 +208,12 @@ async def _lifespan(_app: FastAPI):
         global _RUN_LOCK_HANDLE, _LOCK_BUSY_PID
         while _LOCK_BUSY_PID is not None:
             await asyncio.sleep(30)
+            # The lock state can change during the sleep: set_mode('cli') hands
+            # the lock to the terminal (sets _CLI_MODE, clears _LOCK_BUSY_PID).
+            # Re-check before acquiring, or we'd grab the lock back in CLI mode
+            # and wedge both the web app and the CLI until restart.
+            if _LOCK_BUSY_PID is None or _CLI_MODE:
+                return
             try:
                 _RUN_LOCK_HANDLE = run_lock.acquire()
                 _LOCK_BUSY_PID = None
@@ -253,13 +264,19 @@ async def _lifespan(_app: FastAPI):
         _prune_lyric_state_orphans()
     except Exception as e:
         _log.debug("lyric-state prune error at startup: %s", e)
-    try:
-        from qobuz_librarian.library import flac_cache
-        n_pruned = flac_cache.prune_missing()
-        if n_pruned:
-            _log.info("Pruned %d stale tag-cache entries at startup.", n_pruned)
-    except Exception as e:
-        _log.debug("flac-cache prune error at startup: %s", e)
+    # Heavy, throttled maintenance: prune_missing() stats every cached file
+    # (100k+ on a NAS library), so run it in the background instead of blocking
+    # the app from serving its first request.
+    async def _bg_prune_flac_cache():
+        try:
+            from qobuz_librarian.library import flac_cache
+            n_pruned = await asyncio.get_running_loop().run_in_executor(
+                None, flac_cache.prune_missing)
+            if n_pruned:
+                _log.info("Pruned %d stale tag-cache entries.", n_pruned)
+        except Exception as e:
+            _log.debug("flac-cache prune error: %s", e)
+    asyncio.create_task(_bg_prune_flac_cache())
     job_mgr.start_worker()
     if not shutil.which("rip"):
         _log.warning("`rip` (streamrip) not found in PATH — downloads will fail")
@@ -272,7 +289,9 @@ async def _lifespan(_app: FastAPI):
     # Reload jobs from the prior session so an AWAITING_REVIEW scan's
     # candidates survive a container restart and queued/running downloads
     # don't silently vanish (they're rebadged FAILED with a retry hint).
-    # Done before start_worker() so the worker doesn't race with restore.
+    # Runs AFTER start_worker() above — benign because the work queues are empty
+    # until restore re-queues into them, and the registry is lock-guarded, so the
+    # worker only idle-ticks until restore hands it something.
     try:
         job_mgr.restore_jobs(_RESUME_EXECUTE)
     except Exception as e:
@@ -358,7 +377,7 @@ async def _probe_token():
 
 
 app = FastAPI(title="Qobuz Librarian", docs_url=None, redoc_url=None,
-              lifespan=_lifespan)
+              openapi_url=None, lifespan=_lifespan)
 
 # AuthMiddleware is added first so it ends up innermost — it runs after the
 # CSRF middleware, which keeps CSRF validation on the login/setup POSTs and
@@ -449,18 +468,18 @@ async def login_submit(request: Request, username: str = Form(""),
     if not web_auth.credentials_configured():
         return RedirectResponse(url="/setup", status_code=303)
     ip = (request.client.host if request.client else "") or "unknown"
-    if not web_auth.check_login_rate_limit(ip):
+    if not web_auth.check_login_rate_limit(ip, username):
         return templates.TemplateResponse(
             request=request, name="login.html",
             context={"error": "Too many failed attempts — wait an hour and try again."},
             status_code=429)
     if not web_auth.verify_login(username.strip(), password):
-        web_auth.record_login_failure(ip)
+        web_auth.record_login_failure(ip, username)
         return templates.TemplateResponse(
             request=request, name="login.html",
             context={"error": "Incorrect username or password."},
             status_code=401)
-    web_auth.clear_login_failures(ip)
+    web_auth.clear_login_failures(ip, username)
     resp = RedirectResponse(url="/", status_code=303)
     web_auth.set_session_cookie(resp, request)
     return resp
@@ -469,6 +488,9 @@ async def login_submit(request: Request, username: str = Form(""),
 @app.post("/logout")
 async def logout(request: Request):
     resp = RedirectResponse(url="/login", status_code=303)
+    # Revoke the session server-side, not just the browser cookie — otherwise a
+    # captured cookie value stays valid for its full 30-day lifetime.
+    web_auth.revoke_session(request.cookies.get(web_auth.SESSION_COOKIE))
     web_auth.clear_session_cookie(resp)
     return resp
 
@@ -503,6 +525,15 @@ async def setup_submit(request: Request, username: str = Form(""),
         return templates.TemplateResponse(
             request=request, name="setup.html",
             context={"error": err, "username": user}, status_code=400)
+    # First-run setup is unauthenticated by necessity (no creds exist yet), so
+    # whoever reaches the open port first claims admin. Log the client IP so the
+    # takeover window is at least auditable; the prevention is seeding
+    # WEB_AUTH_USER/WEB_AUTH_PASSWORD (now plumbed through compose).
+    _ip = (request.client.host if request.client else "") or "unknown"
+    import logging as _logging
+    _logging.getLogger("qobuz_librarian").warning(
+        "First-run /setup creating admin account from %s (username=%r).",
+        _ip, user)
     if not web_auth.set_credentials(user, password):
         return templates.TemplateResponse(
             request=request, name="setup.html",
@@ -590,10 +621,6 @@ def _find_job_touching_album(album_id: str):
     return None
 
 
-def _active_job():
-    return job_mgr.registry.running_job()
-
-
 def _staging_album_count() -> int:
     """Album folders left in staging by an interrupted import. The CLI warns
     about these at startup (`_check_staging_occupied`); the web has no such
@@ -634,6 +661,12 @@ def _start_new_release_check():
     already queued). Shared by the manual Library-page option and the automatic
     dashboard trigger."""
     with _auto_check_lock:
+        # The run-lock may have been handed to the terminal mid-submit (this can
+        # run in an executor for POST /library). Re-check under the lock so a
+        # scan can't start right after set_mode('cli') released the lock and then
+        # race the CLI over /staging.
+        if _CLI_MODE:
+            return None
         existing = _existing_new_release_check()
         if existing is not None:
             return existing
@@ -709,6 +742,18 @@ def _active_scan(*kinds, statuses=("pending", "scanning")):
     return None
 
 
+async def _submit_scan_deduped_async(job, scan_fn, execute_fn, *kinds, **kw):
+    """Run _submit_scan_deduped off the event loop.
+
+    It takes _auto_check_lock, which dashboard executor threads can hold across
+    small (possibly NAS-backed) reads, so the loop must not block on it — the
+    same reason POST /library offloads its submit. Every async scan route goes
+    through this instead of calling _submit_scan_deduped directly on the loop."""
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(
+        None, lambda: _submit_scan_deduped(job, scan_fn, execute_fn, *kinds, **kw))
+
+
 def _submit_scan_deduped(job, scan_fn, execute_fn, *kinds, statuses=("pending", "scanning")):
     """Submit a scan only if one of ``kinds`` isn't already active, atomically.
 
@@ -738,6 +783,9 @@ def _start_library_scan(partial_only=False):
     instead of stacking a second one (the manual button and the auto trigger can
     both land here at once)."""
     with _auto_check_lock:
+        # Re-check the CLI handoff under the lock (see _start_new_release_check).
+        if _CLI_MODE:
+            return None
         existing = _active_library_scan()
         if existing is not None:
             return existing
@@ -883,6 +931,7 @@ async def do_search(request: Request, q: str = Form("", max_length=500),
             token = _get_token()
             from qobuz_librarian.api.search import (
                 get_album,
+                get_track,
                 search_albums,
                 search_tracks,
             )
@@ -928,11 +977,29 @@ async def do_search(request: Request, q: str = Form("", max_length=500),
                     logging.getLogger("qobuz_librarian").exception(
                         "album fetch failed for %r", query)
                     error = "Couldn't fetch that album — check the URL."
+            elif parsed and parsed[0] == "track" and kind == "track":
+                # Tracks mode: resolve the pasted track URL to that one track —
+                # the track-results loop below then renders it for a one-song
+                # grab (this is exactly what Tracks mode exists for).
+                try:
+                    _t = await asyncio.wait_for(
+                        loop.run_in_executor(None, lambda: call_within(
+                            cfg.WEB_FETCH_TIMEOUT, get_track, parsed[1], token)),
+                        timeout=cfg.WEB_FETCH_TIMEOUT)
+                    raw = [_t] if _t else []
+                    if not raw:
+                        error = "Couldn't fetch that track — check the URL."
+                except asyncio.TimeoutError:
+                    error = "Timed out reaching the Qobuz API."
+                except (AuthLost, QobuzUnavailable):
+                    raise
+                except QobuzError:
+                    error = "Couldn't fetch that track — check the URL."
             elif parsed and parsed[0] == "track":
-                # A track URL text-searched would silently return nothing.
-                # Mirror the CLI's diagnostic instead of a blank page.
-                error = ("That's a track URL — Qobuz Librarian works on "
-                         "albums. Paste the album URL instead.")
+                # Albums mode: a track URL — point the user at the Tracks toggle
+                # instead of the old (now false) "works on albums" message.
+                error = ("That's a track URL — switch to Tracks to grab one "
+                         "song, or paste the album URL in Albums mode.")
             elif parsed:
                 # Parsed as some other Qobuz URL kind (artist/playlist).
                 error = ("Only Qobuz album URLs are supported here. "
@@ -1038,6 +1105,7 @@ _DOWNLOAD_SUMMARY_LABELS = {
     "cancelled": "Cancelled — the partial download was discarded.",
     "upgrade_aborted_backup_failed": "Upgrade aborted — couldn't back up the original.",
     "partial": "Re-download came back incomplete — kept your original.",
+    "not_imported": "Downloaded, but the import didn't land — library unchanged.",
 }
 
 
@@ -1086,8 +1154,8 @@ def _make_download_run(album, token, *, treat_as_new=False):
                               already_confirmed=True, token=token,
                               treat_as_new=treat_as_new) or {}
         benign = {"already_complete", "skipped_already_higher_quality",
-                  "dry_run", "user_skipped", "lossy_only", "no_tracks",
-                  "cancelled"}
+                  "skipped_has_extras", "dry_run", "user_skipped",
+                  "lossy_only", "no_tracks", "cancelled"}
         if r.get("result") not in benign and not r.get("imported"):
             j.status = job_mgr.JobStatus.FAILED
             j.error = (f"{plural(r['n_fail'], 'track')} failed"
@@ -1184,7 +1252,6 @@ def _make_single_track_run(album, track, token):
 
 @app.post("/download", response_class=HTMLResponse)
 async def queue_download(request: Request, album_id: str = Form(""),
-                         force: str = Form(""),
                          as_new_edition: str = Form(""),
                          track_id: str = Form("")):
     busy = _lock_busy_response(request)
@@ -1195,9 +1262,11 @@ async def queue_download(request: Request, album_id: str = Form(""),
     if not album_id:
         msg = "Missing album id."
         if _is_htmx(request):
+            # 200, not 400: htmx only swaps 2xx/3xx responses, so a 400 fragment
+            # is silently dropped and the user sees no feedback. The alert-error
+            # styling carries the "this failed" meaning instead of the status.
             return HTMLResponse(
-                f'<div class="alert alert-error" data-flash>{msg}</div>',
-                status_code=400)
+                f'<div class="alert alert-error" data-flash>{msg}</div>')
         return RedirectResponse(url="/queue?error=" + urllib.parse.quote(msg),
                                 status_code=303)
     # Refuse duplicates — same album already active or pending. Includes
@@ -1211,7 +1280,6 @@ async def queue_download(request: Request, album_id: str = Form(""),
                 f'<div class="alert alert-warning" data-flash>Already queued — '
                 f'<a href="/jobs/{existing.id}" class="link">view job</a>.</div>')
         return RedirectResponse(url=f"/jobs/{existing.id}", status_code=303)
-    force_redownload = str(force).strip().lower() in ("1", "true", "yes", "on")
     # "Get this edition too" — download a different edition of an album the user
     # already owns, as a separate album. Bypasses the owned-check and treats it
     # as brand-new so it lands in its own (year) folder beside the existing copy
@@ -1229,7 +1297,7 @@ async def queue_download(request: Request, album_id: str = Form(""),
                 lambda: call_within(cfg.WEB_FETCH_TIMEOUT, get_album, album_id, token)),
             timeout=cfg.WEB_FETCH_TIMEOUT,
         )
-        if not force_redownload and not download_as_new_edition and not track_id:
+        if not download_as_new_edition and not track_id:
             def _already_complete():
                 from qobuz_librarian.library.catalog import (
                     compute_missing,
@@ -1293,9 +1361,10 @@ async def queue_download(request: Request, album_id: str = Form(""),
             if single_track is None:
                 msg = "That track isn't on this album."
                 if _is_htmx(request):
+                    # 200, not 400: htmx drops non-2xx/3xx fragments, so a 400
+                    # here renders nothing. alert-error conveys the failure.
                     return HTMLResponse(
-                        f'<div class="alert alert-error" data-flash>{msg}</div>',
-                        status_code=400)
+                        f'<div class="alert alert-error" data-flash>{msg}</div>')
                 return RedirectResponse(
                     url="/queue?error=" + urllib.parse.quote(msg), status_code=303)
         job = job_mgr.Job(
@@ -1421,7 +1490,7 @@ async def artist_scan(request: Request, artist: str = Form("")):
     from qobuz_librarian.web import flows
     job = job_mgr.Job(title="Artist scan", artist=name)
     job.execute_kind = "album"
-    job = _submit_scan_deduped(
+    job = await _submit_scan_deduped_async(
         job,
         lambda j: flows.scan_artist(j, name, _get_token()),
         lambda j, chosen: flows.execute_albums(j, chosen, _get_token()),
@@ -1465,12 +1534,18 @@ async def library_scan(request: Request, mode: str = Form("missing_albums")):
         # Same job the dashboard auto-check submits; its own execute_kind so the
         # review screen pre-ticks the new releases and labels the surface.
         job = await loop.run_in_executor(None, _start_new_release_check)
+        if job is None:    # lock handed to the terminal during the submit
+            return _lock_busy_response(request) or RedirectResponse(
+                url="/settings?mode=cli", status_code=303)
         return RedirectResponse(url=f"/jobs/{job.id}", status_code=303)
     # "library" (not "album") so the review screen knows this is the paced triage
     # surface; both modes run the same album executor and resume from a matching
     # checkpoint if one's waiting (see _start_library_scan / scan_library).
     job = await loop.run_in_executor(
         None, lambda: _start_library_scan(partial_only=(mode_norm == "partial_fill")))
+    if job is None:
+        return _lock_busy_response(request) or RedirectResponse(
+            url="/settings?mode=cli", status_code=303)
     return RedirectResponse(url=f"/jobs/{job.id}", status_code=303)
 
 
@@ -1547,7 +1622,7 @@ async def upgrade_scan(request: Request):
     job = job_mgr.Job(title="Quality upgrade scan")
     job.execute_kind = "upgrade"
     job.review_verb = "Upgrade"  # the action re-rips, not a fresh download
-    job = _submit_scan_deduped(
+    job = await _submit_scan_deduped_async(
         job,
         lambda j: flows.scan_upgrades(j, _get_token()),
         lambda j, chosen: flows.execute_upgrades(j, chosen, _get_token()),
@@ -1578,7 +1653,7 @@ async def upgrade_scan_artist(request: Request, artist: str = Form("")):
     job = job_mgr.Job(title="Quality upgrade scan", artist=name)
     job.execute_kind = "upgrade"
     job.review_verb = "Upgrade"
-    job = _submit_scan_deduped(
+    job = await _submit_scan_deduped_async(
         job,
         lambda j: flows.scan_upgrades_for_artist(j, name, _get_token()),
         lambda j, chosen: flows.execute_upgrades(j, chosen, _get_token()),
@@ -1626,7 +1701,7 @@ async def downsample_scan(request: Request):
     job = job_mgr.Job(title="Downsample scan")
     job.execute_kind = "downsample"
     job.review_verb = "Downsample"  # the action rewrites files, not a download
-    job = _submit_scan_deduped(
+    job = await _submit_scan_deduped_async(
         job,
         lambda j: flows.scan_downsamples(j),
         lambda j, chosen: flows.execute_downsamples(j, chosen),
@@ -1648,7 +1723,7 @@ async def downsample_scan_artist(request: Request, artist: str = Form("")):
     job = job_mgr.Job(title="Downsample scan", artist=name)
     job.execute_kind = "downsample"
     job.review_verb = "Downsample"
-    job = _submit_scan_deduped(
+    job = await _submit_scan_deduped_async(
         job,
         lambda j: flows.scan_downsamples_for_artist(j, name),
         lambda j, chosen: flows.execute_downsamples(j, chosen),
@@ -1681,7 +1756,7 @@ async def repair_scan(request: Request):
     from qobuz_librarian.web import flows
     job = job_mgr.Job(title="Repair scan")
     job.execute_kind = "repair"
-    job = _submit_scan_deduped(
+    job = await _submit_scan_deduped_async(
         job,
         lambda j: flows.scan_repairs(j, _get_token()),
         lambda j, chosen: flows.execute_repairs(j, chosen, _get_token()),
@@ -1707,7 +1782,7 @@ async def repair_scan_artist(request: Request, artist: str = Form("")):
     from qobuz_librarian.web import flows
     job = job_mgr.Job(title="Repair scan", artist=name)
     job.execute_kind = "repair"
-    job = _submit_scan_deduped(
+    job = await _submit_scan_deduped_async(
         job,
         lambda j: flows.scan_repairs_for_artist(j, name, _get_token()),
         lambda j, chosen: flows.execute_repairs(j, chosen, _get_token()),
@@ -1753,12 +1828,12 @@ async def lyrics_scan(request: Request):
     busy = _lock_busy_response(request)
     if busy is not None:
         return busy
-    existing = _active_scan("lyrics", statuses=("pending", "running"))
-    if existing is not None:
-        return RedirectResponse(url=f"/jobs/{existing.id}", status_code=303)
     form = await request.form()
     rescan = bool(form.get("rescan"))
     synced_only = bool(form.get("synced_only"))
+    existing = _active_scan("lyrics", statuses=("pending", "running"))
+    if existing is not None:
+        return RedirectResponse(url=f"/jobs/{existing.id}", status_code=303)
     from qobuz_librarian.web import flows
     job = job_mgr.Job(title="Lyrics backfill")
     job.execute_kind = "lyrics"
@@ -1779,12 +1854,12 @@ async def lyrics_scan_artist(request: Request, artist: str = Form("")):
     name, err = _clean_artist_name(artist)
     if err is not None:
         return err
-    existing = _active_scan("lyrics", statuses=("pending", "running"))
-    if existing is not None:
-        return RedirectResponse(url=f"/jobs/{existing.id}", status_code=303)
     form = await request.form()
     rescan = bool(form.get("rescan"))
     synced_only = bool(form.get("synced_only"))
+    existing = _active_scan("lyrics", statuses=("pending", "running"))
+    if existing is not None:
+        return RedirectResponse(url=f"/jobs/{existing.id}", status_code=303)
     from qobuz_librarian.web import flows
     job = job_mgr.Job(title="Lyrics backfill", artist=name)
     job.execute_kind = "lyrics"
@@ -1835,19 +1910,19 @@ async def migrate_scan(request: Request):
         return busy
     from qobuz_librarian.library import migrate as engine
     src, dest = cfg.MIGRATE_SRC, cfg.MIGRATE_DEST
+    form = await request.form()
+    use_acoustid = form.get("acoustid") == "on"
+    in_place = form.get("in_place") == "on"
     if not src or not dest:
         err = ("Set QL_MIGRATE_SRC and QL_MIGRATE_DEST — the folder to read and "
                "the folder to build the organized copy into — then try again.")
     else:
-        err = engine.validate_paths(Path(src), Path(dest))
+        err = engine.validate_paths(Path(src), Path(dest), in_place=in_place)
     if err:
         return _tr(request, "migrate.html", {
             "page": "migrate", "src": src, "dest": dest,
             "configured": bool(src and dest), "error": err,
             "migrate_checks": _migrate_checks(src, dest)})
-    form = await request.form()
-    use_acoustid = form.get("acoustid") == "on"
-    in_place = form.get("in_place") == "on"
     from qobuz_librarian.web import flows
     job = job_mgr.Job(title="Library migration")
     job.review_verb = "Move" if in_place else "Copy"
@@ -1856,7 +1931,7 @@ async def migrate_scan(request: Request):
     # source folders on an in-place move (the live execute below gets it too).
     job.execute_args = {"dest": str(dest), "in_place": bool(in_place),
                         "src": str(src)}
-    job = _submit_scan_deduped(
+    job = await _submit_scan_deduped_async(
         job,
         lambda j: flows.scan_migration(j, src, dest, use_acoustid=use_acoustid,
                                        in_place=in_place),
@@ -1959,7 +2034,12 @@ async def job_approve(request: Request, job_id: str):
     # Selection is saved server-side as the user ticks (the paginated review no
     # longer carries every checkbox in the form), so approve runs against the
     # saved flags — passing None keeps them as-is rather than reading the form.
-    approved = job_mgr.approve(job, None)
+    # Offload to a thread: approve() does a json.dumps of up to JOB_CANDIDATE_CAP
+    # candidate dicts + a SQLite commit, which would block the single event loop
+    # (freezing every SSE stream / other request) for a large parked review —
+    # the same reason /select was offloaded.
+    loop = asyncio.get_running_loop()
+    approved = await loop.run_in_executor(None, lambda: job_mgr.approve(job, None))
     flag = "approved=1" if approved else "stale=1"
     return RedirectResponse(url=f"/jobs/{job_id}?{flag}", status_code=303)
 
@@ -1968,6 +2048,12 @@ async def job_approve(request: Request, job_id: str):
 # Both share one review screen; they differ only in which hidden-store scope a
 # dismiss writes — missing-album for the gap scan, upgrade for the upgrade scan.
 _TRIAGE_KINDS = ("library", "upgrade", "new_releases", "downsample")
+
+# Kinds whose review screen has server-backed per-candidate selection. Artist
+# ("album") scans render the same checkboxes and approve from the saved flags,
+# so their ticks must persist too — without "album" here every tick 404s and
+# the user's edits never reach the server.
+_SELECTABLE_KINDS = _TRIAGE_KINDS + ("repair", "migration", "album")
 
 
 def _hide_scope(execute_kind):
@@ -2048,14 +2134,18 @@ async def job_select(request: Request, job_id: str):
     posted checkboxes (pagination means most aren't in the DOM), so each toggle
     saves immediately and the saved flags are the source of truth at download."""
     job = _get_reviewable_job(job_id)
-    if not job or job.execute_kind not in _TRIAGE_KINDS + ("repair", "migration"):
+    if not job or job.execute_kind not in _SELECTABLE_KINDS:
         return JSONResponse({"error": "not found"}, status_code=404)
     from qobuz_librarian.web import job_persistence
     form = await request.form()
     cid = (form.get("cid") or "").strip()
     on = (form.get("checked") or "").strip().lower() in ("1", "true", "on", "yes")
     if cid and job.set_selected(cid, on):
-        job_persistence.persist(job)
+        # persist() json.dumps the whole candidates list (multi-MB near the
+        # candidate cap) and writes SQLite under a lock — keep it off the event
+        # loop so a single checkbox tick doesn't stall every other request.
+        await asyncio.get_running_loop().run_in_executor(
+            None, job_persistence.persist, job)
         job.notify_review_changed()
     return JSONResponse(_selection_payload(job))
 
@@ -2065,7 +2155,7 @@ async def job_select_all(request: Request, job_id: str):
     """Bulk select/deselect. scope=all flips every candidate across all pages;
     scope=page flips only the cids posted (the visible page)."""
     job = _get_reviewable_job(job_id)
-    if not job or job.execute_kind not in _TRIAGE_KINDS + ("repair", "migration"):
+    if not job or job.execute_kind not in _SELECTABLE_KINDS:
         return JSONResponse({"error": "not found"}, status_code=404)
     from qobuz_librarian.web import job_persistence
     form = await request.form()
@@ -2073,7 +2163,8 @@ async def job_select_all(request: Request, job_id: str):
     scope = (form.get("scope") or "all").strip().lower()
     cids = form.getlist("cid")[:100000] if scope == "page" else None
     if job.set_all_selected(on, cids=cids):
-        job_persistence.persist(job)
+        await asyncio.get_running_loop().run_in_executor(
+            None, job_persistence.persist, job)
         job.notify_review_changed()
     return JSONResponse(_selection_payload(job))
 
@@ -2089,7 +2180,10 @@ async def job_hide(request: Request, job_id: str):
     running, and never lock-guarded, so dismissing stays available mid-scan and
     while a download holds the staging lock.
     """
-    job = job_mgr.registry.get(job_id)
+    # Use the disk fallback like every other review endpoint so Hide keeps
+    # working on a restored/archived awaiting-review job (registry.get alone
+    # 404s once the job is evicted, while /select, /review and /content don't).
+    job = _get_reviewable_job(job_id)
     if not job:
         return HTMLResponse("", status_code=404)
     if (job.execute_kind in _TRIAGE_KINDS and job.status in (
@@ -2154,8 +2248,36 @@ async def job_retry(request: Request, job_id: str):
             duplicate = _find_job_touching_album(album_id)
             if duplicate:
                 return RedirectResponse(url=f"/jobs/{duplicate.id}", status_code=303)
+            # set_mode could have handed the lock to the terminal during the
+            # get_album await above; re-check inside the submit lock (as
+            # queue_download does) so a retry can't start a job after the CLI
+            # handoff.
+            busy = _lock_busy_response(request)
+            if busy is not None:
+                return busy
+            # A failed single-track grab carries job.album_id (so Retry shows up),
+            # but _make_download_run would re-grab the WHOLE album. Rebuild it as
+            # the same one-track run instead.
+            single = getattr(job, "single", None)
+            track = None
+            if single and single.get("track_id"):
+                tid = str(single.get("track_id"))
+                track = next(
+                    (t for t in (album.get("tracks") or {}).get("items") or []
+                     if str(t.get("id")) == tid), None)
             new_job = job_mgr.Job(title=title, artist=artist, album_id=album_id)
-            job_mgr.submit(new_job, _make_download_run(album, token))
+            if track is not None:
+                new_job.single = dict(single)
+                job_mgr.submit(new_job, _make_single_track_run(album, track, token))
+            elif single and single.get("track_id"):
+                # The original was a single-track grab but that track is no
+                # longer on Qobuz — do NOT silently re-download the whole album.
+                return RedirectResponse(
+                    url="/queue?error=" + urllib.parse.quote(
+                        "That track is no longer on Qobuz — nothing to retry."),
+                    status_code=303)
+            else:
+                job_mgr.submit(new_job, _make_download_run(album, token))
         return RedirectResponse(url=f"/jobs/{new_job.id}", status_code=303)
     except (SystemExit, NoCredsError):
         return RedirectResponse(url="/settings?error=creds", status_code=303)
@@ -2177,12 +2299,17 @@ async def job_undo(request: Request, job_id: str):
     # lock (handed-off mode, or another instance).
     busy = _lock_busy_response(request)
     if busy is not None:
+        if _is_htmx(request):
+            return HTMLResponse(
+                f'<div id="job-content">{busy.body.decode()}</div>')
         return busy
     job = job_mgr.registry.get(job_id)
     info = dict(getattr(job, "single", None) or {}) if job else {}
     if not job or not info.get("dir") or info.get("removed"):
         if _is_htmx(request):
-            return HTMLResponse("")
+            if job:
+                return _tr(request, "_job_body.html", {"job": job})
+            return HTMLResponse("", headers={"HX-Redirect": "/queue"})
         return RedirectResponse(url="/queue", status_code=303)
 
     def _reverse():
@@ -2214,18 +2341,24 @@ async def job_undo(request: Request, job_id: str):
             pass
         if removed is not None:
             forget_beets_entries([removed])
-        if info.get("marked"):
-            hidden_mod.unmark_single(info.get("artist") or "", info.get("album") or "")
+            if info.get("marked"):
+                hidden_mod.unmark_single(info.get("artist") or "", info.get("album") or "")
         # If the grab created a brand-new folder and it now holds no audio, take
         # it back out so a one-off sample doesn't leave an empty album dir behind.
         try:
             if (info.get("new_folder") and d.is_dir()
-                    and not any(x.suffix.lower() == ".flac" for x in d.iterdir())):
+                    and not any(x.is_file()
+                                and x.suffix.lower() in cfg.AUDIO_EXTS
+                                for x in d.rglob("*"))):
                 import shutil
                 shutil.rmtree(d, ignore_errors=True)
         except OSError:
             pass
-        return removed is not None
+        # Return the Path actually deleted (or None when nothing matched) so the
+        # caller can tell a real removal from a no-match — `removed is not None`
+        # would collapse to a bool and make the not-found branch dead code,
+        # reporting false success and burning the one-shot.
+        return removed
 
     def _reverse_under_lock():
         # Take the lock inside the worker thread, never on the event loop —
@@ -2236,10 +2369,22 @@ async def job_undo(request: Request, job_id: str):
 
     loop = asyncio.get_running_loop()
     removed = await loop.run_in_executor(None, _reverse_under_lock)
-    job.single = {**info, "removed": True}
-    job.summary = (f"Removed “{info.get('title')}” and undid the single."
-                   if removed else
-                   f"“{info.get('title')}” was already gone — cleared the single mark.")
+    if removed is not None:
+        job.single = {**info, "removed": True}
+        job.summary = f"Removed “{info.get('title')}” and undid the single."
+    else:
+        # File not found at all (deleted externally) — still burn the one-shot
+        # so Undo doesn't loop, but only when the dir is gone too. If the dir
+        # exists but no track matched (ISRC/track_no mismatch), leave removed
+        # unset so the user can attempt a manual fix and retry.
+        from pathlib import Path as _Path
+        dir_gone = not _Path(info["dir"]).exists()
+        if dir_gone:
+            job.single = {**info, "removed": True}
+            job.summary = f"“{info.get('title')}” was already gone — cleared the single mark."
+        else:
+            job.summary = (f"Couldn't find “{info.get('title')}” by ISRC/track number "
+                           "— check the folder manually and delete the file if needed.")
     if _is_htmx(request):
         return _tr(request, "_job_body.html", {"job": job})
     return RedirectResponse(url=f"/jobs/{job.id}", status_code=303)
@@ -2251,7 +2396,11 @@ async def job_cancel(request: Request, job_id: str):
     if not job:
         return RedirectResponse(url="/queue", status_code=303)
     was_review = job.status == job_mgr.JobStatus.AWAITING_REVIEW
-    job_mgr.request_cancel(job)
+    # Offload: cancelling a parked review runs cancel_review -> persist (a
+    # json.dumps of the full candidate list + SQLite commit), which would block
+    # the event loop and stall every SSE stream for a large review.
+    loop = asyncio.get_running_loop()
+    await loop.run_in_executor(None, lambda: job_mgr.request_cancel(job))
     # A review discard is instant → queue. A running/scanning job stops
     # cooperatively → keep them on the job page to watch it wind down.
     dest = "/queue" if was_review else f"/jobs/{job_id}"
@@ -2282,13 +2431,19 @@ async def queue_history(request: Request, p: int = 1):
 
     from qobuz_librarian.web import job_persistence
     p = max(1, p)
-    total = job_persistence.history_count()
-    pages = max(1, (total + _HISTORY_PER_PAGE - 1) // _HISTORY_PER_PAGE)
-    p = min(p, pages)
-    rows = job_persistence.history_page(_HISTORY_PER_PAGE, (p - 1) * _HISTORY_PER_PAGE)
-    for r in rows:
-        ts = r.get("finished_at") or r.get("created_at")
-        r["when"] = datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M") if ts else ""
+
+    def _load_page(page):
+        total = job_persistence.history_count()
+        pages = max(1, (total + _HISTORY_PER_PAGE - 1) // _HISTORY_PER_PAGE)
+        page = min(max(1, page), pages)
+        rows = job_persistence.history_page(_HISTORY_PER_PAGE, (page - 1) * _HISTORY_PER_PAGE)
+        for r in rows:
+            ts = r.get("finished_at") or r.get("created_at")
+            r["when"] = datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M") if ts else ""
+        return total, pages, page, rows
+
+    loop = asyncio.get_running_loop()
+    total, pages, p, rows = await loop.run_in_executor(None, lambda: _load_page(p))
     return _tr(request, "history.html", {
         "page": "queue", "active_tab": "history",
         "jobs": rows, "cur_page": p, "pages": pages, "total": total,
@@ -2447,7 +2602,10 @@ def _settings_response(request, *, saved=False, queued=False, connected=False,
     # If credentials come from QOBUZ_USER_AUTH_TOKEN env, anything saved
     # via the form is overridden on next process start — let the user know.
     import os
-    creds_from_env = bool(os.environ.get("QOBUZ_USER_AUTH_TOKEN"))
+    # cfg.QOBUZ_USER_AUTH_TOKEN resolves QOBUZ_USER_AUTH_TOKEN_FILE too (the
+    # secret is no longer re-exported to os.environ), so a *_FILE deployment is
+    # correctly recognised as env-provided.
+    creds_from_env = bool(cfg.QOBUZ_USER_AUTH_TOKEN)
     cli_only_env = os.environ.get("QL_CLI_ONLY", "").strip().lower() in (
         "1", "true", "yes", "on")
     return _tr(request, "settings.html", {
@@ -2497,7 +2655,6 @@ async def settings_page(request: Request, saved: bool = False,
 
 @app.post("/settings", response_class=HTMLResponse)
 async def save_settings(request: Request, user_id: str = Form(""), auth_token: str = Form("")):
-    import os
     global _TOKEN_VALID
     loop = asyncio.get_running_loop()
     diags = await loop.run_in_executor(None, _diagnostics)
@@ -2506,11 +2663,11 @@ async def save_settings(request: Request, user_id: str = Form(""), auth_token: s
     # bounce back with a banner rather than writing blanks and flashing green.
     if not auth_token.strip() and not user_id.strip() \
             and not existing.get("auth_token") \
-            and not os.environ.get("QOBUZ_USER_AUTH_TOKEN"):
+            and not cfg.QOBUZ_USER_AUTH_TOKEN:
         return RedirectResponse(url="/settings?error=empty", status_code=303)
     # Blank means "keep the existing value" — the fields are not pre-filled,
     # so an empty submission must not wipe a previously-saved credential.
-    if not auth_token.strip() and not user_id.strip() and os.environ.get("QOBUZ_USER_AUTH_TOKEN"):
+    if not auth_token.strip() and not user_id.strip() and cfg.QOBUZ_USER_AUTH_TOKEN:
         # Nothing changed and env creds are already synced at startup — skip
         # the write so a read-only config volume doesn't surface a false error.
         return RedirectResponse(url="/settings?connected=1", status_code=303)
@@ -2588,7 +2745,8 @@ async def save_behavior(request: Request):
     if is_complete:
         values = {k: (k in form) for k in settings_store.BEHAVIOR_KEYS}
     else:
-        values = {k: True for k in settings_store.BEHAVIOR_KEYS if k in form}
+        values = {k: (form.get(k, "").strip().lower() not in ("0", "false", "off", "no", ""))
+                  for k in settings_store.BEHAVIOR_KEYS if k in form}
     # Text/enum/list fields: take whatever the form posted; absent =
     # leave unchanged (don't wipe a previously-set value).
     for k in settings_store.TEXT_KEYS:
@@ -2885,10 +3043,10 @@ def _no_creds_response(request):
     """Return a 303 redirect (or htmx fragment) when no credentials are set."""
     if _is_htmx(request):
         return HTMLResponse(
-            '<div class="alert alert-error">No Qobuz credentials set — '
+            '<div class="alert alert-error" data-flash>No Qobuz credentials set — '
             'visit <a href="/settings" class="link">Settings</a>.</div>',
             status_code=200)
-    return RedirectResponse(url="/settings", status_code=303)
+    return RedirectResponse(url="/settings?error=creds", status_code=303)
 
 
 _creds_cache: dict | None = None
@@ -2896,11 +3054,11 @@ _creds_cache: dict | None = None
 
 def _read_creds():
     global _creds_cache
-    import os
-    env_token = os.environ.get("QOBUZ_USER_AUTH_TOKEN", "")
+    # cfg resolves QOBUZ_USER_AUTH_TOKEN_FILE too (the secret is no longer
+    # re-exported to os.environ), so a *_FILE deployment is recognised here.
+    env_token = cfg.QOBUZ_USER_AUTH_TOKEN
     if env_token:
-        env_uid = os.environ.get("QOBUZ_USER_ID", "")
-        return {"user_id": env_uid, "auth_token": env_token}
+        return {"user_id": cfg.QOBUZ_USER_ID or "", "auth_token": env_token}
     if _creds_cache is not None:
         return _creds_cache
     if not cfg.STREAMRIP_CONFIG.exists():

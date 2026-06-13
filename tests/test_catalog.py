@@ -248,6 +248,32 @@ def test_filter_owned_albums_doesnt_swallow_sequels_or_distinct_years():
             filter_owned_albums(pairs, {"wastinglightlive": [2019]})] == ["Wasting Light"]
 
 
+def test_filter_owned_albums_offers_distinct_self_titled_albums():
+    # Self-titled exception: when the bare title equals the artist name, an
+    # undecorated far-year exact match is a genuinely distinct album (Weezer's
+    # colour records, Peter Gabriel's four 'Peter Gabriel' LPs), not a reissue —
+    # so owning the 1994 'Weezer' must NOT hide the 2001 'Weezer'.
+    pairs = [({"title": "Weezer", "release_date_original": "2001"}, 1)]
+    assert [a["title"] for a, _ in
+            filter_owned_albums(pairs, {"weezer": [1994]}, "Weezer")] == ["Weezer"]
+
+    # Without the artist name the year-blind reissue behaviour is unchanged.
+    assert filter_owned_albums(pairs, {"weezer": [1994]}) == []
+
+    # A self-titled match at a NEAR year is the same release — still owned.
+    near = [({"title": "Weezer", "release_date_original": "1995"}, 1)]
+    assert filter_owned_albums(near, {"weezer": [1994]}, "Weezer") == []
+
+    # A decorated self-titled edition (a deluxe reissue) stays owned.
+    deluxe = [({"title": "Weezer (Deluxe Edition)", "release_date_original": "2004"}, 1)]
+    assert filter_owned_albums(deluxe, {"weezer": [1994]}, "Weezer") == []
+
+    # A non-self-titled far-year exact match (a real reissue) is still suppressed
+    # even with the artist name supplied — the exception is self-title-only.
+    rev = [({"title": "Revolver", "release_date_original": "2022"}, 1)]
+    assert filter_owned_albums(rev, {"revolver": [1966]}, "The Beatles") == []
+
+
 def test_filter_compilation_albums():
     by = lambda title, artist, comp=False: ({"title": title, "artist": {"name": artist},
                                               "is_compilation": comp}, 1)

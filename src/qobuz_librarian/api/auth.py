@@ -235,25 +235,45 @@ def sync_streamrip_creds_from_env():
     email:" prompt. Idempotent: only rewrites when the config's token
     doesn't already match the env token. Returns True if it wrote,
     False on write failure, None if there was nothing to do.
+
+    A user id is required: the bundled streamrip raises
+    MissingCredentialsError on an empty email_or_userid even under
+    use_auth_token, so we never stamp a blank id — that would break every
+    download while the app's own API calls keep working (the exact
+    half-broken state this sync exists to prevent). The env id wins when set;
+    otherwise we preserve a user id already present in the config (e.g. one
+    saved via the Settings page) and only warn when none is available.
     """
     token = config.QOBUZ_USER_AUTH_TOKEN
     if not token:
         return None
-    # No user id set: leave the field blank rather than stamping the
-    # "<env-token>" display placeholder into the on-disk config. streamrip
-    # authenticates from the token under use_auth_token, so the id is unused.
-    user_id = config.QOBUZ_USER_ID or ""
+    env_user_id = config.QOBUZ_USER_ID or ""
+    existing_user_id = ""
     if config.STREAMRIP_CONFIG.exists():
         try:
             with open(config.STREAMRIP_CONFIG, "rb") as f:
                 existing = tomllib.load(f)
             qz = existing.get("qobuz", {})
+            existing_user_id = str(qz.get("email_or_userid", "") or "")
             if (qz.get("use_auth_token")
                     and str(qz.get("password_or_token", "")) == token
-                    and str(qz.get("email_or_userid", "")) == user_id):
-                return None  # already in sync
+                    and existing_user_id
+                    and (not env_user_id or existing_user_id == env_user_id)):
+                return None  # already usable and in sync
         except Exception:
             pass  # unparseable/old → fall through and rewrite
+    # Env id wins; fall back to whatever the config already had so a
+    # token-only .env (QOBUZ_USER_ID unset) doesn't blank a working id.
+    user_id = env_user_id or existing_user_id
+    if not user_id:
+        import logging
+        logging.getLogger("qobuz_librarian").warning(fmt(
+            C.YELLOW,
+            "  ⚠  QOBUZ_USER_AUTH_TOKEN is set but QOBUZ_USER_ID is not — "
+            "downloads need both. Set QOBUZ_USER_ID (or save credentials on "
+            "the Settings page); `rip` cannot authenticate from the token "
+            "alone."))
+        return None
     return write_streamrip_creds(user_id, token)
 
 
@@ -290,13 +310,23 @@ def detect_auth_lost(rip_output):
     'user authentication failed' avoids matching unrelated debug noise.
     """
     o = rip_output.lower()
-    return any(s in o for s in (
-        "http 401",
-        "user authentication failed",
-        "authenticationerror",
-        "invalid credentials",
-        "unauthor",
-    ))
+    # These markers are specific enough to be safe anywhere in the output.
+    if any(s in o for s in (
+            "http 401",
+            "user authentication failed",
+            "authenticationerror",
+            "invalid credentials")):
+        return True
+    # "unauthorized" is also a real word in album/track titles (e.g. "The
+    # Unauthorized Biography of Reinhold Messner"), and streamrip echoes titles
+    # in its progress output. Only treat it as auth loss on an error-shaped line
+    # so a successful download isn't torn down as a bogus auth failure.
+    for line in o.splitlines():
+        if "unauthor" in line and any(k in line for k in (
+                "error", "exception", "traceback", "401", "403",
+                "denied", "fail")):
+            return True
+    return False
 
 
 def detect_rate_limited(rip_output):

@@ -153,7 +153,7 @@ def test_differs_by_album_variant_rejects_coincidental_letter_overlap():
     assert not differs_by_album_variant("album", "album")
 
 
-def test_downsample_hires_env_var_compat(monkeypatch):
+def test_downsample_hires_env_var_compat(restore_config, monkeypatch):
     # The user-facing toggle was renamed from COMPRESS_ENABLED to
     # DOWNSAMPLE_HIRES_ENABLED. Both env vars must keep working, and the
     # canonical name wins when both are set.
@@ -175,7 +175,7 @@ def test_downsample_hires_env_var_compat(monkeypatch):
     assert cfg.COMPRESS_ENABLED is True
 
 
-def test_downsample_hires_typo_warns_instead_of_silently_off(monkeypatch, capsys):
+def test_downsample_hires_typo_warns_instead_of_silently_off(restore_config, monkeypatch, capsys):
     # Beta-test finding: a typo'd DOWNSAMPLE_HIRES_ENABLED used to silently
     # resolve to False with no warning, while LYRICS_FORMAT=banana correctly
     # warned. Route both through _env_bool so the contract matches. _warn
@@ -191,7 +191,7 @@ def test_downsample_hires_typo_warns_instead_of_silently_off(monkeypatch, capsys
     assert "DOWNSAMPLE_HIRES_ENABLED" in err and "banana" in err
 
 
-def test_artist_scan_workers_clamps_an_absurd_high_value(monkeypatch, capsys):
+def test_artist_scan_workers_clamps_an_absurd_high_value(restore_config, monkeypatch, capsys):
     # Beta-test finding: a typo'd ARTIST_SCAN_WORKERS=999999 used to slip
     # through (only the floor at 1 was enforced) and would spawn a 999999-
     # thread pool. _env_num_min now takes a maximum too.

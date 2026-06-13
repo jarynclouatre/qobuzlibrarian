@@ -76,7 +76,8 @@
           <form action="/jobs/{{ job.id }}/cancel" method="post">
             <input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}">
             <button type="submit" class="btn btn-square min-h-[44px] min-w-[44px] sm:btn-sm btn-ghost"
-                    title="Cancel" aria-label="Cancel">×</button>
+                    title="Cancel" aria-label="Cancel"
+                    data-confirm="Cancel this job? The scan results will be discarded.">×</button>
           </form>
         </div>
         {% elif job.status.value in ('pending', 'running', 'scanning') and not job.single %}

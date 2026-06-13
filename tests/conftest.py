@@ -52,6 +52,11 @@ def _isolate_data_dir():
     cfg.STREAMRIP_CONFIG     = tmp_root / "streamrip" / "config.toml"
     cfg.QOBUZ_USER_AUTH_TOKEN = ""
     cfg.QOBUZ_USER_ID = ""
+    # Keep MUSIC_ROOT off the dev's real ~/Music — tests that need a library
+    # build one under tmp_path and monkeypatch it, but the session default must
+    # never be a real path a stray scan could walk.
+    cfg.MUSIC_ROOT = tmp_root / "music"
+    cfg.MUSIC_ROOT.mkdir(parents=True, exist_ok=True)
     # The dashboard auto-runs the new-release check (when due) and the first-run
     # library scan; both off for the suite so unrelated GET / tests don't fire a
     # real background scan. The dedicated tests flip them on with monkeypatch.
@@ -74,7 +79,9 @@ def _isolate_data_dir():
     # session.
     prior_env = {k: os.environ.get(k) for k in
                  ("WEB_AUTH", "DATA_DIR", "NEW_RELEASE_CHECK_INTERVAL",
-                  "AUTO_LIBRARY_SCAN", "ALBUM_CACHE_ENABLED", "FLAC_CACHE_ENABLED")}
+                  "AUTO_LIBRARY_SCAN", "ALBUM_CACHE_ENABLED", "FLAC_CACHE_ENABLED",
+                  "QOBUZ_USER_AUTH_TOKEN", "QOBUZ_USER_ID", "STREAMRIP_CONFIG",
+                  "MUSIC_ROOT")}
     os.environ["WEB_AUTH"] = "none"
     os.environ["DATA_DIR"] = str(tmp_root)
     os.environ["NEW_RELEASE_CHECK_INTERVAL"] = "0"
@@ -91,6 +98,9 @@ def _isolate_data_dir():
     os.environ["QOBUZ_USER_AUTH_TOKEN"] = ""
     os.environ["QOBUZ_USER_ID"] = ""
     os.environ["STREAMRIP_CONFIG"] = str(cfg.STREAMRIP_CONFIG)
+    # Set MUSIC_ROOT in the env too so a test that importlib.reload(cfg) keeps it
+    # in the temp dir instead of reverting to the real ~/Music.
+    os.environ["MUSIC_ROOT"] = str(cfg.MUSIC_ROOT)
 
     yield
 
@@ -104,6 +114,33 @@ def _isolate_data_dir():
     # ignore_errors=True keeps the test exit clean either way.
     import shutil
     shutil.rmtree(tmp_root, ignore_errors=True)
+
+
+@pytest.fixture
+def restore_config():
+    """For tests that ``importlib.reload(cfg)`` under patched env vars: reload it
+    once more after the test so the recomputed module globals don't leak into the
+    rest of the session. Request it BEFORE ``monkeypatch`` in the test signature
+    so its teardown runs LAST — after monkeypatch has restored the env — and the
+    reload recomputes against the session's (temp-dir) values, not the test's."""
+    yield
+    import importlib
+
+    from qobuz_librarian import config
+    importlib.reload(config)
+
+
+@pytest.fixture(autouse=True)
+def _clean_job_registry():
+    """Clear any jobs a test left in the shared registry singleton so they don't
+    leak into the next test — the registry is module-level and shared across the
+    whole session, so a job one test adds (and doesn't remove) otherwise shows up
+    in another test's registry scans / _get_reviewable_job lookups."""
+    yield
+    from qobuz_librarian.web import jobs as job_mgr
+    with job_mgr.registry._lock:
+        job_mgr.registry._jobs.clear()
+        job_mgr.registry._order.clear()
 
 
 @pytest.fixture(autouse=True)

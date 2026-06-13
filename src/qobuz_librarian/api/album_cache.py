@@ -56,6 +56,38 @@ def _discard_corrupt_db() -> bool:
     return cleared
 
 
+def _handle_db_error(e: sqlite3.Error) -> None:
+    """Recover from a corrupt-db error surfaced by a read/write.
+
+    SQLite data-page corruption (common after an unclean NAS/container power
+    off, the deployment this app targets) often passes connect + 'CREATE TABLE
+    IF NOT EXISTS' and only surfaces as 'database disk image is malformed' on a
+    later row access — which _ensure() never re-checks. Left alone the cache is
+    then permanently dead: every get/put raises, is swallowed, and every scan
+    refetches from Qobuz. So drop this thread's now-suspect connection and, when
+    the error is corruption, discard the malformed file and force the next
+    _ensure() to rebuild it.
+    """
+    global _initialized
+    conn = getattr(_local, "conn", None)
+    if conn is not None:
+        try:
+            conn.close()
+        except sqlite3.Error:
+            pass
+        _local.conn = None
+    if not _is_corrupt_error(e):
+        return
+    with _init_lock:
+        # First thread to notice clears the file and resets the init flag; a
+        # concurrent rebuild (which re-sets _initialized) isn't torn down.
+        if _initialized and _discard_corrupt_db():
+            _initialized = False
+            import logging
+            logging.getLogger("qobuz_librarian").info(
+                "album cache was corrupt — discarded; it rebuilds on next scan")
+
+
 def _ensure() -> bool:
     """Create the tables once. Returns False if the cache can't be used."""
     global _initialized
@@ -125,6 +157,7 @@ def get(album_id) -> dict | None:
             "SELECT payload FROM albums WHERE id = ?", (str(album_id),)).fetchone()
     except sqlite3.Error as e:
         vlog(f"album cache read failed: {e}")
+        _handle_db_error(e)
         return None
     if not row:
         return None
@@ -171,6 +204,7 @@ def put(album_id, payload) -> None:
         conn.commit()
     except sqlite3.Error as e:
         vlog(f"album cache write failed: {e}")
+        _handle_db_error(e)
         return
     _puts_since_trim += 1
     if _puts_since_trim >= _TRIM_EVERY:
@@ -191,6 +225,7 @@ def get_catalog(key, ttl_seconds) -> dict | None:
             (str(key),)).fetchone()
     except sqlite3.Error as e:
         vlog(f"catalog cache read failed: {e}")
+        _handle_db_error(e)
         return None
     if not row or (time.time() - (row[1] or 0)) > ttl_seconds:
         return None
@@ -215,6 +250,7 @@ def put_catalog(key, payload) -> None:
         conn.commit()
     except sqlite3.Error as e:
         vlog(f"catalog cache write failed: {e}")
+        _handle_db_error(e)
 
 
 def _reset_for_tests() -> None:

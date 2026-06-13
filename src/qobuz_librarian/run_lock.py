@@ -27,12 +27,32 @@ class LockBusy(Exception):
         self.pid = pid
 
 
+def _warn_lockless(detail: str) -> None:
+    """Loudly flag that the run is proceeding without the single-instance lock.
+
+    Returning None from acquire() used to be silent, so a CLI run on an
+    unwritable/lockless DATA_DIR could race the web worker into /staging with
+    no signal at all. This is a real corruption risk, so warn at WARNING level
+    (always shown), not the verbose-only vlog the PID-write path uses.
+    """
+    import logging
+
+    from qobuz_librarian.ui_cli.colors import C, fmt
+    logging.getLogger("qobuz_librarian").warning(fmt(
+        C.YELLOW,
+        f"  ⚠  {detail}; running WITHOUT the single-instance lock. Don't start "
+        "a second download/CLI run at the same time — two writers into staging "
+        "can corrupt both downloads."))
+
+
 def acquire() -> Optional[TextIO]:
     """Acquire the run lock and return the file handle.
 
     Caller must keep a reference to the returned handle for the lock to
-    hold; closing/garbage-collecting it releases the lock. Returns None
-    if the lock file can't be opened (best-effort, never blocks the run).
+    hold; closing/garbage-collecting it releases the lock. Returns None if the
+    lock file can't be opened or this filesystem doesn't support flock
+    (best-effort, never blocks the run) — but logs a loud warning in that case
+    because the single-instance guarantee is then gone.
 
     Raises LockBusy if another process already holds the lock.
     """
@@ -42,7 +62,8 @@ def acquire() -> Optional[TextIO]:
         # the lock — "w" would truncate the file before flock could even
         # check, wiping the previous holder's PID.
         fp = open(cfg.LOCK_FILE, "a+", encoding="utf-8")
-    except OSError:
+    except OSError as e:
+        _warn_lockless(f"couldn't open run-lock at {cfg.LOCK_FILE} ({e})")
         return None
     try:
         fcntl.flock(fp.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -54,6 +75,13 @@ def acquire() -> Optional[TextIO]:
             other = "?"
         fp.close()
         raise LockBusy(other)
+    except OSError as e:
+        # ENOLCK / EOPNOTSUPP etc.: flock isn't supported on this mount (some
+        # CIFS/NFS configs). Degrade instead of crashing the web startup / CLI
+        # with a raw traceback, but warn — the lock can't be enforced here.
+        fp.close()
+        _warn_lockless(f"run-lock not enforceable on {cfg.LOCK_FILE} ({e})")
+        return None
     try:
         fp.seek(0)
         fp.truncate()

@@ -52,6 +52,11 @@ services:
       STAGING_DIR:          /staging
       DATA_DIR:             /data
       UPGRADE_BACKUP_DIR:   /upgrade_backups
+      # One-time Migrate tool: source library + destination folder as seen
+      # INSIDE the container. Mount both as volumes below, then set the matching
+      # container paths in .env. Leave unset unless you're migrating.
+      QL_MIGRATE_SRC:       "${QL_MIGRATE_SRC:-}"
+      QL_MIGRATE_DEST:      "${QL_MIGRATE_DEST:-}"
 
       # beets (bundled — no separate container needed)
       BEETS_CONFIG_DIR:     /config/beets
@@ -79,6 +84,14 @@ services:
       # "none" turns the login off entirely — only safe on a trusted network or
       # behind your own authenticating reverse proxy.
       WEB_AUTH: "${WEB_AUTH:-}"
+      # Optionally seed the login from .env instead of the first-visit setup
+      # screen — provide BOTH (they also act as a password reset on restart).
+      # Empty = use the setup screen. An env value is visible to `docker inspect`.
+      WEB_AUTH_USER:     "${WEB_AUTH_USER:-}"
+      WEB_AUTH_PASSWORD: "${WEB_AUTH_PASSWORD:-}"
+      # Behind a reverse proxy, set this to the proxy's IP(s) so the failed-login
+      # throttle keys on the real client IP instead of the shared proxy address.
+      FORWARDED_ALLOW_IPS: "${FORWARDED_ALLOW_IPS:-127.0.0.1}"
       # Refuse downloads/scans at startup if /music or /staging aren't writable
       # by the container user (typical on a NAS with the wrong PUID/PGID).
       QL_CHECK_VOLUMES: "1"
@@ -107,7 +120,7 @@ services:
       # streamrip quality: 1=320k, 2=CD/16-bit lossless, 3=24-bit ≤96kHz,
       # 4=24-bit ≤192kHz. Default 4 = the highest quality Qobuz has per release.
       # Set "2" for CD lossless if you'd rather have smaller files.
-      STREAMRIP_QUALITY: "4"
+      STREAMRIP_QUALITY: "${STREAMRIP_QUALITY:-4}"
 
       # ── Lyrics ────────────────────────────────────────────────────────────
       # Synced lyrics are fetched on every import by default. Set "false" to
@@ -119,38 +132,43 @@ services:
 
       # ── Behaviour (also editable on the Settings page) ────────────────────
       # Pick the hi-res master when an album has multiple versions.
-      PREFER_HIRES: "true"
+      PREFER_HIRES: "${PREFER_HIRES:-true}"
       # After import, merge sibling/duplicate album folders. CLI-only and
       # prompts per folder; off by default (it moves folders). Set "true"
       # if you want it offered on CLI runs.
-      CONSOLIDATE: "false"
+      CONSOLIDATE: "${CONSOLIDATE:-false}"
       # Move "Primary, Other/<album>" into "Primary/<album>" after import.
-      MIGRATE_MULTI_ARTIST: "false"
+      MIGRATE_MULTI_ARTIST: "${MIGRATE_MULTI_ARTIST:-false}"
+      # Cover art placement: sidecar (image beside tracks) | embed | both.
+      ARTWORK: "${ARTWORK:-sidecar}"
 
       # ── New releases ──────────────────────────────────────────────────────
       # First launch auto-runs a library scan — it lists your missing albums
       # AND establishes the new-release baseline (resuming if interrupted).
       # "false" skips the automatic scan; a manual library scan still seeds it.
-      AUTO_LIBRARY_SCAN: "true"
+      AUTO_LIBRARY_SCAN: "${AUTO_LIBRARY_SCAN:-true}"
       # Auto-check for new releases by your library's artists this often
       # (seconds), surfaced on the dashboard once the baseline's set. 0 = off.
       # Also tunable on the Settings page.
-      NEW_RELEASE_CHECK_INTERVAL: "86400"
+      NEW_RELEASE_CHECK_INTERVAL: "${NEW_RELEASE_CHECK_INTERVAL:-86400}"
       # How long (seconds) a gap scan reuses a fetched discography before
       # re-fetching. The new-release check always fetches fresh regardless.
-      ARTIST_CATALOG_CACHE_TTL: "604800"
+      ARTIST_CATALOG_CACHE_TTL: "${ARTIST_CATALOG_CACHE_TTL:-604800}"
 
       # ── Optional features (off by default) ────────────────────────────────
       # Offer quality upgrades during ordinary gap-fill walks. The explicit
       # Upgrade walk works regardless of this; this only affects normal walks.
-      AUTO_UPGRADE_ENABLED: "false"
-      UPGRADE_BACKUP_RETENTION_DAYS: "7"
+      AUTO_UPGRADE_ENABLED: "${AUTO_UPGRADE_ENABLED:-false}"
+      UPGRADE_BACKUP_RETENTION_DAYS: "${UPGRADE_BACKUP_RETENTION_DAYS:-7}"
+      # Let the Upgrade walk also re-rip tracks grabbed as singles (off = leave
+      # deliberate one-off singles alone).
+      UPGRADE_SINGLES_ENABLED: "${UPGRADE_SINGLES_ENABLED:-false}"
       # How long (days) to remember that Qobuz delivered a partial hi-res for
       # an album before retrying it in the upgrade walk.
       # CAPPED_RETENTION_DAYS: "90"
       # Downsample hi-res FLACs to 44.1/48 kHz before import to save space.
       # Leave false to keep whatever Qobuz delivers (CD quality is fine).
-      DOWNSAMPLE_HIRES_ENABLED: "false"
+      DOWNSAMPLE_HIRES_ENABLED: "${DOWNSAMPLE_HIRES_ENABLED:-false}"
 
       # ── Matching thresholds (advanced; defaults are well-tested) ──────────
       # Similarity score (0–1) for fuzzy directory-name matching.
@@ -161,6 +179,23 @@ services:
       # DB_ALBUM_THRESH:            "0.85"
       # CONSOLIDATE_THRESH:         "0.70"
       # AUTO_SAFE_TITLE_SIM_THRESH: "0.85"
+
+      # ── Advanced overrides (defaults match the app; change via .env) ──────
+      # beets import guard: seconds of no-output before a stalled import is
+      # killed and quarantined, retry count, and pause between attempts.
+      BEETS_TIMEOUT:         "${BEETS_TIMEOUT:-600}"
+      BEETS_MAX_ATTEMPTS:    "${BEETS_MAX_ATTEMPTS:-2}"
+      BEETS_RETRY_PAUSE:     "${BEETS_RETRY_PAUSE:-30}"
+      # Polite-API cooldown (seconds) after Qobuz rate-limits us.
+      RATE_LIMIT_COOLDOWN:   "${RATE_LIMIT_COOLDOWN:-30}"
+      # Parallel ffmpeg workers for the on-demand downsample (CPU-bound).
+      RESAMPLE_WORKERS:      "${RESAMPLE_WORKERS:-4}"
+      # Log verbosity: DEBUG | INFO | WARNING | ERROR.
+      LOG_LEVEL:             "${LOG_LEVEL:-INFO}"
+      # Optional command run after every job (job state as JSON on stdin);
+      # POST_JOB_HOOK_TIMEOUT caps a slow webhook.
+      POST_JOB_HOOK:         "${POST_JOB_HOOK:-}"
+      POST_JOB_HOOK_TIMEOUT: "${POST_JOB_HOOK_TIMEOUT:-10}"
 
       # ── Web request budgets ───────────────────────────────────────────────
       # Per-request timeout (seconds) for the web UI's Qobuz API calls.

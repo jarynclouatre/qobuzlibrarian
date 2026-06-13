@@ -109,9 +109,17 @@ def check_rip():
     try:
         r = subprocess.run(["rip", "--version"], capture_output=True, text=True, timeout=10)
         if r.returncode != 0:
-            die(fmt(C.RED, _missing_tool_hint(
-                "rip", "Try `pipx reinstall streamrip` or install streamrip "
-                "(https://github.com/nathom/streamrip).")), EXIT_CONFIG)
+            # rip is on PATH (no FileNotFoundError) but exited nonzero — it's
+            # installed and broken, not missing. Saying "not in PATH" sends the
+            # user down the wrong path, so report the real exit + stderr.
+            detail = (r.stderr or r.stdout or "").strip()
+            die(fmt(C.RED,
+                f"\n✗  `rip --version` exited {r.returncode} — streamrip is "
+                f"installed but not working"
+                + (f":\n     {detail}" if detail else ".")
+                + "\n   Reinstall it with `pipx reinstall streamrip` "
+                "(https://github.com/nathom/streamrip).\n"),
+                EXIT_CONFIG)
     except FileNotFoundError:
         die(fmt(C.RED, _missing_tool_hint(
             "rip", "Install streamrip first: `pipx install streamrip` "
@@ -366,7 +374,8 @@ def parse_args():
     # (album mode) or --artist it does nothing — reject it instead of
     # accepting it silently. Bare --auto-safe stays valid: the interactive
     # menu's upgrade option reads it.
-    if args.auto_safe and not args.upgrade_walk and (args.query or args.artist):
+    if args.auto_safe and not args.upgrade_walk and (
+            args.query or args.artist or other_run_mode):
         p.error("--auto-safe only applies to --upgrade-walk")
     # An empty --artist (e.g. `--artist "$VAR"` with VAR unset) is falsy, so it
     # would silently fall through to the interactive menu instead of running
@@ -396,24 +405,33 @@ def main():
     args = parse_args()
     set_verbose(args.verbose)
     set_quiet(args.quiet)
-    attach_file_handler(cfg.APP_LOG_FILE, cfg.LOG_LEVEL)
+    # role="cli" → a separate log file so a `docker exec` CLI run sharing the
+    # container with the long-lived web server can't race it on log rollover.
+    attach_file_handler(cfg.APP_LOG_FILE, cfg.LOG_LEVEL, role="cli")
     if args.quiet:
         set_color_enabled(False)
 
     if args.no_color:
         set_color_enabled(False)
 
+    if args.reset_walk_seen and args.dry_run:
+        present = [str(f) for f in (cfg.WALK_SEEN_FILE, cfg.ALBUM_WALK_SEEN_FILE)
+                   if f.exists()]
+        if present:
+            log.info(fmt(C.GRAY, "  --dry-run: would clear walk-seen state:"))
+            for r in present:
+                log.info(fmt(C.GRAY, f"     {r}"))
+        else:
+            log.info(fmt(C.GRAY, "  No walk-seen state to clear."))
+        return
+
+    banner("Qobuz Librarian  —  search · artist · library · repair · upgrade")
+
+    # Single-instance lock first — fail fast before doing any other work.
+    # Hold the file handle for the lifetime of main() so the lock persists.
+    _lockfile = acquire_run_lock()  # noqa: F841
+
     if args.reset_walk_seen:
-        if args.dry_run:
-            present = [str(f) for f in (cfg.WALK_SEEN_FILE, cfg.ALBUM_WALK_SEEN_FILE)
-                       if f.exists()]
-            if present:
-                log.info(fmt(C.GRAY, "  --dry-run: would clear walk-seen state:"))
-                for r in present:
-                    log.info(fmt(C.GRAY, f"     {r}"))
-            else:
-                log.info(fmt(C.GRAY, "  No walk-seen state to clear."))
-            return
         removed = []
         for f in (cfg.WALK_SEEN_FILE, cfg.ALBUM_WALK_SEEN_FILE):
             try:
@@ -433,12 +451,6 @@ def main():
         else:
             log.info(fmt(C.GRAY, "  No walk-seen state to clear."))
         return
-
-    banner("Qobuz Librarian  —  search · artist · library · repair · upgrade")
-
-    # Single-instance lock first — fail fast before doing any other work.
-    # Hold the file handle for the lifetime of main() so the lock persists.
-    _lockfile = acquire_run_lock()  # noqa: F841
 
     # Library migration is local-only: it reorganizes files on disk and never
     # touches Qobuz. Handle it here, before the credential check and the
@@ -705,8 +717,22 @@ def _maybe_drop_privileges():
     if not gosu:
         return
     home = os.environ.get("APP_HOME", "/tmp")
+    # Reconstruct the invocation. Under `python -m <pkg>`, sys.argv[0] is the
+    # module *file* path, which gosu would try to exec directly — it has no
+    # exec bit / shebang, so the re-exec dies and privilege-drop silently fails.
+    # Detect the -m case via __main__.__spec__ and route back through the
+    # interpreter; otherwise argv[0] is the console-script wrapper (executable).
+    import __main__
+    spec = getattr(__main__, "__spec__", None)
+    if spec is not None and getattr(spec, "name", None):
+        mod = spec.name
+        if mod.endswith(".__main__"):
+            mod = mod[: -len(".__main__")]
+        prog = [sys.executable, "-m", mod]
+    else:
+        prog = [sys.argv[0]]
     os.execvp(gosu, [gosu, f"{puid}:{pgid}", "env", f"HOME={home}",
-                     sys.argv[0], *sys.argv[1:]])
+                     *prog, *sys.argv[1:]])
 
 
 def _entry():

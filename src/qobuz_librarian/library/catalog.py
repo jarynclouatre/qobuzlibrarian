@@ -21,6 +21,7 @@ Behaviour you should not change without understanding the consequence:
 """
 import os
 import re
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -176,6 +177,15 @@ def _is_split_album_merge(album_dir, post_dir, qartist):
         return False
     a = normalize(strip_year_decoration(album_dir.name))
     if not a or a != normalize(strip_year_decoration(post_dir.name)):
+        return False
+    # strip_year_decoration also strips a "(Live 2008)"/"(Demos 1992)" marker,
+    # so a distinct live/demo release can normalize equal to the studio album
+    # above. _decoration_year only parses pure-year parens, so its years-differ
+    # guard below misses these. Catch them explicitly: if the un-stripped names
+    # differ only by an album-variant marker, they're different releases.
+    _an, _pn = normalize(album_dir.name), normalize(post_dir.name)
+    if _an != _pn and (differs_by_album_variant(_an, _pn)
+                       or differs_by_album_variant(_pn, _an)):
         return False
     ay, py = _decoration_year(album_dir.name), _decoration_year(post_dir.name)
     if ay and py and ay != py:
@@ -620,14 +630,23 @@ def _best_edition(group, prefer_hires):
     ))
 
 
-def filter_owned_albums(catalog_pairs, owned_bare_titles):
+def filter_owned_albums(catalog_pairs, owned_bare_titles, artist_name=None):
     """Drop catalog entries whose bare title matches something already owned.
 
-    An exact normalized-bare-title match counts as owned regardless of year (a
-    remaster is the same work in a new edition). Falls back to a fuzzy match at
-    CONSOLIDATE_THRESH for edition variants the decoration stripper didn't fully
-    normalize, where a nearby-year guard separates distinct same-named releases.
+    An exact bare-title match normally counts as owned regardless of year — a
+    far-off year is a remaster/reissue of the same work (a 2022 'Revolver' is the
+    1966 one re-released, not a new album). The one exception is a *self-titled*
+    release: when the bare title equals the artist name and the catalog entry is
+    undecorated and its year is far from every owned copy, it's usually a
+    genuinely distinct same-titled album (Weezer's colour records, Peter
+    Gabriel's four 'Peter Gabriel' LPs) rather than a reissue — so it's offered
+    instead of silently hidden. ``artist_name`` enables that exception; without
+    it the year-blind exact-own behaviour is unchanged. Falls back to a fuzzy
+    match at CONSOLIDATE_THRESH for edition variants the decoration stripper
+    didn't fully normalize, with a nearby-year guard separating distinct names.
     """
+    self_titled_key = (normalize(strip_leading_article(artist_name))
+                       if artist_name else None)
     if not owned_bare_titles:
         return list(catalog_pairs)
     missing = []
@@ -637,25 +656,33 @@ def filter_owned_albums(catalog_pairs, owned_bare_titles):
         if not key:
             missing.append((album, n_versions))
             continue
-        if key in owned_bare_titles:
-            # An exact normalized bare-title match is almost always the same
-            # work in a different edition — a remaster carries a far-off year —
-            # so it counts as owned regardless of the year gap. Otherwise owning
-            # a 2011 remaster of a 1973 album leaves the 1973 original offered as
-            # "missing" and re-downloaded as a duplicate. The year window's real
-            # job is the fuzzy path below, separating distinct same-named
-            # releases (sequels, numbered entries) that only resemble each other.
-            continue
-        # Fuzzy fallback for edition variants the stripper didn't fully
-        # normalize. Require the catalog title to be the owned one plus a
-        # suffix (an un-stripped edition tag) AND a nearby year — without those
-        # guards, sequels and numbered entries ('Load'/'Reload', 'Vol 1'/'Vol
-        # 2', 'II'/'III') get silently hidden from the missing list as owned.
         catalog_yr_str = album_year(album)
         try:
             cat_yr = int(catalog_yr_str) if catalog_yr_str else None
         except ValueError:
             cat_yr = None
+        if key in owned_bare_titles:
+            owned_years = owned_bare_titles[key]
+            # Exact bare-title match → owned regardless of year (reissue of the
+            # same work), EXCEPT a self-titled, undecorated, far-from-owned-year
+            # release: those are usually distinct same-titled albums, so let them
+            # fall through and be offered rather than hidden behind a year-blind
+            # own. A decorated edition stays owned even when self-titled (it's an
+            # edition of one we have), and unknown years stay owned (can't tell).
+            is_self_titled = self_titled_key is not None and key == self_titled_key
+            distinct_self_titled = (
+                is_self_titled
+                and not _is_decorated_edition(album)
+                and cat_yr is not None and None not in owned_years
+                and all(oy is None or abs(oy - cat_yr) > 3 for oy in owned_years)
+            )
+            if not distinct_self_titled:
+                continue
+        # Fuzzy fallback for edition variants the stripper didn't fully
+        # normalize. Require the catalog title to be the owned one plus a
+        # suffix (an un-stripped edition tag) AND a nearby year — without those
+        # guards, sequels and numbered entries ('Load'/'Reload', 'Vol 1'/'Vol
+        # 2', 'II'/'III') get silently hidden from the missing list as owned.
         owned_fuzzy = False
         for owned, owned_years in owned_bare_titles.items():
             if not owned or not (key.startswith(owned) or owned.startswith(key)):
@@ -705,7 +732,10 @@ def filter_short_releases(catalog_pairs, min_tracks=None):
 def dedup_album_versions(albums, prefer_hires=False):
     """Collapse multiple editions of the same album into one canonical entry.
 
-    Two albums dedup if their stripped-decoration titles normalize identically.
+    Two albums dedup if their stripped-decoration titles normalize identically
+    AND share the same release year. Different years are kept as separate groups
+    so self-titled albums from different years (Weezer's colour records, Peter
+    Gabriel's four eponymous LPs) are not collapsed into one canonical entry.
     Within a group, picks (see _best_edition):
       - prefer_hires=True:  best resolution at the standard track count
       - prefer_hires=False: the original (untagged) edition
@@ -861,13 +891,17 @@ def cleanup_duplicate_art(album_dir: Path) -> int:
     return removed
 
 
-def _prompt_migration_conflict(src_dir: Path, dest_dir: Path):
+def _prompt_migration_conflict(src_dir: Path, dest_dir: Path, auto_yes=False):
     """Two albums for the same Qobuz release exist — one in the multi-artist
     folder we just imported into, one in the primary-artist folder. Show
     track count + quality side-by-side and ask whether to merge.
 
     Returns True if the user wants to merge (file-by-file move with collision
-    prompts handled in `_merge_album_dirs`); False to leave both folders."""
+    prompts handled in `_merge_album_dirs`); False to leave both folders.
+    ``auto_yes`` (the CLI --yes flag) merges without prompting. Reachable from
+    the headless web executor, where there's no terminal to answer the prompt —
+    so a non-tty stdin leaves both folders for manual review rather than blocking
+    on input() (the merge's per-file prompts would block too)."""
     from qobuz_librarian.library.scanner import read_album_dir as _read_album_dir
     from qobuz_librarian.quality.tiers import format_quality
     from qobuz_librarian.ui_cli.prompts import confirm
@@ -899,9 +933,16 @@ def _prompt_migration_conflict(src_dir: Path, dest_dir: Path):
     log.info(fmt(C.GRAY,
         "     Merge moves missing tracks from [src] → [dst]; on per-file "
         "conflicts you'll be asked to keep src or dst."))
+    if not auto_yes and not sys.stdin.isatty():
+        # Headless (web executor / piped): can't safely prompt. Leave both
+        # folders for manual review instead of blocking on input().
+        log.info(fmt(C.GRAY,
+            "     No interactive terminal — leaving both folders for manual "
+            "review (re-run from a terminal or with --yes to merge)."))
+        return False
     return confirm(
         "  Merge [src] into [dst]?",
-        default_yes=True, auto_yes=False)
+        default_yes=True, auto_yes=auto_yes)
 
 
 # Beyond this many nested subdirs we stop merging. A real "Disc N" or
@@ -978,17 +1019,25 @@ def _merge_album_dirs(src: Path, dst: Path, _depth: int = 0) -> bool:
         log.info(fmt(C.WHITE, f"     conflict: {item.name}"))
         log.info(fmt(C.GRAY,
             f"       src: {format_size(src_sz)}   dst: {format_size(dst_sz)}"))
-        if confirm("       Replace dst with src?",
-                   default_yes=False, auto_yes=False):
+        # Always keep-both unless a human at a terminal says otherwise: this
+        # collision can be two different masters, and --yes / the headless web
+        # executor must never silently replace one with the other. isatty gates
+        # the prompt so a non-tty worker takes the safe default without blocking
+        # on input().
+        if sys.stdin.isatty() and confirm(
+                "       Replace dst with src? (No keeps both)",
+                default_yes=False, auto_yes=False):
             try:
                 item.replace(target)
             except OSError as e:
                 log.info(fmt(C.YELLOW, f"       failed: {e}"))
         else:
-            try:
-                item.unlink()
-            except OSError as e:
-                log.info(fmt(C.YELLOW, f"       couldn't drop src: {e}"))
+            # Keep both — do NOT delete src. A same-named collision here can be
+            # two different masters, and the prompt never warned a file would be
+            # removed either way. Leaving src means its folder just isn't emptied
+            # (and so isn't auto-removed); the user can clean it up deliberately.
+            log.info(fmt(C.GRAY,
+                f"       kept both — left {item.name} in {item.parent.name}/"))
     return True
 
 
@@ -1032,6 +1081,20 @@ def _sync_beets_db_after_move(old_dir: Path, new_dir: Path) -> None:
                 "WHERE SUBSTR(path, 1, ?) = ?",
                 (new_prefix, len(old_prefix) + 1, len(old_prefix), old_prefix),
             )
+            # albums.artpath uses the same MUSIC_ROOT-relative BLOB convention
+            # and the cover moves with the folder, so repoint it too — otherwise
+            # albums.artpath dangles at the pre-move folder. Best-effort and
+            # isolated: a DB shape without the albums table/column must not roll
+            # back the items update above.
+            try:
+                conn.execute(
+                    "UPDATE albums SET artpath = "
+                    "CAST(? || SUBSTR(artpath, ?) AS BLOB) "
+                    "WHERE artpath IS NOT NULL AND SUBSTR(artpath, 1, ?) = ?",
+                    (new_prefix, len(old_prefix) + 1, len(old_prefix), old_prefix),
+                )
+            except sqlite3.Error:
+                pass
             conn.commit()
     except (sqlite3.Error, OSError, ValueError) as e:
         log.info(fmt(C.YELLOW,
@@ -1185,15 +1248,19 @@ def prompt_and_migrate_multi_artist_folder(album, args):
 
     # Only migrate when the parent is 'qartist, other' (comma-space form).
     # Other separators (' & ', ' and ') frequently appear inside real band
-    # names so we don't auto-migrate those.
-    if not _is_migration_candidate(cur_parent.name, qartist):
+    # names so we don't auto-migrate those. Match against the FULL Qobuz name
+    # (qartist_raw), not the primary: a single artist whose own name contains a
+    # comma ("Tyler, The Creator"; "Earth, Wind & Fire") would otherwise look
+    # like "<primary>, other" and get wrongly migrated into a lead-word folder.
+    if not _is_migration_candidate(cur_parent.name, qartist_raw):
         return cur
 
     new_parent = config.MUSIC_ROOT / primary
     new_dir = new_parent / cur.name
 
     if new_dir.exists():
-        if not _prompt_migration_conflict(cur, new_dir):
+        if not _prompt_migration_conflict(
+                cur, new_dir, auto_yes=getattr(args, "yes", False)):
             return cur
         # User chose to merge: handle file-by-file, prompting on collisions.
         ok = _merge_album_dirs(cur, new_dir)
@@ -1221,13 +1288,24 @@ def prompt_and_migrate_multi_artist_folder(album, args):
                 for src in leftovers:
                     rel = src.relative_to(cur)
                     dst = new_dir / rel
-                    dst.parent.mkdir(parents=True, exist_ok=True)
-                    if not dst.exists():
-                        _shutil.move(str(src), str(dst))
+                    # Per-file try/except: one un-movable leftover (a permission
+                    # flip, ENOSPC) must not abort the sweep and skip the DB sync
+                    # below — that would leave the album split across both folders
+                    # with the DB still pointing every moved row at the old path.
+                    try:
+                        dst.parent.mkdir(parents=True, exist_ok=True)
+                        if not dst.exists():
+                            _shutil.move(str(src), str(dst))
+                    except OSError as e:
+                        log.info(fmt(C.YELLOW,
+                            f"  ⚠  couldn't sweep {rel} into {new_dir.name}: {e}."))
             maybe_remove_empty_dir(cur)
-        # Sync beets DB BEFORE the cache clear so a concurrent scan can't
-        # see the new layout with the DB still pointing at the old path.
-        _sync_beets_db_after_move(cur, new_dir)
+        # Sync beets DB BEFORE the cache clear so a concurrent scan can't see the
+        # new layout with the DB still pointing at the old path. Use the
+        # merge-aware sync (reconciles only rows whose file ACTUALLY moved), so a
+        # partial sweep that left some files at cur doesn't mis-repoint their
+        # rows to new_dir.
+        _sync_beets_db_after_merge(cur, new_dir)
         log.info(fmt(C.GRAY,
             f"  ⤷  Moved into primary-artist folder: {new_dir.name} "
             f"(parent: {primary})"))
@@ -1249,8 +1327,17 @@ _DIR_YEAR_BARE_RE = re.compile(r"\b(19\d{2}|20\d{2})\b")
 def _dir_year(name):
     """The release year embedded in an album folder name, or None. Prefers a
     parenthesised '(2013)' over a bare in-title year."""
-    m = _DIR_YEAR_PAREN_RE.search(name) or _DIR_YEAR_BARE_RE.search(name)
-    return int(m.group(1)) if m else None
+    m = _DIR_YEAR_PAREN_RE.search(name)
+    if m:
+        return int(m.group(1))
+    m = _DIR_YEAR_BARE_RE.search(name)
+    if not m:
+        return None
+    # A title that simply IS a 4-digit number ('1989', '2112') is the album
+    # name, not a year decoration — don't read it as a release year.
+    if strip_album_decorations(name).strip() == m.group(1):
+        return None
+    return int(m.group(1))
 
 
 def _year_proximity_bonus(dir_year, album):
@@ -1309,6 +1396,18 @@ def _catalog_candidates_for_dir(album_dir, catalog, artist_name, prefer_hires=Fa
         s1 = similarity(r_bare, bare)
         s2 = similarity(r_bare, bare_softened) if bare_softened and bare_softened != bare else 0.0
         score = max(s1, s2)
+        # Coverage + variant guards, mirroring find_album_dir_filesystem: a
+        # 0.65-similar prefix match ('The North Borders' vs '… Tour — Live')
+        # would otherwise pull a live/tour edition onto the studio-album dir.
+        norm_r = normalize(r_bare)
+        norm_b = normalize(bare)
+        if norm_r and norm_b:
+            coverage = min(len(norm_r), len(norm_b)) / max(len(norm_r), len(norm_b))
+            if coverage < config.FUZZY_DIR_MIN_COVERAGE:
+                continue
+            shorter_n, longer_n = sorted((norm_r, norm_b), key=len)
+            if differs_by_album_variant(shorter_n, longer_n):
+                continue
         candidates.append((score, _year_proximity_bonus(dir_year, r), r))
 
     if not candidates:
@@ -1523,7 +1622,7 @@ def find_qobuz_album_for_dir(album_dir: Path, artist_name: str, token,
         return None
 
 
-def find_expanded_edition(album, album_dir, existing, token, args):
+def find_expanded_edition(album, album_dir, existing, token, _args=None):
     """When a Qobuz edition produces extras that would block an upgrade, search
     for alternate editions whose track count covers the local library.
 

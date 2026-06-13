@@ -27,17 +27,14 @@ def streamrip_quality_cap():
 def downsample_target_rate(sr_hz):
     """Sample rate (Hz) a file ends up at after the downsample hook runs.
 
-    Mirrors the resample families in scripts/compress.py: the high-rate
-    members of each integer-ratio family collapse to their 44.1/48 kHz base,
-    and rates already at (or below) the base pass through unchanged. Unlike
-    the script's target_rate, this returns the input for the no-change case
-    rather than None, so callers can chain it without a guard.
+    Delegates to the engine's target_rate() so the integer-ratio family table
+    lives in exactly one place — a second copy here could drift and make scan
+    estimates disagree with the actual downsampler. Unlike the engine's version,
+    this returns the input for the no-change case rather than None, so callers
+    can chain it without a guard.
     """
-    if sr_hz in (88200, 176400, 352800):
-        return 44100
-    if sr_hz in (96000, 192000, 384000):
-        return 48000
-    return sr_hz
+    from qobuz_librarian.integrations.downsample_engine import target_rate
+    return target_rate(sr_hz) or sr_hz
 
 
 def format_quality(bits, rate):

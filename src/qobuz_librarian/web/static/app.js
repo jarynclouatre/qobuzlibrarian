@@ -78,7 +78,8 @@
   document.addEventListener("submit", function (evt) {
     var form = evt.target;
     if (!form || !form.matches || !form.matches("form[data-busy-submit]")) return;
-    var b = form.querySelector("button[type=submit]");
+    var b = (evt.submitter && evt.submitter.type === "submit" ? evt.submitter : null)
+          || form.querySelector("button[type=submit]");
     if (!b || b.disabled) return;
     setTimeout(function () {
       b.disabled = true;
@@ -98,21 +99,6 @@
       evt.preventDefault();
       evt.stopPropagation();
     }
-  });
-
-  // Select-all / select-none for a set of checkboxes. data-check is "all" or
-  // "none"; data-check-within is the checkbox selector, scoped to the closest
-  // data-check-closest ancestor when present, else document-wide.
-  document.addEventListener("click", function (evt) {
-    var btn = evt.target.closest && evt.target.closest("[data-check]");
-    if (!btn) return;
-    var on = btn.getAttribute("data-check") === "all";
-    var sel = btn.getAttribute("data-check-within");
-    if (!sel) return;
-    var closest = btn.getAttribute("data-check-closest");
-    var scope = closest ? btn.closest(closest) : document;
-    if (!scope) return;
-    scope.querySelectorAll(sel).forEach(function (c) { c.checked = on; });
   });
 
   // data-reload reloads the page (the lock-busy "Try again" button).
@@ -165,6 +151,37 @@
     if (!dd) return;
     // focusout fires before the new focus settles, so re-check next tick.
     setTimeout(function () { syncDropdownExpanded(dd); }, 0);
+  });
+
+  // iOS Safari doesn't reliably focus a <button> on tap, so the :focus-within
+  // CSS that opens a daisyUI .dropdown never fires and the mobile menu is dead
+  // on iOS. Drive it explicitly with the .dropdown-open modifier on tap; close
+  // on an outside tap or after a menu link is chosen, releasing focus too so the
+  // focus-within CSS agrees with the class.
+  function closeDropdown(dd) {
+    dd.classList.remove("dropdown-open");
+    if (dd.contains(document.activeElement) && document.activeElement.blur) {
+      document.activeElement.blur();
+    }
+    var b = dd.querySelector("[aria-expanded]");
+    if (b) b.setAttribute("aria-expanded", "false");
+  }
+  document.addEventListener("click", function (evt) {
+    var btn = evt.target.closest && evt.target.closest("[aria-haspopup='menu']");
+    var trigger = (btn && btn.closest(".dropdown")) ? btn : null;
+    var triggerDd = trigger ? trigger.closest(".dropdown") : null;
+    // Close any open dropdown that isn't the one being toggled (outside tap, a
+    // chosen menu link, or switching dropdowns).
+    document.querySelectorAll(".dropdown.dropdown-open").forEach(function (o) {
+      if (o !== triggerDd) closeDropdown(o);
+    });
+    if (!triggerDd) return;
+    if (triggerDd.classList.contains("dropdown-open")) {
+      closeDropdown(triggerDd);
+    } else {
+      triggerDd.classList.add("dropdown-open");
+      trigger.setAttribute("aria-expanded", "true");
+    }
   });
 
   // Flash banners. Every server-rendered alert driven by a one-shot query flag
@@ -256,12 +273,13 @@
     src.addEventListener("done", function () {
       shut();
       if (surface === "dashboard") {
-        // Don't yank the user mid-search — if search results are showing, just
-        // drop this card and leave the rest alone.
+        // Don't yank the user mid-search — if search results are showing, drop
+        // just THIS finished card. Hiding the whole #dashboard-active container
+        // (its previous behaviour) would blank every other still-running job's
+        // progress card too.
         var results = document.getElementById("search-results");
         if (results && results.children.length) {
-          var wrap = document.getElementById("dashboard-active");
-          if (wrap) wrap.classList.add("hidden");
+          card.remove();
           return;
         }
         if (window.htmx) {
@@ -318,11 +336,26 @@
         : "";
     }
     var src = new EventSource("/api/jobs/" + id + "/stream");
+    var opened = false;
     src.onmessage = function (e) {
       if (!titleSet) { document.title = "▶ " + baseTitle; titleSet = true; }
       if (logEl) { logEl.appendChild(document.createTextNode(e.data + "\n")); logEl.scrollTop = logEl.scrollHeight; }
     };
-    src.onopen = function () { if (reconnect) reconnect.classList.add("hidden"); };
+    src.onopen = function () {
+      if (reconnect) reconnect.classList.add("hidden");
+      // On a RECONNECT the server replays the last N log lines; without clearing
+      // they'd be appended a second time, duplicating a block of the log. Reset
+      // the pane so the replay repopulates it instead of doubling it. Not on the
+      // first open — there's nothing to duplicate yet.
+      if (opened) {
+        if (logEl) logEl.textContent = "";
+        // Reset the hit counters so replayed progress events repopulate them
+        // from scratch rather than doubling the tally.
+        foundAlbums = 0;
+        foundArtists = 0;
+      }
+      opened = true;
+    };
     src.onerror = function () {
       if (reconnect && src.readyState !== EventSource.CLOSED) reconnect.classList.remove("hidden");
     };
@@ -415,11 +448,21 @@
 
     // Save one tick to the server, then refresh counts from its response.
     function saveTick(cb) {
+      // Approval acts on the server-saved flags, so a silently-dropped tick
+      // would leave the box showing an intent the server never got (an unwanted
+      // track still gets downloaded/downsampled). Roll the box back and flash it
+      // red on any failure (network error OR a non-OK response).
+      var previous = !cb.checked;
+      function revert() {
+        cb.checked = previous;
+        cb.style.outline = "2px solid #ef4444";
+        setTimeout(function () { cb.style.outline = ""; }, 1500);
+      }
       var body = "cid=" + encodeURIComponent(cb.value) + "&checked=" + (cb.checked ? "1" : "0");
       post("/jobs/" + id + "/select", body)
-        .then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (r) { return r.ok ? r.json() : Promise.reject(); })
         .then(function (c) { if (c) applyCounts(c); updateHideLabels(); })
-        .catch(function () { /* a dropped tick just isn't saved; the box reflects intent until retried */ });
+        .catch(revert);
     }
 
     function bulkSelect(on, scope) {
@@ -448,9 +491,15 @@
       cbs.forEach(function (cb) {
         if (cb.checked !== on) {
           cb.checked = on;
-          chain = post("/jobs/" + id + "/select",
-            "cid=" + encodeURIComponent(cb.value) + "&checked=" + (on ? "1" : "0"))
-            .then(function (r) { return r.ok ? r.json() : null; });
+          // Capture cb.value in the closure; chain each POST sequentially so
+          // the final .then() always receives the last-completed response.
+          chain = (function (val, prev) {
+            return prev.then(function () {
+              return post("/jobs/" + id + "/select",
+                "cid=" + encodeURIComponent(val) + "&checked=" + (on ? "1" : "0"))
+                .then(function (r) { return r.ok ? r.json() : null; });
+            });
+          }(cb.value, chain));
         }
       });
       chain.then(function (c) { if (c) applyCounts(c); updateHideLabels(); });
@@ -486,7 +535,16 @@
           if (txt == null) return;
           var host = document.getElementById("review-page");
           if (host) {
+            // Preserve which artist groups the user has expanded so a
+            // cross-tab sync tick doesn't silently collapse them all.
+            var openArtists = {};
+            host.querySelectorAll("details[data-artist][open]").forEach(function (d) {
+              if (d.dataset.artist) openArtists[d.dataset.artist] = true;
+            });
             host.innerHTML = txt;
+            host.querySelectorAll("details[data-artist]").forEach(function (d) {
+              if (d.dataset.artist && openArtists[d.dataset.artist]) d.open = true;
+            });
             if (window.htmx) window.htmx.process(host);
             updateHideLabels();
           }
@@ -523,11 +581,19 @@
         if (filterTimer) clearTimeout(filterTimer);
         filterTimer = setTimeout(function () { loadPage(1, curQuery()); }, 250);
       });
+      // Enter in the filter box must NOT submit the review form. The form's
+      // first submit button is Approve — an irreversible download/downsample —
+      // or, when nothing is ticked, Cancel, which discards the whole scan.
+      // Filtering then pressing Enter is a natural gesture, so swallow it; the
+      // filter already applies live as you type.
+      filterInput.addEventListener("keydown", function (e) {
+        if (e.key === "Enter") e.preventDefault();
+      });
     }
 
     // A hide returns the affected group (or empty) and an HX-Trigger carrying
     // fresh counts; refresh counts and, if a page emptied, reload it.
-    document.body.addEventListener("qlHidden", function (e) {
+    function onQlHidden(e) {
       var d = e.detail || {};
       if (d.counts) applyCounts(d.counts);
       var box = pageBox();
@@ -537,7 +603,8 @@
       } else {
         updateHideLabels();
       }
-    });
+    }
+    document.body.addEventListener("qlHidden", onQlHidden);
 
     updateHideLabels();
 
@@ -546,6 +613,17 @@
     //    server so every open view stays in step. When the job leaves review
     //    (someone approved/cancelled it elsewhere), reload to the new state. ──
     var rsrc = new EventSource("/api/jobs/" + id + "/review-stream");
+    // Tear down both the EventSource and the body listener when #job-content
+    // is swapped out, so a subsequent wireReview call starts clean.
+    function shutReview() {
+      try { rsrc.close(); } catch (e) {}
+      document.body.removeEventListener("qlHidden", onQlHidden);
+      document.removeEventListener("htmx:beforeSwap", onReviewSwap);
+    }
+    function onReviewSwap(e) {
+      if (e.detail && e.detail.target && e.detail.target.id === "job-content") shutReview();
+    }
+    document.addEventListener("htmx:beforeSwap", onReviewSwap);
     rsrc.addEventListener("review", function () {
       // Re-fetch the current page (picks up others' ticks/hides) and the counts.
       loadPage(curPage(), curQuery());
@@ -554,7 +632,7 @@
         .then(function (c) { if (c) applyCounts(c); });
     });
     rsrc.addEventListener("closed", function (e) {
-      rsrc.close();
+      shutReview();
       // "inactive" = this job isn't live in the registry (a restored/archived
       // review): it still works, just without cross-tab sync — don't reload, or
       // we'd loop. Any other reason means the job left review elsewhere, so

@@ -374,6 +374,44 @@ def test_new_releases_surface_only_what_appeared_since_the_baseline(
     assert caught_up.new_gaps == []
 
 
+def test_new_release_check_treats_a_short_page_as_a_failed_fetch(monkeypatch, tmp_path):
+    # A transient partial 200 (Qobuz reports total=3 but hands back 1 album, and
+    # we didn't hit our own limit) must NOT be recorded as the baseline — else
+    # the 2 dropped albums re-surface as "new" (pre-ticked) next check. The
+    # check flags fetch_failed and PRESERVES the prior baseline.
+    a1 = _album(101, "One", "Billie Eilish", 2016, [_qt("o0", "ISRCO0")])
+    _library(monkeypatch, tmp_path, {"Billie Eilish": {}})
+    FakeQobuz(artists=[{"name": "Billie Eilish", "id": 2867335}],
+              catalog=[a1], total=3).install(monkeypatch)   # total 3 > 1 fetched
+    monkeypatch.setattr(discovery, "_resolve_cache", {})
+    opts = DiscoveryOpts(prefer_hires=True)
+    prior = ["101", "202", "303"]
+    res = find_new_releases_for_artist(
+        "Billie Eilish", token="tok", opts=opts,
+        seen_by_id={"2867335": prior}, artist_dir=tmp_path / "Billie Eilish")
+    assert res.fetch_failed is True
+    assert res.new_gaps == []
+    assert res.current_ids == prior                  # prior baseline preserved
+
+
+def test_new_release_check_records_baseline_for_a_legitimate_cap(monkeypatch, tmp_path):
+    # A capped fetch (got exactly our limit, fewer than Qobuz's total) is NOT a
+    # short-page failure — it's the documented cap, so the baseline is still
+    # recorded (don't treat every artist with >limit albums as a failed fetch).
+    monkeypatch.setattr(cfg, "ARTIST_CATALOG_LIMIT", 2)
+    a1 = _album(101, "One", "X", 2016, [_qt("o0", "ISRCO0")])
+    a2 = _album(102, "Two", "X", 2017, [_qt("t0", "ISRCT0")])
+    _library(monkeypatch, tmp_path, {"X": {}})
+    FakeQobuz(artists=[{"name": "X", "id": 9}],
+              catalog=[a1, a2], total=9).install(monkeypatch)
+    monkeypatch.setattr(discovery, "_resolve_cache", {})
+    res = find_new_releases_for_artist(
+        "X", token="tok", opts=DiscoveryOpts(prefer_hires=True),
+        seen_by_id=None, artist_dir=tmp_path / "X")
+    assert res.fetch_failed is False
+    assert set(res.current_ids) == {"101", "102"}    # capped baseline still recorded
+
+
 def test_resolution_uses_deepest_catalog_over_bare_name_twin(monkeypatch, tmp_path):
     # D6: the engine inherits the article-stripping, deepest-catalog resolver,
     # so 'beatles' resolves to the real 'The Beatles', not the bare-name twin.

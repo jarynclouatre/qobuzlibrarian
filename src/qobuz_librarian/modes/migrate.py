@@ -41,7 +41,8 @@ def _resolve_paths(args):
         return None, None
 
     src, dest = Path(src), Path(dest)
-    err = engine.validate_paths(src, dest)
+    in_place = bool(getattr(args, "in_place", False))
+    err = engine.validate_paths(src, dest, in_place=in_place)
     if err:
         log.info(fmt(C.RED, f"  ✗  {err}"))
         return None, None
@@ -162,9 +163,15 @@ def run_migrate_mode(args):
 
     result = engine.execute_plan(plan, in_place=in_place, progress=progress)
 
-    results_manifest = dest / "migration-results.csv"
+    # Timestamped so a second run (or a resume after a partial run) doesn't
+    # overwrite the only source→destination record of the first run's moves —
+    # in-place mode already deleted the sources, so that mapping is otherwise
+    # unrecoverable.
+    from datetime import datetime
+    results_manifest = dest / f"migration-results-{datetime.now():%Y%m%d-%H%M%S}.csv"
     try:
         engine.write_results_manifest(result, results_manifest)
+        log.info(fmt(C.GRAY, f"  · Results manifest: {results_manifest}"))
     except OSError as e:
         log.info(fmt(C.YELLOW, f"  ⚠  Couldn't write the results manifest ({e})."))
 

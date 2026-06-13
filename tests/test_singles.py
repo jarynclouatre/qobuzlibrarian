@@ -117,3 +117,51 @@ def test_is_single_helper_tolerates_none_album(store_file):
     store = hidden.load()
     assert _is_single(store, "X", None) is False
     assert _is_single(None, "X", _album("A")) is False
+
+
+# ── failure seams ──────────────────────────────────────────────────────────────
+
+def test_discover_fully_missing_skips_single_catalog_album(store_file):
+    """discover_fully_missing must not re-offer a catalog album the user
+    deliberately grabbed as a single — even when no owned folder exists."""
+    from qobuz_librarian.library.discovery import DiscoveryOpts, discover_fully_missing
+
+    hidden.mark_single("Allie X", "Girl With No Face", "2024", "555")
+    store = hidden.load()
+
+    # Minimal catalog entry that passes is_lossless_album and filter_short_releases
+    catalog = [{
+        "id": "555",
+        "title": "Girl With No Face",
+        "artist": {"name": "Allie X"},
+        "maximum_bit_depth": 16,
+        "tracks_count": 12,
+        "release_date_original": "2024-01-01",
+    }]
+    gaps = discover_fully_missing(
+        "Allie X", catalog, DiscoveryOpts(),
+        single_store=store,
+    )
+    assert gaps == [], "single-marked album must be suppressed from the catalog walk"
+
+
+def test_mark_single_matches_remaster_title_via_fingerprint(store_file):
+    """album_fingerprint calls strip_album_decorations, so marking the remaster
+    edition ties to the same fingerprint as the bare title — an is_single check
+    on either spelling returns True."""
+    hidden.mark_single("Allie X", "Girl With No Face (2024 Remaster)", "2024", "555")
+    store = hidden.load()
+    # bare title resolves to same fingerprint
+    assert hidden.is_single("Allie X", "Girl With No Face", store) is True
+    # original decorated form also matches
+    assert hidden.is_single("Allie X", "Girl With No Face (2024 Remaster)", store) is True
+
+
+def test_mark_and_unmark_single_with_empty_title_returns_false(store_file):
+    """album_fingerprint returns None for empty/non-normalizable input;
+    mark_single and unmark_single must return False rather than raise."""
+    assert hidden.mark_single("", "", "2020", "1") is False
+    assert hidden.mark_single("Artist", "", "2020", "1") is False
+    assert hidden.unmark_single("", "") is False
+    # store untouched
+    assert hidden.load()[hidden.SCOPE_SINGLE] == {}

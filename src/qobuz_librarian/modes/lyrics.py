@@ -70,7 +70,8 @@ def _report_summary(res, *, dry_run):
                     + res.get("kept-existing-plain", 0))
     not_found    = res.get("not-found", 0)
     unavailable  = res.get("providers-unavailable", 0)
-    errors       = res.get("write-error", 0) + res.get("exception", 0)
+    errors       = (res.get("write-error", 0) + res.get("exception", 0)
+                    + res.get("error", 0))
 
     print()
     log.info(fmt(C.GREEN, "  ✓  Lyrics pass complete."))

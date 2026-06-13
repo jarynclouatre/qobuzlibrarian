@@ -224,11 +224,20 @@ def _relocate_refilled_into_album_dir(album_dir, landed_dir, wanted_isrcs,
             continue
         if _norm_isrc(et.get("isrc")) not in wanted_isrcs:
             continue
-        dst = album_dir / Path(src).name
+        # Preserve the refill's path relative to landed_dir (e.g. "CD 2/track")
+        # instead of flattening to album_dir/track — a multi-disc album keeps its
+        # per-disc structure, matching backup_gap_fill_files/restore_gap_fill_
+        # backup, and a disc-2 track can't collide with a disc-1 track of the
+        # same filename at the album root.
+        try:
+            rel = Path(src).relative_to(landed_dir)
+        except ValueError:
+            rel = Path(Path(src).name)
+        dst = album_dir / rel
         if dst.exists():
             continue
         try:
-            album_dir.mkdir(parents=True, exist_ok=True)
+            dst.parent.mkdir(parents=True, exist_ok=True)
             shutil.move(src, str(dst))
         except OSError as e:
             log.info(fmt(C.YELLOW,
@@ -276,14 +285,22 @@ def _refills_intact(album_dir, wanted_isrcs, token):
     AuthLost / QobuzUnavailable propagate so a transient outage can't read as
     "still truncated"."""
     try:
-        scan = scan_dir_for_isrc_repairs(album_dir, token, deep=True)
+        scan = scan_dir_for_isrc_repairs(
+            album_dir, token, deep=True, only_isrcs=wanted_isrcs)
     except (AuthLost, QobuzUnavailable):
         raise
     except Exception:
         return False
-    still_truncated = {_norm_isrc(b.get("isrc"))
-                       for b in scan["verified_truncated"]}
-    return wanted_isrcs.isdisjoint(still_truncated)
+    # Require POSITIVE re-verification: every wanted ISRC must have re-matched a
+    # Qobuz recording AND passed the truncation gate. Checking only "not flagged
+    # truncated" was unsafe — a wanted ISRC whose post-repair lookup transiently
+    # returned nothing (4xx, index lag, strict-equality miss) lands in
+    # isrc_no_match, NOT verified_truncated, so it would read as intact and the
+    # only good-enough original's backup would be deleted while the refill is
+    # still short. An unverified ISRC now keeps the backup (caller's "couldn't
+    # verify → keep" branch).
+    verified_ok = {_norm_isrc(i) for i in scan.get("verified_ok_isrcs", ())}
+    return wanted_isrcs.issubset(verified_ok)
 
 
 def _prompt_library_album_for_repair(args, token):
@@ -501,8 +518,25 @@ def repair_album_dir(album_dir, verified_truncated, artist_name, args, token):
         # presence check alone would let a short re-rip pass, and "no ISRC to
         # verify by" is unproven, not proven.
         back_in_place = download_clean and _refills_present_in(album_dir, wanted_counts)
-        repaired = (back_in_place and bool(wanted_isrcs)
-                    and _refills_intact(album_dir, wanted_isrcs, token))
+        if back_in_place and bool(wanted_isrcs):
+            try:
+                repaired = _refills_intact(album_dir, wanted_isrcs, token)
+            except (AuthLost, QobuzUnavailable):
+                # _refills_intact verifies via Qobuz, so a token loss / outage
+                # here aborts before the backup-resolution block below — leaving
+                # the truncated originals orphaned in the backup dir with no
+                # pointer for the user. Surface the location (same as the
+                # download-phase AuthLost branch) before re-raising.
+                if backup_path and backup_path.exists():
+                    log.info(fmt(C.YELLOW,
+                        f"  ⚠  Couldn't verify the re-downloaded tracks "
+                        f"(auth lost / Qobuz unavailable) — truncated originals "
+                        f"preserved at:\n     {backup_path}\n"
+                        f"     Re-run Repair once Qobuz is reachable, or restore "
+                        f"them by hand."))
+                raise
+        else:
+            repaired = False
 
         # ── Backup resolution ────────────────────────────────────────────
         if backup_path and backup_path.exists():

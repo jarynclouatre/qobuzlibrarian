@@ -182,7 +182,11 @@ def run_album_download(*, album, missing, present, album_dir, snapshot,
                 break
             else:
                 n_fail += 1
-                failed_tracks.append(ttl)
+                # Store the BARE title — the post-download reconcile matches
+                # failed_tracks against on-disk filename stems (bare), so the
+                # display-augmented "Title (Version)" would never match and a
+                # track that actually landed could never be un-failed.
+                failed_tracks.append(t.get("title") or "?")
                 if "KeyError: 'body'" in out:
                     log.info(fmt(C.RED,
                         "    ✗ streamrip KeyError on track endpoint "

@@ -4,6 +4,68 @@ All notable changes to Qobuz Librarian are recorded here, newest first. The
 project follows [semantic versioning](https://semver.org/); dates are when each
 version was tagged during local development.
 
+## [0.6.1] - 2026-06-13
+
+Bugfix release. All seventeen changes are fixes to edge cases found by an
+exhaustive post-release audit — no new features, no changed defaults.
+
+**Backup safety**
+
+- The age sweep now proves each track in an upgrade backup is actually back at
+  its origin path — same relative filename, at least as many bytes — before
+  reaping the backup. File-count matching was fooled when a gap-fill or other
+  operation added a different file to the origin while one of the backup's own
+  tracks was still missing there. Previously that could silently destroy the
+  only surviving copy of the unreturned track.
+- An upgrade backup kept because the re-rip couldn't be verified as complete
+  (e.g. a truncated-but-decodable track shrank the playtime) now gets an
+  explicit keep-marker. A same-count, larger hi-res re-rip could look redundant
+  by bytes alone and be reaped on the next sweep; the marker stops that.
+- The beets import override now always forces `move: yes`. A user beets config
+  with `copy: yes` was silently leaving every newly-downloaded album in staging,
+  which the pipeline's success check read as "import failed" and parked.
+- Retrying parked albums now checks whether the audio actually left disk before
+  removing the parking entry. A beets run that exits 0 while skipping a library
+  duplicate (under `duplicate_action: skip`) used to trigger cleanup on the
+  strength of the exit code alone, deleting the only copy.
+
+**Single-track grab and undo**
+
+- Grabbing the last missing track of an album now clears the "grabbed single"
+  mark an earlier partial grab may have left. Without this the album's artist
+  stayed hidden from bulk scans and the new-release check even after you
+  completed the album.
+- The upgrade walk now keys the "skip grabbed singles" check on the Qobuz
+  artist name, not the folder name. A folder called "Beatles" where Qobuz says
+  "The Beatles" was leaking the grabbed single back into upgrade candidates.
+- The single-track undo now takes the cross-process run lock before deleting
+  any files or touching the beets database.
+- The undo track-match now uses the `tracknumber` field (the one `read_album_dir`
+  actually writes). Also, two tracks with no ISRC and no track number on record
+  can no longer accidentally match each other and delete the wrong file.
+
+**Consolidation and repair**
+
+- Consolidation stops immediately under `--dry-run` — it deletes overlapping
+  tracks, so letting it run was a dry-run violation.
+- Repair stops under `--dry-run` before moving any files aside, for the same
+  reason: repair moves the truncated originals out of the way before re-ripping,
+  so an interrupt could have stranded them.
+- A sibling FLAC whose quality can't be read (broken STREAMINFO or no title tag)
+  now shows as "quality unreadable" and requires the same explicit DELETE
+  confirmation as a track that's clearly better quality. Previously it was
+  silently counted as safe to delete.
+
+**Web and CLI polish**
+
+- The settings page keeps the token you just typed in the (masked) field when
+  Qobuz rejects it, so you can fix a paste slip without re-entering the whole
+  thing.
+- Pasting an album URL into Tracks mode now shows a clear "that's an album URL —
+  switch to Albums" message instead of a silent empty result.
+- An interrupted repair scan now tells you to start the repair scan again (which
+  resumes from the checkpoint), not the library scan.
+
 ## [0.6.0] - 2026-06-09
 
 - **Get one song.** Search has a Tracks mode and a *Get track* button that pulls

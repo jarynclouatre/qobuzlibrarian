@@ -163,6 +163,44 @@ def test_undo_removes_the_grabbed_track_and_clears_the_mark(client, monkeypatch,
         _remove_job(job)
 
 
+def test_undo_keeps_multidisc_album_dir_with_audio_in_disc_subdirs(
+        client, monkeypatch, fresh_singles, tmp_path):
+    # The grab files a track into a beets multi-disc layout ($album/Disc N/...).
+    # Undo removes the grabbed track but must NOT rmtree the whole album when
+    # other tracks still live in 'Disc N/' subdirs — the old shallow .flac check
+    # at the album root saw none and deleted everything.
+    import qobuz_librarian.integrations.beets as beets_mod
+    import qobuz_librarian.library.scanner as scanner_mod
+
+    d = tmp_path / "Artist" / "Box Set (2020)"
+    disc = d / "Disc 1"
+    disc.mkdir(parents=True)
+    grabbed = disc / "03 - Grabbed.flac"
+    keep = disc / "01 - Keep.flac"
+    grabbed.write_bytes(b"flac")
+    keep.write_bytes(b"flac")
+
+    job = jm.Job(title="Grabbed", artist="Artist", album_id="alb9")
+    job.status = jm.JobStatus.DONE
+    job.single = {"album_id": "alb9", "track_id": "trk3", "dir": str(d),
+                  "isrc": "ISRCG", "track_no": 3, "title": "Grabbed",
+                  "artist": "Artist", "album": "Box Set",
+                  "marked": False, "new_folder": True}
+    jm.registry.add(job)
+    monkeypatch.setattr(scanner_mod, "read_album_dir", lambda _d: [
+        {"path": str(grabbed), "isrc": "ISRCG", "track": 3},
+        {"path": str(keep), "isrc": "ISRCK", "track": 1}])
+    monkeypatch.setattr(beets_mod, "forget_beets_entries", lambda paths: len(paths))
+    try:
+        r = client.post(f"/jobs/{job.id}/undo", follow_redirects=False)
+        assert r.status_code in (200, 303)
+        assert not grabbed.exists()      # grabbed track removed
+        assert keep.exists()             # the other disc track survives
+        assert d.is_dir()                # album NOT rmtree'd
+    finally:
+        _remove_job(job)
+
+
 def test_completing_the_album_normally_graduates_the_single(client, monkeypatch, fresh_singles):
     import qobuz_librarian.api.search as search_mod
     import qobuz_librarian.modes.process as proc_mod

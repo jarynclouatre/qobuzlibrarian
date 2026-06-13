@@ -41,15 +41,16 @@ def test_env_num_min_clamps_a_negative_delay_to_zero(monkeypatch):
 def test_resolve_secret_reads_token_from_a_file(monkeypatch, tmp_path):
     # Docker-secret style: the token lives in a file, not the environment, so
     # it stays out of `docker inspect`. The trailing newline a file carries must
-    # be stripped, and the value published back so direct os.environ readers agree.
-    # Empty (compose's `${VAR:-}`) means "unset" to the resolver, and lets
-    # monkeypatch own the key so its write-back doesn't leak into later tests.
+    # be stripped. The resolved value is NOT written back to os.environ — doing
+    # so re-exported the secret into every subprocess the app spawns.
+    # Empty (compose's `${VAR:-}`) means "unset" to the resolver.
     monkeypatch.setenv("QOBUZ_USER_AUTH_TOKEN", "")
     token_file = tmp_path / "qobuz_token"
     token_file.write_text("tok-from-file\n")
     monkeypatch.setenv("QOBUZ_USER_AUTH_TOKEN_FILE", str(token_file))
     assert cfg._resolve_secret("QOBUZ_USER_AUTH_TOKEN") == "tok-from-file"
-    assert os.environ["QOBUZ_USER_AUTH_TOKEN"] == "tok-from-file"
+    # Must NOT leak the secret into the process environment.
+    assert os.environ.get("QOBUZ_USER_AUTH_TOKEN") == ""
 
 
 def test_resolve_secret_prefers_a_set_env_var_over_the_file(monkeypatch, tmp_path):

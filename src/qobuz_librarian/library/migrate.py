@@ -24,6 +24,7 @@ second stage that only runs against the files tags couldn't place, so a
 mostly-tagged library finishes fast and offline.
 """
 import csv
+import errno
 import logging
 import os
 import re
@@ -110,6 +111,9 @@ class ExecResult:
     # deleted, so the original still occupies space — counted apart from clean
     # moves so the summary doesn't claim them as fully relocated.
     lingered: int = 0
+    # Non-audio companion files (cover art, .cue/.log/.lrc/…) carried alongside
+    # the audio into the destination so a migrated album keeps its artwork.
+    companions: int = 0
     cancelled: bool = False
     # One (source, dest_rel, status, reason) per attempted file — the record of
     # what actually happened, surfaced to the user and written to the results
@@ -220,6 +224,35 @@ def is_placeable(meta: Optional[dict]) -> bool:
     return bool(meta.get("albumartist") and meta.get("album"))
 
 
+_NAME_MAX = 255  # bytes — the per-component limit on ext4/APFS/NTFS and POSIX
+
+
+def _truncate_component(name: str, *, ext: str = "", limit: int = _NAME_MAX) -> str:
+    """Cap a single path component at the filesystem's per-name BYTE limit (beets
+    caps at the same 255 by default). A tag long enough to exceed NAME_MAX would
+    otherwise raise ENAMETOOLONG from the first Path.exists()/copy and abort the
+    whole migration before any plan is built. Truncates on a UTF-8 char boundary
+    and reserves room for the extension."""
+    ext_b = ext.encode("utf-8", "surrogateescape")
+    budget = max(1, limit - len(ext_b))
+    b = name.encode("utf-8", "surrogateescape")
+    if len(b) <= budget:
+        return name + ext
+    # Drop a partial trailing multi-byte char rather than splitting it.
+    return b[:budget].decode("utf-8", "ignore") + ext
+
+
+def _dest_exists_or_unstattable(path: Path) -> bool:
+    """True if the destination exists OR can't be stat'd. A bare Path.exists()
+    re-raises ENAMETOOLONG/EACCES on a pathological path, which would abort the
+    whole plan build; treat an unstat-able destination as a collision so that one
+    entry is skipped (status COLLISION) rather than crashing the migration."""
+    try:
+        return path.exists()
+    except OSError:
+        return True
+
+
 def album_components(meta: dict) -> tuple:
     """(artist_folder, album_folder) for an album, sanitized to match beets.
 
@@ -237,14 +270,15 @@ def album_components(meta: dict) -> tuple:
         album_folder = f"{strip_year_decoration(album)} ({year})"
     else:
         album_folder = album
-    return beets_sanitize(artist), beets_sanitize(album_folder)
+    return (_truncate_component(beets_sanitize(artist)),
+            _truncate_component(beets_sanitize(album_folder)))
 
 
 def track_filename(meta: dict) -> str:
     track = meta.get("track") or 0
     title = meta.get("title") or ""
     name = f"{track:02d} - {title}" if track > 0 else title
-    return beets_sanitize(name) + meta.get("ext", "")
+    return _truncate_component(beets_sanitize(name), ext=meta.get("ext", ""))
 
 
 def _album_key(meta: dict) -> tuple:
@@ -299,7 +333,7 @@ def build_plan(items, dest_root: Path) -> MigrationPlan:
             entries.append(PlanEntry(
                 source=source, status=COLLISION, source_of_truth=sot,
                 reason="two files map to the same destination", meta=meta))
-        elif (dest_root / rel).exists():
+        elif _dest_exists_or_unstattable(dest_root / rel):
             entries.append(PlanEntry(
                 source=source, status=COLLISION, source_of_truth=sot,
                 reason="destination already exists", meta=meta))
@@ -434,13 +468,17 @@ def _is_within(child: Path, parent: Path) -> bool:
         return False
 
 
-def validate_paths(src: Path, dest: Path) -> Optional[str]:
+def validate_paths(src: Path, dest: Path, *,
+                   in_place: bool = False) -> Optional[str]:
     """Reason the source/destination pair is unusable, or None if it's fine.
 
     The destination has to be a separate tree from the source so a copy can't
     recurse into or overwrite itself."""
     if not src.is_dir():
         return f"Source isn't a readable directory: {src}"
+    if in_place and not os.access(str(src), os.W_OK):
+        return (f"Source is not writable — in-place mode moves files out of "
+                f"the source tree and requires write access: {src}")
     if dest.exists() and not dest.is_dir():
         return f"Destination exists but isn't a folder: {dest}"
     if src.resolve() == dest.resolve():
@@ -532,6 +570,56 @@ def _audio_files(source_root: Path) -> list:
     return files
 
 
+# Non-audio files worth carrying with an album: cover art, embedded booklets,
+# rip logs, cue sheets, synced lyrics, and playlists. Only audio gets a plan
+# entry, so without an explicit pass these are stranded in the old library.
+_COMPANION_EXTS = {
+    ".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp",
+    ".cue", ".log", ".pdf", ".lrc", ".nfo", ".m3u", ".m3u8",
+}
+
+
+def _carry_companion_files(plan: "MigrationPlan", result: "ExecResult", *,
+                           progress: Optional[Callable] = None) -> None:
+    """Copy each migrated album folder's non-audio companions into the
+    destination folder(s) that received its audio.
+
+    Always a copy (never a move), even in in-place mode: the same cover can fan
+    out to several destinations (AcoustID splitting a messy folder), the source
+    folder may still hold audio that failed/skipped, and a duplicated cover image
+    is harmless. Best-effort — a companion failure is logged, never fatal.
+    Same-folder layout only (cover beside the tracks); an album-level cover a
+    level above per-disc track folders is intentionally not chased."""
+    folder_map: dict = {}
+    for source, dest_rel, status, _reason in result.outcomes:
+        if status != COPIED or dest_rel is None:
+            continue
+        folder_map.setdefault(source.parent, set()).add(
+            (plan.dest_root / dest_rel).parent)
+    for src_folder, dst_folders in folder_map.items():
+        try:
+            companions = [f for f in src_folder.iterdir()
+                          if f.suffix.lower() in _COMPANION_EXTS and f.is_file()]
+        except OSError:
+            continue
+        for dst_folder in dst_folders:
+            for f in companions:
+                dst = dst_folder / f.name
+                # The existence probes are inside the try too: Path.exists()
+                # swallows ENOENT but re-raises EACCES/EPERM on a path component,
+                # and this whole pass is best-effort — a stray stat error must
+                # log-and-skip, never abort the companion sweep for the run.
+                try:
+                    if not f.exists() or dst.exists():
+                        continue
+                    if progress:
+                        progress("Carrying cover art and sidecars", 0, 0, f.name)
+                    _place_file(f, dst, move=False)
+                    result.companions += 1
+                except (OSError, shutil.Error) as e:
+                    log.info(f"  ⚠  couldn't carry {f.name}: {e}")
+
+
 def collect_items(source_root: Path, *, use_acoustid: bool = False,
                   cancel_check: Optional[Callable[[], bool]] = None,
                   progress: Optional[Callable] = None,
@@ -547,7 +635,8 @@ def collect_items(source_root: Path, *, use_acoustid: bool = False,
     files = _audio_files(source_root)
     total = len(files)
     items = []
-    unplaced = []
+    unplaced = []   # (path, orig_meta) — orig_meta may have track/disc even
+                    # when albumartist/album are absent, so keep it for merging.
     for i, f in enumerate(files, 1):
         if cancel_check and cancel_check():
             break
@@ -557,48 +646,87 @@ def collect_items(source_root: Path, *, use_acoustid: bool = False,
         if is_placeable(meta):
             items.append((f, meta, "tags"))
         else:
-            unplaced.append(f)
+            unplaced.append((f, meta))
 
     if use_acoustid and unplaced:
         n = len(unplaced)
-        for i, f in enumerate(unplaced, 1):
+        for i, (f, orig_meta) in enumerate(unplaced, 1):
             if cancel_check and cancel_check():
                 items.append((f, None, ""))
                 continue
             if progress:
                 progress("Fingerprinting unidentified files", i, n, f.name)
             meta = fingerprint_identify(f, min_score=min_score, ext=f.suffix)
+            if meta and orig_meta:
+                # Prefer the file's own track/disc numbers over AcoustID's
+                # zero-defaults: AcoustID identifies the recording but has no
+                # reliable per-file position; the embedded tags do.
+                if not meta.get("track") and orig_meta.get("track"):
+                    meta["track"] = orig_meta["track"]
+                if meta.get("disc") == 1 and orig_meta.get("disc", 1) > 1:
+                    meta["disc"] = orig_meta["disc"]
+                    meta["disctotal"] = orig_meta.get("disctotal") or meta["disctotal"]
             items.append((f, meta, "acoustid" if meta else ""))
             time.sleep(ACOUSTID_RATE_DELAY)
     else:
-        items.extend((f, None, "") for f in unplaced)
+        items.extend((f, None, "") for f, _ in unplaced)
 
     return items
 
 
 # ── Execution ─────────────────────────────────────────────────────────────────
 
+def _same_content(a: Path, b: Path, _chunk: int = 1 << 20) -> bool:
+    """True iff a and b are byte-for-byte identical. Streams in chunks (bounded
+    memory, short-circuits on first difference). Any OSError reads as 'not
+    proven identical' — the caller must then keep the source."""
+    try:
+        if a.stat().st_size != b.stat().st_size:
+            return False
+        with open(a, "rb") as fa, open(b, "rb") as fb:
+            while True:
+                ca, cb = fa.read(_chunk), fb.read(_chunk)
+                if ca != cb:
+                    return False
+                if not ca:
+                    return True
+    except OSError:
+        return False
+
+
 def _place_file(src: Path, dst: Path, *, move: bool) -> None:
     """Materialize ``src`` at ``dst`` safely. Copy by default; move only when
     asked, and only after a verified copy exists.
 
     Cross-filesystem safe: the bytes land at a ``.partial`` sibling on the
-    destination filesystem, are size-verified, then atomically renamed into
-    place. An interrupt mid-copy leaves the source intact and at worst an orphan
-    ``.partial`` — never a half-written destination."""
+    destination filesystem, are size- AND (for a move) content-verified, then
+    atomically renamed into place. An interrupt mid-copy leaves the source intact
+    and at worst an orphan ``.partial`` — never a half-written destination."""
     dst.parent.mkdir(parents=True, exist_ok=True)
-    if move:
+    if move and not src.is_symlink():
         try:
             os.rename(str(src), str(dst))   # atomic same-filesystem move
             return
         except OSError:
             pass                            # cross-fs: fall through to copy
+    # A symlinked source skips the rename fast-path: os.rename relocates the LINK
+    # itself, leaving the destination pointing at the (possibly out-of-tree)
+    # original — a dangle waiting to happen. The copy path below dereferences via
+    # shutil.copy2 so the real bytes land at the destination as a real file, then
+    # the move branch unlinks the source link.
 
     tmp = dst.parent / (dst.name + ".partial")
     try:
         shutil.copy2(str(src), str(tmp))
         if tmp.stat().st_size != src.stat().st_size:
             raise OSError("copy size mismatch")
+        # A move DELETES the source after this, so a same-length-but-corrupt copy
+        # (bit-rot, a driver returning a complete-but-wrong stream, a sparse-hole
+        # mismatch) would lose the only good copy. Byte-verify before committing —
+        # size alone can't catch it. Copy mode keeps the source, so it can skip
+        # the (full-read) content check.
+        if move and not _same_content(src, tmp):
+            raise OSError("content mismatch after cross-filesystem copy")
         os.replace(str(tmp), str(dst))
     except BaseException:
         try:
@@ -608,6 +736,17 @@ def _place_file(src: Path, dst: Path, *, move: bool) -> None:
         raise
 
     if move:
+        # Make the destination durable before deleting the source: a crash in the
+        # gap between os.replace and unlink could otherwise leave neither a
+        # durable dst nor the source. Best-effort (fsync may be unsupported).
+        try:
+            dfd = os.open(str(dst.parent), os.O_RDONLY)
+            try:
+                os.fsync(dfd)
+            finally:
+                os.close(dfd)
+        except OSError:
+            pass
         try:
             src.unlink()
         except OSError as e:
@@ -666,6 +805,11 @@ def execute_plan(plan: MigrationPlan, *, in_place: bool = False,
         except (OSError, shutil.Error) as e:
             result.failed += 1
             result.outcomes.append((src, entry.dest_rel, FAILED, str(e)))
+            if getattr(e, "errno", None) == errno.ENOSPC:
+                result.cancelled = True
+                break
+    if not result.cancelled:
+        _carry_companion_files(plan, result, progress=progress)
     return result
 
 

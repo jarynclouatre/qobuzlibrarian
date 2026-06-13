@@ -1,4 +1,5 @@
 """Upgrade and gap-fill backup/restore functions."""
+import errno
 import os
 import re
 import shutil
@@ -12,10 +13,13 @@ from qobuz_librarian.ui_cli.logging import log
 
 
 def _backup_dir_name(album_dir: Path, *, kind: str = "") -> str:
-    # Shared name for upgrade and gap-fill backup dirs: "<ts>[_<kind>]_<safe>".
-    # The retention sweep parses this shape back out, so the writers here and
-    # the sweep have to agree on it.
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    # Shared name for upgrade and gap-fill backup dirs:
+    # "<ymd>_<hms>_<micro>[_<kind>]_<safe>". Microseconds keep two backups of the
+    # same album in the same wall-clock second from colliding into one dir (which
+    # mkdir(exist_ok=True) would silently merge, mixing two operations' files and
+    # breaking the 1:1 backup→restore mapping). The retention sweep only parses
+    # the leading ``\d{8}_\d{6}`` timestamp, so the extra segment is transparent.
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
     safe = re.sub(r"[^\w\-_. ]", "_", album_dir.name)[:80]
     infix = f"{kind}_" if kind else ""
     return f"{ts}_{infix}{safe}"
@@ -176,7 +180,14 @@ def find_only_copy_backups():
         return out
     try:
         for entry in cfg.UPGRADE_BACKUP_DIR.iterdir():
-            if entry.is_dir() and not _backup_safe_to_reap(entry):
+            if not entry.is_dir():
+                continue
+            # A genuine mid-copy '.partial' (sidecar not yet written) isn't a
+            # real backup; a committed backup whose album name merely ends in
+            # '.partial' DOES carry the origin sidecar and must still surface.
+            if entry.name.endswith(".partial") and not (entry / _ORIGIN_SIDECAR).is_file():
+                continue
+            if not _backup_safe_to_reap(entry):
                 out.append((entry, _read_backup_origin(entry)))
     except OSError:
         pass
@@ -204,7 +215,20 @@ def backup_album_dir(album_dir: Path):
 
     if _same_filesystem(album_dir, cfg.UPGRADE_BACKUP_DIR):
         try:
-            shutil.move(str(album_dir), str(bp))
+            # Pure rename only — NOT shutil.move. Two bind mounts of the same
+            # host disk share an st_dev (so _same_filesystem says "same"), yet
+            # os.rename across them raises EXDEV; shutil.move would then silently
+            # fall back to an UNVERIFIED copytree+rmtree. Catch EXDEV and fall
+            # through to the verified cross-fs path below instead.
+            os.rename(str(album_dir), str(bp))
+        except OSError as e:
+            if e.errno != errno.EXDEV:
+                from qobuz_librarian.ui_cli.errors import oserr_hint
+                log.info(fmt(C.RED,
+                    f"  ✗  Could not back up {album_dir}: {e}.{oserr_hint(e)}"))
+                return None
+            # EXDEV: same st_dev but cross-mount — use the verified copy path.
+        else:
             if not _write_backup_origin(bp, album_dir):
                 # The move already emptied album_dir, so bp is now the only
                 # copy — but with no sidecar the age sweep could reap it. Undo
@@ -221,14 +245,8 @@ def backup_album_dir(album_dir: Path):
                         f"origin write: {e2}. Files are at {bp}."))
                 return None
             return bp
-        except (OSError, shutil.Error) as e:
-            from qobuz_librarian.ui_cli.errors import oserr_hint
-            hint = oserr_hint(e) if isinstance(e, OSError) else ""
-            log.info(fmt(C.RED,
-                f"  ✗  Could not back up {album_dir}: {e}.{hint}"))
-            return None
 
-    # Cross-filesystem copy-verify-commit-remove.
+    # Cross-filesystem (or same-st_dev-but-EXDEV) copy-verify-commit-remove.
     src_stats = _tree_stats(album_dir)
     if src_stats is None:
         log.info(fmt(C.RED,
@@ -384,7 +402,7 @@ def backup_gap_fill_files(file_paths, album_dir: Path):
         log.info(fmt(C.RED,
             f"  ✗  Couldn't record gap-fill backup origin for {album_dir.name}; "
             "restoring the originals and aborting backup."))
-        restore_gap_fill_backup(bp, album_dir)
+        restore_gap_fill_backup(bp, album_dir, keep_larger_dst=False)
 
         def _still_has_tracks():
             try:
@@ -406,11 +424,19 @@ def backup_gap_fill_files(file_paths, album_dir: Path):
     return bp
 
 
-def restore_gap_fill_backup(backup_path: Path, album_dir: Path) -> int:
+def restore_gap_fill_backup(backup_path: Path, album_dir: Path,
+                            *, keep_larger_dst: bool = True) -> int:
     """Move every file in backup_path back to its original location under
     album_dir, preserving relative structure. Returns the number of files
     restored. Removes the backup dir on completion. Safe to call on a
     non-existent or empty backup_path (returns 0).
+
+    keep_larger_dst (default True, the repair caller): when a file already at
+    the destination is >= the backup copy in bytes, keep it and discard the
+    backup — valid for repair, where the backup is the truncated original and
+    a larger dst is the good refill. Gap-fill callers pass False: there the
+    backup IS the good original, so a larger-but-corrupt partial re-rip at dst
+    must NOT win — always restore the backup.
 
     Crash-safe across filesystems: each file is copied to a
     ``.restore_tmp`` sibling *on the destination filesystem*, then
@@ -431,7 +457,7 @@ def restore_gap_fill_backup(backup_path: Path, album_dir: Path) -> int:
     n_restored = 0
     n_failed = 0
     for f in backup_path.rglob("*"):
-        if not f.is_file() or f.name in (_ORIGIN_SIDECAR, _PARTIAL_RESTORE_SENTINEL):
+        if not f.is_file() or f.name in _SIDECARS:
             continue
         rel = f.relative_to(backup_path)
         dst = album_dir / rel
@@ -442,7 +468,8 @@ def restore_gap_fill_backup(backup_path: Path, album_dir: Path) -> int:
         # under the same name in a same-ISRC/dedup edge), restoring the smaller
         # original over it would be a downgrade. Leave the good file in place.
         try:
-            if dst.exists() and dst.stat().st_size >= f.stat().st_size:
+            if (keep_larger_dst and dst.exists()
+                    and dst.stat().st_size >= f.stat().st_size):
                 log.info(fmt(C.GRAY,
                     f"  · Keeping the file already at {dst.name} "
                     f"(>= the backed-up copy) rather than restoring over it."))
@@ -462,6 +489,20 @@ def restore_gap_fill_backup(backup_path: Path, album_dir: Path) -> int:
             # filesystem (tmp lives in dst.parent, so they do) and it
             # overwrites any partial the failed rip left at dst.
             shutil.copy2(str(f), str(tmp))
+            # This backup file is the ONLY copy (originals were moved here), so
+            # verify the copy is byte-complete BEFORE the destructive swap. A
+            # short copy that copy2 didn't raise on (truncating/overlay FS,
+            # quota cutoff, sparse mismatch) must not overwrite dst and then
+            # delete the source — that would destroy the only good copy.
+            src_size = f.stat().st_size
+            copied = tmp.stat().st_size if tmp.exists() else -1
+            if copied != src_size:
+                tmp.unlink(missing_ok=True)
+                n_failed += 1
+                log.info(fmt(C.YELLOW,
+                    f"  ⚠  Couldn't restore {f.name}: short copy "
+                    f"({copied}/{src_size} bytes) — kept the backup copy."))
+                continue
             os.replace(str(tmp), str(dst))
             # Destination is verifiably in place — the backup copy is now
             # redundant. A failure to unlink it here is non-fatal: the
@@ -618,7 +659,29 @@ def restore_upgrade_backup(backup_path: Path, original_path: Path) -> bool:
                     f"mv {backup_path!s} {original_path!s}"))
                 return False
         original_path.parent.mkdir(parents=True, exist_ok=True)
-        shutil.move(str(backup_path), str(original_path))
+        # Crash-safe cross-mount restore: /upgrade_backups → /music is a
+        # different mount in Docker, so a plain shutil.move degrades to an
+        # UNVERIFIED copytree+rmtree where an ENOSPC mid-copy (likely right after
+        # the failed download that triggered this restore) leaves a half-written
+        # original. Copy to a .restoring sibling ON the destination fs, verify it
+        # matches, then atomically rename it in and only then drop the backup.
+        if _same_filesystem(backup_path, original_path):
+            shutil.move(str(backup_path), str(original_path))
+        else:
+            restoring = original_path.with_name(original_path.name + ".restoring")
+            if restoring.exists():
+                shutil.rmtree(str(restoring), ignore_errors=True)
+            src_stats = _tree_stats(backup_path)
+            shutil.copytree(str(backup_path), str(restoring), symlinks=True)
+            if src_stats is None or _tree_stats(restoring) != src_stats:
+                shutil.rmtree(str(restoring), ignore_errors=True)
+                log.info(fmt(C.RED,
+                    f"  ✗  Restore verification failed; backup kept at "
+                    f"{backup_path}.\n     Manual restore: mv {backup_path!s} "
+                    f"{original_path!s}"))
+                return False
+            os.rename(str(restoring), str(original_path))
+            shutil.rmtree(str(backup_path), ignore_errors=True)
         try:
             (original_path / _ORIGIN_SIDECAR).unlink(missing_ok=True)
         except OSError:
@@ -664,6 +727,25 @@ def cleanup_old_upgrade_backups(retention_days: int = None,
     n_removed = 0
     for entry in cfg.UPGRADE_BACKUP_DIR.iterdir():
         if not entry.is_dir():
+            continue
+        if entry.name.endswith(".partial") and not (entry / _ORIGIN_SIDECAR).is_file():
+            # Stranded mid-copy dir from a hard kill during a cross-fs backup.
+            # A committed backup ALWAYS writes the origin sidecar (even one whose
+            # album name itself ends in '.partial'), so its absence marks a
+            # never-finished copy. Only reap once it's old enough that it can't
+            # be another process's actively-running cross-fs copy (also
+            # sidecar-less until it commits) — the run lock usually serialises
+            # this, but the grace window is cheap insurance.
+            try:
+                stale = (time.time() - entry.stat().st_mtime) > 3600
+            except OSError:
+                stale = True
+            if stale:
+                try:
+                    shutil.rmtree(entry)
+                    n_removed += 1
+                except OSError:
+                    pass
             continue
         m = re.match(r"^(\d{8}_\d{6})_", entry.name)
         if not m:

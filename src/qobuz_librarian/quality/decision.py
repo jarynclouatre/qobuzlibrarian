@@ -15,7 +15,10 @@ from qobuz_librarian.library.catalog import (
     find_extras_in_existing,
     is_lossless_album,
 )
-from qobuz_librarian.library.scanner import clear_scan_caches, list_artist_album_dirs
+from qobuz_librarian.library.scanner import (
+    drop_artist_subdirs_cache,
+    list_artist_album_dirs,
+)
 from qobuz_librarian.library.tags import similarity, strip_album_decorations
 from qobuz_librarian.quality.tiers import downsample_target_rate, streamrip_quality_cap
 from qobuz_librarian.ui_cli.logging import vlog
@@ -230,7 +233,12 @@ def scan_artist_for_upgrades(artist_name, artist_dir, token, args, capped=None):
     """
     from qobuz_librarian.library.catalog import find_expanded_edition, find_qobuz_album_for_dir
 
-    clear_scan_caches()
+    # Invalidate only THIS artist's cached subdir listing, not the whole cache.
+    # This runs once per artist inside the bulk-upgrade loop; clear_scan_caches()
+    # would wipe every other artist's warm listing (and force a flac_cache disk
+    # flush) on each iteration, cold-rebuilding the entire library per artist.
+    # This function only reads quality metadata, so the flush isn't needed here.
+    drop_artist_subdirs_cache(artist_dir)
     album_dirs = list_artist_album_dirs(artist_dir)
     if not album_dirs:
         return []
@@ -268,15 +276,6 @@ def scan_artist_for_upgrades(artist_name, artist_dir, token, args, capped=None):
         if qobuz_album is None or not is_lossless_album(qobuz_album):
             continue
 
-        # Key the single check on the matched Qobuz artist name — that's what
-        # mark_single stored. The folder name (artist_name) can differ from it
-        # ("Beatles" on disk vs "The Beatles" on Qobuz), which would miss the
-        # mark and leak the grabbed single into the upgrade scan.
-        if single_store is not None:
-            q_artist = (qobuz_album.get("artist") or {}).get("name") or artist_name
-            if hidden_mod.is_single(q_artist, qobuz_album.get("title"), single_store):
-                continue
-
         # Skip albums Qobuz can't actually deliver at target.
         if capped and is_album_capped(qobuz_album.get("id"), capped):
             vlog(f"    {album_dir.name}: capped (partial hi-res previously)")
@@ -291,9 +290,21 @@ def scan_artist_for_upgrades(artist_name, artist_dir, token, args, capped=None):
             continue  # nothing on disk — not an upgrade scenario
 
         # False-match guard: if no tracks overlap the Qobuz result is wrong.
-        _, present = compute_missing(qobuz_tracks, existing)
+        missing, present = compute_missing(qobuz_tracks, existing)
         if not present:
             continue
+
+        # Key the single check on the matched Qobuz artist name — that's what
+        # mark_single stored. The folder name (artist_name) can differ from it
+        # ("Beatles" on disk vs "The Beatles" on Qobuz), which would miss the
+        # mark and leak the grabbed single into the upgrade scan.
+        # Only skip when the album is still partial (has missing tracks) — a
+        # fully-present album should graduate out of the single marker and remain
+        # eligible for a quality upgrade, matching discovery.py semantics.
+        if single_store is not None and missing:
+            q_artist = (qobuz_album.get("artist") or {}).get("name") or artist_name
+            if hidden_mod.is_single(q_artist, qobuz_album.get("title"), single_store):
+                continue
 
         if getattr(args, "no_upgrade", False):
             continue

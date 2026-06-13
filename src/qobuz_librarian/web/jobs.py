@@ -27,7 +27,7 @@ from enum import Enum
 from typing import Callable, Optional
 
 from qobuz_librarian.integrations import rip as rip_module
-from qobuz_librarian.ui_cli.logging import set_progress_reporter
+from qobuz_librarian.ui_cli.logging import set_progress_reporter, set_thread_wrapper
 from qobuz_librarian.web import job_persistence
 
 # Thread-local pointer to the job currently being run on this worker.
@@ -41,7 +41,44 @@ def _current_job_cancel_requested() -> bool:
     return bool(j and j.cancel_requested)
 
 
+def _adopt_current_job(job):
+    """ThreadPoolExecutor initializer: tag each pool worker with the job that
+    spawned the pool so log records emitted from pool threads are attributed to
+    the right job (not dropped by JobLogHandler's thread filter)."""
+    _TLS.current_job = job
+
+
+def pool_initializer_kwargs() -> dict:
+    """kwargs for a ThreadPoolExecutor created INSIDE a job's worker thread, so
+    its workers inherit this job via _TLS.current_job. Must be called on the
+    worker thread (where current_job is set). Outside a job (CLI) it captures
+    None, which is harmless (no JobLogHandler is attached there)."""
+    return {"initializer": _adopt_current_job,
+            "initargs": (getattr(_TLS, "current_job", None),)}
+
+
+def _propagate_job_to_thread(target):
+    """Wrap a helper-thread target so it inherits the SPAWNING thread's
+    current_job. Used for rip.py's output-reader thread: it logs streamrip's
+    live progress + per-track errors via the shared logger, and JobLogHandler
+    routes records by thread — so without carrying the job onto that thread its
+    lines would be dropped. current_job is captured here, on the spawning
+    (worker) thread; the wrapped target re-applies it on the helper thread."""
+    job = getattr(_TLS, "current_job", None)
+
+    def _wrapped(*args, **kwargs):
+        _TLS.current_job = job
+        return target(*args, **kwargs)
+
+    return _wrapped
+
+
 rip_module.set_cancel_check(_current_job_cancel_requested)
+# Carry the running job onto subprocess-reader helper threads (rip + beets) so
+# their live-output log lines reach the right job instead of being dropped by
+# JobLogHandler's per-thread routing. One hook at the shared logging module
+# covers both readers.
+set_thread_wrapper(_propagate_job_to_thread)
 
 
 def _report_progress_to_current_job(phase, current, total, item):
@@ -204,11 +241,15 @@ class Job:
         a one-off {artist, albums} the scanning page appends to its live preview
         — it is deliberately left out of the stored snapshot so a reconnect
         replay doesn't duplicate a preview row."""
-        self.progress_phase = phase
-        self.progress_current = current
-        self.progress_total = total
-        self.progress_item = item
-        self.progress_found = found
+        # Write the snapshot fields under the lock so a reconnecting subscriber
+        # reading them via _progress_snapshot() (also under the lock) can't catch
+        # a torn mix — e.g. the new phase label with the previous phase's counts.
+        with self._lock:
+            self.progress_phase = phase
+            self.progress_current = current
+            self.progress_total = total
+            self.progress_item = item
+            self.progress_found = found
         payload = {"phase": phase, "current": current, "total": total,
                    "item": item, "found": found}
         if hit:
@@ -281,6 +322,7 @@ class Job:
         # Locked: a live scan appends from the worker thread while the request
         # thread may be reading/dropping candidates via the review screen.
         capped = False
+        cid = None
         with self._lock:
             # Bound the in-memory (and persisted) candidate list so a runaway
             # whole-library scan can't exhaust memory. Past the cap, drop new
@@ -289,6 +331,10 @@ class Job:
                 capped = not self._candidate_cap_noted
                 self._candidate_cap_noted = True
             else:
+                # Append regardless of whether the cap was hit EARLIER: a
+                # mid-scan hide can shrink the list back below the cap, and a
+                # candidate we actually appended must return its real cid — the
+                # sticky _candidate_cap_noted flag used to swallow it as None.
                 seq = self._cand_seq
                 self._cand_seq += 1
                 self.candidates.append({
@@ -296,14 +342,13 @@ class Job:
                     "artist": artist, "detail": detail, "payload": payload or {},
                     "selected": selected,
                 })
-        if self._candidate_cap_noted:
-            if capped:  # log once, outside the lock (push_line takes it itself)
-                self.push_line(
-                    f"Reached the {self.CANDIDATE_CAP:,}-result cap — further "
-                    "finds aren't listed. Narrow the scan (scan by artist) to "
-                    "see the rest.")
-            return None
-        return f"c{seq}"
+                cid = f"c{seq}"
+        if capped:  # log once, outside the lock (push_line takes it itself)
+            self.push_line(
+                f"Reached the {self.CANDIDATE_CAP:,}-result cap — further "
+                "finds aren't listed. Narrow the scan (scan by artist) to "
+                "see the rest.")
+        return cid
 
     def selected_candidates(self) -> list:
         return [c for c in self.candidates if c.get("selected")]
@@ -380,28 +425,16 @@ class JobRegistry:
     def pending_and_running(self) -> list[Job]:
         return [j for j in self.all() if j.status in ACTIVE]
 
-    def running_job(self) -> Optional[Job]:
-        """Return the active download/scan job for the dashboard card, or None.
-
-        Prefers a RUNNING download over a SCANNING job so the card shows what
-        the user is most likely watching. Iterates only under the lock without
-        building a full list copy.
-        """
-        running = scanning = None
-        with self._lock:
-            for jid in self._order:
-                j = self._jobs.get(jid)
-                if j is None:
-                    continue
-                if j.status == JobStatus.RUNNING and running is None:
-                    running = j
-                elif j.status == JobStatus.SCANNING and scanning is None:
-                    scanning = j
-        return running or scanning
-
     def awaiting_review(self) -> list[Job]:
         return [j for j in self.all()
                 if j.status == JobStatus.AWAITING_REVIEW]
+
+    def executing(self) -> list[Job]:
+        """Jobs actively reading cfg/touching files RIGHT NOW (not merely queued
+        or parked). Used to decide whether it's safe to apply a deferred config
+        change without mutating an in-flight job underneath the other lane."""
+        return [j for j in self.all()
+                if j.status in (JobStatus.RUNNING, JobStatus.SCANNING)]
 
     def finished(self) -> list[Job]:
         return [j for j in self.all() if j.status in TERMINAL]
@@ -458,6 +491,16 @@ class JobLogHandler(logging.Handler):
         self.job = job
 
     def emit(self, record: logging.LogRecord):
+        # Both worker lanes (download + scan) attach a handler to the SAME
+        # process-global "qobuz_librarian" logger, and Python dispatches every
+        # record to EVERY handler regardless of the emitting thread. Without this
+        # filter a download's lines (incl. [ERROR]) bleed into a concurrent
+        # scan's log/SSE stream and vice versa. _TLS.current_job identifies the
+        # emitting thread's job (set in _run_task, and propagated into pool
+        # workers via pool_initializer_kwargs), so only push records that belong
+        # to THIS handler's job.
+        if getattr(_TLS, "current_job", None) is not self.job:
+            return
         try:
             self.job.push_line(self._ANSI.sub("", self.format(record)))
         except Exception:
@@ -572,7 +615,12 @@ def _run_task(job: Job, fn):
         # Persist outside the post-job hook (and after AWAITING_REVIEW
         # transitions inside scan_fn) so the saved row matches what the user
         # would see on /queue, including candidate lists for review jobs.
-        job_persistence.persist(job)
+        # Skip if the job was evicted from the registry while we ran — a
+        # terminal transition above can race a concurrent Clear-History (which
+        # deletes the row), and a blind persist would re-insert the just-cleared
+        # job onto the History page.
+        if registry.get(job.id) is not None:
+            job_persistence.persist(job)
         job.end_stream()
 
 
@@ -627,18 +675,28 @@ def _worker_loop(work_queue: "queue.Queue"):
             # has been submitted.
             try:
                 from qobuz_librarian.web import settings_store
-                settings_store.drain_pending()
+                # Only drain when nothing is active anywhere: the OTHER worker
+                # lane may be mid-job, and applying a deferred quality/config
+                # change on this idle tick is exactly the mid-job mutation
+                # save() deferred to prevent. (The pre-job drain below is the
+                # intended apply point once a lane picks up the next job.)
+                if not settings_store._any_active_job():
+                    settings_store.drain_pending()
             except Exception:
                 pass
             continue
-        # Settings changes that arrived while we were busy with the previous
-        # job are deferred (settings_store.save()) — drain them BEFORE
-        # starting the next job so the user's intent ("apply now") takes
-        # effect for the very next job, not whenever the queue happens to
-        # empty.
+        # Settings changes deferred while we were busy are applied BEFORE the
+        # next job so "apply now" takes effect for it — but NOT while the OTHER
+        # lane is mid-execution. This lane's job is still PENDING here (it goes
+        # RUNNING below), so registry.executing() reflects only a concurrently
+        # RUNNING/SCANNING job in the other lane, which is reading cfg per-item
+        # right now; applying config under it is exactly the mid-job mutation
+        # save() deferred. When the other lane is busy, the change stays deferred
+        # and the idle tick (or the next pre-job point) applies it once idle.
         try:
             from qobuz_librarian.web import settings_store
-            settings_store.drain_pending()
+            if not registry.executing():
+                settings_store.drain_pending()
         except Exception:
             pass
         # Sole worker thread — catching BaseException ensures one
@@ -839,6 +897,7 @@ def restore_jobs(execute_registry: dict) -> None:
             review_verb=row.get("review_verb") or "Download",
             execute_kind=row.get("execute_kind") or "",
             execute_args=row.get("execute_args") or {},
+            single=row.get("single") or {},
             created_at=row.get("created_at") or time.time(),
             finished_at=row.get("finished_at"),
         )
@@ -924,6 +983,7 @@ def load_historical_job(job_id: str) -> Optional[Job]:
         review_verb=row.get("review_verb") or "Download",
         execute_kind=row.get("execute_kind") or "",
         execute_args=row.get("execute_args") or {},
+        single=row.get("single") or {},
         created_at=row.get("created_at") or time.time(),
         finished_at=row.get("finished_at"),
     )

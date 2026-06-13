@@ -13,6 +13,10 @@ log = logging.getLogger("qobuz_librarian")
 log.setLevel(logging.INFO)
 _sh = logging.StreamHandler(sys.stdout)
 _sh.setFormatter(logging.Formatter("%(message)s"))
+# Pin the console to INFO so lowering the LOGGER to DEBUG for the file handler
+# (see attach_file_handler) doesn't flood the terminal — DEBUG belongs in the
+# log file, not on screen. set_quiet() raises this to WARNING for --quiet.
+_sh.setLevel(logging.INFO)
 if not log.handlers:
     log.addHandler(_sh)
 
@@ -29,15 +33,25 @@ class _StripAnsiFormatter(logging.Formatter):
 _file_handler = None
 
 
-def attach_file_handler(path, level_name: str = "INFO"):
+def attach_file_handler(path, level_name: str = "INFO", role: str = ""):
     """Attach a rotating file handler at `path`. Idempotent — safe to call
-    from both _entry() and the web _lifespan."""
+    from both _entry() and the web _lifespan.
+
+    ``role`` names the writing process (e.g. "cli"); when set, the handler
+    writes to a role-suffixed file (qobuz-librarian-cli.log). The long-lived web
+    server and a `docker exec` CLI run can both be attached to the SAME log at
+    once, and a single shared RotatingFileHandler races on rollover at the 5 MB
+    boundary — two processes independently rename .log->.log.1 and reshuffle the
+    backup chain, losing lines and orphaning an inode. A distinct file per role
+    sidesteps the race without a cross-process rollover lock."""
     global _file_handler
     if _file_handler is not None:
         return
     from logging.handlers import RotatingFileHandler
     from pathlib import Path
     p = Path(path)
+    if role:
+        p = p.with_name(f"{p.stem}-{role}{p.suffix}")
     try:
         p.parent.mkdir(parents=True, exist_ok=True)
         h = RotatingFileHandler(p, maxBytes=5 * 1024 * 1024, backupCount=3,
@@ -47,6 +61,11 @@ def attach_file_handler(path, level_name: str = "INFO"):
             datefmt="%Y-%m-%d %H:%M:%S"))
         level = getattr(logging, level_name.upper(), logging.INFO)
         h.setLevel(level)
+        # The logger itself gates at INFO (line 13), which would drop DEBUG
+        # records before any handler saw them — so LOG_LEVEL=DEBUG was a no-op.
+        # Lower the logger to this handler's level (the console handler keeps its
+        # own INFO/WARNING level), so LOG_LEVEL=DEBUG actually reaches the file.
+        log.setLevel(min(log.level, level))
         log.addHandler(h)
         _file_handler = h
     except OSError:
@@ -74,6 +93,28 @@ def report_progress(phase, current=0, total=0, item=""):
             pass
 
 
+# Optional thread-context wrapper, injected by the web JobManager. Helper threads
+# that subprocess-readers spawn (rip / beets output readers) log via the shared
+# "qobuz_librarian" logger, but the web job-log handler routes records by thread,
+# so a thread that doesn't carry the spawning job's context has its lines (the
+# live download / import output — the most user-visible part) dropped. The web
+# layer installs a wrapper that copies the spawning thread's job onto the helper
+# thread. No-op on the CLI (no per-thread job context). Shared here so both the
+# rip and beets readers use one injection point.
+_thread_wrapper = None
+
+
+def set_thread_wrapper(fn):
+    global _thread_wrapper
+    _thread_wrapper = fn
+
+
+def wrap_thread_target(target):
+    """Wrap a thread target so it inherits the spawning thread's job context.
+    Call on the SPAWNING thread (it captures context at call time)."""
+    return _thread_wrapper(target) if _thread_wrapper else target
+
+
 _VERBOSE = False
 
 
@@ -87,8 +128,10 @@ def set_quiet(quiet: bool):
 
     Raises the level on the stdout handler rather than on the logger, so the
     file log keeps recording at its own level — a quiet cron run still leaves
-    a full trail to diagnose from."""
-    _sh.setLevel(logging.WARNING if quiet else logging.NOTSET)
+    a full trail to diagnose from. Non-quiet resets to INFO (not NOTSET) so the
+    console stays at INFO even when LOG_LEVEL=DEBUG lowered the logger for the
+    file handler."""
+    _sh.setLevel(logging.WARNING if quiet else logging.INFO)
 
 
 def vlog(msg):

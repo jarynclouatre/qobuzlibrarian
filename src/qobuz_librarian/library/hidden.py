@@ -90,8 +90,12 @@ def save(store):
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(store, f, indent=2, ensure_ascii=False)
         tmp.replace(cfg.HIDDEN_FILE)
-    except OSError:
-        pass
+    except OSError as e:
+        # Don't fail completely silent: a dismissal/single-mark that didn't
+        # persist (full or read-only data volume) returns a success count but
+        # would re-surface next scan — at least leave a verbose trail.
+        from qobuz_librarian.ui_cli.logging import vlog
+        vlog(f"hidden-store write failed ({e}); the change may not persist")
 
 
 def is_hidden(scope, artist, title, store):

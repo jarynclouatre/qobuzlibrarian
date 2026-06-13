@@ -124,9 +124,12 @@ def _retry_after(resp) -> float | None:
     if not val:
         return None
     try:
-        return min(max(float(val), 0.0), 30.0)
+        v = float(val)
     except ValueError:
         return None
+    if v != v:  # NaN ('nan' parses but propagates through the clamp) — reject it
+        return None
+    return min(max(v, 0.0), 30.0)
 
 
 def _retry_sleep(seconds: float):

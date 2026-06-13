@@ -96,9 +96,13 @@ def _env_num_min(key, default, minimum, maximum=None):
 def _resolve_secret(key: str) -> str:
     """Value of `key`, or — when it's unset — the contents of the file named by
     `{key}_FILE`. The file form lets Docker/Compose secrets supply the token
-    without it showing up in `docker inspect` or a process listing. The resolved
-    value is written back to the environment so the handful of places that read
-    os.environ[key] directly agree with the config global."""
+    without it showing up in `docker inspect` or a process listing.
+
+    The resolved value is deliberately NOT written back to os.environ: doing so
+    re-exported the secret into every subprocess the app spawns (rip, beet,
+    flac, and the operator's POST_JOB_HOOK shell), defeating the whole point of
+    the *_FILE form. Callers must read the config global (e.g.
+    cfg.QOBUZ_USER_AUTH_TOKEN), never os.environ[key]."""
     val = os.environ.get(key, "").strip()
     if val:
         return val
@@ -106,13 +110,10 @@ def _resolve_secret(key: str) -> str:
     if not path:
         return ""
     try:
-        val = Path(path).read_text(encoding="utf-8").strip()
+        return Path(path).read_text(encoding="utf-8").strip()
     except OSError as e:
         _warn(f"{key}_FILE={path!r} couldn't be read ({e}); ignoring it.")
         return ""
-    if val:
-        os.environ[key] = val
-    return val
 
 
 # ── Auth — direct env-var override (no streamrip config file needed) ──────────
@@ -418,8 +419,8 @@ AUTO_SAFE_TITLE_SIM_THRESH = _env("AUTO_SAFE_TITLE_SIM_THRESH", 0.85)
 EDITION_SEARCH_API_BUDGET = _env("EDITION_SEARCH_API_BUDGET", 3)
 
 LEFTOVER_WARN_LIMIT    = _env("LEFTOVER_WARN_LIMIT",    50)
-ARTIST_CATALOG_LIMIT   = _env("ARTIST_CATALOG_LIMIT",   500)
-ARTIST_CATALOG_PAGE    = _env("ARTIST_CATALOG_PAGE",    100)
+ARTIST_CATALOG_LIMIT   = _env_num_min("ARTIST_CATALOG_LIMIT",   500, 1)
+ARTIST_CATALOG_PAGE    = _env_num_min("ARTIST_CATALOG_PAGE",    100, 1)
 # Hide releases shorter than this in the "missing albums" step of artist
 # mode (singles, very small EPs are usually noise — bump if you want them).
 MISSING_ALBUMS_MIN_TRACKS = _env("MISSING_ALBUMS_MIN_TRACKS", 4)

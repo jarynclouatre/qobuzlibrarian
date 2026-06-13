@@ -26,7 +26,12 @@ from qobuz_librarian import config as cfg
 from qobuz_librarian.library.scanner import clear_scan_caches
 from qobuz_librarian.ui_cli.colors import C, fmt
 from qobuz_librarian.ui_cli.errors import EXIT_GENERAL, die
-from qobuz_librarian.ui_cli.logging import log, report_progress, vlog
+from qobuz_librarian.ui_cli.logging import (
+    log,
+    report_progress,
+    vlog,
+    wrap_thread_target,
+)
 
 try:
     from mutagen.flac import FLAC as _MutagenFLAC  # noqa: F401
@@ -109,9 +114,14 @@ def _merge_split_folder(dest_dir, source_dir):
         except OSError as e:
             log.info(fmt(C.YELLOW, f"  ⚠  merge: couldn't move {src.name}: {e}."))
     if moved_pairs:
-        from qobuz_librarian.library.catalog import _sync_beets_db_after_file_move
-        for old, new in moved_pairs:
-            _sync_beets_db_after_file_move(old, new)
+        # Use the merge-aware, directory-prefix sync (not the per-file one): the
+        # destination may already hold rows, and a blind per-file
+        # UPDATE items SET path=new WHERE path=old would create a SECOND row when
+        # a row at `new` already exists (items.path has no UNIQUE constraint),
+        # breaking the next `beet update`. _sync_beets_db_after_merge drops the
+        # stale source row on such a collision instead.
+        from qobuz_librarian.library.catalog import _sync_beets_db_after_merge
+        _sync_beets_db_after_merge(source_dir, dest_dir)
     for d in sorted([p for p in source_dir.rglob("*") if p.is_dir()],
                     key=lambda p: len(p.parts), reverse=True):
         try:
@@ -219,9 +229,20 @@ def _prepare_staging_tags(roots=None):
                 tags[key] = cleaned
                 changed = True
         if changed:
+            # Atomic rewrite: mutagen's in-place save shifts audio frames when
+            # the new comment block outgrows the padding, so a crash mid-save
+            # corrupts the only downloaded copy. Save onto a same-dir temp (a
+            # valid FLAC copy) and os.replace it in.
+            tmp = f.with_name(f.name + ".qltag.tmp")
             try:
-                tags.save()
+                shutil.copy2(str(f), str(tmp))
+                tags.save(str(tmp))
+                os.replace(str(tmp), str(f))
             except Exception as e:
+                try:
+                    tmp.unlink(missing_ok=True)
+                except OSError:
+                    pass
                 vlog(f"couldn't rewrite cleaned tags on {f.name}: {e}")
     if moved:
         log.info(fmt(C.YELLOW,
@@ -259,6 +280,17 @@ def _build_import_override_yaml():
         "  incremental: no\n"
         "  autotag: no\n"
         "  move: yes\n"
+        # Pin duplicate_action: merge for OUR importer (separate from the user's
+        # own `beet` usage, which still reads their config). Two reasons:
+        #  - Safety: `duplicate_action: remove` in config.yaml would have beets
+        #    util.remove() the pre-existing album's files off disk on a gap-fill /
+        #    re-download collision (irreversible, no backup). merge never deletes.
+        #  - Correctness: per-track gap-fill stages ONLY the missing tracks and
+        #    does NOT pre-clear the existing ones (download.py) — it depends on
+        #    beets MERGING the new tracks into the existing album folder. `skip`
+        #    (or a user-set skip) silently imports nothing; merge is also the
+        #    seeded default and what the consolidation re-import needs.
+        "  duplicate_action: merge\n"
     )
     # Path templates are deployer-supplied and can contain single quotes
     # (e.g. `$albumartist's stuff/$album`); _yaml_sq keeps the scalar safe.
@@ -442,6 +474,7 @@ def _beets_direct(override_path, cleanup_fn, paths=None):
     ``(ok: bool, kind: str)`` where kind is ``"ok"`` / ``"timeout"`` /
     ``"error"`` so the caller can distinguish a retry-worthy idle-timeout
     from a permanent failure."""
+    explicit_paths = bool(paths)
     if not paths:
         paths = [str(cfg.STAGING_DIR)]
     audio_before = _count_audio_under(paths)
@@ -514,7 +547,10 @@ def _beets_direct(override_path, cleanup_fn, paths=None):
             # docker logs, leaving the job page silent during import).
             log.info(fmt(C.GRAY, "    " + line.rstrip()))
 
-    reader = threading.Thread(target=_reader, daemon=True)
+    # Carry the spawning job's context onto the reader thread so its beets
+    # output lines (logged via the shared logger for the SSE stream) aren't
+    # dropped by the job-log handler's per-thread routing.
+    reader = threading.Thread(target=wrap_thread_target(_reader), daemon=True)
     reader.start()
 
     try:
@@ -553,7 +589,12 @@ def _beets_direct(override_path, cleanup_fn, paths=None):
     # track was skipped; an exit-0 run that moved nothing is the real silent skip.
     audio_after = _count_audio_under(paths)
     moved_any = audio_before > 0 and audio_after < audio_before
-    imported_nothing = proc.returncode == 0 and audio_before > 0 and not moved_any
+    # An explicit album import that finds zero audio (every track quarantined as
+    # untagged before the run) imported nothing — it must not read as success, or
+    # the executor marks a never-imported album done instead of parking/re-ripping.
+    imported_nothing = proc.returncode == 0 and (
+        (audio_before > 0 and not moved_any)
+        or (explicit_paths and audio_before == 0))
 
     clear_scan_caches()
 

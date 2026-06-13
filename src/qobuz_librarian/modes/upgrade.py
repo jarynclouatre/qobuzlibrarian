@@ -86,9 +86,11 @@ def run_upgrade_walk_mode(args, token):
     log.info(fmt(C.GRAY, f"  {plural(n, 'artist')} to scan. Artists with no upgrades are skipped silently."))
     log.info(fmt(C.GRAY, "  Ctrl-C to stop at any point."))
 
-    # Auto-accept-all gate.
+    # Auto-accept-all gate. Skipped under --dry-run (which changes nothing), so
+    # a preview run doesn't prompt to "run unattended" — matching downsample.py.
     auto_accept_all = False
-    if not args.yes and not getattr(args, "auto_safe", False):
+    if (not args.yes and not getattr(args, "auto_safe", False)
+            and not getattr(args, "dry_run", False)):
         try:
             _r = input(fmt(C.CYAN,
                 "\n  Auto-accept all upgrades and run unattended? [y/N]: "

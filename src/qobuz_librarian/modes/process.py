@@ -27,6 +27,7 @@ from qobuz_librarian.library.backup import (
     restore_upgrade_backup,
 )
 from qobuz_librarian.library.catalog import (
+    _disc_scoped_match,
     _is_split_album_merge,
     album_quality_label,
     cleanup_duplicate_art,
@@ -145,6 +146,22 @@ def _audio_count_and_seconds(folder):
     return len(tracks), total
 
 
+def _album_max_quality(folder):
+    """Best (bit_depth, sample_rate) across a folder's audio, or (0, 0).
+
+    Compared as a tuple so 24-bit always beats 16-bit and, within a depth, the
+    higher sample rate wins — the same ordering the upgrade decision uses."""
+    best = (0, 0)
+    for t in read_album_dir(folder):
+        try:
+            q = (int(t.get("bits") or 0), int(t.get("sample_rate") or 0))
+        except (TypeError, ValueError):
+            continue
+        if q > best:
+            best = q
+    return best
+
+
 def _upgrade_replacement_verified(album, album_dir, backup_path):
     """True only when the freshly imported album is at least as complete as
     the backed-up original — same-or-more tracks AND same-or-more playtime.
@@ -168,6 +185,14 @@ def _upgrade_replacement_verified(album, album_dir, backup_path):
         return False
     new_n, new_secs = _audio_count_and_seconds(post_dir)
     old_n, old_secs = _audio_count_and_seconds(backup_path)
+    # An empty or unreadable backup reads as (0, 0.0), which makes both gates
+    # below pass vacuously (new_n < 0 is never true), deleting the only full
+    # copy. Treat an unreadable/empty backup as unverifiable and keep it.
+    if old_n == 0:
+        log.info(fmt(C.YELLOW,
+            "  ⚠  Couldn't read the upgrade backup (empty or unreadable) "
+            "— keeping it."))
+        return False
     if new_n < old_n:
         log.info(fmt(C.YELLOW,
             f"  ⚠  Upgrade landed {new_n} track(s) but the original held "
@@ -179,7 +204,47 @@ def _upgrade_replacement_verified(album, album_dir, backup_path):
             f"original {int(old_secs)}s (a track may be truncated) — "
             f"keeping the backup."))
         return False
+    # Quality gate: an auto-upgrade exists to RAISE quality, so refuse to delete
+    # the original when Qobuz under-delivered (advertised hi-res, served e.g.
+    # 16/44). Same track count + playtime would otherwise pass this vacuously and
+    # permanently replace the user's higher-res files with lower-res ones.
+    new_q = _album_max_quality(post_dir)
+    old_q = _album_max_quality(backup_path)
+    if old_q > (0, 0) and new_q < old_q:
+        log.info(fmt(C.YELLOW,
+            f"  ⚠  Upgrade delivered {new_q[0]}-bit/{(new_q[1] or 0) / 1000:g}kHz "
+            f"where the original was {old_q[0]}-bit/{(old_q[1] or 0) / 1000:g}kHz "
+            f"— keeping the backup (Qobuz under-delivered the advertised quality)."))
+        return False
     return True
+
+
+def _carry_non_audio_from_backup(album, album_dir, backup_path):
+    """Copy non-audio companions (booklets, scans, .cue/.log, hand-placed cover
+    art) from an upgrade backup into the rebuilt album before the backup is
+    deleted. The audio-only completeness check ignores these files, so without
+    this they'd be lost with the backup. Existing destination files are left
+    untouched."""
+    dest = find_album_dir_filesystem(album)
+    if not dest or not dest.exists():
+        dest = album_dir
+    if not dest or not dest.exists() or not backup_path.exists():
+        return
+    from qobuz_librarian.library.backup import _SIDECARS
+    for src in backup_path.rglob("*"):
+        # Skip the backup bookkeeping sidecars (.ql_backup_origin etc.) — they
+        # are non-audio but must never be carried into the live library folder.
+        if (not src.is_file() or src.suffix.lower() in cfg.AUDIO_EXTS
+                or src.name in _SIDECARS):
+            continue
+        out = dest / src.relative_to(backup_path)
+        if out.exists():
+            continue
+        try:
+            out.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(str(src), str(out))
+        except OSError:
+            pass
 
 
 def detect_sibling_album_groups(album_dirs):
@@ -275,14 +340,14 @@ def process_album(album, args, *, allow_force=True, label=None,
       label         optional prefix for status output (e.g. "[3/12]")
 
     Track-by-track downloading is a queue-only contract: this path always
-    downloads the whole album in one rip invocation and computes its
-    own per-track decisions (around line 600). Callers that need
-    one-track-at-a-time isolation (repair) must go through the queue
-    builder/executor and set `force_track_by_track`.
+    downloads the whole album in one rip invocation and delegates per-track
+    decisions to run_album_download. Callers that need one-track-at-a-time
+    isolation (repair) must go through the queue builder/executor and set
+    `force_track_by_track`.
 
     Returns dict with run results (used by artist mode summary).
-    Never raises for "this album can't be done"; only KeyboardInterrupt and
-    AuthLost propagate.
+    Never raises for "this album can't be done"; only KeyboardInterrupt,
+    AuthLost, and SystemExit propagate.
     """
     use_force = bool(args.force) and allow_force
     label_prefix = (label + " ") if label else ""
@@ -416,6 +481,9 @@ def process_album(album, args, *, allow_force=True, label=None,
                     else:
                         log.info(fmt(C.MAGENTA + C.BOLD,
                             f"\n  ↑ Auto-upgrade via expanded edition → {target_label}"))
+                        log.info(fmt(C.YELLOW,
+                            "  ⚠  This was queued as a gap-fill but will now back up and"
+                            " replace the entire folder."))
                         auto_upgrade_active = True
                         existing = []
                         missing, present = qobuz_tracks, []
@@ -446,8 +514,8 @@ def process_album(album, args, *, allow_force=True, label=None,
                     log.info(fmt(C.MAGENTA + C.BOLD,
                         f"\n  ↑ Auto-upgrade via expanded edition → {target_label}"))
                     log.info(fmt(C.YELLOW,
-                        "  ⚠  This was queued as a gap-fill but will now back up and\n"
-                        "     replace the entire folder. Ctrl+C to abort."))
+                        "  ⚠  This was queued as a gap-fill but will now back up and"
+                        " replace the entire folder. Confirm or cancel at the prompt below."))
                     auto_upgrade_active = True
                     existing = []
                     missing, present = qobuz_tracks, []
@@ -515,9 +583,14 @@ def process_album(album, args, *, allow_force=True, label=None,
                     # cleanup_lossy then deletes, losing the original.
                     _claimed_qids = set()
                     _upgrade_targets = []
+                    # Mirror compute_missing's disc scoping: only require the
+                    # disc to match when BOTH sides are genuinely multi-disc. A
+                    # flat folder (all tracks default discnumber 1) of a Qobuz
+                    # multi-disc album would otherwise never match its disc-2+
+                    # tracks, dropping them from the upgrade re-rip.
+                    _disc_scoped = _disc_scoped_match(present, existing)
                     for _et in existing:
-                        _eisrc = _et.get("isrc") or ""
-                        _embid = _et.get("mb_trackid") or ""
+                        _eisrc = (_et.get("isrc") or "").replace("-", "").upper().strip()
                         _enorm = _et.get("normalized") or ""
                         _edisc = _et.get("discnumber", 1) or 1
                         _estripped = normalize(strip_edition_suffix(
@@ -526,20 +599,23 @@ def process_album(album, args, *, allow_force=True, label=None,
                         for _qt in present:
                             if _qt.get("id") in _claimed_qids:
                                 continue
-                            _qisrc = (_qt.get("isrc") or "").replace("-", "").upper()
-                            _qmbid = (_qt.get("mbid") or "").lower()
+                            # Qobuz tracks carry isrc/version but never an mbid,
+                            # so there's no MusicBrainz tier here (the on-disk
+                            # mb_trackid has nothing to match against): ISRC, then
+                            # normalized title, then edition-stripped title.
+                            _qisrc = (_qt.get("isrc") or "").replace("-", "").upper().strip()
                             _qnorm = normalize(_qt.get("title") or "")
                             _qstripped = normalize(strip_edition_suffix(
                                 _qt.get("title") or ""))
                             _qdisc = _qt.get("media_number", 1) or 1
                             if _eisrc and _qisrc and _eisrc == _qisrc:
                                 _r = 0
-                            elif _embid and _qmbid and _embid == _qmbid:
+                            elif ((not _disc_scoped or _qdisc == _edisc)
+                                    and _enorm and _enorm == _qnorm):
                                 _r = 1
-                            elif _qdisc == _edisc and _enorm and _enorm == _qnorm:
+                            elif ((not _disc_scoped or _qdisc == _edisc)
+                                    and _estripped and _estripped == _qstripped):
                                 _r = 2
-                            elif _qdisc == _edisc and _estripped and _estripped == _qstripped:
-                                _r = 3
                             else:
                                 continue
                             if _r < _best_rank:
@@ -694,6 +770,7 @@ def process_album(album, args, *, allow_force=True, label=None,
     download_phase_completed = False
     transient_lyric_sigs = []
     download_result = {}
+    _gap_fill_not_located = False  # gap-fill succeeded on paper but album not found on disk
 
     try:
         snapshot = snapshot_staging()
@@ -785,6 +862,10 @@ def process_album(album, args, *, allow_force=True, label=None,
                 or _upgrade_replacement_verified(
                     album, album_dir, upgrade_backup_path))
             if upgrade_verified:
+                # Carry non-audio companions (booklets, art, .cue/.log) from the
+                # backup into the rebuilt album before deleting it — the
+                # audio-only verification ignores them, so they'd be lost.
+                _carry_non_audio_from_backup(album, album_dir, upgrade_backup_path)
                 try:
                     shutil.rmtree(upgrade_backup_path)
                     if auto_upgrade_active and not upgrade_only:
@@ -845,21 +926,64 @@ def process_album(album, args, *, allow_force=True, label=None,
                                   and n_fail == 0
                                   and n_lossy == 0)
             if gap_fill_succeeded:
-                try:
-                    shutil.rmtree(gap_fill_backup_path)
-                except OSError as e:
+                # Mirror the executor's "imported but folder not located" guard:
+                # beets files by tags, so a re-rip whose canonical folder differs
+                # from album_dir (renamed edition, unexpected albumartist) lands
+                # elsewhere. The present tracks were moved into the backup BEFORE
+                # the re-rip, so if we can't confirm the filled album actually
+                # landed on disk, deleting the backup would strand the only copy
+                # and leave album_dir an empty remnant — keep it instead.
+                _filled = find_album_dir_filesystem(album)
+                if _filled is None:
+                    clear_scan_caches()
+                    _filled = find_album_dir_filesystem(album)
+                # NOT just "the folder has any audio": album_dir still physically
+                # holds the EXTRAS (which are audio) after the present tracks were
+                # moved to the backup, so a >0 check passes even when the re-rip
+                # landed elsewhere / imported nothing and the present tracks were
+                # never restored — and the backup (their only copy) would be
+                # deleted. Require the resolved folder to hold the WHOLE album
+                # (present + missing re-downloaded); a count short of that means
+                # the present tracks aren't provably back, so keep the backup.
+                _expected = max(1, len(present) + len(missing))
+                _filled_ok = (_filled is not None and _filled.exists()
+                              and _audio_count_and_seconds(_filled)[0] >= _expected)
+                if _filled_ok:
+                    try:
+                        shutil.rmtree(gap_fill_backup_path)
+                    except OSError as e:
+                        log.info(fmt(C.YELLOW,
+                            f"  ⚠  Gap-fill complete but couldn't remove backup: {e}."))
+                else:
+                    _gap_fill_not_located = True
                     log.info(fmt(C.YELLOW,
-                        f"  ⚠  Gap-fill complete but couldn't remove backup: {e}."))
-            elif args.no_import:
+                        "  ⚠  Gap-fill imported but the filled album couldn't be "
+                        f"located on disk — keeping backed-up tracks at "
+                        f"{gap_fill_backup_path}."))
+            elif download_phase_completed and args.no_import:
+                # Gate on download_phase_completed like the upgrade branch above:
+                # a crash MID-download (phase not completed) must fall through to
+                # the restore branch, not keep a backup while the album is short.
                 log.info(fmt(C.YELLOW,
                     f"  ⚠  --no-import; gap-fill backup kept at "
                     f"{gap_fill_backup_path}."))
             else:
                 log.info(fmt(C.YELLOW,
                     "  ⚠  Gap-fill did not succeed; restoring backed-up tracks…"))
-                _n_back = restore_gap_fill_backup(gap_fill_backup_path, album_dir)
-                log.info(fmt(C.GREEN,
-                    f"  ✓  Restored {_n_back} track(s) to {album_dir}."))
+                _n_back = restore_gap_fill_backup(gap_fill_backup_path, album_dir,
+                                                  keep_larger_dst=False)
+                # restore_gap_fill_backup preserves anything it couldn't restore
+                # at the backup path (and only removes the backup on a complete
+                # restore). Don't print a green "Restored N" when nothing — or
+                # only some — came back: like the executor's path, point the user
+                # at the preserved originals so they can reconcile by hand.
+                if _n_back and not gap_fill_backup_path.exists():
+                    log.info(fmt(C.GREEN,
+                        f"  ✓  Restored {_n_back} track(s) to {album_dir}."))
+                else:
+                    log.info(fmt(C.RED,
+                        f"  ✗  Restored {_n_back} track(s); remaining originals "
+                        f"preserved at {gap_fill_backup_path} — reconcile by hand."))
 
         # `beet import` only moves audio. Streamrip's __artwork/ cover-image
         # dirs are left behind in staging; sweep them once the import path
@@ -946,13 +1070,16 @@ def process_album(album, args, *, allow_force=True, label=None,
                  f"staging path(s) for next-launch retry")
 
     # ── Summary ──────────────────────────────────────────────────────────────
-    if already_confirmed and not n_fail and not n_lossy and imported:
-        if auto_upgrade_active:
+    if already_confirmed and not n_fail and not n_lossy and imported and not _gap_fill_not_located:
+        if auto_upgrade_active and not upgrade_unverified:
             log.info(fmt(C.MAGENTA + C.BOLD,
                 f"  ↑ upgraded · {n_ok} track(s) · {int(elapsed)}s · imported"))
-        else:
+        elif not auto_upgrade_active:
             log.info(fmt(C.GREEN,
                 f"  ✓ {n_ok} downloaded · {int(elapsed)}s · imported"))
+        # else (auto_upgrade_active and upgrade_unverified): the "⚠ Upgrade
+        # couldn't be verified — keeping your original" warning already printed
+        # above, so don't also claim a clean "↑ upgraded · imported".
     else:
         section("Result")
         log.info("")
@@ -988,6 +1115,11 @@ def process_album(album, args, *, allow_force=True, label=None,
 
     if n_ok and n_fail:
         result_status = "partial"
+    elif n_ok and not imported and not args.no_import:
+        # Tracks ripped but didn't make it into the library (a beets failure, or
+        # an upgrade/--force the finally-block rolled back to the original) — the
+        # library is unchanged, so don't log this as a completed "downloaded".
+        result_status = "not_imported"
     elif n_ok:
         result_status = "downloaded"
     elif n_fail:

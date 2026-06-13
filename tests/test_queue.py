@@ -322,6 +322,53 @@ def test_executor_keeps_only_failed_downloads_for_retry(monkeypatch, tmp_path):
     assert saves                   # progress persisted as the item dropped
 
 
+def test_executor_cancel_short_circuit_labels_items_cancelled(monkeypatch, tmp_path):
+    """A standing cancel short-circuits the remaining albums at the loop
+    boundary; each must carry result='cancelled', not the seeded None that
+    _resolve_queue_item would otherwise mislabel 'nothing_landed' (and write to
+    the fetch log). Regression guard for the setdefault-on-a-present-key no-op."""
+    from qobuz_librarian import config as cfg
+    from qobuz_librarian.queue import executor
+
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    monkeypatch.setattr(cfg, "STAGING_DIR", staging)
+
+    def make(tag):
+        return {
+            "album": {"id": tag, "title": tag, "artist": {"name": tag},
+                      "tracks": {"items": []}},
+            "album_dir": None, "auto_upgrade": False,
+            "missing": [], "present": [], "upgrade_only": False, "label": tag,
+            "n_ok": 0, "n_fail": 0, "n_lossy": 0,
+            "failed_tracks": [], "lossy_tracks": [],
+            "rate_limited": False, "elapsed": 0.0,
+            "result": None, "snapshot_before": None,   # exactly as the builder seeds
+        }
+
+    queue = [make("A"), make("B")]
+    # Cancel is already standing when the batch starts → both albums hit the
+    # top-of-loop short-circuit without downloading.
+    monkeypatch.setattr(executor, "is_cancel_requested", lambda: True)
+    monkeypatch.setattr(executor, "staging_preflight", lambda _a: None)
+
+    seen = []
+
+    def fake_resolve(item, args, ok):
+        # Record the label _short_circuit stamped before resolution.
+        seen.append((item["label"], item.get("result")))
+        return {"dir": None, "imported": ok, "result": item.get("result"),
+                "n_ok": 0, "n_fail": 0, "n_lossy": 0, "auto_upgrade": False}
+
+    monkeypatch.setattr(executor, "_resolve_queue_item", fake_resolve)
+
+    args = Namespace(dry_run=False, no_import=False, no_downsample=True,
+                     no_compress=True, migrate_multi_artist=False, consolidate=False)
+    executor._execute_download_queue(queue, args, token=None)
+
+    assert seen == [("A", "cancelled"), ("B", "cancelled")]
+
+
 def test_reimport_parked_albums_clears_moved_and_keeps_skipped(monkeypatch, tmp_path):
     """A parked album is cleared only when its audio actually leaves disk on the
     retry import. A beets run that exits 0 while skipping the album (e.g. a

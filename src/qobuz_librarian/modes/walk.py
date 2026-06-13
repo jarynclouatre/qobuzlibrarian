@@ -34,7 +34,10 @@ def load_walk_seen():
         with open(cfg.WALK_SEEN_FILE, encoding="utf-8") as f:
             for line in f:
                 s = line.strip()
-                if not s or s.startswith("#"):
+                # Only "# " (hash + SPACE) is a header comment; an artist folder
+                # like "#1 Dads" or "#####" is a real entry and must load back,
+                # or it gets re-prompted every walk and the file grows each time.
+                if not s or s.startswith("# "):
                     continue
                 n = normalize(s)
                 if n:
@@ -95,7 +98,7 @@ def record_walk_seen(artist_name, seen=None):
                 "# Library walk decisions — artists you've answered y/N for during the library walk.\n",
                 "# Skipped on future walks so you don't loop the same names.\n",
                 "# To revisit an artist, delete its line below (or delete this whole file).\n",
-                "# Comments start with #. One artist per line.\n",
+                "# Comments start with '# ' (hash + space). One artist per line.\n",
                 "\n",
             ],
             entry=artist_name + "\n",
@@ -128,7 +131,10 @@ def load_album_walk_seen():
         with open(cfg.ALBUM_WALK_SEEN_FILE, encoding="utf-8") as f:
             for line in f:
                 s = line.strip()
-                if not s or s.startswith("#"):
+                # Only "# " (hash + SPACE) is a header comment; an artist folder
+                # like "#1 Dads" or "#####" is a real entry and must load back,
+                # or it gets re-prompted every walk and the file grows each time.
+                if not s or s.startswith("# "):
                     continue
                 if " | " not in s:
                     continue
@@ -163,7 +169,7 @@ def record_album_walk_seen(artist_name, album_name, seen=None):
                 "# Format: Artist | Album, one per line.\n",
                 "# To revisit an album, delete its line below "
                 "(or delete this whole file).\n",
-                "# Comments start with #.\n",
+                "# Comments start with '# ' (hash + space).\n",
                 "\n",
             ],
             entry=f"{artist_name} | {album_name}\n",
@@ -319,6 +325,11 @@ def run_album_walk_mode(args, token):
                     log.info(fmt(C.GRAY, "  Stopping the album walk."))
                     break
             except KeyboardInterrupt:
+                # Persist NOW: the current artist's just-approved albums are in
+                # shared_queue (appended as decided) but save_callback only fired
+                # for completed artists, so without this the in-progress artist's
+                # approvals wouldn't actually reach disk despite the message.
+                save_pending_queue(shared_queue, mode="album_walk")
                 log.info(fmt(C.GRAY,
                     "\n  Walk interrupted — queue is persisted to "
                     f"{cfg.PENDING_QUEUE_FILE.name}; resume next launch."))
@@ -515,6 +526,10 @@ def run_walk_queued_mode(args, token):
                             )
                             _save_now()
                     except KeyboardInterrupt:
+                        # Persist the in-memory queue now — the current artist's
+                        # approvals are in shared_queue but save_callback hadn't
+                        # fired for this in-progress artist yet.
+                        save_pending_queue(shared_queue, mode="walk_queue")
                         log.info(fmt(C.GRAY,
                             "\n  Artist scan interrupted — queue persisted to "
                             f"{cfg.PENDING_QUEUE_FILE.name}; resume next launch."))

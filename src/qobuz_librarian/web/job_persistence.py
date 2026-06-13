@@ -11,11 +11,12 @@ With this module:
 * Job state is mirrored into ``DATA_DIR/jobs.db`` on every meaningful
   transition (add, RUNNING start, AWAITING_REVIEW, approve, terminal).
 * On startup, ``restore`` reloads the rows into the registry:
-  - DONE / FAILED / CANCELED come back as historical entries on /queue.
+  - DONE / FAILED / CANCELED come back as historical entries browsable
+    in the History view (see ``history_page`` / ``history_count``).
   - AWAITING_REVIEW comes back with candidates intact so the user can
-    still approve. The execute function is rebound from a kind registry
-    the caller passes in — closures themselves aren't serialisable.
-  - PENDING / RUNNING / SCANNING from the prior session are marked
+    still approve. The execute function is resolved from ``execute_kind``
+    via a lookup table the caller provides — closures aren't serialisable.
+  - PENDING / RUNNING from the prior session are marked
     FAILED("interrupted on restart — submit again") so the user sees
     them rather than them silently vanishing.
 
@@ -100,18 +101,51 @@ CREATE TABLE IF NOT EXISTS jobs (
     execute_kind  TEXT NOT NULL DEFAULT '',
     execute_args  TEXT NOT NULL DEFAULT '{}',
     created_at    REAL,
-    finished_at   REAL
+    finished_at   REAL,
+    single        TEXT NOT NULL DEFAULT '{}'
 )
 """
 
 
+_SCHEMA_VERSION = 2
+
+
 def init() -> None:
-    """Create the schema. Safe to call repeatedly."""
+    """Create the schema (and run additive migrations). Safe to call repeatedly."""
     with _lock:
         conn = _get_conn()
         if conn is None:
             return
         conn.execute(_SCHEMA)
+        # Terminal-row index: history_count() / history_page() / prune_finished()
+        # all filter on status and order by finished_at. Without this they full-
+        # scan the table, touching every row's record header just to skip past
+        # the multi-MB ``candidates`` blob of parked reviews. COUNT(*) is served
+        # entirely from the index; the page query uses it to filter+sort before
+        # fetching only the LIMIT rows. created_at is the ORDER BY's COALESCE
+        # fallback, so it's carried in the index too. IF NOT EXISTS = idempotent.
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_jobs_terminal "
+            "ON jobs(status, finished_at, created_at)"
+        )
+        # Schema versioning so a FUTURE column addition can ALTER TABLE instead
+        # of silently failing every persist() against an old jobs.db — that
+        # failure is swallowed by _note_write_failure, leaving the archive
+        # non-durable with no visible sign. To add a column later: bump
+        # _SCHEMA_VERSION and add an `if version < N: conn.execute("ALTER TABLE
+        # jobs ADD COLUMN ...")` block here (SQLite ADD COLUMN is online-safe).
+        version = conn.execute("PRAGMA user_version").fetchone()[0]
+        if version < _SCHEMA_VERSION:
+            # v2: persist Job.single (single-track-grab undo info) so a restart
+            # doesn't drop the Undo affordance on a completed one-track grab.
+            # _SCHEMA already adds the column for a fresh db (CREATE TABLE), so
+            # only ALTER an existing table that predates it. ADD COLUMN is
+            # online-safe and the DEFAULT backfills old rows with '{}'.
+            cols = {r[1] for r in conn.execute("PRAGMA table_info(jobs)")}
+            if "single" not in cols:
+                conn.execute(
+                    "ALTER TABLE jobs ADD COLUMN single TEXT NOT NULL DEFAULT '{}'")
+            conn.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")
         conn.commit()
 
 
@@ -126,6 +160,7 @@ def persist(job) -> None:
     # and silently drop a parked review the user can't get back.
     candidates_json = json.dumps(job.candidates or [], default=str)
     execute_args_json = json.dumps(job.execute_args or {}, default=str)
+    single_json = json.dumps(job.single or {}, default=str)
     with _lock:
         conn = _get_conn()
         if conn is None:
@@ -135,8 +170,8 @@ def persist(job) -> None:
                 "INSERT OR REPLACE INTO jobs "
                 "(id, title, artist, album_id, kind, status, phase, candidates, "
                 " error, summary, review_verb, execute_kind, execute_args, "
-                " created_at, finished_at) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                " created_at, finished_at, single) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     job.id, job.title or "", job.artist or "",
                     job.album_id or "", job.kind or "download",
@@ -150,6 +185,7 @@ def persist(job) -> None:
                     execute_args_json,
                     job.created_at,
                     job.finished_at,
+                    single_json,
                 ),
             )
             conn.commit()
@@ -183,7 +219,7 @@ def load_one(job_id: str) -> Optional[dict]:
             row = conn.execute(
                 "SELECT id, title, artist, album_id, kind, status, phase, "
                 "candidates, error, summary, review_verb, execute_kind, "
-                "execute_args, created_at, finished_at FROM jobs WHERE id=?",
+                "execute_args, created_at, finished_at, single FROM jobs WHERE id=?",
                 (job_id,),
             ).fetchone()
         except sqlite3.Error as e:
@@ -200,6 +236,7 @@ def load_one(job_id: str) -> Optional[dict]:
             "execute_kind": row[11] or "",
             "execute_args": json.loads(row[12] or "{}"),
             "created_at": row[13], "finished_at": row[14],
+            "single": json.loads(row[15] or "{}"),
         }
     except (ValueError, TypeError):
         return None
@@ -299,7 +336,7 @@ def load_all() -> list[dict]:
             rows = conn.execute(
                 "SELECT id, title, artist, album_id, kind, status, phase, "
                 "candidates, error, summary, review_verb, execute_kind, "
-                "execute_args, created_at, finished_at FROM jobs "
+                "execute_args, created_at, finished_at, single FROM jobs "
                 "ORDER BY created_at"
             ).fetchall()
         except sqlite3.Error as e:
@@ -308,14 +345,21 @@ def load_all() -> list[dict]:
     out = []
     for r in rows:
         try:
+            # Only AWAITING_REVIEW jobs need their candidates on restore; all
+            # other statuses are either rehydrated as live state (RUNNING →
+            # FAILED) or displayed as history without candidates. Skipping the
+            # json.loads for the rest avoids deserialising ~950 multi-MB blobs
+            # on startup when only a handful of parked reviews exist.
+            candidates = json.loads(r[7] or "[]") if r[5] == "awaiting_review" else []
             out.append({
                 "id": r[0], "title": r[1], "artist": r[2], "album_id": r[3],
                 "kind": r[4], "status": r[5], "phase": r[6],
-                "candidates": json.loads(r[7] or "[]"),
+                "candidates": candidates,
                 "error": r[8], "summary": r[9] or "", "review_verb": r[10] or "Download",
                 "execute_kind": r[11] or "",
                 "execute_args": json.loads(r[12] or "{}"),
                 "created_at": r[13], "finished_at": r[14],
+                "single": json.loads(r[15] or "{}"),
             })
         except (ValueError, TypeError) as e:
             _log.info("skipping unreadable jobs.db row %s: %s", r[0], e)

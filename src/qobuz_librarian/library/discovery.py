@@ -21,6 +21,7 @@ prefers the deepest catalog over a bare-name twin, cached to disk).
 import json
 import os
 import tempfile
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -62,19 +63,26 @@ from qobuz_librarian.ui_cli.logging import log, vlog
 _RESOLVE_CACHE_VERSION = 1
 _resolve_cache = None
 _resolve_cache_dirty = False
+_resolve_cache_lock = threading.Lock()
 
 
 def _load_resolve_cache() -> dict:
     global _resolve_cache
+    # Double-checked lock: the artist scan calls this from a ThreadPoolExecutor,
+    # so an unlocked lazy-init would let two workers both set {} and one's loaded
+    # entries get dropped.
     if _resolve_cache is None:
-        _resolve_cache = {}
-        try:
-            raw = json.loads(cfg.ARTIST_RESOLVE_CACHE_FILE
-                             .read_text(encoding="utf-8"))
-            if raw.get("version") == _RESOLVE_CACHE_VERSION:
-                _resolve_cache = raw.get("entries") or {}
-        except (OSError, ValueError):
-            pass
+        with _resolve_cache_lock:
+            if _resolve_cache is None:
+                loaded = {}
+                try:
+                    raw = json.loads(cfg.ARTIST_RESOLVE_CACHE_FILE
+                                     .read_text(encoding="utf-8"))
+                    if raw.get("version") == _RESOLVE_CACHE_VERSION:
+                        loaded = raw.get("entries") or {}
+                except (OSError, ValueError):
+                    pass
+                _resolve_cache = loaded
     return _resolve_cache
 
 
@@ -217,7 +225,11 @@ class DiscoveryResult:
     skipped: list = field(default_factory=list)       # {dir, reason, qobuz_title, ...}
     unmatched_dirs: list = field(default_factory=list)  # folders no Qobuz album matched
     catalog: list = field(default_factory=list)       # the fetched catalog (callers may reuse)
-    catalog_truncated: bool = False
+    # The catalog fetch was a transient SHORT page (a partial 200), NOT a
+    # legitimate cap — so it's not the whole discography. Baseline-recording
+    # paths must skip an incomplete fetch, else the dropped albums re-surface as
+    # "new"/missing on the next scan.
+    catalog_incomplete: bool = False
 
     @property
     def partials(self):
@@ -237,6 +249,11 @@ class NewReleaseResult:
     artist_name: str | None
     new_gaps: list = field(default_factory=list)
     current_ids: list = field(default_factory=list)
+    # True when the catalog fetch came back empty AND with no total — a failed/
+    # empty 200, indistinguishable from a transient API hiccup. The caller skips
+    # re-baselining this artist so a wipe-to-[] can't dump the back catalogue as
+    # "new" on the next successful check.
+    fetch_failed: bool = False
 
 
 def _record_owned_title(owned_titles, album_dir):
@@ -256,10 +273,12 @@ def owned_album_titles(album_dirs):
     return titles
 
 
-def _owned_by_name(owned_titles, album):
+def _owned_by_name(owned_titles, album, artist_name=None):
     """True when the album's bare title (year-aware) already names an owned
-    folder — the backstop for a resolution miss, so a duplicate isn't offered."""
-    return not filter_owned_albums([(album, 1)], owned_titles)
+    folder — the backstop for a resolution miss, so a duplicate isn't offered.
+    ``artist_name`` lets filter_owned_albums offer distinct self-titled albums
+    (a 2001 'Weezer' when only the 1994 one is owned) instead of hiding them."""
+    return not filter_owned_albums([(album, 1)], owned_titles, artist_name)
 
 
 def _is_hidden(hidden, artist_name, album):
@@ -279,7 +298,13 @@ def _collecting(single_store, artist_name, album_dirs):
     means show everything."""
     if single_store is None:
         return True
-    return len(album_dirs) > hidden_mod.n_singles_for(artist_name, single_store)
+    # Derive per-folder, not by count: an artist is collecting if ANY owned
+    # folder isn't a grabbed single (is_single normalises the folder name to the
+    # mark's fingerprint). A bare folder-count-vs-mark-count comparison drifts —
+    # a mark whose folder was deleted, or extra non-single folders, flips the
+    # suppression both ways.
+    return any(not hidden_mod.is_single(artist_name, ad.name, single_store)
+               for ad in album_dirs)
 
 
 def _materialize_tracks(album, token):
@@ -351,7 +376,8 @@ def match_album_dir(album_dir, artist_name, token, *, catalog, prefer_hires):
 
 def discover_fully_missing(artist_name, catalog, opts, *, hidden=None,
                            handled_ids=frozenset(), resolved_dirs=frozenset(),
-                           owned_titles=None, token=None, quick=False):
+                           owned_titles=None, token=None, quick=False,
+                           single_store=None):
     """Catalog albums the owned-album pass didn't account for: fully-missing
     releases, plus a collaboration filed under another artist's folder that
     still has track gaps. Shared by the CLI missing-albums step and the web
@@ -372,6 +398,12 @@ def discover_fully_missing(artist_name, catalog, opts, *, hidden=None,
         pairs = filter_short_releases(pairs, cfg.MISSING_ALBUMS_MIN_TRACKS)
     for album, _n_versions in pairs:
         if album.get("id") in handled_ids:
+            continue
+        # A deliberately-grabbed single from this album: the owned pass suppresses
+        # it, but this fully-missing pass would otherwise re-offer it as a gap.
+        # (single_store is None for the single-artist Artist mode, which shows
+        # everything by design.)
+        if _is_single(single_store, artist_name, album):
             continue
         if _is_hidden(hidden, artist_name, album):
             continue
@@ -406,10 +438,24 @@ def discover_fully_missing(artist_name, catalog, opts, *, hidden=None,
         # folders directly under the artist; a same-named folder its resolution
         # missed must not be re-offered, so check the year-aware owned-by-name
         # backstop before calling the album fully-missing.
-        if _owned_by_name(owned_titles, album):
+        if _owned_by_name(owned_titles, album, artist_name):
             continue
         gaps.append(AlbumGap(album, None))
     return gaps
+
+
+def _catalog_fetch_incomplete(catalog, total, limit) -> bool:
+    """True when get_artist_albums returned a transient SHORT page rather than a
+    legitimate cap. A capped result fills the page (len == limit); a short page
+    (a partial 200 mid-pagination) has fewer than BOTH the limit and Qobuz's own
+    reported total. A fully-empty 200 (total None, no albums key) is incomplete
+    too. Recording a baseline from an incomplete fetch is the bug this guards:
+    the dropped albums later re-surface as 'new releases' (pre-ticked for
+    download) or as missing gaps. Mirrors get_artist_albums' own `complete` test.
+    """
+    if not catalog and total is None:
+        return True
+    return total is not None and len(catalog) < total and len(catalog) < limit
 
 
 def find_missing_for_artist(query, *, token, opts=None, artist_dir=None,
@@ -443,8 +489,13 @@ def find_missing_for_artist(query, *, token, opts=None, artist_dir=None,
         log.info(f"  Qobuz lists {total} albums; scanning the first "
                  f"{len(catalog)}.")
 
-    result = DiscoveryResult(artist_id, artist_name, catalog=catalog,
-                             catalog_truncated=truncated)
+    # catalog_incomplete is the PRECISE short-page signal (distinct from the
+    # informational `truncated` above, which also fires on a legitimate cap):
+    # only a fetch shorter than BOTH the limit and the total is untrustworthy.
+    result = DiscoveryResult(
+        artist_id, artist_name, catalog=catalog,
+        catalog_incomplete=_catalog_fetch_incomplete(
+            catalog, total, cfg.ARTIST_CATALOG_LIMIT))
     handled_ids = set()
     resolved_dirs = set()
 
@@ -465,7 +516,8 @@ def find_missing_for_artist(query, *, token, opts=None, artist_dir=None,
                          or _collecting(single_store, artist_name, album_dirs)):
         result.gaps.extend(discover_fully_missing(
             artist_name, catalog, opts, hidden=hidden, handled_ids=handled_ids,
-            resolved_dirs=resolved_dirs, owned_titles=owned_titles, token=token))
+            resolved_dirs=resolved_dirs, owned_titles=owned_titles, token=token,
+            single_store=single_store))
 
     vlog(f"  discovery({artist_name!r}): {len(result.partials)} partial, "
          f"{len(result.fully_missing)} fully-missing, "
@@ -503,6 +555,17 @@ def find_new_releases_for_artist(query, *, token, opts=None, seen_by_id=None,
     # check exists to find. The fetch refreshes the shared cache as a side effect.
     catalog, _total = get_artist_albums(artist_id, token,
                                         limit=cfg.ARTIST_CATALOG_LIMIT, fresh=True)
+    # Don't record a baseline from an INCOMPLETE fetch. A 200 with no "albums"
+    # key yields items=[]/total=None; a transient short page mid-pagination
+    # yields a non-empty catalog SHORTER than Qobuz's reported total (without
+    # hitting our own limit). Either way the dropped albums would re-surface as
+    # "new" (pre-ticked for download) on the next successful check. Preserve the
+    # previous baseline and flag the failure so the caller skips re-baselining.
+    if _catalog_fetch_incomplete(catalog, _total, cfg.ARTIST_CATALOG_LIMIT):
+        prev = (seen_by_id or {}).get(artist_id)
+        return NewReleaseResult(artist_id, artist_name, [],
+                                prev if prev is not None else [],
+                                fetch_failed=True)
     lossless = [a for a in catalog if is_lossless_album(a)]
     current_ids = [str(a["id"]) for a in lossless if a.get("id") is not None]
 
@@ -524,7 +587,8 @@ def find_new_releases_for_artist(query, *, token, opts=None, seen_by_id=None,
 
     new_gaps = discover_fully_missing(
         artist_name, fresh, opts, hidden=hidden,
-        owned_titles=owned_album_titles(album_dirs), token=token, quick=True)
+        owned_titles=owned_album_titles(album_dirs), token=token, quick=True,
+        single_store=single_store)
     return NewReleaseResult(artist_id, artist_name, new_gaps, current_ids)
 
 
@@ -575,5 +639,13 @@ def classify_owned_match(result, m, hidden, single_store, artist_name,
             return
         result.gaps.append(AlbumGap(m.qobuz_album, ad, m.missing, m.present))
     else:
+        # Graduation is completeness-driven, not button-driven: an album that's
+        # now fully present on disk drops any stale single marker no matter which
+        # path completed it (CLI fill, repair, bulk import) — otherwise the mark
+        # suppresses the artist from walks and new-release checks forever.
+        if single_store is not None and _is_single(single_store, artist_name,
+                                                   m.qobuz_album):
+            hidden_mod.unmark_single(
+                artist_name, (m.qobuz_album or {}).get("title") or "")
         result.complete.append({"dir": ad, "qobuz_album": m.qobuz_album,
                                  "existing": m.existing})

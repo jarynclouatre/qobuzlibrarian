@@ -100,13 +100,16 @@ def load_pending_queue():
             f"  ⚠  {cfg.PENDING_QUEUE_FILE.name} version {ver!r} not supported "
             f"(expected {cfg.PENDING_QUEUE_VERSION}); ignoring."))
         return None, None, None
-    try:
-        items = [_deserialize_queue_item(d) for d in payload.get("items") or []]
-    except Exception as e:
-        log.info(fmt(C.YELLOW,
-            f"  ⚠  {cfg.PENDING_QUEUE_FILE.name} contained malformed item "
-            f"({e}); ignoring."))
-        return None, None, None
+    # Deserialize per item: one malformed entry must not discard every other
+    # valid queued album. Skip and log the bad ones, keep the rest.
+    items = []
+    for d in payload.get("items") or []:
+        try:
+            items.append(_deserialize_queue_item(d))
+        except Exception as e:
+            log.info(fmt(C.YELLOW,
+                f"  ⚠  {cfg.PENDING_QUEUE_FILE.name} skipped a malformed item "
+                f"({e})."))
     return items, payload.get("mode"), payload.get("saved_at")
 
 

@@ -38,7 +38,8 @@ def iter_library_flacs(*, artist_dirs=None):
     for artist_dir in artists:
         for album_dir in list_artist_album_dirs(artist_dir):
             try:
-                flacs = sorted(album_dir.rglob("*.flac"))
+                flacs = sorted(p for p in album_dir.rglob("*")
+                               if p.is_file() and p.suffix.lower() == ".flac")
             except OSError as e:
                 vlog(f"lyrics walk: couldn't list {album_dir}: {e}")
                 continue

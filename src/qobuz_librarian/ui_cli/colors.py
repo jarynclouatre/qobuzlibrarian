@@ -24,7 +24,11 @@ def _detect_color() -> bool:
     _fc = os.environ.get("FORCE_COLOR", "")
     if _fc and _fc != "0":
         return True
-    return sys.stdout.isatty() and os.environ.get("TERM", "") != "dumb"
+    # die() and other error output goes to stderr, so honour a TTY on EITHER
+    # stream — otherwise raw ANSI escapes leak into a redirected stdout while
+    # the user watches a coloured terminal on stderr (or vice versa).
+    return ((sys.stdout.isatty() or sys.stderr.isatty())
+            and os.environ.get("TERM", "") != "dumb")
 
 
 _enabled = _detect_color()

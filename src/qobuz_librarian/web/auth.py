@@ -55,6 +55,22 @@ _LOGIN_WINDOW = 3600
 # table; stale buckets are pruned continuously, this caps the live set.
 _MAX_TRACKED_IPS = 2048
 
+# Per-username failure tracking, in ADDITION to per-IP: an attacker on a /64 of
+# residential IPv6 can rotate source addresses to dodge the per-IP throttle, so
+# also lock the targeted account after _USER_LOGIN_MAX failures regardless of
+# source IP.
+_user_failures: dict[str, list[float]] = {}
+_USER_LOGIN_MAX = 10
+_MAX_TRACKED_USERS = 1024
+
+# Active session tokens: a random per-login token (the cookie value) → expiry
+# epoch seconds. The cookie carries one of THESE, not the credential secret, so
+# logout and password changes can revoke sessions (one or all). In-memory: a
+# restart logs every browser out — acceptable for a self-hosted app and strictly
+# safer than a single 30-day shared, non-revocable bearer token.
+_sessions: dict[str, float] = {}
+_sessions_lock = threading.Lock()
+
 
 def auth_disabled() -> bool:
     """True only when WEB_AUTH is the literal 'none'. Blank/unset leaves auth
@@ -95,13 +111,25 @@ def _read() -> dict:
     current = str(cfg.WEB_AUTH_FILE)
     if _cred_cache is not None and _cred_cache_path == current:
         return _cred_cache
-    _cred_cache_path = current
     try:
         data = json.loads(cfg.WEB_AUTH_FILE.read_text(encoding="utf-8"))
         _cred_cache = data if isinstance(data, dict) else {}
-    except (OSError, ValueError):
+        _cred_cache_path = current
+        return _cred_cache
+    except FileNotFoundError:
+        # No creds file yet (fresh install) — a stable "unconfigured" state,
+        # safe to cache so the open-setup phase doesn't re-stat every request.
         _cred_cache = {}
-    return _cred_cache
+        _cred_cache_path = current
+        return _cred_cache
+    except (OSError, ValueError):
+        # A transient read failure (NFS/CIFS not ready, a brief I/O error, a
+        # half-written file) must NOT be cached: caching {} would permanently
+        # report "no creds configured" and re-expose the open /setup page until
+        # the next set_credentials(). Return a throwaway dict and retry next call.
+        _cred_cache = None
+        _cred_cache_path = None
+        return {}
 
 
 def credentials_configured() -> bool:
@@ -137,7 +165,29 @@ def set_credentials(username: str, password: str) -> bool:
                 os.unlink(tmp)
     except OSError:
         return False
+    # A password change (or first setup) invalidates every existing session:
+    # the old per-session tokens must no longer authenticate.
+    revoke_all_sessions()
     return True
+
+
+def _env_password() -> str:
+    """WEB_AUTH_PASSWORD from the env, or WEB_AUTH_PASSWORD_FILE (Docker-secret
+    form) when the env var is unset — so the admin password can stay out of
+    `docker inspect` and the process environment, exactly like
+    QOBUZ_USER_AUTH_TOKEN_FILE does for the Qobuz token."""
+    pw = os.environ.get("WEB_AUTH_PASSWORD", "")
+    if pw:
+        return pw
+    path = os.environ.get("WEB_AUTH_PASSWORD_FILE", "").strip()
+    if not path:
+        return ""
+    try:
+        with open(path, encoding="utf-8") as f:
+            # Strip only the trailing newline a file editor adds.
+            return f.read().rstrip("\n")
+    except OSError:
+        return ""
 
 
 def apply_env_credentials() -> str:
@@ -155,7 +205,7 @@ def apply_env_credentials() -> str:
     if auth_disabled():
         return "noop"
     user = os.environ.get("WEB_AUTH_USER", "").strip()
-    password = os.environ.get("WEB_AUTH_PASSWORD", "")
+    password = _env_password()
     if not user and not password:
         return "noop"
     if not user or not password:
@@ -187,15 +237,50 @@ def verify_login(username: str, password: str) -> bool:
 
 
 def session_value() -> str:
-    """The value a signed-in browser carries — the persisted session secret."""
+    """The persisted per-credential session secret. No longer the cookie value
+    (sessions carry per-login tokens now), but still written by set_credentials
+    and rotated on a password change, so it doubles as the 'configured' marker."""
     return _read().get("session_secret") or ""
 
 
+def mint_session() -> str:
+    """Issue a fresh per-login session token (the cookie value) and return it."""
+    token = secrets.token_urlsafe(32)
+    now = time.time()
+    with _sessions_lock:
+        for t, exp in list(_sessions.items()):
+            if exp <= now:
+                del _sessions[t]
+        _sessions[token] = now + _COOKIE_MAX_AGE
+    return token
+
+
+def revoke_session(token: str) -> None:
+    """Invalidate one session (log a single browser out)."""
+    if not token:
+        return
+    with _sessions_lock:
+        _sessions.pop(token, None)
+
+
+def revoke_all_sessions() -> None:
+    """Invalidate every session (e.g. on a password change)."""
+    with _sessions_lock:
+        _sessions.clear()
+
+
 def verify_session(cookie_value: str) -> bool:
-    secret = session_value()
-    if not secret or not cookie_value:
+    if not cookie_value:
         return False
-    return _constant_time_eq(cookie_value, secret)
+    now = time.time()
+    with _sessions_lock:
+        exp = _sessions.get(cookie_value)
+        if exp is None:
+            return False
+        if exp <= now:
+            del _sessions[cookie_value]
+            return False
+        return True
 
 
 def _secure(request) -> bool:
@@ -210,7 +295,7 @@ def set_session_cookie(response, request) -> None:
     # re-issues it. Strict keeps the auth cookie off every cross-site request.
     response.set_cookie(
         SESSION_COOKIE,
-        session_value(),
+        mint_session(),
         max_age=_COOKIE_MAX_AGE,
         httponly=True,
         samesite="strict",
@@ -230,39 +315,68 @@ def auth_active() -> bool:
 
 def _prune_failures(now: float) -> None:
     """Drop buckets with no in-window failures left. Caller holds _login_lock."""
-    stale = [ip for ip, ts in _login_failures.items()
-             if not any(now - t < _LOGIN_WINDOW for t in ts)]
-    for ip in stale:
-        del _login_failures[ip]
+    for bucket in (_login_failures, _user_failures):
+        stale = [k for k, ts in bucket.items()
+                 if not any(now - t < _LOGIN_WINDOW for t in ts)]
+        for k in stale:
+            del bucket[k]
 
 
-def check_login_rate_limit(ip: str) -> bool:
-    """True if this IP may attempt a login, False if it's been blocked."""
+def _norm_user(username: str) -> str:
+    return (username or "").strip().casefold()
+
+
+def check_login_rate_limit(ip: str, username: str = "") -> bool:
+    """True if BOTH this IP and this account may attempt a login. The per-account
+    counter (keyed on the submitted username) blocks an attacker who rotates
+    source IPs against one account — the per-IP counter alone is bypassable."""
     now = time.monotonic()
+    uname = _norm_user(username)
     with _login_lock:
         times = [t for t in _login_failures.get(ip, []) if now - t < _LOGIN_WINDOW]
         if times:
             _login_failures[ip] = times
         else:
             _login_failures.pop(ip, None)
-        return len(times) < _LOGIN_MAX
+        if len(times) >= _LOGIN_MAX:
+            return False
+        if uname:
+            utimes = [t for t in _user_failures.get(uname, [])
+                      if now - t < _LOGIN_WINDOW]
+            if utimes:
+                _user_failures[uname] = utimes
+            else:
+                _user_failures.pop(uname, None)
+            if len(utimes) >= _USER_LOGIN_MAX:
+                return False
+        return True
 
 
-def record_login_failure(ip: str) -> None:
+def record_login_failure(ip: str, username: str = "") -> None:
     now = time.monotonic()
+    uname = _norm_user(username)
     with _login_lock:
         _prune_failures(now)
         if ip not in _login_failures and len(_login_failures) >= _MAX_TRACKED_IPS:
-            oldest = min(_login_failures, key=lambda k: min(_login_failures[k]))
-            del _login_failures[oldest]
+            del _login_failures[min(_login_failures,
+                                    key=lambda k: min(_login_failures[k]))]
         _login_failures.setdefault(ip, []).append(now)
+        if uname:
+            if (uname not in _user_failures
+                    and len(_user_failures) >= _MAX_TRACKED_USERS):
+                del _user_failures[min(_user_failures,
+                                       key=lambda k: min(_user_failures[k]))]
+            _user_failures.setdefault(uname, []).append(now)
 
 
-def clear_login_failures(ip: str) -> None:
-    """Forget an IP's failures after a successful login so an earlier typo run
-    doesn't leave the next session one slip from a lockout."""
+def clear_login_failures(ip: str, username: str = "") -> None:
+    """Forget an IP's (and the account's) failures after a successful login so an
+    earlier typo run doesn't leave the next session one slip from a lockout."""
+    uname = _norm_user(username)
     with _login_lock:
         _login_failures.pop(ip, None)
+        if uname:
+            _user_failures.pop(uname, None)
 
 
 class AuthMiddleware(BaseHTTPMiddleware):
@@ -291,8 +405,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
             return self._reject(request, SETUP_PATH)
 
         cookie = request.cookies.get(SESSION_COOKIE)
-        secret = creds.get("session_secret") or ""
-        if cookie and secret and _constant_time_eq(cookie, secret):
+        if cookie and verify_session(cookie):
             return await call_next(request)
         if path == LOGIN_PATH:
             return await call_next(request)

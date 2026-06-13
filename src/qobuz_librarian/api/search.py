@@ -82,6 +82,10 @@ def get_album(album_id, token):
         return cached
     album = qobuz_get("album/get", {"album_id": album_id, "extra": "track_ids"}, token)
     album = _normalize_album_fields(album)
+    if not isinstance(album, dict):
+        # A malformed/error 200 body (list/str/None) would crash on `.get` below
+        # and escape every caller that only catches QobuzError — raise one here.
+        raise QobuzError(f"album/get returned a non-dict response for {album_id!r}")
     # Don't cache a track-less response. The album cache has no TTL, so a
     # transient/partial 200 with an empty tracks block would otherwise report
     # the album as empty forever; serve it this once but only persist a real
@@ -89,6 +93,16 @@ def get_album(album_id, token):
     if (album.get("tracks") or {}).get("items"):
         album_cache.put(album_id, album)
     return album
+
+
+def get_track(track_id, token):
+    """Fetch one Qobuz track by id (for a pasted track URL in Tracks mode).
+
+    Returns the track dict — which carries its `album` sub-object, so the search
+    results renderer has everything it needs — or None when the id doesn't
+    resolve to a real track."""
+    t = qobuz_get("track/get", {"track_id": track_id}, token)
+    return t if isinstance(t, dict) and t.get("id") else None
 
 
 def search_tracks(query, token, limit=10):
@@ -175,6 +189,10 @@ def get_artist_albums(artist_id, token, limit=None, fresh=False):
         block = albums_obj.get("items") or []
         if qobuz_total is None:
             t = albums_obj.get("total")
+            if isinstance(t, bool):
+                t = None
+            elif isinstance(t, str) and t.strip().isdigit():
+                t = int(t)
             if isinstance(t, int):
                 qobuz_total = t
         if not block:

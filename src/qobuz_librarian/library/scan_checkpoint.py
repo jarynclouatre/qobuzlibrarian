@@ -46,8 +46,12 @@ def _write(data) -> None:
             cfg.SCAN_CHECKPOINT_FILE.suffix + ".tmp")
         tmp.write_text(json.dumps(data), encoding="utf-8")
         tmp.replace(cfg.SCAN_CHECKPOINT_FILE)
-    except OSError:
-        pass
+    except OSError as e:
+        # Surface (verbose) rather than fail completely silent — on a full or
+        # read-only data volume an hours-long scan would otherwise save no
+        # resumable checkpoint with zero signal.
+        from qobuz_librarian.ui_cli.logging import vlog
+        vlog(f"scan checkpoint write failed ({e}); resume won't be available")
 
 
 def load(kind) -> dict | None:
@@ -56,9 +60,14 @@ def load(kind) -> dict | None:
     cp = _read().get(kind)
     if not isinstance(cp, dict):
         return None
-    cp.setdefault("scanned", [])
-    cp.setdefault("candidates", [])
-    cp.setdefault("seen", {})
+    # setdefault only fills ABSENT keys; coerce present-but-wrong types too so a
+    # corrupt or hand-edited checkpoint can't crash the consumer's set()/dict().
+    if not isinstance(cp.get("scanned"), list):
+        cp["scanned"] = []
+    if not isinstance(cp.get("candidates"), list):
+        cp["candidates"] = []
+    if not isinstance(cp.get("seen"), dict):
+        cp["seen"] = {}
     return cp
 
 

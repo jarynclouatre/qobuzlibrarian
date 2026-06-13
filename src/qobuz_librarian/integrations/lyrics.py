@@ -216,13 +216,20 @@ def write_post_import_sidecars(album_dirs):
             written += 1
             if strip_tag:
                 try:
-                    if "lyrics" in f.tags:
-                        del f.tags["lyrics"]
+                    had = False
+                    for _k in ("lyrics", "unsyncedlyrics"):
+                        if _k in f.tags:
+                            del f.tags[_k]
+                            had = True
+                    if had:
                         # Atomic save (temp copy + os.replace) like
                         # lyric_fetch.write_lyrics — a bare in-place save can
                         # corrupt the library file if a crash interrupts mutagen
                         # while it rewrites the metadata block.
-                        fd, tmp = tempfile.mkstemp(suffix=".flac", dir=str(fp.parent))
+                        # Name the temp so it can't be mistaken for a real track
+                        # by a concurrent scan: end it in '.tmp', not '.flac'.
+                        fd, tmp = tempfile.mkstemp(
+                            prefix=fp.name + ".", suffix=".tmp", dir=str(fp.parent))
                         os.close(fd)
                         try:
                             shutil.copy2(str(fp), tmp)

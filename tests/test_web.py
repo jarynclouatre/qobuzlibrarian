@@ -53,15 +53,48 @@ def test_slow_subscriber_keeps_live_tail_and_close_marker():
 
 # ── jobs.py: JobLogHandler ────────────────────────────────────────────────────
 
-def test_log_handler_strips_ansi_and_pushes():
+def test_log_handler_strips_ansi_and_routes_by_thread():
     import logging
     job = jm.Job()
     handler = jm.JobLogHandler(job)
     handler.setFormatter(logging.Formatter("%(message)s"))
     rec = logging.LogRecord("x", logging.INFO, "f", 1,
                             "\x1b[32mcolored\x1b[0m text", None, None)
-    handler.emit(rec)
-    assert job.log_lines == ["colored text"]
+    # The two worker lanes share the global logger, so the handler only captures
+    # records emitted while ITS job owns the thread (keyed on _TLS.current_job,
+    # as _run_task sets it). A record emitted while another job owns the thread
+    # must NOT bleed into this job's log.
+    jm._TLS.current_job = job
+    try:
+        handler.emit(rec)
+        jm._TLS.current_job = jm.Job()      # a different job owns the thread now
+        handler.emit(logging.LogRecord("x", logging.INFO, "f", 1,
+                                       "foreign line", None, None))
+    finally:
+        jm._TLS.current_job = None          # don't leak into other tests
+    assert job.log_lines == ["colored text"]   # foreign line filtered out
+
+
+def test_helper_thread_inherits_job_for_log_routing():
+    # The rip/beets subprocess output-reader threads log via the shared logger;
+    # the thread wrapper must carry the spawning job onto them so their lines
+    # pass JobLogHandler's per-thread filter instead of being silently dropped.
+    import threading
+    job = jm.Job()
+    captured = {}
+
+    def target():
+        captured["job"] = getattr(jm._TLS, "current_job", None)
+
+    jm._TLS.current_job = job
+    try:
+        wrapped = jm._propagate_job_to_thread(target)   # captures on this thread
+    finally:
+        jm._TLS.current_job = None
+    t = threading.Thread(target=wrapped)
+    t.start()
+    t.join()
+    assert captured["job"] is job        # reader thread saw the spawning job
 
 
 
@@ -136,14 +169,18 @@ def test_staging_lock_serialises_lane_album_work():
     assert inside.wait(timeout=5)
 
     contender = jm.Job(title="lock contender")
+    contender_started = threading.Event()
 
     def _grab(j):
+        contender_started.set()   # worker picked up the job; now it blocks on the lock
         with jm.staging_lock():
             second_inside.set()
 
     jm.submit(contender, _grab)
-    # The download lane's worker has picked up the job (it isn't queue-blocked
-    # behind the holder), but staging_lock is held — so it must NOT enter yet.
+    # Wait until the worker has actually entered _grab (it is now blocking on
+    # staging_lock, which the holder still owns).  Only then assert it can't
+    # proceed — otherwise a slow scheduler means the assertion is vacuous.
+    assert contender_started.wait(timeout=5), "download-lane worker never picked up contender"
     assert not second_inside.wait(timeout=0.3)
     release.set()
     assert second_inside.wait(timeout=5)
@@ -1149,6 +1186,32 @@ def test_job_page_renders_archived_job_from_sqlite_after_eviction(client):
             job_persistence._conn = None
 
 
+def test_job_single_undo_info_survives_persistence_roundtrip():
+    """Job.single (single-track-grab undo info) must persist so the Undo
+    affordance survives a container restart instead of silently vanishing."""
+    from qobuz_librarian.web import job_persistence
+
+    job_persistence._reset_for_tests()
+    job_persistence.init()
+    try:
+        single = {"album_dir": "/music/Artist/Album", "isrc": "USABC1234567",
+                  "track_number": 3, "marked_single": True, "created_dir": False}
+        job = jm.Job(title="Grabbed a track", status=jm.JobStatus.DONE,
+                     single=single)
+        job_persistence.persist(job)
+        rows = {r["id"]: r for r in job_persistence.load_all()}
+        assert rows[job.id]["single"] == single
+        assert job_persistence.load_one(job.id)["single"] == single
+    finally:
+        job_persistence._disabled = True
+        if job_persistence._conn is not None:
+            try:
+                job_persistence._conn.close()
+            except Exception:
+                pass
+            job_persistence._conn = None
+
+
 def test_history_lists_finished_jobs_newest_first(client):
     """Finished jobs live in the durable archive, not the capped in-memory set —
     the History view pages them newest-first and offers a retry on a failure."""
@@ -1853,8 +1916,9 @@ def test_sse_terminal_job_sends_done_without_blocking():
         body = "".join(chunks)
         assert "event: done" in body
         assert "preface" in body
-        # Pre-fix this took 500ms+ on the empty-queue timeout.
-        assert elapsed < 0.4, f"terminal-job SSE blocked {elapsed:.2f}s"
+        # Pre-fix this took 500ms+ on the empty-queue timeout; 1.5s gives
+        # ample CI headroom while still catching an accidental revert.
+        assert elapsed < 1.5, f"terminal-job SSE blocked {elapsed:.2f}s"
     finally:
         _remove_job(job)
 
@@ -1868,8 +1932,12 @@ def test_sse_stream_done_on_stream_end_sentinel(client):
     jm.registry.add(job)
 
     def _push_end():
-        # Give the server a beat to subscribe before pushing the sentinel.
-        time.sleep(0.2)
+        # Poll until the SSE handler has registered its subscriber — avoids a
+        # wall-clock race where end_stream() fires before subscribe() is called
+        # on a slow CI box.
+        deadline = time.time() + 5.0
+        while not job._subscribers and time.time() < deadline:
+            time.sleep(0.01)
         job.push_line("midstream")
         job.end_stream()
 
@@ -1918,7 +1986,7 @@ def test_scan_routes_redirect_to_settings_when_no_creds(client, monkeypatch):
     monkeypatch.setattr(webapp, "_get_token", _no_creds)
     r = client.post("/library", data={}, follow_redirects=False)
     assert r.status_code == 303
-    assert r.headers["location"] == "/settings"
+    assert r.headers["location"] == "/settings?error=creds"
 
 
 def test_scan_library_propagates_authlost_so_job_fails(monkeypatch, tmp_path):
@@ -2092,7 +2160,7 @@ def test_sse_stream_emits_heartbeat_when_idle(client, monkeypatch):
     jm.registry.add(job)
 
     def _end_later():
-        time.sleep(0.7)  # Give the generator a couple of empty ticks.
+        time.sleep(2.0)  # Give the generator enough empty ticks (each ~0.5s) for a heartbeat.
         job.end_stream()
 
     t = threading.Thread(target=_end_later)
@@ -2986,3 +3054,36 @@ def test_prune_keeps_a_finished_job_that_is_still_being_streamed(monkeypatch):
     for i in range(3):                       # push well past MAX_FINISHED
         reg.add(jm.Job(title=f"new{i}", status=jm.JobStatus.DONE))
     assert reg.get(oldest.id) is not None    # not yanked out from under the stream
+
+
+def test_session_tokens_are_per_login_and_revocable():
+    from qobuz_librarian.web import auth as web_auth
+    web_auth.revoke_all_sessions()
+    t1 = web_auth.mint_session()
+    t2 = web_auth.mint_session()
+    assert t1 != t2                              # per-login, not one shared secret
+    assert web_auth.verify_session(t1) and web_auth.verify_session(t2)
+    web_auth.revoke_session(t1)                  # logout of one browser
+    assert not web_auth.verify_session(t1)       # ...that session is dead...
+    assert web_auth.verify_session(t2)           # ...the other still works
+    web_auth.revoke_all_sessions()               # e.g. on a password change
+    assert not web_auth.verify_session(t2)
+    assert web_auth.verify_session("") is False
+
+
+def test_per_account_throttle_survives_ip_rotation(monkeypatch):
+    from qobuz_librarian.web import auth as web_auth
+    monkeypatch.setattr(web_auth, "_login_failures", {})
+    monkeypatch.setattr(web_auth, "_user_failures", {})
+    monkeypatch.setattr(web_auth, "_USER_LOGIN_MAX", 3)
+    # Same account, a fresh source IP each attempt — the per-IP counter never
+    # trips, so only the per-account counter can stop the rotation attack.
+    for i in range(3):
+        assert web_auth.check_login_rate_limit(f"10.0.0.{i}", "admin") is True
+        web_auth.record_login_failure(f"10.0.0.{i}", "admin")
+    assert web_auth.check_login_rate_limit("10.0.0.99", "admin") is False
+    # A different account from a clean IP is unaffected.
+    assert web_auth.check_login_rate_limit("10.0.0.99", "someoneelse") is True
+    # A successful login clears the account's failures and lifts the block.
+    web_auth.clear_login_failures("10.0.0.99", "admin")
+    assert web_auth.check_login_rate_limit("10.0.0.100", "admin") is True

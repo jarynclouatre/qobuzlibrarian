@@ -25,6 +25,13 @@ def test_detect_auth_lost_only_fires_on_http_401():
     assert detect_auth_lost("Downloaded track 401 - Song Title.flac") is False
     assert detect_auth_lost("Downloading track 401 of 500") is False
     assert detect_auth_lost("") is False
+    # A real album title containing "Unauthorized" must not tear down creds
+    # mid-download (streamrip echoes titles in its progress output).
+    assert detect_auth_lost(
+        "Downloading The Unauthorized Biography of Reinhold Messner") is False
+    # But an actual 401 Unauthorized error line still fires.
+    assert detect_auth_lost(
+        "HTTPError: 401 Client Error: Unauthorized for url") is True
 
 
 def test_detect_rate_limited_catches_429_and_persistent_failures():

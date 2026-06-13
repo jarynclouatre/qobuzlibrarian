@@ -225,7 +225,12 @@ def run_artist_gap_fill(artist_name, artist_dir, args, token, *,
     # 'a' at any gap-fill prompt auto-confirms the rest of THIS artist's albums.
     # Scoped local — doesn't bleed into step 2 or the next artist in a walk.
     auto_yes_rest = False
-    queue = []  # download decisions, run as a batch after the prompting loop
+    # In shared_queue mode, append decisions STRAIGHT into shared_queue (not a
+    # local list): a Ctrl-C mid-loop then leaves the current artist's approvals
+    # in the caller's queue (which the walk persists on interrupt) instead of
+    # dropping them, and the 'd' flush can act on them mid-artist. Non-shared
+    # mode keeps a local list that _execute_download_queue drains below.
+    queue = shared_queue if shared_queue is not None else []
     # AuthLost / QobuzUnavailable mid-loop: stash it, finish the hand-off so the
     # artist's queue reaches shared_queue, then re-raise. Both mean "can't keep
     # scanning" — a lost token or an unreachable API — so they stop the same way.
@@ -303,6 +308,20 @@ def run_artist_gap_fill(artist_name, artist_dir, args, token, *,
                             "qobuz_title": pred})
             continue
 
+        if m.status == "low_overlap":
+            # A different, similarly-named album fuzz-matched this folder. Like a
+            # path mismatch it is NOT accounted for — fall through WITHOUT adding
+            # to handled_ids/resolved_dirs, so the real album stays offerable in
+            # step 2 and we don't auto-queue a wrong-album full download (the
+            # DirMatch carries missing=[]/present=[] here).
+            pred = (m.qobuz_album or {}).get("title") or "?"
+            log.info(fmt(C.YELLOW,
+                f"    ⚠  Qobuz fuzzy-match has low track overlap with this "
+                f"folder ({pred}) — possible wrong album. Skipping."))
+            results.append({"dir": ad, "result": "low_overlap",
+                            "qobuz_title": pred})
+            continue
+
         album = m.qobuz_album
         if album.get("id") is not None:
             handled_ids.add(album["id"])
@@ -368,7 +387,12 @@ def run_artist_gap_fill(artist_name, artist_dir, args, token, *,
                 log.info(fmt(C.GREEN,
                     f"    ✓  All {n_total} track(s) present — checking next"))
             results.append({"dir": ad, "result": "already_complete", "n_total": n_total})
-            _delete_siblings_of_complete(ad)
+            # Don't delete the picked album's siblings here: the sibling-group
+            # prompt promised deletion "on successful fill", but this branch did
+            # NO download (the folder was already complete). Deleting now would
+            # destroy a bonus-track sibling with no fill and no further consent,
+            # possibly many albums after the pick was made. The executor still
+            # deletes siblings after a real, verified fill.
             continue
 
         # Partial — offer to fill the gap.
@@ -434,9 +458,9 @@ def run_artist_gap_fill(artist_name, artist_dir, args, token, *,
             siblings_to_delete=sibling_choices.get(ad, []),
         ))
 
-    # Shared_queue mode — accumulate and let the caller flush.
+    # Shared_queue mode — decisions already went straight into shared_queue
+    # (see above), so just persist; no extend (that would double every item).
     if shared_queue is not None:
-        shared_queue.extend(queue)
         if save_callback is not None and queue:
             try:
                 save_callback()

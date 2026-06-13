@@ -36,7 +36,10 @@ HAVE_DOWNSAMPLE = (shutil.which("ffmpeg") is not None
 MUSIC_ROOT       = Path(os.environ.get("MUSIC_ROOT", "/music"))
 # 1024 is enough to clear large ID3v2 preambles on the rare track that has one.
 PROBE_BYTES      = 1024
-RESAMPLE_WORKERS = int(os.environ.get("RESAMPLE_WORKERS", "4"))
+try:
+    RESAMPLE_WORKERS = max(1, int(os.environ.get("RESAMPLE_WORKERS", "4")))
+except ValueError:
+    RESAMPLE_WORKERS = 4  # a bad override must not poison import or crash the pool
 
 
 def human(b):
@@ -154,6 +157,48 @@ def read_sample_rate(path: Path) -> int:
         return 0
 
 
+def parse_flac_total_samples(data: bytes) -> int:
+    """Return the 36-bit total_samples from FLAC STREAMINFO bytes, or 0.
+
+    FLAC stores 0 for 'unknown/streaming', which this also returns as 0 so
+    callers treat it as 'don't know' rather than 'zero-length'."""
+    i = data.find(b"fLaC")
+    if i < 0:
+        return 0
+    si = i + 8  # skip fLaC(4) + metadata block header(4)
+    if len(data) < si + 18:
+        return 0
+    return (((data[si + 13] & 0x0F) << 32)
+            | (data[si + 14] << 24)
+            | (data[si + 15] << 16)
+            | (data[si + 16] << 8)
+            | data[si + 17])
+
+
+def read_total_samples(path: Path) -> int:
+    """Total decoded sample count of a local FLAC, or 0 if unknown/unreadable.
+
+    Same shape as read_sample_rate: the 1 KB header byte-parse settles the
+    common case, and metaflac backstops a file whose STREAMINFO sits past the
+    probe window (a leading ID3 tag). Used to confirm a resample didn't drop
+    audio off a truncated source."""
+    try:
+        with open(path, "rb") as f:
+            data = f.read(PROBE_BYTES)
+        n = parse_flac_total_samples(data)
+    except OSError:
+        return 0
+    if n:
+        return n
+    try:
+        out = subprocess.run(
+            ["metaflac", "--show-total-samples", str(path)],
+            capture_output=True, text=True, timeout=10).stdout.strip()
+        return int(out) if out else 0
+    except (FileNotFoundError, OSError, subprocess.TimeoutExpired, ValueError):
+        return 0
+
+
 def target_rate(sr):
     if sr in (88200, 176400, 352800):
         return 44100
@@ -177,8 +222,11 @@ def scan_dir_for_hires(directory):
     n_flac = 0
     if not directory.is_dir():
         return {"hires": hires, "n_flac": 0}
-    for p in directory.rglob("*.flac"):
-        if p.name.startswith(".") or not p.is_file():
+    for p in directory.rglob("*"):
+        # Case-insensitive: the rest of the app indexes *.FLAC too (suffix.lower),
+        # so a case-sensitive glob would hide uppercase-extension files here.
+        if (p.name.startswith(".") or not p.is_file()
+                or p.suffix.lower() != ".flac"):
             continue
         n_flac += 1
         sr = read_sample_rate(p)
@@ -273,11 +321,20 @@ def resample_one(rel, sr, rate, af_filter, *, base_dir=None):
             [
                 "ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin",
                 "-i", str(src),
+                # Map every input stream so all embedded PICTURE blocks
+                # (front+back cover) survive — ffmpeg's default selection keeps
+                # only one video stream and would drop the rest.
+                "-map", "0",
                 "-af", af,
                 "-ar", str(rate),
                 "-sample_fmt", sample_fmt,
                 *depth_args,
                 "-c:a", "flac",
+                # Copy attached art bit-for-bit. Without this the FLAC muxer's
+                # default video codec (PNG) transcodes the embedded JPEG cover,
+                # inflating the file (a multi-MB Qobuz cover can wipe out the
+                # audio savings and make the output net-larger).
+                "-c:v", "copy",
                 "-map_metadata", "0",
                 "-y", str(tmp),
             ],
@@ -303,6 +360,42 @@ def resample_one(rel, sr, rate, af_filter, *, base_dir=None):
                 return (rel, sr, rate, None,
                         f"resampled to {out_bps}-bit, expected {bps}-bit; "
                         "left the original untouched")
+        # Verify the resample kept the whole stream. ffmpeg exits 0 on a
+        # truncated or mid-file-corrupt source, emitting only the decodable
+        # prefix, and flac -t then passes on that short output — so a damaged
+        # hi-res master (the exact file class the repair feature exists to
+        # catch) could be silently replaced by a shortened encode, laundering
+        # the damage out of every later integrity probe. Compare the output's
+        # sample count to the source scaled by the rate ratio.
+        in_samples = read_total_samples(src)
+        out_samples = read_total_samples(tmp)
+        if not (in_samples and out_samples):
+            # A 0 = STREAMINFO 'unknown' on either side means the length can't be
+            # verified. Previously this SKIPPED the check and replaced the master
+            # anyway, so a truncated-but-decodable encode of an unknown-length
+            # source slipped through. Refuse instead — keep the original; an
+            # un-shrunk file is a far cheaper outcome than a silently-truncated
+            # master with no recovery path.
+            return (rel, sr, rate, None,
+                    "couldn't verify resampled length (source/output STREAMINFO "
+                    "reports unknown sample count); left the original untouched")
+        expected = in_samples * rate / sr
+        # Cap the relative term at ~1s of output. expected*0.005 alone scales
+        # with length (~21s on a 70-min master), which would let a long source
+        # lose many seconds and still pass — the opposite of this gate's job.
+        tol = max(rate // 10, min(expected * 0.005, rate))
+        if abs(out_samples - expected) > tol:
+            return (rel, sr, rate, None,
+                    f"resampled to {out_samples / rate:.1f}s, expected "
+                    f"~{in_samples / sr:.1f}s; left the original untouched "
+                    "(source may be truncated)")
+        # With art copied bit-for-bit a real downsample always shrinks the file;
+        # if it somehow didn't, replacing the source only churns it (and a
+        # larger output would drive saved_bytes negative), so keep the original.
+        if out_size >= in_size:
+            return (rel, sr, rate, None,
+                    "resampled output not smaller than source; "
+                    "left the original untouched")
         # tempfile.mkstemp makes the temp 0o600; carry the source's mode across
         # the swap so a downsample doesn't quietly tighten a 0o644 library file
         # to owner-only (an annoyance on shared/NAS libraries).
@@ -372,8 +465,8 @@ def downsample_dir(directory, *, verbose=True, base_dir=None, log=print):
     af_filter, _ = detect_resampler_filter()
 
     candidates = []
-    for p in directory.rglob("*.flac"):
-        if p.name.startswith("."):
+    for p in directory.rglob("*"):
+        if p.name.startswith(".") or not p.is_file() or p.suffix.lower() != ".flac":
             continue
         try:
             rel = str(p.relative_to(_bd))
@@ -398,15 +491,21 @@ def downsample_dir(directory, *, verbose=True, base_dir=None, log=print):
     with ThreadPoolExecutor(max_workers=RESAMPLE_WORKERS) as ex:
         futs = {ex.submit(resample_one, rel, sr, rate, af_filter, base_dir=_bd): rel
                 for rel, sr, rate in candidates}
-        for fut in as_completed(futs):
-            rel, sr, rate, saved, err = fut.result()
-            if err is not None:
-                errors += 1
-                if verbose:
-                    log(f"  ✗ {Path(rel).name}: {err}")
-            else:
-                resampled += 1
-                saved_total += saved
+        try:
+            for fut in as_completed(futs):
+                rel, sr, rate, saved, err = fut.result()
+                if err is not None:
+                    errors += 1
+                    if verbose:
+                        log(f"  ✗ {Path(rel).name}: {err}")
+                else:
+                    resampled += 1
+                    saved_total += saved
+        except KeyboardInterrupt:
+            # Stop promptly: discard not-yet-started encodes instead of letting
+            # the context manager block on shutdown(wait=True) for the whole queue.
+            ex.shutdown(wait=False, cancel_futures=True)
+            raise
 
     if verbose and resampled:
         log(f"  ✓ downsample: {resampled} resampled, "

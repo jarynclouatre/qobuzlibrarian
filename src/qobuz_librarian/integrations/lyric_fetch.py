@@ -185,7 +185,6 @@ class TrackState:
     size: int = 0
     status: str = ""        # synced | plain | not_found | error | skipped
     source: str = ""        # provider that succeeded
-    attempts: int = 0
     last_seen: float = 0.0  # epoch of last attempt
 
 
@@ -194,7 +193,11 @@ def load_state(path: Path = DEFAULT_STATE_FILE) -> dict[str, TrackState]:
         return {}
     try:
         raw = json.loads(path.read_text())
-        return {k: TrackState(**v) for k, v in raw.items()}
+        # Strip legacy keys (e.g. 'attempts', removed in schema cleanup) so
+        # existing state files load cleanly instead of raising TypeError.
+        _known = TrackState.__dataclass_fields__
+        return {k: TrackState(**{fk: fv for fk, fv in v.items() if fk in _known})
+                for k, v in raw.items()}
     except Exception as e:
         logging.getLogger("lyric_fetch").warning(
             "State file unreadable (%s), starting fresh: %s", path, e
@@ -290,12 +293,25 @@ def classify(text: Optional[str]) -> str:
     return "synced" if SYNCED_RE.search(text) else "plain"
 
 
-def get_existing_lyrics(f) -> Optional[str]:
+def get_existing_lyrics(f, path=None, include_sidecar=False) -> Optional[str]:
     for key in ("lyrics", "LYRICS", "unsyncedlyrics", "UNSYNCEDLYRICS"):
         if key in f.tags:
             v = f.tags[key]
             if v:
                 return v[0]
+    # When the run writes sidecars, a track whose lyrics live ONLY in an existing
+    # .lrc would otherwise read as "missing", get re-fetched, and the fetched copy
+    # would CLOBBER the user's (possibly hand-synced) sidecar. Consult the sidecar
+    # so such a track is recognised as already having lyrics and left alone.
+    if include_sidecar and path is not None:
+        try:
+            side = Path(path).with_suffix(".lrc")
+            if side.is_file():
+                txt = side.read_text(encoding="utf-8", errors="replace")
+                if txt.strip():
+                    return txt
+        except OSError:
+            pass
     return None
 
 
@@ -331,8 +347,21 @@ def write_lyrics(f, content: str) -> None:
 
 
 def write_sidecar(path: Path, content: str) -> None:
-    """Write lyrics to a .lrc file next to the track (UTF-8)."""
+    """Write lyrics to a .lrc file next to the track (UTF-8).
+
+    Never downgrades a user's sidecar: if a non-empty .lrc already exists and is
+    SYNCED while the new content is not, keep the existing one. Combined with
+    get_existing_lyrics consulting the sidecar (so synced sidecars short-circuit
+    before any fetch), this stops a provider's plain lyrics from overwriting a
+    hand-synced .lrc."""
     target = path.with_suffix(".lrc")
+    try:
+        if target.is_file():
+            old = target.read_text(encoding="utf-8", errors="replace")
+            if old.strip() and classify(old) == "synced" and classify(content) != "synced":
+                return
+    except OSError:
+        pass
     fd, tmp = tempfile.mkstemp(dir=str(target.parent), prefix=target.name + ".",
                                suffix=".tmp")
     try:
@@ -574,7 +603,6 @@ def process_file(
         log.error("FLAC open failed: %s — %s", path, e)
         st.status = "error"
         st.last_seen = time.time()
-        st.attempts += 1
         _commit(state, key, st)
         return "error"
 
@@ -590,7 +618,9 @@ def process_file(
         _commit(state, key, st)
         return "skipped-long"
 
-    existing      = get_existing_lyrics(f)
+    existing      = get_existing_lyrics(
+        f, path, include_sidecar=(lyrics_format or "embed").strip().lower()
+        in ("sidecar", "both"))
     existing_kind = classify(existing)
 
     if existing_kind == "synced":
@@ -623,7 +653,6 @@ def process_file(
     lyrics, source, kind, providers_tried = search_lyrics(
         query, providers, duration, log, skip_plain=skip_plain,
     )
-    st.attempts += 1
     st.last_seen = time.time()
 
     if not lyrics:
@@ -758,7 +787,11 @@ def fetch_for_paths(
     def checkpoint() -> None:
         try:
             with _state_lock:
-                save_state(state, state_path)
+                # Merge into the on-disk state under the cross-process lock so a
+                # concurrent writer's entries survive — a blind save would clobber
+                # whatever another process (CLI import hook / other lane) wrote
+                # since this run loaded its snapshot (see update_state's docstring).
+                update_state(lambda disk: disk.update(state), state_path)
         except Exception as e:
             # An overnight run shouldn't die because the disk hiccupped on
             # one checkpoint write. Log and keep going — the next checkpoint
@@ -892,7 +925,7 @@ def index_existing(
         st = TrackState(
             mtime=mtime, size=size,
             status=kind, source="indexed",
-            attempts=0, last_seen=time.time(),
+            last_seen=time.time(),
         )
         _commit(state, key, st)
         return f"indexed-{kind}"
@@ -900,7 +933,11 @@ def index_existing(
     def checkpoint() -> None:
         try:
             with _state_lock:
-                save_state(state, state_path)
+                # Merge into the on-disk state under the cross-process lock so a
+                # concurrent writer's entries survive — a blind save would clobber
+                # whatever another process (CLI import hook / other lane) wrote
+                # since this run loaded its snapshot (see update_state's docstring).
+                update_state(lambda disk: disk.update(state), state_path)
         except Exception as e:
             log.warning("checkpoint failed (continuing): %s", e)
 

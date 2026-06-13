@@ -47,12 +47,18 @@ fi
 #     also drops a PyPI request from every download.
 enforce_streamrip() {
     local key="$1" want="$2" section="$3" cfg="$STREAMRIP_DIR/config.toml" cur
-    cur=$(sed -n "s/^${key} = \(.*\)/\1/p" "$cfg" 2>/dev/null)
+    # Match the key with flexible whitespace around '=' so a hand-edited
+    # 'downloads_enabled=false' (or extra spaces) is found and rewritten in
+    # place. Demanding exactly '^key = ' would miss it, fall through to the
+    # section-append branch below, and insert a DUPLICATE key — which makes the
+    # TOML unparseable and breaks every download. The '^' anchor still spares
+    # longer keys like failed_downloads_enabled.
+    cur=$(sed -n "s/^${key}[[:space:]]*=[[:space:]]*\(.*\)/\1/p" "$cfg" 2>/dev/null)
     if [ "$cur" = "$want" ]; then
         return 0
     fi
-    if grep -q "^${key} = " "$cfg" 2>/dev/null; then
-        if sed -i "s/^${key} = .*/${key} = ${want}/" "$cfg" 2>/dev/null; then
+    if grep -q "^${key}[[:space:]]*=" "$cfg" 2>/dev/null; then
+        if sed -i "s/^${key}[[:space:]]*=.*/${key} = ${want}/" "$cfg" 2>/dev/null; then
             echo "[init] Set streamrip ${key}=${want} (was ${cur})."
         else
             echo "[warn] couldn't set streamrip ${key}=${want} — mount /config read-write." >&2

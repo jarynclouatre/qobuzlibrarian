@@ -10,7 +10,7 @@ from pathlib import Path
 
 from qobuz_librarian import config as cfg
 from qobuz_librarian.ui_cli.colors import C, fmt
-from qobuz_librarian.ui_cli.logging import log, vlog
+from qobuz_librarian.ui_cli.logging import log, vlog, wrap_thread_target
 
 # Optional cancel-check hook. The web JobManager installs a callable
 # here that returns True when the active job has been cancelled; rip_url
@@ -245,6 +245,15 @@ def rip_url(url, timeout=None, live_output=False, quality=None):
     if quality is None:
         quality = cfg.STREAMRIP_QUALITY
     cmd = ["rip"]
+    # The librarian does its own missing-track bookkeeping (it re-rips for
+    # quality upgrades, truncation repair, and broken-FLAC retries), so
+    # streamrip's downloads database — which silently skips any URL it has
+    # already logged, exiting 0 with no new file — must be off. The Docker
+    # entrypoint forces downloads_enabled=false in the config, but a
+    # bare-metal/CLI run can fall back to the user's own
+    # ~/.config/streamrip/config.toml where it defaults ON; --no-db (a global
+    # rip flag) makes every re-rip work regardless of the config.
+    cmd += ["--no-db"]
     # streamrip does NOT honor a STREAMRIP_CONFIG env var; it looks at
     # ~/.config/streamrip/config.toml unless --config-path is passed. The
     # web Settings page writes credentials to cfg.STREAMRIP_CONFIG, so we
@@ -344,7 +353,10 @@ def rip_url(url, timeout=None, live_output=False, quality=None):
             log.info("    " + _src_re.sub("", _lvl_re.sub("", cleaned)))
         emit_error()
 
-    reader = threading.Thread(target=_reader, daemon=True)
+    # Wrap so the reader thread inherits the spawning job's context — its
+    # streamrip progress + per-track error lines log via the shared logger and
+    # would otherwise be dropped by the job-log handler's thread filter.
+    reader = threading.Thread(target=wrap_thread_target(_reader), daemon=True)
     reader.start()
 
     deadline = time.monotonic() + timeout if timeout else None
@@ -502,6 +514,21 @@ def _dir_is_all_residue(d):
     return True
 
 
+def _dir_has_audio(d):
+    """True if any audio file exists anywhere under d.
+
+    Used to spare a real leftover album's art/metadata from the residue
+    sweep — a cover.jpg beside the tracks is not an orphaned stray.
+    """
+    try:
+        for child in d.rglob("*"):
+            if child.is_file() and child.suffix.lower() in cfg.AUDIO_EXTS:
+                return True
+    except OSError:
+        return False
+    return False
+
+
 def cleanup_staging_residue():
     """Remove known streamrip non-audio residue from STAGING_DIR.
 
@@ -535,6 +562,14 @@ def cleanup_staging_residue():
                 pass
         try:
             if p.is_file() and p.suffix.lower() in _RESIDUE_EXTS:
+                # Don't sweep art/metadata that belongs to a real leftover
+                # album the user is about to import: a cover.jpg beside the
+                # tracks is the filesystem fetchart source under
+                # ARTWORK=sidecar. Only unlink residue whose containing album
+                # dir holds no audio (an orphaned stray). Files directly in
+                # STAGING_DIR root have no album dir, so they're always orphans.
+                if p.parent != cfg.STAGING_DIR and _dir_has_audio(p.parent):
+                    continue
                 p.unlink()
                 removed += 1
                 vlog(f"residue removed: {p.relative_to(cfg.STAGING_DIR)}")

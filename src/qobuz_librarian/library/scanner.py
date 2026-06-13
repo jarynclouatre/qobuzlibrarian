@@ -34,7 +34,14 @@ def iter_tree_no_symlinks(root: Path):
     scanned as if it lived there. Symlinked subdirs are yielded as leaves so
     the caller still sees them; they're just never followed.
     """
-    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+    def _onerror(err):
+        # os.walk swallows scandir failures by default — a permission-denied or
+        # I/O-failed subdir would then silently drop its tracks from the scan
+        # with no signal at all. Surface it (verbose) so vanished files are at
+        # least diagnosable.
+        vlog(f"scan: couldn't read {getattr(err, 'filename', root)}: {err}")
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=False,
+                                                onerror=_onerror):
         dp = Path(dirpath)
         for name in dirnames:
             yield dp / name
@@ -65,6 +72,12 @@ def parse_track_num(s):
 
 
 # ── Audio metadata ────────────────────────────────────────────────────────────
+# Cached sentinel for a file mutagen can't parse / that has no title tag, so the
+# filename-fallback files (untagged legacy mp3/m4a) aren't fully re-parsed on
+# every scan. Self-invalidates with mtime/size like any cache row.
+_NEG_META = {"__neg__": True}
+
+
 def read_audio_meta(path: Path):
     """Read tags and audio info via mutagen. Returns dict or None.
 
@@ -78,15 +91,20 @@ def read_audio_meta(path: Path):
         return None
     cached = flac_cache.get(path)
     if cached is not None:
-        return cached
+        # A cached negative result (unparseable / title-less file): return None
+        # without re-parsing — these otherwise pay a full mutagen parse on every
+        # scan even though they always fall back to the filename.
+        return None if cached.get("__neg__") else cached
     # Capture the file signature before parsing so a file edited mid-scan isn't
     # cached with its new mtime but these now-stale tags.
     sig = flac_cache.signature(path)
     try:
         f = mutagen.File(str(path), easy=True)
     except Exception:
+        flac_cache.put(path, _NEG_META, sig=sig)
         return None
     if f is None:
+        flac_cache.put(path, _NEG_META, sig=sig)
         return None
 
     tags = f.tags
@@ -99,6 +117,7 @@ def read_audio_meta(path: Path):
 
     title = first("title")
     if not title:
+        flac_cache.put(path, _NEG_META, sig=sig)
         return None
 
     info = f.info
@@ -142,8 +161,15 @@ def read_album_dir(album_dir: Path):
     _exts = set(config.AUDIO_EXTS)
     try:
         for f in iter_tree_no_symlinks(album_dir):
-            if f.suffix.lower() in _exts and f.is_file():
-                audio_files.append(f)
+            # is_file() re-raises EACCES/EIO/ESTALE (only ENOENT-class errors are
+            # swallowed by pathlib). Catch per entry so one unreadable file drops
+            # only itself, not every track after it — a truncated album list
+            # would mislead the backup/upgrade gates into deleting a good copy.
+            try:
+                if f.suffix.lower() in _exts and f.is_file():
+                    audio_files.append(f)
+            except OSError as e:
+                vlog(f"skipping unreadable entry {f} in {album_dir}: {e}")
     except OSError as e:
         vlog(f"walk failed in {album_dir}: {e}")
     audio_files.sort()
@@ -213,7 +239,11 @@ def _has_audio_anywhere(d: Path) -> bool:
                 _HAS_AUDIO_CACHE[key] = True
                 return True
     except OSError:
-        _HAS_AUDIO_CACHE[key] = False
+        # A transient EACCES/EIO/ESTALE walk failure is NOT proof the dir is
+        # empty — caching a sticky False here would drop a real artist/album
+        # from the whole scan until clear_scan_caches() runs. Answer
+        # conservatively for this call, but don't poison the cache: let the
+        # next call re-check.
         return False
     _HAS_AUDIO_CACHE[key] = False
     return False

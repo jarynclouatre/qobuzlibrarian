@@ -251,7 +251,7 @@ def _reimport_parked_albums():
 
 
 _RETRYABLE_STOP_RESULTS = {
-    "cancelled", "interrupted", "auth_lost", "disk_full",
+    "cancelled", "interrupted", "auth_lost", "disk_full", "io_error",
     "upgrade_aborted_backup_failed",
 }
 
@@ -297,7 +297,10 @@ def _resolve_queue_item(item, args, imported_globally):
     post_dir = _migrated or find_album_dir_filesystem(item["album"]) or album_dir
     # For brand-new albums (album_dir=None), find_album_dir_filesystem may
     # return None if the cache hasn't refreshed. Clear and retry once.
-    if post_dir is None:
+    # Only bother when beets actually ran — if the import was never attempted
+    # the cache is already correct and clearing it for every short-circuited
+    # item in a large cancelled batch would thrash it O(n) times for nothing.
+    if post_dir is None and imported_globally:
         clear_scan_caches()
         post_dir = find_album_dir_filesystem(item["album"])
     album_has_content = (
@@ -337,13 +340,30 @@ def _resolve_queue_item(item, args, imported_globally):
         # download must not wipe the sibling that may hold the missing tracks.
         if item.get("n_fail", 0) == 0 and item.get("n_lossy", 0) == 0:
             for sib_dir in item.get("siblings_to_delete", []):
-                if sib_dir.exists():
+                if not sib_dir.exists():
+                    continue
+                # Never rmtree the folder beets just imported into: the
+                # split-folder merge above can have moved the user's kept tracks
+                # into post_dir, and sibling groups are keyed on a
+                # decoration-stripped name, so post_dir can collide with a
+                # sibling marked for deletion — deleting it would destroy the
+                # freshly-imported album.
+                same_as_post = False
+                if post_dir is not None:
                     try:
-                        shutil.rmtree(sib_dir)
-                        log.info(fmt(C.GRAY, f"  🗑  Removed sibling: {sib_dir.name}"))
-                    except OSError as _e_sib:
-                        log.info(fmt(C.YELLOW,
-                            f"  ⚠  Couldn't remove {sib_dir.name}: {_e_sib}"))
+                        same_as_post = sib_dir.resolve() == post_dir.resolve()
+                    except OSError:
+                        same_as_post = sib_dir == post_dir
+                if same_as_post:
+                    log.info(fmt(C.GRAY,
+                        f"  · Keeping {sib_dir.name} — it's the imported folder"))
+                    continue
+                try:
+                    shutil.rmtree(sib_dir)
+                    log.info(fmt(C.GRAY, f"  🗑  Removed sibling: {sib_dir.name}"))
+                except OSError as _e_sib:
+                    log.info(fmt(C.YELLOW,
+                        f"  ⚠  Couldn't remove {sib_dir.name}: {_e_sib}"))
         elif item.get("siblings_to_delete"):
             log.info(fmt(C.GRAY,
                 f"  · Keeping {len(item['siblings_to_delete'])} sibling(s) "
@@ -453,7 +473,8 @@ def _resolve_queue_item(item, args, imported_globally):
                     log.info(fmt(C.YELLOW,
                         f"  ⚠  {truncate(_restore_target.name, 40)}: gap-fill "
                         f"did not succeed; restoring backed-up tracks…"))
-                _n_back = restore_gap_fill_backup(gfb, _restore_target)
+                _n_back = restore_gap_fill_backup(gfb, _restore_target,
+                                                  keep_larger_dst=False)
                 if _n_back:
                     log.info(fmt(C.GREEN,
                         f"  ✓  Restored {_n_back} track(s) to "
@@ -470,7 +491,14 @@ def _resolve_queue_item(item, args, imported_globally):
     if item.get("result") == "upgrade_aborted_backup_failed":
         return {"dir": album_dir, "result": "upgrade_aborted_backup_failed"}
 
-    if n_ok and n_fail:
+    # A stop marker (cancel discarded the staged files; disk-full / I/O / auth
+    # stopped the batch) must keep its label — n_ok still counts the tracks that
+    # briefly landed, so the n_ok branch below would mislabel a discarded cancel
+    # as "downloaded" in the fetch log.
+    _stop = item.get("result")
+    if _stop in ("cancelled", "disk_full", "io_error", "auth_lost"):
+        status = _stop
+    elif n_ok and n_fail:
         status = "partial"
     elif n_ok:
         status = "downloaded"
@@ -552,6 +580,7 @@ def _execute_download_queue(queue, args, token, *, on_progress=None):
     interrupted = False
     cancelled = False
     disk_full = False
+    io_error = False
     auth_lost_exc = None
     queue_transient_lyric_sigs = []
     any_imported = _reimport_parked_albums()
@@ -579,18 +608,40 @@ def _execute_download_queue(queue, args, token, *, on_progress=None):
         loss / disk full): mark it, run backup resolution so any upgrade backup
         gets restored, and keep it queued for a later retry. Skipping
         resolution would orphan the original tracks under their backup path."""
-        item.setdefault("snapshot_before", set())
-        item.setdefault("result",
-                        "cancelled" if cancelled
-                        else "interrupted" if interrupted
-                        else "disk_full" if disk_full
-                        else "auth_lost")
+        # NB: _build_queue_item always seeds these keys with None, so setdefault()
+        # is a no-op here (the key is present) — it would leave result=None and
+        # _resolve_queue_item would then mislabel the stop as "nothing_landed"
+        # (and write that to the fetch log) instead of the true reason. Assign
+        # explicitly, overriding None while preserving a real result a prior
+        # run's flush already recorded.
+        if item.get("snapshot_before") is None:
+            item["snapshot_before"] = set()
+        if not item.get("result"):
+            item["result"] = ("cancelled" if cancelled
+                              else "interrupted" if interrupted
+                              else "disk_full" if disk_full
+                              else "io_error" if io_error
+                              else "auth_lost")
         results.append(_resolve_queue_item(item, args, False))
 
     for idx, item in enumerate(items, 1):
-        if interrupted or cancelled or disk_full or auth_lost_exc is not None:
+        # A cancel raised while the PREVIOUS album was importing (i.e. after its
+        # own post-download checkpoint at the bottom of the loop) hasn't set
+        # `cancelled` yet. Re-check here so the next album short-circuits at the
+        # boundary instead of downloading in full before the stale check lands —
+        # set the flag first so _short_circuit marks the item 'cancelled', not
+        # the auth_lost fallback.
+        if not cancelled and is_cancel_requested():
+            cancelled = True
+        if (interrupted or cancelled or disk_full or io_error
+                or auth_lost_exc is not None):
             _short_circuit(item)
             continue
+        # A retried item may still carry a stop marker ('disk_full',
+        # 'interrupted', ...) from an earlier flush; clear it so a
+        # now-successful re-download isn't read as still-stopped by
+        # _queue_item_needs_retry and left in the queue forever.
+        item["result"] = None
 
         album = item["album"]
         album_dir = item["album_dir"]
@@ -600,11 +651,6 @@ def _execute_download_queue(queue, args, token, *, on_progress=None):
         log.info(fmt(C.BOLD + C.WHITE,
             f"  [Q {idx}/{n_items}] {truncate(title, 55)}"))
 
-        # Snapshot staging before the backup: a custom config can point
-        # UPGRADE_BACKUP_DIR inside STAGING_DIR, and a backup copied in after the
-        # snapshot would read as freshly downloaded audio. The single-album path
-        # snapshots first too.
-        item["snapshot_before"] = snapshot_staging()
         if item["auto_upgrade"] and album_dir and album_dir.exists():
             bp = backup_album_dir(album_dir)
             if bp is None:
@@ -614,6 +660,11 @@ def _execute_download_queue(queue, args, token, *, on_progress=None):
                 results.append(_resolve_queue_item(item, args, False))
                 continue   # nothing downloaded — stays queued for retry
             item["backup_path"] = bp
+        # Snapshot staging AFTER the backup: a custom config can point
+        # UPGRADE_BACKUP_DIR inside STAGING_DIR, and a backup copied in BEFORE
+        # the snapshot is already present at snapshot time, so it's correctly
+        # excluded from the freshly-downloaded diff (not re-imported/downsampled).
+        item["snapshot_before"] = snapshot_staging()
         try:
             _download_for_queue_item(item)
         except KeyboardInterrupt:
@@ -633,14 +684,24 @@ def _execute_download_queue(queue, args, token, *, on_progress=None):
             results.append(_resolve_queue_item(item, args, False))
             continue
         except OSError as _e_os:
-            if _e_os.errno != errno.ENOSPC:
-                raise
-            log.info(fmt(C.RED,
-                f"\n    Out of disk space at {cfg.STAGING_DIR}. Stopping the "
-                "queue — restoring backups and keeping the rest for a retry "
-                "once space is freed."))
-            item["result"] = "disk_full"
-            disk_full = True
+            if _e_os.errno == errno.ENOSPC:
+                log.info(fmt(C.RED,
+                    f"\n    Out of disk space at {cfg.STAGING_DIR}. Stopping "
+                    "the queue — restoring backups and keeping the rest for a "
+                    "retry once space is freed."))
+                item["result"] = "disk_full"
+                disk_full = True
+            else:
+                # EROFS (NAS remounted read-only), EIO (failing disk), EACCES,
+                # etc. — environmental, not this album's fault. Stop the batch
+                # cleanly so the remaining items are short-circuited and their
+                # upgrade backups restored, rather than re-raising out of the
+                # loop and stranding those originals in the backup dir.
+                log.info(fmt(C.RED,
+                    f"\n    Storage error ({_e_os}). Stopping the queue — "
+                    "restoring backups and keeping the rest for a retry."))
+                item["result"] = "io_error"
+                io_error = True
             results.append(_resolve_queue_item(item, args, False))
             continue
 
@@ -770,12 +831,6 @@ def _execute_download_queue(queue, args, token, *, on_progress=None):
                      f"post-import path(s) for next-launch retry")
         except Exception as _e_lr:
             vlog(f"lyric retry resolution failed: {_e_lr}")
-        # Materialise .lrc sidecars next to the final renamed files
-        # (no-op unless LYRICS_FORMAT is sidecar/both).
-        try:
-            write_post_import_sidecars(_post_dirs)
-        except Exception as _e_sc:
-            vlog(f"post-import sidecar write raised: {_e_sc}")
     elif (queue_transient_lyric_sigs
             and auth_lost_exc is None
             and not interrupted):
@@ -791,6 +846,17 @@ def _execute_download_queue(queue, args, token, *, on_progress=None):
                      f"{len(resolved)} staging path(s) for next-launch retry")
         except Exception as _e_lr:
             vlog(f"lyric retry (staging fallback) failed: {_e_lr}")
+
+    # Materialise .lrc sidecars (and strip the embedded tag in sidecar mode) for
+    # every imported album — not only when a transient lyric outage happened.
+    # The lyric hook always embeds and relies on this post-import pass to emit
+    # the sidecars; gating it on transient sigs broke LYRICS_FORMAT=sidecar/both
+    # on the normal happy path. No-op when LYRICS_FORMAT is embed.
+    if any_imported and _post_dirs:
+        try:
+            write_post_import_sidecars(_post_dirs)
+        except Exception as _e_sc:
+            vlog(f"post-import sidecar write raised: {_e_sc}")
 
     n_success = sum(1 for r in results
                     if r.get("result") in ("downloaded", "partial"))

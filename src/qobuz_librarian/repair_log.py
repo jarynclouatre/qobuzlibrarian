@@ -54,7 +54,7 @@ def _flac_decode_ok(path):
 
 def scan_dir_for_isrc_repairs(album_dir, token,
                               *, min_short_seconds=30, max_ratio=0.85,
-                              deep=True):
+                              deep=True, only_isrcs=None):
     """Pair each FLAC in album_dir to its Qobuz recording via ISRC, then flag
     truncation by duration comparison (both gates: >30 s short AND <85% ratio).
 
@@ -72,10 +72,21 @@ def scan_dir_for_isrc_repairs(album_dir, token,
     deep=True (single-album repair) verifies every track against Qobuz. A
     whole-library sweep passes deep=False: a track is only looked up on Qobuz
     when it already looks truncated from the file size + STREAMINFO alone, so a
-    healthy library finishes in minutes instead of one API call per track."""
+    healthy library finishes in minutes instead of one API call per track.
+
+    only_isrcs: when given (a set of normalised ISRCs), tracks whose ISRC is not
+    in the set are counted as verified_ok without an API call. _refills_intact
+    uses this to confirm just the freshly-refilled tracks instead of re-verifying
+    the whole album one network call per track."""
     report = {
         "verified_truncated": [],
         "verified_ok": 0,
+        # The normalized ISRCs that matched a Qobuz recording AND passed the gate
+        # — i.e. POSITIVELY re-verified, not merely "not flagged truncated". A
+        # track whose lookup returned nothing lands in isrc_no_match, so callers
+        # that must prove a refill is intact (repair backup deletion) check
+        # membership here rather than absence from verified_truncated.
+        "verified_ok_isrcs": set(),
         "no_isrc_tag": [],
         "isrc_no_match": [],
     }
@@ -85,6 +96,13 @@ def scan_dir_for_isrc_repairs(album_dir, token,
 
     for et in existing:
         path = et.get("path") or ""
+        # FLAC-only scanner: the integrity probe is `flac -t` and refills are
+        # re-ripped from Qobuz as FLAC. read_album_dir also returns
+        # mp3/m4a/aac/ogg/opus/wav, on which `flac -t` ALWAYS fails — which
+        # would flag a perfectly healthy non-FLAC as verified_truncated and
+        # then delete+refill it. Skip anything that isn't FLAC.
+        if not path.lower().endswith(".flac"):
+            continue
         title = et.get("title") or Path(path).stem
         isrc_raw = et.get("isrc") or ""
         isrc = isrc_raw.replace("-", "").upper().strip()
@@ -147,6 +165,12 @@ def scan_dir_for_isrc_repairs(album_dir, token,
         if not deep and not looks_byte_short:
             report["verified_ok"] += 1
             continue
+        # Caller only needs a subset of ISRCs positively re-verified (e.g. the
+        # post-repair integrity check on just the refilled tracks): everything
+        # outside that set is counted ok without burning an API call per track.
+        if only_isrcs is not None and isrc not in only_isrcs:
+            report["verified_ok"] += 1
+            continue
 
         qt = find_qobuz_track_by_isrc(isrc, token)
         if qt is None:
@@ -186,7 +210,10 @@ def scan_dir_for_isrc_repairs(album_dir, token,
                     "reason": "decode_failed",
                 })
             else:
+                # ISRC matched on Qobuz, file decodes; Qobuz gave no duration so
+                # this is the strongest "ok" we can assert for it.
                 report["verified_ok"] += 1
+                report["verified_ok_isrcs"].add(isrc)
             continue
 
         # Byte-size sanity gate against Qobuz's authoritative duration. Quiet /
@@ -244,6 +271,7 @@ def scan_dir_for_isrc_repairs(album_dir, token,
             continue
 
         report["verified_ok"] += 1
+        report["verified_ok_isrcs"].add(isrc)
     return report
 
 
@@ -265,6 +293,15 @@ _REPAIR_LOG_HEADER = (
 )
 
 
+def _one_log_line(value):
+    """Collapse a tag value to a single safe field for the pipe-delimited log:
+    '|' would break the column split, and an embedded newline (legal in Vorbis
+    comments / ID3 and copied straight from tags) would split the row across two
+    physical lines — which read_repair_log_entries then drops both halves of."""
+    return ((value or "?").strip()
+            .replace("|", "/").replace("\r", " ").replace("\n", " "))
+
+
 def append_repair_log(entries):
     """Append `{artist, album, title}` rows to the replaced-tracks log
     so the user knows which albums to refresh on caching clients.
@@ -279,9 +316,9 @@ def append_repair_log(entries):
     ts = time.strftime("%Y-%m-%d %H:%M")
     payload_lines = []
     for e in entries:
-        artist = (e.get("artist") or "?").strip().replace("|", "/")
-        album  = (e.get("album")  or "?").strip().replace("|", "/")
-        title  = (e.get("title")  or "?").strip().replace("|", "/")
+        artist = _one_log_line(e.get("artist"))
+        album  = _one_log_line(e.get("album"))
+        title  = _one_log_line(e.get("title"))
         payload_lines.append(f"{ts}  |  {artist}  |  {album}  |  {title}\n")
     payload = "".join(payload_lines)
     try:

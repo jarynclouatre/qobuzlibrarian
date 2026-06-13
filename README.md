@@ -559,15 +559,18 @@ on first import:
 |---------|---------|------------------|-------------------|
 | `autotag` | `no` | Keeps Qobuz's tags; the downloader already produces tagged FLACs. | Pinned for downloads (see below). Set it for your own `beet` runs if you trust MusicBrainz over Qobuz, or want auto-cover-art beyond what Qobuz embeds. |
 | `move` | `yes` | Files leave staging (scratch space) and land in `MUSIC_ROOT` cleanly. | Pinned for downloads. `move: yes` already handles a `/music` on a different filesystem from `/staging` — it copies, then deletes — so there's no need to switch to `copy` (which would leave files piling up in staging). |
-| `duplicate_action` | `merge` | Gap-fill merges new tracks into an existing album folder. | Use `skip` to skip anything that collides; `keep` to keep both copies on disk. |
+| `duplicate_action` | `merge` | Gap-fill merges new tracks into an existing album folder. | Pinned to `merge` for downloads (see below) — gap-fill depends on it and it can never delete your existing files. Set `skip`/`keep` for your own `beet` runs. |
 | `incremental` | `no` | Always rescans staging so a retry sees the same files. | Pinned for downloads. Set it for your own `beet` runs to skip already-seen dirs. |
 
 Edit `/config/beets/config.yaml` and the changes apply on the next import
-— no restart needed. The one exception: the download-importer **pins
-`move: yes`, `autotag: no`, and `incremental: no`** for its own runs (it needs
-the tracks to leave staging, keeps Qobuz's tags, and always rescans), so those
-three take effect only for `beet` commands you run yourself. Everything else —
-paths, plugins, artwork, `duplicate_action` — comes straight from your config.
+— no restart needed. The exception: the download-importer **pins
+`move: yes`, `autotag: no`, `incremental: no`, and `duplicate_action: merge`**
+for its own runs (it needs the tracks to leave staging, keeps Qobuz's tags,
+always rescans, and merges gap-fill tracks into the existing album — `merge`
+also guarantees a re-download can never delete your existing files, which a
+`duplicate_action: remove` in your config otherwise would). Those take effect
+only for the downloader; your own `beet` commands still read your config.
+Everything else — paths, plugins, artwork — comes straight from your config.
 
 ## First scan on a big library
 
@@ -635,7 +638,10 @@ path isn't writable by it. On boot it chowns the app-managed volumes
 — which can be a large NAS mount — is deliberately left alone, so make sure
 the run user can write to it yourself. If your music share is read-only on the
 NAS, append `:ro` to the `/music` bind in `compose.yaml` — the app will refuse
-to mutate but scans and upgrade detection still work.
+to mutate but scans and upgrade detection still work. (If you also have
+`QL_CHECK_VOLUMES=1` set, the volume check will return 503 for scan endpoints
+too, since `/music` won't pass the write test — either leave that flag unset or
+remove `:ro` if you need scans with the volume check enabled.)
 
 If the bind dirs already exist (typical: Compose auto-created them as root
 on first `up`), `chown` them to your `PUID`/`PGID` before enabling those
@@ -717,7 +723,7 @@ curl -s -b 'qf_session=<your-cookie>' http://localhost:8666/api/jobs?status=runn
 |---------|--------------------------|
 | `Another Qobuz Librarian run is in progress` | Web container holds the lock — use the web UI, or `docker compose stop qobuz-librarian` for CLI. |
 | `MUSIC_ROOT missing or inaccessible` | Bind mount unset or wrong path — check `QL_MUSIC_DIR` in `.env` and that the host path exists. |
-| Container exits immediately on `docker compose up` | `.env` missing from the compose dir, or a required `QL_*` var is unset. `docker compose logs qobuz-librarian` shows which. |
+| Container exits immediately on `docker compose up` | `.env` missing from the compose dir, or a host bind-mount path in `compose.yaml` doesn't exist on disk. `docker compose logs qobuz-librarian` shows which. |
 | `Volume not writable` (Settings → Diagnostics shows FAIL) | `PUID`/`PGID` don't match the host owner of the bind mount — `chown -R $(id -u):$(id -g) ./music ./staging` or set `PUID`/`PGID` in `.env`. |
 | Web UI loads but Library scan says "no artist folders found" | `/music` is mounted at an empty directory or one level off — make sure `QL_MUSIC_DIR` points at the artist-level folder, not the parent. |
 | Token rejected (Settings → Save & connect) | Token expired, copied with surrounding quotes, or pasted with trailing whitespace — re-grab it from play.qobuz.com (dev tools → Local Storage → `localuser` → `token`; Chrome/Edge: Application tab, Firefox: Storage tab), paste clean. |

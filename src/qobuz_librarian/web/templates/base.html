@@ -126,14 +126,13 @@
     </div>
     <div class="lg:hidden">
       <!-- Mobile menu -->
-      <div class="dropdown dropdown-end">
-        <button type="button" tabindex="0" class="btn btn-ghost btn-circle" aria-label="Menu"
-                aria-haspopup="menu" aria-expanded="false" aria-controls="mobile-menu">
+      <details class="dropdown dropdown-end">
+        <summary class="btn btn-ghost btn-circle list-none" aria-label="Menu">
           <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/>
           </svg>
-        </button>
-        <ul id="mobile-menu" tabindex="0" class="menu menu-sm dropdown-content mt-3 z-[1] p-2 shadow bg-base-200 rounded-box min-w-max">
+        </summary>
+        <ul id="mobile-menu" class="menu menu-sm dropdown-content mt-3 z-[1] p-2 shadow bg-base-200 rounded-box min-w-max">
           <li><a href="/" class="{% if page=='dashboard' %}active{% endif %}">Dashboard</a></li>
           <li><a href="/search" class="{% if page=='search' %}active{% endif %}">Search</a></li>
           <li><a href="/artist" class="{% if page=='artist' %}active{% endif %}">Artist</a></li>
@@ -153,7 +152,7 @@
           <li><button type="submit" form="logout-form">Log out</button></li>
           {% endif %}
         </ul>
-      </div>
+      </details>
     </div>
   </nav>
 
@@ -214,7 +213,10 @@
     document.addEventListener('click', e => {
       const link = e.target.closest('.dropdown-content a, .dropdown-content button');
       if (!link) return;
-      // Dropping focus from the tapped item closes the daisyUI dropdown.
+      // Close the <details>-based mobile dropdown after a link/button tap.
+      const details = link.closest('details.dropdown');
+      if (details) details.removeAttribute('open');
+      // Dropping focus from the tapped item closes any focus-based daisyUI dropdown.
       if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
     });
     // Global keyboard shortcuts. "/" focuses the search box; Esc dismisses

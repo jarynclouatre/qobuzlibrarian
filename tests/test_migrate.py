@@ -71,6 +71,24 @@ def test_bad_path_characters_are_sanitized():
     assert '"' not in rel and ":" not in rel
 
 
+def test_overlong_tag_components_are_truncated_not_fatal():
+    # A ~300-char tag-derived component would exceed the 255-byte NAME_MAX and
+    # make Path.exists() raise ENAMETOOLONG, aborting the whole plan. Each
+    # component is capped to 255 bytes (extension preserved) so the plan builds.
+    long_album = "Z" * 300
+    long_title = "T" * 300
+    meta = _meta(albumartist="Artist", album=long_album, title=long_title, track=5)
+    plan = m.build_plan([(Path("/src/x.flac"), meta, "tags")], Path("/dest"))
+    rel = plan.placed[0].dest_rel
+    for part in rel.parts:
+        assert len(part.encode("utf-8")) <= 255
+    assert rel.name.endswith(".flac")           # extension survived truncation
+    # A multi-byte tag truncates on a char boundary (no UnicodeDecodeError).
+    mb = _meta(albumartist="A", album="名" * 200, title="t", track=1)
+    p2 = m.build_plan([(Path("/src/y.flac"), mb, "tags")], Path("/dest"))
+    assert all(len(part.encode("utf-8")) <= 255 for part in p2.placed[0].dest_rel.parts)
+
+
 def test_multidisc_uses_disc_subfolder_only_when_album_spans_discs():
     two_disc = [
         (Path("/src/a.flac"), _meta(disc=1, disctotal=2, title="A", track=1), "tags"),
@@ -151,6 +169,22 @@ def test_copy_mode_leaves_originals_untouched(tmp_path):
     dst = plan.dest_root / plan.placed[0].dest_rel
     assert dst.read_bytes() == src.read_bytes()
     assert not dst.with_name(dst.name + ".partial").exists()
+
+
+def test_companion_files_are_carried_alongside_audio(tmp_path):
+    plan = _placed_plan(tmp_path)
+    src_dir = plan.placed[0].source.parent
+    (src_dir / "cover.jpg").write_bytes(b"JPEGDATA")
+    (src_dir / "album.log").write_bytes(b"rip log")
+    (src_dir / "notes.txt").write_bytes(b"not a companion")   # excluded ext
+    res = m.execute_plan(plan, in_place=False)
+    assert res.copied == 1
+    assert res.companions == 2                                # cover.jpg + album.log
+    dst_dir = (plan.dest_root / plan.placed[0].dest_rel).parent
+    assert (dst_dir / "cover.jpg").read_bytes() == b"JPEGDATA"
+    assert (dst_dir / "album.log").exists()
+    assert not (dst_dir / "notes.txt").exists()               # .txt isn't carried
+    assert (src_dir / "cover.jpg").exists()                   # copy: source untouched
 
 
 def test_in_place_mode_moves_only_after_verified_copy(tmp_path):

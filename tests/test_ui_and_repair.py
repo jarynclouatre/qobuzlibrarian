@@ -66,6 +66,10 @@ def test_parse_number_list_handles_gnarly_inputs():
     # '²'.isdigit() is True but int('²') raises — must be ignored, not crash.
     assert parse_number_list("²", 10) == []
     assert parse_number_list("1-³", 10) == []
+    # Space-separated picks are two numbers, not the concatenation "13".
+    assert parse_number_list("1 3", 10) == [1, 3]
+    assert parse_number_list("1, 3", 10) == [1, 3]
+    assert parse_number_list("2 4-6", 10) == [2, 4, 5, 6]
 
 
 # ── Fetch log: malformed file robustness ─────────────────────────────────
@@ -625,7 +629,9 @@ def test_quiet_mutes_console_but_keeps_file_log(tmp_path):
         qlog.set_quiet(False)
         qlog.log.removeHandler(qlog._file_handler)
         qlog._file_handler = None
-        assert qlog._sh.level == logging.NOTSET
+        # Non-quiet pins the console to INFO (not NOTSET) so a DEBUG logger set
+        # for the file handler can't flood the terminal.
+        assert qlog._sh.level == logging.INFO
 
 
 def test_die_uses_provided_exit_code(capsys):
@@ -656,7 +662,7 @@ def test_interactive_query_warns_on_non_qobuz_url(caplog):
     assert any("Only Qobuz URLs" in r.message for r in caplog.records)
 
 
-def test_album_mode_track_url_at_prompt_explains_clearly(capsys):
+def test_album_mode_track_url_at_prompt_explains_clearly(caplog):
     import types
 
     from qobuz_librarian.modes.album import run_album_mode
@@ -667,9 +673,12 @@ def test_album_mode_track_url_at_prompt_explains_clearly(capsys):
     with patch("qobuz_librarian.modes.album.interactive_query",
                return_value=("__url__", "https://play.qobuz.com/track/12345")), \
          patch("qobuz_librarian.modes.album.clear_scan_caches"):
-        with pytest.raises(SystemExit):
+        # A track URL at the prompt is recoverable now (raised as CatalogMiss):
+        # it explains and returns cleanly instead of die()ing the session — so a
+        # menu loop keeps any albums already queued.
+        with caplog.at_level("INFO", logger="qobuz_librarian"):
             run_album_mode(args, "tok", loop=False)
-    assert "track URL" in capsys.readouterr().err
+    assert "track URL" in caplog.text
 
 
 def test_album_mode_aborted_at_query_prompt_breaks_loop():

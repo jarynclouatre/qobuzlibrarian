@@ -40,6 +40,56 @@ def _db_path():
     return Path(str(cfg.DATA_DIR)) / "flac_cache.db"
 
 
+def _is_corrupt_error(e: sqlite3.Error) -> bool:
+    msg = str(e).lower()
+    return any(s in msg for s in
+               ("malformed", "not a database", "file is encrypted"))
+
+
+def _discard_corrupt_db() -> bool:
+    """Delete a malformed cache db (+ WAL sidecars). The cache is derived data —
+    losing it just makes the next scan re-parse, which beats a permanently dead
+    cache that re-parses every file forever. Returns True if anything cleared."""
+    db = _db_path()
+    cleared = False
+    for p in (db, db.with_name(db.name + "-wal"), db.with_name(db.name + "-shm")):
+        try:
+            p.unlink()
+            cleared = True
+        except FileNotFoundError:
+            pass
+        except OSError as e:
+            vlog(f"couldn't clear corrupt flac cache {p.name}: {e}")
+            return False
+    if cleared:
+        vlog("flac cache was corrupt — rebuilt from scratch")
+    return cleared
+
+
+def _handle_db_error(e: sqlite3.Error) -> None:
+    """Drop this thread's connection and, on a corrupt-db error, discard the
+    malformed file so the next _ensure() rebuilds — the same recovery
+    album_cache has. SQLite data-page corruption can pass connect + CREATE TABLE
+    and only surface on a row read, which would otherwise leave the cache
+    permanently dead (every scan re-parsing every file)."""
+    global _initialized
+    conn = getattr(_local, "conn", None)
+    if conn is not None:
+        try:
+            conn.close()
+        except sqlite3.Error:
+            pass
+        _local.conn = None
+    if not _is_corrupt_error(e):
+        return
+    with _init_lock:
+        if _initialized and _discard_corrupt_db():
+            _initialized = False
+            import logging
+            logging.getLogger("qobuz_librarian").info(
+                "flac cache was corrupt — discarded; it rebuilds on next scan")
+
+
 def _ensure() -> bool:
     global _initialized
     if not cfg.FLAC_CACHE_ENABLED:
@@ -51,21 +101,31 @@ def _ensure() -> bool:
             return True
         try:
             _db_path().parent.mkdir(parents=True, exist_ok=True)
-            conn = sqlite3.connect(str(_db_path()), timeout=5)
-            try:
-                conn.execute("PRAGMA journal_mode=WAL")
-                conn.execute(
-                    "CREATE TABLE IF NOT EXISTS files "
-                    "(path TEXT PRIMARY KEY, mtime_ns INTEGER, size INTEGER, "
-                    "payload TEXT NOT NULL)")
-                conn.commit()
-            finally:
-                conn.close()
-            _initialized = True
-            return True
-        except sqlite3.Error as e:
-            vlog(f"flac cache init failed ({e}); proceeding without it")
+        except OSError as e:
+            vlog(f"flac cache dir unavailable ({e}); proceeding without it")
             return False
+        for attempt in (1, 2):
+            try:
+                conn = sqlite3.connect(str(_db_path()), timeout=5)
+                try:
+                    conn.execute("PRAGMA journal_mode=WAL")
+                    conn.execute(
+                        "CREATE TABLE IF NOT EXISTS files "
+                        "(path TEXT PRIMARY KEY, mtime_ns INTEGER, size INTEGER, "
+                        "payload TEXT NOT NULL)")
+                    conn.commit()
+                finally:
+                    conn.close()
+                _initialized = True
+                return True
+            except sqlite3.Error as e:
+                # A corrupt db is the one error we can fix: drop it and retry
+                # once. Anything else (locked, full, unwritable) isn't ours.
+                if attempt == 1 and _is_corrupt_error(e) and _discard_corrupt_db():
+                    continue
+                vlog(f"flac cache init failed ({e}); proceeding without it")
+                return False
+        return False
 
 
 def _conn():
@@ -128,6 +188,7 @@ def get(path) -> dict | None:
             (p,)).fetchone()
     except sqlite3.Error as e:
         vlog(f"flac cache read failed: {e}")
+        _handle_db_error(e)
         return None
     if not row or row[0] != mtime_ns or row[1] != size:
         return None
@@ -181,8 +242,8 @@ def flush_pending() -> None:
     with _PENDING_LOCK:
         if not _PENDING_ROWS:
             return
-        rows = [(p, m, s, d) for p, (m, s, d) in _PENDING_ROWS.items()]
-        _PENDING_ROWS.clear()
+        snapshot = dict(_PENDING_ROWS)
+        rows = [(p, m, s, d) for p, (m, s, d) in snapshot.items()]
     try:
         conn = _conn()
         conn.executemany(
@@ -191,6 +252,14 @@ def flush_pending() -> None:
         conn.commit()
     except sqlite3.Error as e:
         vlog(f"flac cache batch write failed: {e}")
+        _handle_db_error(e)
+        return  # keep the buffered rows so the next flush retries them
+    # Commit succeeded: drop exactly the rows we wrote, preserving any a
+    # concurrent put() has replaced in the meantime.
+    with _PENDING_LOCK:
+        for p, val in snapshot.items():
+            if _PENDING_ROWS.get(p) == val:
+                del _PENDING_ROWS[p]
 
 
 # Flush whatever's still in the buffer when the process exits cleanly — a CLI
@@ -230,6 +299,7 @@ def prune_missing(force: bool = False) -> int:
             conn.commit()
     except sqlite3.Error as e:
         vlog(f"flac cache prune failed: {e}")
+        _handle_db_error(e)
         return 0
     try:
         stamp.parent.mkdir(parents=True, exist_ok=True)

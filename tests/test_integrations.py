@@ -119,6 +119,32 @@ def test_cleanup_staging_residue_removes_images_but_keeps_real_albums(tmp_path, 
     assert album.exists() and cue_dir.exists()
 
 
+def test_cleanup_staging_residue_keeps_art_beside_leftover_audio(tmp_path, monkeypatch):
+    # An interrupted run can leave a fully-downloaded album in staging; its
+    # cover.jpg is the filesystem fetchart source on import (ARTWORK=sidecar).
+    # The sweep must not delete residue that sits beside real audio.
+    monkeypatch.setattr("qobuz_librarian.config.STAGING_DIR", tmp_path)
+    album = tmp_path / "Artist" / "Album"
+    album.mkdir(parents=True)
+    (album / "01 - Track.flac").write_bytes(b"audio data" * 1000)
+    (album / "cover.jpg").write_bytes(b"img")
+    (album / "meta.json").write_text("{}")
+    # Multi-disc: art at album root, audio one level down.
+    boxset = tmp_path / "Artist" / "BoxSet"
+    (boxset / "Disc 1").mkdir(parents=True)
+    (boxset / "Disc 1" / "01.flac").write_bytes(b"audio" * 1000)
+    (boxset / "cover.jpg").write_bytes(b"img")
+    # An orphan stray with no audio sibling still goes.
+    orphan = tmp_path / "Old"
+    orphan.mkdir()
+    (orphan / "cover.jpg").write_bytes(b"img")
+
+    cleanup_staging_residue()
+    assert (album / "cover.jpg").exists() and (album / "meta.json").exists()
+    assert (boxset / "cover.jpg").exists()
+    assert not (orphan / "cover.jpg").exists()
+
+
 def test_cleanup_staging_residue_removes_image_only_residue_dir(tmp_path, monkeypatch):
     monkeypatch.setattr("qobuz_librarian.config.STAGING_DIR", tmp_path)
     cover = tmp_path / "cover"
@@ -697,6 +723,18 @@ def test_import_override_pins_autotag_off(monkeypatch):
     import yaml
     conf = yaml.safe_load(_build_artwork_yaml(monkeypatch))
     assert conf["import"]["autotag"] is False
+
+
+def test_import_override_pins_duplicate_action_merge(monkeypatch):
+    # OUR importer must pin duplicate_action: merge regardless of the user's
+    # config. `remove` would delete the existing library album on a collision
+    # (irreversible); `skip` would silently import nothing for a per-track
+    # gap-fill (which relies on beets MERGING the missing tracks into the
+    # existing folder). merge is non-destructive and what gap-fill / the
+    # consolidation re-import need.
+    import yaml
+    conf = yaml.safe_load(_build_artwork_yaml(monkeypatch))
+    assert conf["import"]["duplicate_action"] == "merge"
 
 
 def test_library_lyrics_walk_targets_library_flacs_only(tmp_path, monkeypatch):
