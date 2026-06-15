@@ -251,9 +251,9 @@ in `.env` (see the login note below).
 > **Setting or resetting the login.** Either pick it on the first-visit setup
 > screen, or set `WEB_AUTH_USER` and `WEB_AUTH_PASSWORD` in `.env` so the box
 > comes up already locked down. Those two double as a password reset: change
-> them and restart to update the login. (The old way still works too — stop the
-> container, delete `.qobuz_web_auth.json` from the data volume, and set it
-> again on next visit.)
+> them and restart to update the login. To reset without env vars, stop the
+> container, delete `.qobuz_web_auth.json` from the data volume, and set new
+> credentials on the next visit.
 
 > **Behind a reverse proxy,** set `FORWARDED_ALLOW_IPS` in `.env` to the
 > proxy's address so the failed-login throttle counts attempts per real client
