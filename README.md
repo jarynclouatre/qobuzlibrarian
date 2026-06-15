@@ -401,7 +401,7 @@ npm ci && npm run build      # writes src/qobuz_librarian/web/static/dist/app.cs
 
 Qobuz Librarian is the glue around several open-source projects, bundled into the Docker image:
 
-- **[streamrip](https://github.com/nathom/streamrip)** (Nathaniel Thomas) — the Qobuz downloader. GPL-3.0.
+- **[streamrip](https://github.com/nathom/streamrip)** (nathom) — the Qobuz downloader. GPL-3.0.
 - **[beets](https://beets.io/)** — tagging, cover art, library organisation. MIT.
 - **[mutagen](https://github.com/quodlibet/mutagen)** — audio metadata reading/writing. GPL-2.0-or-later.
 - **[FFmpeg](https://ffmpeg.org/)** — audio probing and transcoding. LGPL/GPL depending on build.
