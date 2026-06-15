@@ -50,14 +50,14 @@ tracks you already have under slightly different names:
 3. edition-stripped title (so "(Remastered)" / "(Deluxe)" don't cause dupes)
 
 Want a *different* edition kept alongside one you own — a remaster, or a fresh
-mix like the Giles Martin Beatles reissues? Search for it and choose **Download
+mix? Search for it and choose **Download
 this edition too**; it imports into its own folder next to the original instead
 of being skipped as a duplicate.
 
 **Just one track.** Flip search from **Albums** to **Tracks** to grab a single
 song. It files under its album like any other download, but the album is marked
-as a deliberate single — so a gap scan won't nag you to finish it, and an artist
-you own *only* singles by won't have their whole catalogue surfaced as "missing".
+as a deliberate single — so a gap scan won't ask you to fill the album, and an artist
+you download *only* singles by won't have their whole catalogue surfaced as "missing".
 Want the rest later? Download the album the normal way and it quietly graduates
 back to a full album. (The Upgrade walk leaves singles alone unless you set
 `UPGRADE_SINGLES_ENABLED=true`.)
@@ -69,12 +69,9 @@ those.
 
 **Reclaim space from hi-res you don't need.** The **Downsample** mode scans your
 library for FLACs stored above CD rate and shrinks the ones you pick down to
-44.1 / 48 kHz — most playback gear can't tell the difference, and the files are a
-fraction of the size. It's local (no Qobuz login needed), each file is verified to
-decode cleanly before it replaces the original, and it only ever runs when you ask.
-It's irreversible, so nothing is selected by default and the original is not kept.
+44.1 / 48 kHz (configurable in settings). Each file is verified to decode cleanly before it replaces the original.
 
-**Catch new releases, without going looking.** A *Check for new releases* pass —
+**Catch new releases.** A *Check for new releases* pass —
 across your whole library, or one artist at a time — compares each artist's
 current Qobuz catalogue against what you've already seen and surfaces only what's
 genuinely new and you don't own, pre-ticked and ready to download. It reads the
@@ -82,14 +79,12 @@ catalogue listing alone (no per-track fetches), so it's quick — roughly one Qo
 call per artist. Your normal gap scans keep their catalogue cache for speed; this
 check is the always-fresh path, and it refreshes that cache as it runs.
 
-By default it works on its own end to end. On first run it kicks off a **library
+On first run it kicks off a **library
 scan** — which both shows your missing albums and establishes the new-release
-baseline (so there's never a second crawl). That scan **resumes from where it
+baseline. That scan **resumes from where it
 left off** if it's interrupted, and only the daily new-release check is unlocked
 once it has finished cleanly. From then on, opening the app quietly checks for
-new releases when a day has passed and surfaces them on the dashboard — so they
-come to you instead of you remembering to look. Nothing downloads without your
-say-so. Turn the first-run scan off with `AUTO_LIBRARY_SCAN=false`; change the
+new releases when a day has passed and surfaces them on the dashboard. Turn the first-run scan off with `AUTO_LIBRARY_SCAN=false`; change the
 check interval, or disable it, on the Settings page.
 
 **Clean import.** beets handles tagging and cover art; files land in your
@@ -154,15 +149,14 @@ keeps it hi-res.) The single-artist **Artist** scan never
 hides anything, since typing a name is a deliberate request to see everything.
 
 Dismissing is per *album*, not per artist, so a brand-new release by an artist
-whose back catalogue you've already triaged still surfaces — the *Check for new
+whose back catalogue you've already reviewed still surfaces — the *Check for new
 releases* pass (or the per-artist link in the **Hidden** view) brings it up
 without un-hiding everything you dismissed.
 
 The CLI runs the **same matching engine**, so it finds exactly the same missing
 albums and track gaps the web does — it just works through them differently.
 Instead of parking a checklist you review all at once, it walks you album by
-album with yes/no prompts (skip, queue, fill, stop), which suits hands-on,
-power-user runs. Launch with no arguments for the menu (Search · Artist ·
+album with yes/no prompts (skip, queue, fill, stop). Launch with no arguments for the menu (Search · Artist ·
 Library walk · Album gaps · Repair · Upgrade · Migrate · Downsample · Lyrics),
 or pass flags for unattended runs — `--help` lists them all.
 
@@ -209,7 +203,7 @@ Off by default because they change your files:
 - **Downsample hi-res on import** (`DOWNSAMPLE_HIRES_ENABLED`): downsample
   high-sample-rate FLACs (88.2/176.4/352.8 kHz → 44.1, 96/192/384 kHz → 48; bit
   depth preserved) as they're downloaded. Pairs with the hi-res default: grab the
-  highest quality, then store it at a sane sample rate. Still lossless FLAC;
+  highest quality, then store it at a sane sample rate (good for grabbing Hi-Res masters). Still lossless FLAC;
   originals are replaced atomically, so an interrupt can't corrupt a track. This
   only touches *new* downloads — to shrink hi-res that's **already** in your
   library, use the on-demand [Downsample](#how-you-use-it) mode instead, which
