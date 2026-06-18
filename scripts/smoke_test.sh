@@ -26,7 +26,11 @@ docker build -t "$IMAGE" .
 
 echo "==> Starting container"
 cleanup
-docker run -d --name "$NAME" -p "127.0.0.1:${PORT}:8666" "$IMAGE" >/dev/null
+# WEB_AUTH=none so the smoke test can reach every route directly. With the
+# default (auth on and no account yet) a fresh boot correctly sends every page
+# to /setup, so the route checks below would only prove the redirect fires, not
+# that each template renders. Auth off exercises the handlers themselves.
+docker run -d --name "$NAME" -e WEB_AUTH=none -p "127.0.0.1:${PORT}:8666" "$IMAGE" >/dev/null
 
 echo -n "==> Waiting for the web server"
 up=0
@@ -72,8 +76,8 @@ check /migrate                200
 check /queue                  200
 check /queue/history          200
 check /settings               200
-check /static/icon.png        200
-check /static/logo.png        200
+check /static/icon.png        200   # favicon + navbar mark
+check /static/icon-192.png    200   # PWA icon
 check /api/jobs/nope/status   404   # unknown job id
 
 echo "==> Checking bundled tools in the image"
@@ -86,9 +90,10 @@ for bin in rip beet ffmpeg flac metaflac fpcalc; do
 done
 
 echo "==> Checking branding"
-if docker exec "$NAME" sh -c "curl -fsS http://localhost:8666/" 2>/dev/null \
-     | grep -q "Qobuz Librarian"; then
-    echo "  ok  page title shows 'Qobuz Librarian'"
+# Host-side curl (the slim runtime image ships no curl of its own — the bundled
+# tools above are checked with `command -v`, not curl).
+if curl -fsS "${BASE}/" 2>/dev/null | grep -q "Qobuz Librarian"; then
+    echo "  ok  page shows 'Qobuz Librarian'"
 else
     fail "branding 'Qobuz Librarian' not found in served HTML"
 fi
