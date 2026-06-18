@@ -4,6 +4,35 @@ All notable changes to Qobuz Librarian are recorded here, newest first. The
 project follows [semantic versioning](https://semver.org/); dates are when each
 version was tagged during local development.
 
+## [Unreleased]
+
+Correctness fixes toward the first public release. No changed defaults.
+
+**Repair scan**
+
+- The whole-library repair scan now decode-tests every FLAC instead of trusting
+  its size and STREAMINFO header. A file with frame-CRC damage or a zeroed-out
+  middle keeps its original size and reported duration, so the old size-and-header
+  check passed it as "verified intact" and the scan reported no damage. Every file
+  is now run through `flac -t` locally (no network): a clean file still costs no
+  Qobuz call, a file that won't decode is surfaced and refilled, and when the
+  `flac` tool is missing a file is counted "unverified" rather than silently "ok".
+  The scan summary now reports what was actually decode-verified.
+
+**Offline page**
+
+- The offline page's Retry button works again. It loaded a small script that was
+  never shipped in the image, so the button did nothing; it is now a plain link
+  that still works while the service worker is serving the page.
+
+**Dismissed-album list**
+
+- A corrupt hidden-albums file is now moved aside to a `.corrupt` copy with a
+  warning instead of being silently overwritten by the next dismissal. Previously
+  one unreadable read returned an empty list and the next hide or restore wrote a
+  fresh file over it, destroying a dismissed-album list curated over weeks with no
+  trace.
+
 ## [0.6.1] - 2026-06-13
 
 Bugfix release. All seventeen changes are fixes to edge cases found by an
