@@ -23,11 +23,14 @@ conscious request to see everything by that artist. Only the bulk walks filter
 on it.
 """
 import json
+import logging
 import threading
 from datetime import datetime, timezone
 
 from qobuz_librarian import config as cfg
 from qobuz_librarian.library.tags import normalize, strip_album_decorations
+
+log = logging.getLogger("qobuz_librarian")
 
 SCOPE_MISSING = "missing"
 SCOPE_UPGRADE = "upgrade"
@@ -63,18 +66,44 @@ def album_fingerprint(artist, title):
     return f"{a}|{t}"
 
 
+def _preserve_corrupt_store(reason):
+    """Move a corrupt hidden-store aside (….corrupt) and warn, instead of letting
+    the next save() silently overwrite it. A dismissed-album list is curated over
+    weeks; losing it to one bad read with no trace is the failure this prevents.
+    Best-effort — a rename that can't happen (read-only volume) still warns."""
+    dest = cfg.HIDDEN_FILE.with_name(cfg.HIDDEN_FILE.name + ".corrupt")
+    try:
+        cfg.HIDDEN_FILE.replace(dest)
+        where = f"kept the unreadable copy at {dest.name}"
+    except OSError:
+        where = "could not move the unreadable copy aside"
+    log.warning("hidden-albums store was corrupt (%s); %s. Your dismissed-album "
+                "list may have been reset — recover from that file if needed.",
+                reason, where)
+
+
 def load():
     """Return the whole store as {scope: {fingerprint: entry}}, tolerating a
-    missing or corrupt file by returning empty scopes."""
+    missing file by returning empty scopes. A corrupt file is moved aside
+    (….corrupt) with a warning rather than silently overwritten by the next
+    save() — which would destroy the dismissed-album list with no trace."""
     base = {s: {} for s in _SCOPES}
     if not cfg.HIDDEN_FILE.exists():
         return base
     try:
         with open(cfg.HIDDEN_FILE, encoding="utf-8") as f:
             data = json.load(f)
-    except (OSError, json.JSONDecodeError):
+    except OSError as e:
+        # Present but unreadable (perms / IO). A rename would likely fail too,
+        # so surface it rather than pretending the list was empty.
+        log.warning("hidden-albums store could not be read (%s); treating it as "
+                    "empty for this run.", e)
+        return base
+    except json.JSONDecodeError as e:
+        _preserve_corrupt_store(e)
         return base
     if not isinstance(data, dict):
+        _preserve_corrupt_store("top-level value is not a JSON object")
         return base
     for scope in _SCOPES:
         bucket = data.get(scope)

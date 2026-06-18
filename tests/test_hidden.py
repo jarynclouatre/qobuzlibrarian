@@ -75,3 +75,23 @@ def test_load_tolerates_a_corrupt_file(monkeypatch, tmp_path):
                              "single": {}}
 
 
+def test_corrupt_store_is_preserved_not_silently_wiped(monkeypatch, tmp_path):
+    # A corrupt store must NOT be silently overwritten by the next save() — that
+    # would destroy a curated hide list. It's moved aside (.corrupt) and the new
+    # write goes to a fresh file, so the old data stays recoverable + the user is
+    # told, rather than the list vanishing on one bad read.
+    p = tmp_path / "h.json"
+    p.write_text('{"missing": {"a|b": {"artist": "A"}}, THIS IS BROKEN',
+                 encoding="utf-8")
+    monkeypatch.setattr("qobuz_librarian.config.HIDDEN_FILE", p)
+
+    hidden.hide(hidden.SCOPE_MISSING, [("New", "Album", "2020")])  # load -> save
+
+    corrupt = p.with_name(p.name + ".corrupt")
+    assert corrupt.exists(), "corrupt store must be kept aside, not silently wiped"
+    assert "THIS IS BROKEN" in corrupt.read_text(encoding="utf-8")
+    # the new hide still persisted, to a fresh valid file
+    saved = hidden.load()
+    assert hidden.album_fingerprint("New", "Album") in saved[hidden.SCOPE_MISSING]
+
+
