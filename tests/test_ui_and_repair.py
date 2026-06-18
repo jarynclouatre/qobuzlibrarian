@@ -249,13 +249,18 @@ def test_scan_isrc_repairs_byte_size_short_catches_tail_truncation(tmp_path):
 
 
 def test_scan_isrc_repairs_sweep_mode_skips_qobuz_for_healthy_files(tmp_path):
-    # deep=False: a healthy file passes with no Qobuz call (the speed win),
-    # but a clearly-truncated one is still flagged without one.
+    # deep=False: a file that DECODES CLEANLY passes with no Qobuz call (the
+    # speed win) — only the local decode probe runs, no per-track API hit. A
+    # clearly byte-short one is still flagged. (The sweep now always decode-
+    # probes, so a non-byte-short file is "ok" only when it actually decodes;
+    # the real-FLAC coverage of that lives in test_repair_accuracy.py. Here we
+    # mock the decode True to isolate the "no Qobuz call for healthy" contract.)
     healthy = tmp_path / "ok.flac"
     healthy.write_bytes(b"\x00" * 2_000_000)
     calls = []
     with patch("qobuz_librarian.repair_log.read_album_dir",
                return_value=[_track(length=10.0, path=str(healthy))]), \
+         patch("qobuz_librarian.repair_log.flac_audio_ok", return_value=True), \
          patch("qobuz_librarian.repair_log.find_qobuz_track_by_isrc",
                side_effect=lambda *a, **k: calls.append(a)):
         r = scan_dir_for_isrc_repairs(tmp_path, "token", deep=False)

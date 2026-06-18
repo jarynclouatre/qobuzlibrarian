@@ -69,10 +69,16 @@ def scan_dir_for_isrc_repairs(album_dir, token,
     mandatory: album-edition guessing (find_qobuz_album_for_dir) can silently
     swap a 1992 master for its 2011 remaster, which is wrong for surgical repair.
 
-    deep=True (single-album repair) verifies every track against Qobuz. A
-    whole-library sweep passes deep=False: a track is only looked up on Qobuz
-    when it already looks truncated from the file size + STREAMINFO alone, so a
-    healthy library finishes in minutes instead of one API call per track.
+    Either way, every FLAC is decode-probed locally (`flac -t`, no network), so
+    a file is only ever counted verified_ok when it actually decodes — frame-CRC
+    and middle-zero damage that leaves the size + STREAMINFO intact is caught.
+    The `deep` flag controls only the Qobuz duration cross-check, not whether we
+    read the file: deep=True (single-album repair) looks every track up on Qobuz
+    to also catch a file that decodes fine but is genuinely shorter than the real
+    recording. A whole-library sweep passes deep=False and only spends a Qobuz
+    call on a track that already looks suspect (byte-short OR won't decode), so a
+    healthy library still avoids one API call per track. When the `flac` tool is
+    absent a file can't be decode-checked and is counted `unverified`, never ok.
 
     only_isrcs: when given (a set of normalised ISRCs), tracks whose ISRC is not
     in the set are counted as verified_ok without an API call. _refills_intact
@@ -89,6 +95,9 @@ def scan_dir_for_isrc_repairs(album_dir, token,
         "verified_ok_isrcs": set(),
         "no_isrc_tag": [],
         "isrc_no_match": [],
+        # FLACs we could not decode-check because the flac tool is absent —
+        # counted so the summary can say so, never reported as "verified ok".
+        "unverified": 0,
     }
     existing = read_album_dir(album_dir)
     if not existing:
@@ -135,7 +144,7 @@ def scan_dir_for_isrc_repairs(album_dir, token,
             # stay fast; a corrupt file there still trips the byte-size gate
             # below once it has an ISRC, and a deep single-album scan catches
             # the rest. (No-op when the flac tool is absent.)
-            elif deep and path and not _flac_decode_ok(path):
+            elif path and not _flac_decode_ok(path):
                 entry["diagnostic"] = (
                     "won't decode (frame-CRC or mid-file damage); "
                     "re-download or replace from another source")
@@ -163,8 +172,24 @@ def scan_dir_for_isrc_repairs(album_dir, token,
             and audio_size < flen * sample_rate * channels * (bits / 8)
             * _BYTE_SIZE_TRUNCATED_RATIO)
         if not deep and not looks_byte_short:
-            report["verified_ok"] += 1
-            continue
+            # The cheap gates say "fine" — but frame-CRC or middle-zero damage
+            # leaves the file size and STREAMINFO intact while the audio itself
+            # won't decode. A repair scan must never call a file "ok" it never
+            # read, so decode-probe locally (no network) before trusting it.
+            # A clean file is verified_ok and stays network-free (the common,
+            # fast case); a decode FAILURE falls through to the ISRC lookup +
+            # flag path below so the damage is surfaced and, if matched on
+            # Qobuz, refillable. A missing `flac` tool means we genuinely can't
+            # verify — count it unverified rather than fabricate an "ok".
+            dec = flac_audio_ok(Path(path)) if path else None
+            if dec is True:
+                report["verified_ok"] += 1
+                report["verified_ok_isrcs"].add(isrc)
+                continue
+            if dec is None:
+                report["unverified"] += 1
+                continue
+            # dec is False → genuinely corrupt; fall through to look up + flag.
         # Caller only needs a subset of ISRCs positively re-verified (e.g. the
         # post-repair integrity check on just the refilled tracks): everything
         # outside that set is counted ok without burning an API call per track.
@@ -180,7 +205,7 @@ def scan_dir_for_isrc_repairs(album_dir, token,
             # so a corrupt-but-unmatched file is surfaced rather than silently
             # passed. Routed to no_isrc_tag's diagnostic channel (same as a
             # broken untagged file), since the byID refill can't apply here.
-            if deep and path and not _flac_decode_ok(path):
+            if path and not _flac_decode_ok(path):
                 entry["diagnostic"] = (
                     "won't decode (frame-CRC or mid-file damage); "
                     "re-download or replace from another source")

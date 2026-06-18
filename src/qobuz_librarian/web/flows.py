@@ -1029,6 +1029,9 @@ def scan_repairs(job, token):
     cp = scan_checkpoint.load("repair")
     scanned = set(cp["scanned"]) if cp else set()
     total = 0
+    n_verified = 0      # ISRC'd FLACs that actually decoded clean this run
+    n_unverified = 0    # couldn't decode-check (flac tool absent)
+    n_failed = 0        # albums that errored mid-scan (surfaced, not hidden)
     if cp:
         for c in cp["candidates"]:
             _readd_candidate(job, c)
@@ -1064,7 +1067,10 @@ def scan_repairs(job, token):
                 raise
             except Exception as e:
                 log.info(f"    skipped {album_dir.name}: {e}")
+                n_failed += 1
                 continue
+            n_verified += scan["verified_ok"]
+            n_unverified += scan.get("unverified", 0)
             truncated = scan["verified_truncated"]
             if truncated:
                 job.add_candidate(
@@ -1114,9 +1120,21 @@ def scan_repairs(job, token):
             scan_checkpoint.save("repair", scanned, job.candidates, {})
         time.sleep(cfg.ARTIST_API_DELAY)
     scan_checkpoint.clear("repair")
-    job.summary = (f"{plural(total, 'album')} flagged with damaged files."
-                   if total else
-                   "No damaged files found — every ISRC-tagged track verified intact.")
+    # Honest summary: report what was actually decode-verified, and never claim
+    # completeness the scan didn't earn. Surface the un-checkable (no flac tool)
+    # and the albums that errored, instead of folding them into a clean total.
+    unver = (f" {plural(n_unverified, 'track')} couldn't be decode-checked "
+             "(no flac tool)." if n_unverified else "")
+    fail = (f" {plural(n_failed, 'album')} couldn't be scanned — re-run to retry."
+            if n_failed else "")
+    if total:
+        job.summary = (f"{plural(total, 'album')} flagged with damaged files. "
+                       f"{plural(n_verified, 'track')} decode-verified clean."
+                       + unver + fail)
+    else:
+        job.summary = (f"No damaged files found — "
+                       f"{plural(n_verified, 'track')} decode-verified intact."
+                       + unver + fail)
     log.info(job.summary)
 
 
