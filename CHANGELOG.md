@@ -6,7 +6,8 @@ version was tagged during local development.
 
 ## [0.7.0] - 2026-06-18
 
-First public release. Correctness fixes on top of 0.6.1; no changed defaults.
+Strengthens the library repair scan so it can no longer report a corrupt file
+as intact, plus two smaller correctness fixes. No changed defaults.
 
 **Repair scan**
 
