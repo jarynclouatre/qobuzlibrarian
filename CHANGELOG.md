@@ -4,9 +4,9 @@ All notable changes to Qobuz Librarian are recorded here, newest first. The
 project follows [semantic versioning](https://semver.org/); dates are when each
 version was tagged during local development.
 
-## [Unreleased]
+## [0.7.0] - 2026-06-18
 
-Correctness fixes toward the first public release. No changed defaults.
+First public release. Correctness fixes on top of 0.6.1; no changed defaults.
 
 **Repair scan**
 
