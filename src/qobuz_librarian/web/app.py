@@ -3189,4 +3189,8 @@ def _write_creds(user_id, auth_token) -> bool:
 
 def start():
     import uvicorn
-    uvicorn.run("qobuz_librarian.web.app:app", host=cfg.WEB_HOST, port=cfg.WEB_PORT, workers=1)
+    # server_header=False mirrors the --no-server-header the Docker entrypoint
+    # passes, so the installed qobuz-librarian-web entrypoint doesn't advertise
+    # "Server: uvicorn" (a free hint to anyone scanning for framework CVEs).
+    uvicorn.run("qobuz_librarian.web.app:app", host=cfg.WEB_HOST,
+                port=cfg.WEB_PORT, workers=1, server_header=False)

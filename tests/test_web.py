@@ -802,6 +802,21 @@ def test_first_post_after_page_load_still_succeeds():
         assert r.status_code == 303  # accepted, not a 403
 
 
+def test_start_passes_server_header_false_to_uvicorn(monkeypatch):
+    """The installed qobuz-librarian-web entrypoint must suppress the
+    'Server: uvicorn' header the way the Docker entrypoint's --no-server-header
+    does. uvicorn.run blocks, so capture its kwargs instead of launching."""
+    import uvicorn
+
+    from qobuz_librarian.web import app as webapp
+
+    captured = {}
+    monkeypatch.setattr(uvicorn, "run",
+                        lambda *a, **kw: captured.update(kw))
+    webapp.start()
+    assert captured.get("server_header") is False
+
+
 # ── app.py: credential helpers ────────────────────────────────────────────────
 
 def test_write_then_read_creds_roundtrip(tmp_path, monkeypatch):
