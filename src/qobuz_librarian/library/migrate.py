@@ -488,6 +488,11 @@ def validate_paths(src: Path, dest: Path, *,
                 "library into itself. Choose a destination outside the source.")
     if _is_within(src, dest):
         return "Source is inside the destination. Choose separate folders."
+    # The copy/move writes into the destination tree (created if absent), so a
+    # read-only dest must fail here, not partway through with a raw OSError.
+    dest_anchor = dest if dest.exists() else _existing_ancestor(dest)
+    if dest_anchor is None or not os.access(str(dest_anchor), os.W_OK):
+        return f"Destination isn't writable: {dest_anchor or dest}"
     return None
 
 

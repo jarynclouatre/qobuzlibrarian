@@ -1873,18 +1873,34 @@ async def lyrics_scan_artist(request: Request, artist: str = Form("")):
 
 def _migrate_checks(src, dest):
     import os
+
+    from qobuz_librarian.library.migrate import _existing_ancestor
     checks = []
     for label, path in (("Source folder", src), ("Destination folder", dest)):
         if not path:
             checks.append({"label": label, "ok": False, "detail": "not set"})
             continue
         p = Path(path)
+        is_dest = label.startswith("Destination")
         if not p.exists():
-            checks.append({"label": label, "ok": False, "detail": f"{p} does not exist"})
+            # The migration creates the destination tree, so a not-yet-created
+            # dest is fine as long as a writable ancestor exists to land it in.
+            anc = _existing_ancestor(p) if is_dest else None
+            if is_dest and anc and os.access(str(anc), os.W_OK):
+                checks.append({"label": label, "ok": True,
+                               "detail": f"{p} (will be created under {anc})"})
+            elif is_dest:
+                checks.append({"label": label, "ok": False,
+                               "detail": f"{p} can't be created — nearest existing "
+                                         f"folder {anc or p.anchor} is not writable"})
+            else:
+                checks.append({"label": label, "ok": False, "detail": f"{p} does not exist"})
         elif not p.is_dir():
             checks.append({"label": label, "ok": False, "detail": f"{p} is not a directory"})
         elif not os.access(str(p), os.R_OK):
             checks.append({"label": label, "ok": False, "detail": f"{p} is not readable"})
+        elif is_dest and not os.access(str(p), os.W_OK):
+            checks.append({"label": label, "ok": False, "detail": f"{p} is not writable"})
         else:
             checks.append({"label": label, "ok": True, "detail": str(p)})
     return checks

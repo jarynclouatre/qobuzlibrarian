@@ -42,7 +42,14 @@ def test_validate_paths_in_place_requires_writable_source(tmp_path):
     src = tmp_path / "src"
     src.mkdir()
     dest = tmp_path / "dest"
-    with patch("qobuz_librarian.library.migrate.os.access", return_value=False):
+    dest.mkdir()
+    real_access = engine.os.access
+    # Deny write on the SOURCE only — the destination stays writable so the
+    # copy-mode dest-writability check passes and this isolates the source rule.
+    with patch("qobuz_librarian.library.migrate.os.access",
+               side_effect=lambda p, mode: False
+               if (str(p) == str(src) and mode == engine.os.W_OK)
+               else real_access(p, mode)):
         # Copy mode never consults source writability.
         assert engine.validate_paths(src, dest, in_place=False) is None
         # In-place mode moves files out of the source and refuses a read-only one.

@@ -16,6 +16,23 @@ def _meta(**kw):
     return base
 
 
+def test_validate_paths_rejects_unwritable_destination(tmp_path, monkeypatch):
+    # The destination is written to; a read-only dest must fail the preflight,
+    # not partway through the migration with a raw PermissionError.
+    src = tmp_path / "src"
+    src.mkdir()
+    dest = tmp_path / "dest"
+    dest.mkdir()
+    assert m.validate_paths(src, dest) is None          # writable dest is fine
+    real_access = m.os.access
+    monkeypatch.setattr(m.os, "access",
+                        lambda p, mode: False
+                        if (str(p) == str(dest) and mode == m.os.W_OK)
+                        else real_access(p, mode))
+    reason = m.validate_paths(src, dest)
+    assert reason and "writable" in reason.lower()
+
+
 # ── tag normalization ────────────────────────────────────────────────────────
 
 def test_normalize_tags_parses_slashed_track_and_disc_and_year():
