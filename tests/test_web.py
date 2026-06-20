@@ -758,6 +758,50 @@ def test_csrf_form_field_body_replayed_to_route():
         )
 
 
+def test_csrf_cookie_minted_only_on_html_responses():
+    """The CSRF cookie is what an HTML page reads (from its <meta>) and submits,
+    so only HTML responses should mint it. Minting it on every static asset /
+    health probe / sw.js / JSON api hit was wasteful and cache-unfriendly. This
+    only changes when the cookie is SET, never how it's validated."""
+    from fastapi.testclient import TestClient
+
+    from qobuz_librarian.web.app import app
+    from qobuz_librarian.web.csrf import CSRF_COOKIE_NAME
+
+    def set_cookie_header(path):
+        # Fresh, cookieless client per request so each response stands alone.
+        with TestClient(app) as c:
+            r = c.get(path)
+            return r.headers.get("set-cookie") or ""
+
+    # An HTML page seeds the cookie so the form/AJAX flow has a token.
+    assert CSRF_COOKIE_NAME in set_cookie_header("/")
+
+    # Non-HTML responses do not mint it.
+    for path in ("/static/app.js", "/healthz", "/sw.js", "/api/jobs"):
+        assert CSRF_COOKIE_NAME not in set_cookie_header(path), (
+            f"{path} should not set the CSRF cookie")
+
+
+def test_first_post_after_page_load_still_succeeds():
+    """Narrowing the cookie to HTML responses must not break legit CSRF: a
+    client that loaded a normal page has the cookie, so its first POST passes."""
+    from fastapi.testclient import TestClient
+
+    from qobuz_librarian.web.csrf import CSRF_COOKIE_NAME, CSRF_FORM_FIELD
+    from qobuz_librarian.web.app import app
+
+    with TestClient(app) as c:
+        c.get("/")  # a normal HTML page load seeds the cookie
+        token = c.cookies.get(CSRF_COOKIE_NAME)
+        assert token  # the page load actually set it
+        c.headers.pop("X-CSRF-Token", None)
+        r = c.post("/artist",
+                   data={CSRF_FORM_FIELD: token, "artist": "test-artist"},
+                   follow_redirects=False)
+        assert r.status_code == 303  # accepted, not a 403
+
+
 # ── app.py: credential helpers ────────────────────────────────────────────────
 
 def test_write_then_read_creds_roundtrip(tmp_path, monkeypatch):

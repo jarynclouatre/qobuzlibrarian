@@ -60,7 +60,15 @@ class CSRFMiddleware(BaseHTTPMiddleware):
                 )
 
         response = await call_next(request)
-        if not cookie_token:
+        # Mint the cookie only when the client has none AND we're returning an
+        # HTML page — the page is what reads the token (from its <meta> tag) and
+        # then submits it, so static assets, /healthz, /sw.js and JSON /api
+        # responses don't need it. This avoids minting (and a Set-Cookie that
+        # defeats caching) on every probe/asset hit. Validation is unchanged:
+        # any HTML page load still seeds the cookie, so the first POST after a
+        # normal page view still has a cookie to check against.
+        is_html = response.headers.get("content-type", "").startswith("text/html")
+        if not cookie_token and is_html:
             secure = (request.url.scheme == "https"
                       or request.headers.get("x-forwarded-proto") == "https")
             response.set_cookie(
