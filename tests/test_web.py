@@ -1869,6 +1869,42 @@ def test_jobs_list_returns_array_and_respects_filter(client):
         _remove_job(done)
 
 
+def test_jobs_list_reaches_history_past_registry_cap(client):
+    """The registry only holds MAX_FINISHED finished jobs, so listing
+    `status=done` used to top out there. The API now also reaches the on-disk
+    archive, so a finished job evicted past the cap is still returned."""
+    from qobuz_librarian.web import job_persistence
+
+    job_persistence._reset_for_tests()
+    job_persistence.init()
+    n = jm.registry.MAX_FINISHED + 10  # comfortably past the in-memory cap
+    persisted_ids = []
+    try:
+        # Persist straight to the archive without touching the registry, so the
+        # only way these can come back is via the history fallback.
+        for i in range(n):
+            job = jm.Job(title=f"Archived {i}", status=jm.JobStatus.DONE)
+            job.finished_at = 1000.0 + i
+            job_persistence.persist(job)
+            persisted_ids.append(job.id)
+
+        r = client.get("/api/jobs?status=done&limit=500")
+        assert r.status_code == 200
+        ids = {j["id"] for j in r.json()["jobs"]}
+        # All of them are reachable, not just the most-recent MAX_FINISHED.
+        assert set(persisted_ids).issubset(ids)
+        assert len([1 for j in r.json()["jobs"]
+                    if j["id"] in persisted_ids]) == n
+    finally:
+        job_persistence._disabled = True
+        if job_persistence._conn is not None:
+            try:
+                job_persistence._conn.close()
+            except Exception:
+                pass
+            job_persistence._conn = None
+
+
 def test_dashboard_null_fetch_log_fields_render_safe(client, monkeypatch):
     import qobuz_librarian.ui_cli.prompts as prompts_mod
     monkeypatch.setattr(

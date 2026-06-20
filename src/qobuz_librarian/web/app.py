@@ -3046,7 +3046,13 @@ async def job_status(job_id: str):
 async def jobs_list(status: str = "", limit: int = 50):
     """List jobs as JSON. Optional `status` filter ('pending', 'running',
     'awaiting_review', 'scanning', 'done', 'failed', 'canceled').
-    `limit` caps the response — most recent first."""
+    `limit` caps the response — most recent first.
+
+    Live (non-terminal) jobs come from the in-memory registry. Terminal jobs
+    (done/failed/canceled) come from the registry too, but it only keeps the
+    most-recent MAX_FINISHED of them, so we also reach into the on-disk archive
+    to surface jobs evicted past that cap — otherwise `status=done` could never
+    return anything older than the last ~50 finishes."""
     wanted = status.strip().lower() or None
     if wanted is not None:
         valid = {s.value for s in job_mgr.JobStatus}
@@ -3054,13 +3060,44 @@ async def jobs_list(status: str = "", limit: int = 50):
             raise HTTPException(status_code=400,
                                 detail="Unknown status filter")
     cap = max(1, min(limit, 500))
+    terminal_values = {s.value for s in job_mgr.TERMINAL}
+    want_terminal = wanted in terminal_values if wanted else True
+
     matching = []
+    seen = set()
     for j in reversed(job_mgr.registry.all()):
         if wanted and j.status.value != wanted:
             continue
         matching.append(_job_to_dict(j, log_tail=0))
+        seen.add(j.id)
         if len(matching) >= cap:
             break
+
+    # The registry only holds the newest MAX_FINISHED terminal jobs; the archive
+    # keeps far more. Append older finished rows (deduped) so they're reachable.
+    # Registry rows are the live copy and already cover the newest finishes, so
+    # the archive rows we add are strictly older and stay correctly ordered.
+    if want_terminal and len(matching) < cap:
+        from qobuz_librarian.web import job_persistence
+        for row in job_persistence.history_page(cap, 0):
+            if wanted and row["status"] != wanted:
+                continue
+            if row["id"] in seen:
+                continue
+            matching.append({
+                "id": row["id"],
+                "status": row["status"],
+                "title": row["title"],
+                "artist": row["artist"],
+                "album_id": row["album_id"] or None,
+                "error": row["error"],
+                "created_at": row["created_at"],
+                "finished_at": row["finished_at"],
+            })
+            seen.add(row["id"])
+            if len(matching) >= cap:
+                break
+
     return JSONResponse({"jobs": matching, "count": len(matching)})
 
 
