@@ -111,6 +111,8 @@ On Windows, run these in WSL or Git Bash — PowerShell's `curl` is an alias for
 
 `compose.yaml` pulls the prebuilt `latest` image from Docker Hub; see [Building from source](#building-from-source) to build it yourself.
 
+> **On an untrusted or shared network, lock the box down before the first boot.** The default Compose publishes the port on all interfaces, and the first-visit setup screen stays open until an account exists — so whoever reaches the port first can claim the admin account. Seed `WEB_AUTH_USER` / `WEB_AUTH_PASSWORD` in `.env` before `docker compose up`, or bind the port to `127.0.0.1` (or keep it behind your own reverse proxy) until you've created the account. On a private home LAN the risk is low, but seeding the credentials up front is the safe default.
+
 Open <http://localhost:8666>. The first visit prompts you to set a web username and password; sign in, then add your Qobuz token on **Settings**:
 
 1. Paste your `user_auth_token` and click **Save & connect** (it's validated against Qobuz before saving).
