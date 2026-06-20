@@ -788,8 +788,8 @@ def test_first_post_after_page_load_still_succeeds():
     client that loaded a normal page has the cookie, so its first POST passes."""
     from fastapi.testclient import TestClient
 
-    from qobuz_librarian.web.csrf import CSRF_COOKIE_NAME, CSRF_FORM_FIELD
     from qobuz_librarian.web.app import app
+    from qobuz_librarian.web.csrf import CSRF_COOKIE_NAME, CSRF_FORM_FIELD
 
     with TestClient(app) as c:
         c.get("/")  # a normal HTML page load seeds the cookie
@@ -3160,6 +3160,7 @@ def test_login_hash_runs_off_the_event_loop(monkeypatch, tmp_path):
     # so one login attempt can't freeze health/API/SSE on the single-worker
     # server. A worker thread has no running loop, so get_running_loop() raises.
     import asyncio as _asyncio
+
     from qobuz_librarian.web import auth as web_auth
     seen = {}
     real = web_auth.verify_login
@@ -3216,7 +3217,8 @@ def test_add_candidate_caps_and_flags_truncation():
 
 
 def test_cap_note_only_warns_when_results_were_truncated():
-    from qobuz_librarian.web import flows, jobs as jm
+    from qobuz_librarian.web import flows
+    from qobuz_librarian.web import jobs as jm
     job = jm.Job()
     assert flows._cap_note(job) == ""  # nothing dropped, no note
     job.CANDIDATE_CAP = 2
