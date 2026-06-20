@@ -170,14 +170,45 @@ def pin_unverified_upgrade_backup(bp: Path) -> None:
         pass
 
 
+# Memoize the orphan walk: every settings load/submit and the dashboard call
+# _diagnostics(), which calls this, and it rglob-walks every retained backup to
+# content-check redundancy. A burst of those hits (form POST → redirect →
+# dashboard render) would otherwise re-walk the whole backup tree each time. The
+# cache is invalidated when the backup dir's mtime changes (a backup added or
+# removed bumps it) or when the short TTL lapses (catches a sub-dir-only change,
+# e.g. a restore completing, that doesn't touch the parent's mtime).
+_ONLY_COPY_TTL_SEC = 10.0
+_only_copy_cache: tuple[float, float, list] | None = None
+
+
+def _invalidate_only_copy_cache() -> None:
+    global _only_copy_cache
+    _only_copy_cache = None
+
+
 def find_only_copy_backups():
     """Backups whose recorded origin is gone or still short of them — orphaned
     by a hard kill that skipped the caller's restore/delete. Retention keeps
     these; the web diagnostic surfaces them so the user can recover or clear
-    them (each holds the origin path in its sidecar)."""
-    out = []
+    them (each holds the origin path in its sidecar).
+
+    Memoized for a few seconds keyed on the backup dir's mtime — see
+    _ONLY_COPY_TTL_SEC — so repeated diagnostics don't each re-walk the tree."""
+    global _only_copy_cache
     if not cfg.UPGRADE_BACKUP_DIR.exists():
-        return out
+        _only_copy_cache = None
+        return []
+    try:
+        dir_mtime = cfg.UPGRADE_BACKUP_DIR.stat().st_mtime
+    except OSError:
+        dir_mtime = 0.0
+    now = time.time()
+    cached = _only_copy_cache
+    if (cached is not None and cached[1] == dir_mtime
+            and now - cached[0] < _ONLY_COPY_TTL_SEC):
+        return cached[2]
+
+    out = []
     try:
         for entry in cfg.UPGRADE_BACKUP_DIR.iterdir():
             if not entry.is_dir():
@@ -191,6 +222,7 @@ def find_only_copy_backups():
                 out.append((entry, _read_backup_origin(entry)))
     except OSError:
         pass
+    _only_copy_cache = (now, dir_mtime, out)
     return out
 
 

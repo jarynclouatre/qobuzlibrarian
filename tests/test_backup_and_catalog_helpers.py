@@ -176,6 +176,41 @@ def test_age_sweep_keeps_any_backup_it_cannot_prove_redundant(tmp_path, monkeypa
     assert any(e == bp for e, _origin in bk.find_only_copy_backups())
 
 
+def test_find_only_copy_backups_is_memoized_within_ttl(tmp_path, monkeypatch):
+    # Every settings load/submit and the dashboard call _diagnostics(), which
+    # walks every retained backup to content-check redundancy. Two calls in a row
+    # (e.g. a form POST then the redirect's dashboard render) must not both
+    # re-walk the tree — the result is memoized for a few seconds.
+    import qobuz_librarian.library.backup as bk
+    backup_root = tmp_path / "backups"
+    backup_root.mkdir()
+    monkeypatch.setattr(bk.cfg, "UPGRADE_BACKUP_DIR", backup_root)
+
+    bp = backup_root / "20200101_000000_orphan"
+    bp.mkdir()
+    (bp / "01.flac").write_bytes(b"x" * 5000)  # no sidecar → surfaces as orphan
+
+    bk._invalidate_only_copy_cache()
+    calls = {"n": 0}
+    real_reap = bk._backup_safe_to_reap
+
+    def counting_reap(entry):
+        calls["n"] += 1
+        return real_reap(entry)
+
+    monkeypatch.setattr(bk, "_backup_safe_to_reap", counting_reap)
+
+    first = bk.find_only_copy_backups()
+    assert any(e == bp for e, _origin in first)
+    after_first = calls["n"]
+    assert after_first >= 1  # the first call did the walk
+
+    second = bk.find_only_copy_backups()
+    assert second == first
+    # No re-walk within the TTL while the backup dir's mtime is unchanged.
+    assert calls["n"] == after_first
+
+
 def test_age_sweep_keeps_a_count_match_when_a_track_is_missing_at_origin(tmp_path, monkeypatch):
     # Redundancy is proved by content, not file count. An origin that gained a
     # DIFFERENT file (so the count matches) while one of the backup's own tracks
