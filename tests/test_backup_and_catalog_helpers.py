@@ -1,6 +1,7 @@
 """Tests for backup/restore safety, beets-DB-after-move sync, and the
 consolidation helpers. These mostly cover the cross-filesystem / interrupted-
 operation paths that have actually bit us — the gnarly parts."""
+import errno
 import os
 import shutil
 import sqlite3
@@ -389,6 +390,47 @@ def test_restore_upgrade_backup_clears_a_stale_restore_trash(tmp_path):
     assert restore_upgrade_backup(backup, original) is True
     assert (original / "intact.flac").exists()
     assert not stale.exists()
+
+
+def test_restore_upgrade_backup_exdev_verifies_before_dropping_backup(tmp_path, monkeypatch):
+    # Same-st_dev bind mounts can still raise EXDEV on rename. The restore must
+    # use the verified copy-to-.restoring path, NOT shutil.move's unverified
+    # copy+delete: if the staged copy doesn't match the backup, the backup must
+    # be PRESERVED, not deleted. Reproduces the data-loss-on-restore hole.
+    import qobuz_librarian.library.backup as bkmod
+    backup = tmp_path / "backup"
+    backup.mkdir()
+    (backup / "track1.flac").write_bytes(b"a" * 50_000)
+    (backup / "track2.flac").write_bytes(b"b" * 50_000)
+    original = tmp_path / "Album"  # absent → straight to the move branch
+
+    # Same st_dev, yet rename fails cross-mount like two bind mounts of one disk.
+    monkeypatch.setattr(bkmod, "_same_filesystem", lambda a, b: True)
+    real_rename = bkmod.os.rename
+
+    def fake_rename(src, dst, *a, **k):
+        if str(src) == str(backup):
+            raise OSError(errno.EXDEV, "Invalid cross-device link")
+        return real_rename(src, dst, *a, **k)
+
+    monkeypatch.setattr(bkmod.os, "rename", fake_rename)
+
+    # Simulate an interrupted/short copy: only one of the two tracks lands.
+    def short_copytree(src, dst, *a, **k):
+        os.makedirs(dst, exist_ok=True)
+        shutil.copy2(os.path.join(src, "track1.flac"),
+                     os.path.join(dst, "track1.flac"))
+        return dst
+
+    monkeypatch.setattr(bkmod.shutil, "copytree", short_copytree)
+
+    # Verified path catches the short copy: keeps the backup, reports failure,
+    # leaves no half-written original. (shutil.move would have copied+deleted.)
+    assert restore_upgrade_backup(backup, original) is False
+    assert backup.exists()
+    assert (backup / "track1.flac").exists() and (backup / "track2.flac").exists()
+    assert not original.exists()
+    assert not original.with_name(original.name + ".restoring").exists()
 
 
 # ── backup_gap_fill_files ───────────────────────────────────────────────────

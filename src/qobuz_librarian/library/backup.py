@@ -659,15 +659,24 @@ def restore_upgrade_backup(backup_path: Path, original_path: Path) -> bool:
                     f"mv {backup_path!s} {original_path!s}"))
                 return False
         original_path.parent.mkdir(parents=True, exist_ok=True)
-        # Crash-safe cross-mount restore: /upgrade_backups → /music is a
-        # different mount in Docker, so a plain shutil.move degrades to an
-        # UNVERIFIED copytree+rmtree where an ENOSPC mid-copy (likely right after
-        # the failed download that triggered this restore) leaves a half-written
-        # original. Copy to a .restoring sibling ON the destination fs, verify it
-        # matches, then atomically rename it in and only then drop the backup.
+        # Crash-safe restore. /upgrade_backups → /music can be a different mount
+        # in Docker, and even when _same_filesystem() reports the same st_dev an
+        # os.rename across two bind mounts of one host disk still raises EXDEV. So
+        # try a pure rename first — NOT shutil.move, which on EXDEV would silently
+        # degrade to an UNVERIFIED copytree+rmtree and could leave a half-written
+        # original on an ENOSPC mid-copy (the very failure this restore exists to
+        # prevent). On EXDEV fall through to a verified copy: stage onto the
+        # destination fs, check the tree matches, atomically rename it in, and
+        # only then drop the backup.
+        renamed = False
         if _same_filesystem(backup_path, original_path):
-            shutil.move(str(backup_path), str(original_path))
-        else:
+            try:
+                os.rename(str(backup_path), str(original_path))
+                renamed = True
+            except OSError as e:
+                if e.errno != errno.EXDEV:
+                    raise
+        if not renamed:
             restoring = original_path.with_name(original_path.name + ".restoring")
             if restoring.exists():
                 shutil.rmtree(str(restoring), ignore_errors=True)
