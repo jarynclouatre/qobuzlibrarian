@@ -2653,6 +2653,23 @@ async def settings_page(request: Request, saved: bool = False,
                               error=error, mode=mode, diagnostics=diags)
 
 
+def _streamrip_has_userid() -> bool:
+    """True if the streamrip config carries a non-empty user id, so `rip` can
+    actually authenticate a download. A token-only env (QOBUZ_USER_AUTH_TOKEN set,
+    QOBUZ_USER_ID unset) has none until the id is set or creds are saved, even
+    though the app's own Qobuz API calls work from the token alone."""
+    try:
+        if not cfg.STREAMRIP_CONFIG.exists():
+            return False
+        import tomllib
+        with open(cfg.STREAMRIP_CONFIG, "rb") as f:
+            data = tomllib.load(f)
+        uid = str(data.get("qobuz", {}).get("email_or_userid", "") or "").strip()
+        return bool(uid)
+    except Exception:
+        return False
+
+
 @app.post("/settings", response_class=HTMLResponse)
 async def save_settings(request: Request, user_id: str = Form(""), auth_token: str = Form("")):
     global _TOKEN_VALID
@@ -2668,9 +2685,16 @@ async def save_settings(request: Request, user_id: str = Form(""), auth_token: s
     # Blank means "keep the existing value" — the fields are not pre-filled,
     # so an empty submission must not wipe a previously-saved credential.
     if not auth_token.strip() and not user_id.strip() and cfg.QOBUZ_USER_AUTH_TOKEN:
-        # Nothing changed and env creds are already synced at startup — skip
-        # the write so a read-only config volume doesn't surface a false error.
-        return RedirectResponse(url="/settings?connected=1", status_code=303)
+        # Blank submit with an env token = "keep the env creds". But downloads
+        # shell out to `rip`, which also needs a user id; a token-only env
+        # authenticates our own API calls yet fails every download. Only report
+        # connected when a usable user id actually exists (env id, or one already
+        # in the rip config) — otherwise show the needuser banner instead of a
+        # false green that dead-ends at the first download.
+        if cfg.QOBUZ_USER_ID or _streamrip_has_userid():
+            return RedirectResponse(url="/settings?connected=1", status_code=303)
+        return _settings_response(request, error="needuser", user_id="",
+                                  auth_token_prefill="", diagnostics=diags)
     new_token = auth_token.strip() or existing.get("auth_token", "")
     new_uid = user_id.strip() or existing.get("user_id", "")
     # Both fields are mandatory. The token authenticates our API calls on its

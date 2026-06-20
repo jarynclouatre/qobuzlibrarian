@@ -1011,6 +1011,32 @@ def test_unreachable_qobuz_saves_token_but_flags_unverified(client, monkeypatch)
     assert wrote == [("u", "tok")]
 
 
+def test_token_only_env_does_not_report_connected(client, monkeypatch, tmp_path):
+    # QOBUZ_USER_AUTH_TOKEN set but no user id: our API calls work, but `rip`
+    # downloads need a user id too, so a blank save must NOT flash a false green.
+    # It now shows the needuser banner instead of redirecting to connected=1.
+    from qobuz_librarian import config as cfg
+    monkeypatch.setattr(cfg, "QOBUZ_USER_AUTH_TOKEN", "envtok")
+    monkeypatch.setattr(cfg, "QOBUZ_USER_ID", "")
+    monkeypatch.setattr(cfg, "STREAMRIP_CONFIG", tmp_path / "nope.toml")
+    r = client.post("/settings", data={"user_id": "", "auth_token": ""},
+                    follow_redirects=False)
+    assert r.status_code == 200            # rendered the page, not a connected redirect
+    assert "isn't enough" in r.text        # the needuser guidance is shown
+
+
+def test_token_plus_user_id_env_reports_connected(client, monkeypatch):
+    # With a real user id available, a blank save legitimately reports connected
+    # because downloads are actually usable.
+    from qobuz_librarian import config as cfg
+    monkeypatch.setattr(cfg, "QOBUZ_USER_AUTH_TOKEN", "envtok")
+    monkeypatch.setattr(cfg, "QOBUZ_USER_ID", "12345")
+    r = client.post("/settings", data={"user_id": "", "auth_token": ""},
+                    follow_redirects=False)
+    assert r.status_code == 303
+    assert "connected=1" in r.headers["location"]
+
+
 def test_settings_behavior_persist_failure_redirects_with_error(client, monkeypatch):
     from qobuz_librarian.web import settings_store
     monkeypatch.setattr(settings_store, "save", lambda *_: (False, []))
