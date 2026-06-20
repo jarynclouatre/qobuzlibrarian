@@ -350,6 +350,13 @@ class Job:
                 "see the rest.")
         return cid
 
+    @property
+    def candidate_cap_hit(self) -> bool:
+        """True once a scan hit CANDIDATE_CAP and stopped listing further finds,
+        so summaries can say results were truncated instead of implying the full
+        found-count is reviewable."""
+        return self._candidate_cap_noted
+
     def selected_candidates(self) -> list:
         return [c for c in self.candidates if c.get("selected")]
 

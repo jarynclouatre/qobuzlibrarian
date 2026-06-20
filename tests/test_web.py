@@ -2998,6 +2998,33 @@ def test_setup_creates_login_and_signs_in(monkeypatch, tmp_path):
         assert c.get("/", follow_redirects=False).status_code == 200
 
 
+def test_add_candidate_caps_and_flags_truncation():
+    # The in-memory candidate list is bounded by CANDIDATE_CAP. Past the cap,
+    # finds are dropped (cid None) and candidate_cap_hit flips True so the
+    # summary can say results were truncated. (Regression: a whole-library scan
+    # found ~37k gaps but kept only the cap, while the summary still implied all
+    # were reviewable — McCartney/Beatles silently vanished.)
+    from qobuz_librarian.web import jobs as jm
+    job = jm.Job()
+    job.CANDIDATE_CAP = 3  # instance value shadows the class default for the test
+    cids = [job.add_candidate("album", f"track {i}") for i in range(5)]
+    assert len(job.candidates) == 3
+    assert cids[3] is None and cids[4] is None
+    assert job.candidate_cap_hit is True
+    assert jm.Job().candidate_cap_hit is False
+
+
+def test_cap_note_only_warns_when_results_were_truncated():
+    from qobuz_librarian.web import flows, jobs as jm
+    job = jm.Job()
+    assert flows._cap_note(job) == ""  # nothing dropped, no note
+    job.CANDIDATE_CAP = 2
+    for i in range(4):
+        job.add_candidate("album", f"track {i}")
+    note = flows._cap_note(job)
+    assert "result cap" in note and "first 2" in note
+
+
 def test_migrate_page_renders_unconfigured_and_configured(client, monkeypatch):
     import qobuz_librarian.config as cfg
     monkeypatch.setattr(cfg, "MIGRATE_SRC", "")

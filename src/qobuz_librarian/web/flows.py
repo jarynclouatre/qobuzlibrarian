@@ -94,6 +94,17 @@ def _readd_candidate(job, c):
                       payload=c.get("payload") or {}, selected=bool(c.get("selected")))
 
 
+def _cap_note(job) -> str:
+    """A truncation notice appended to a scan summary when the candidate list hit
+    the in-memory cap, so a summary never implies more results are reviewable
+    than were actually kept. Empty when nothing was dropped."""
+    if not job.candidate_cap_hit:
+        return ""
+    return (f" Showing the first {len(job.candidates):,} — the scan hit the "
+            f"{job.CANDIDATE_CAP:,} result cap. Scan a single artist, or raise "
+            "JOB_CANDIDATE_CAP, to see the rest.")
+
+
 def _add_gap_candidate(job, gap, artist_name, selected=False, is_new=False):
     """Turn an engine AlbumGap into a review candidate. A partial gap carries
     its missing-track count so the detail reads 'gap-fill: N missing'."""
@@ -389,9 +400,11 @@ def scan_library(job, token, partial_only=False):
                        if total else "Stopped before anything turned up.")
     elif partial_only:
         job.summary = (f"{plural(total, 'album')} with track gaps across the library."
+                       + _cap_note(job)
                        if total else "No track gaps found in your owned albums.")
     else:
         job.summary = (f"{plural(total, 'missing album')} across the library."
+                       + _cap_note(job)
                        if total else
                        "No missing albums — your library matches each artist's "
                        "Qobuz catalog.")
@@ -664,7 +677,7 @@ def scan_upgrades(job, token):
                        if total else "Stopped before anything turned up.")
     else:
         job.summary = (f"{plural(total, 'upgradeable album')} Qobuz can serve "
-                       "at higher quality." if total else
+                       "at higher quality." + _cap_note(job) if total else
                        "No upgrades — every album is already at the best quality "
                        "Qobuz offers.")
     log.info(job.summary)
@@ -897,6 +910,7 @@ def scan_downsamples(job):
                        if total else "Stopped before anything turned up.")
     else:
         job.summary = (f"{plural(total, 'album')} stored above CD rate."
+                       + _cap_note(job)
                        if total else
                        "No hi-res files — every album is already at CD rate or lower.")
     log.info(job.summary)

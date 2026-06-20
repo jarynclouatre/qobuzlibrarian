@@ -399,9 +399,12 @@ JOB_LOG_CAP          = _env_num_min("JOB_LOG_CAP",         5000, 1)
 JOB_LOG_REPLAY_TAIL  = _env_num_min("JOB_LOG_REPLAY_TAIL",  500, 0)
 # Ceiling on candidates a single review job holds in memory (and persists/
 # rehydrates). A whole-library gap scan on a very large collection could
-# otherwise grow this unbounded; past the cap the scan stops adding and notes
-# how many it dropped, so the box stays safe and the user narrows the scan.
-JOB_CANDIDATE_CAP    = _env_num_min("JOB_CANDIDATE_CAP",  20000, 1)
+# otherwise grow this unbounded; past the cap the scan stops adding and the
+# summary says so, so the box stays safe and the user can narrow or raise it.
+# The default is high enough that a realistic whole-library scan is never
+# silently truncated (a dense ~2k-artist library produced ~37k gaps) — it is a
+# runaway guard, not a routine limit.
+JOB_CANDIDATE_CAP    = _env_num_min("JOB_CANDIDATE_CAP",  100000, 1)
 POST_JOB_HOOK_TIMEOUT = _env_num_min("POST_JOB_HOOK_TIMEOUT", 10, 1)
 SSE_MAX_WORKERS      = _env_num_min("SSE_MAX_WORKERS", 16, 1)
 SSE_HEARTBEAT_TICKS  = _env_num_min("SSE_HEARTBEAT_TICKS", 30, 1)
