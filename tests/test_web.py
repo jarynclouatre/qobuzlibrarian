@@ -3051,6 +3051,20 @@ def test_cap_note_only_warns_when_results_were_truncated():
     assert "result cap" in note and "first 2" in note
 
 
+def test_artist_sort_key_files_articles_under_the_real_letter():
+    # "The Beatles" must sort under B, not T (owner acceptance criterion);
+    # leading the/a/an are ignored, the rest of the name is not.
+    from qobuz_librarian.web.app import _artist_sort_key
+    names = ["The Beatles", "Bob Dylan", "ABBA", "Adele", "The Who",
+             "A Tribe Called Quest", "an Evening"]
+    ordered = sorted(names, key=_artist_sort_key)
+    assert ordered.index("Adele") < ordered.index("The Beatles") < ordered.index("Bob Dylan")
+    assert ordered[-1] == "The Who"            # "who" sorts last
+    assert _artist_sort_key("The Beatles") == "beatles"
+    assert _artist_sort_key("A Tribe Called Quest") == "tribe called quest"
+    assert _artist_sort_key("Adele") == "adele"   # no leading "a " to strip
+
+
 def test_migrate_page_renders_unconfigured_and_configured(client, monkeypatch):
     import qobuz_librarian.config as cfg
     monkeypatch.setattr(cfg, "MIGRATE_SRC", "")

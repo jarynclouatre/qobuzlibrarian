@@ -308,11 +308,13 @@ LYRICS_PROVIDERS = [p.strip() for p in
 
 # ── Timeouts / delays ─────────────────────────────────────────────────────────
 SEARCH_LIMIT     = _env("SEARCH_LIMIT",     8)
-# Per-context search depth for internal matchers. Defaults stay close to
-# the literals they replace (5 / 12) — bump to widen catalog/artist
-# matching at the cost of more Qobuz API calls. SEARCH_LIMIT above is
-# the user-facing "Search page" depth and is unaffected.
-ARTIST_LOOKUP_LIMIT  = _env("ARTIST_LOOKUP_LIMIT",  5)
+# Per-context search depth for internal matchers. ARTIST_LOOKUP_LIMIT scores
+# this many artist-search hits when resolving a name to an id; 5 was too few for
+# common names (the right artist could rank 6th+ and silently resolve to
+# nothing), so 15. CATALOG_SEARCH_LIMIT is the per-album edition-match depth.
+# SEARCH_LIMIT above is the user-facing Search-page depth and is unaffected.
+# Higher = more matches at the cost of more Qobuz API calls.
+ARTIST_LOOKUP_LIMIT  = _env("ARTIST_LOOKUP_LIMIT",  15)
 CATALOG_SEARCH_LIMIT = _env("CATALOG_SEARCH_LIMIT", 12)
 # Per-album rip subprocess cap. 0 means no timeout (the rip runs until it
 # finishes or is cancelled); a stray negative folds to 0 rather than killing
@@ -422,7 +424,10 @@ AUTO_SAFE_TITLE_SIM_THRESH = _env("AUTO_SAFE_TITLE_SIM_THRESH", 0.85)
 EDITION_SEARCH_API_BUDGET = _env("EDITION_SEARCH_API_BUDGET", 3)
 
 LEFTOVER_WARN_LIMIT    = _env("LEFTOVER_WARN_LIMIT",    50)
-ARTIST_CATALOG_LIMIT   = _env_num_min("ARTIST_CATALOG_LIMIT",   500, 1)
+# Max albums fetched per artist when scanning. 500 truncated prolific artists
+# (the Beatles list ~900 on Qobuz), so a gap scan missed albums; 1000 covers
+# realistic discographies. Truncation past this is logged by the scanner.
+ARTIST_CATALOG_LIMIT   = _env_num_min("ARTIST_CATALOG_LIMIT",   1000, 1)
 ARTIST_CATALOG_PAGE    = _env_num_min("ARTIST_CATALOG_PAGE",    100, 1)
 # Hide releases shorter than this in the "missing albums" step of artist
 # mode (singles, very small EPs are usually noise — bump if you want them).

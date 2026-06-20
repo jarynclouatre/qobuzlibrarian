@@ -2071,6 +2071,17 @@ def _hide_scope(execute_kind):
 REVIEW_PAGE_ARTISTS = 25
 
 
+def _artist_sort_key(name: str) -> str:
+    """Order artists ignoring a leading article, so 'The Beatles' files under B
+    (not T) and 'A Tribe Called Quest' under T — the way music libraries sort.
+    Case-insensitive."""
+    low = (name or "").strip().casefold()
+    for art in ("the ", "a ", "an "):
+        if low.startswith(art):
+            return low[len(art):]
+    return low
+
+
 def _review_artist_groups(job, query=""):
     """Candidates grouped by artist for the review screen, in a deterministic
     order so pagination is stable across reloads. ``query`` filters across the
