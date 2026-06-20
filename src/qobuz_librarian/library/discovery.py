@@ -20,6 +20,7 @@ prefers the deepest catalog over a bare-name twin, cached to disk).
 """
 import json
 import os
+import re
 import tempfile
 import threading
 from dataclasses import dataclass, field
@@ -189,6 +190,40 @@ def resolve_artist_dir(artist_query):
 
 
 # ── The discovery result ────────────────────────────────────────────────────────
+
+# Markers of a live/tour/session/acoustic release, matched ONLY as a delimited
+# release tag so an album whose real title merely contains one of these words is
+# never dropped (e.g. "Live and Let Die", "Live Through This", "Tour de France",
+# "Acoustic" the studio LP). Each pattern requires a bracket/parenthesis tag, a
+# dash-delimited suffix, or a "Live <place-preposition>" phrase — none of which a
+# normal studio title trips.
+_LIVE_RELEASE_PATTERNS = (
+    # "(Live)", "(Live at Wembley)", "[Live in Tokyo]", "(Recorded Live ...)"
+    re.compile(r"[\(\[][^)\]]*\blive\b", re.IGNORECASE),
+    # " - Live", " - Live at the Apollo", "– Live in ..." (en/em dash too)
+    re.compile(r"[\-–—]\s*live\b", re.IGNORECASE),
+    # "Live at/in/from/on ..." — a place/date phrase, not "Live and ..."/"Live Through ..."
+    re.compile(r"\blive\s+(?:at|in|from|on)\b", re.IGNORECASE),
+    # Acoustic/unplugged/session formats, as a tagged or delimited marker.
+    re.compile(r"\bunplugged\b", re.IGNORECASE),
+    re.compile(r"[\(\[][^)\]]*\b(?:acoustic|session|sessions)\b", re.IGNORECASE),
+    re.compile(r"[\-–—]\s*(?:acoustic\s+session|live\s+session)", re.IGNORECASE),
+    re.compile(r"\b(?:bbc|peel|abbey\s+road)\s+sessions?\b", re.IGNORECASE),
+    re.compile(r"\blive\s+sessions?\b", re.IGNORECASE),
+    # A bracketed/parenthetical "... Tour" tag, e.g. "(The Wall Tour Live)".
+    re.compile(r"[\(\[][^)\]]*\btour\b", re.IGNORECASE),
+)
+
+
+def _is_live_release(title: str) -> bool:
+    """True if the album title looks like a live/tour/session/acoustic release.
+    Conservative by design: only a clearly tagged or delimited marker counts, so
+    a studio album that merely has one of these words in its real name is kept.
+    Used only when cfg.EXCLUDE_LIVE_ALBUMS is on; default behaviour is unchanged."""
+    if not title:
+        return False
+    return any(p.search(title) for p in _LIVE_RELEASE_PATTERNS)
+
 
 @dataclass
 class DiscoveryOpts:
@@ -396,6 +431,9 @@ def discover_fully_missing(artist_name, catalog, opts, *, hidden=None,
         pairs = filter_compilation_albums(pairs, artist_name)
     if not opts.include_singles:
         pairs = filter_short_releases(pairs, cfg.MISSING_ALBUMS_MIN_TRACKS)
+    if cfg.EXCLUDE_LIVE_ALBUMS:
+        pairs = [(a, n) for (a, n) in pairs
+                 if not _is_live_release(a.get("title") or "")]
     for album, _n_versions in pairs:
         if album.get("id") in handled_ids:
             continue

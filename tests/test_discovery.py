@@ -144,6 +144,60 @@ def test_fully_missing_album_is_a_gap_with_no_dir(monkeypatch, tmp_path, beatles
     assert not res.unmatched_dirs
 
 
+@pytest.mark.parametrize("title", [
+    "Live at Wembley",
+    "Made in Japan (Live)",
+    "The Wall [Live in Berlin]",
+    "Tonight - Live",
+    "MTV Unplugged",
+    "Nirvana (Unplugged) [Acoustic]",
+    "Songs (Live Session)",
+    "The Beatles - BBC Sessions",
+    "Recorded Live at the Apollo",
+    "Greatest Hits (The Wall Tour Live)",
+])
+def test_is_live_release_flags_tagged_live_records(title):
+    assert discovery._is_live_release(title)
+
+
+@pytest.mark.parametrize("title", [
+    "Live and Let Die",        # the word is part of the real title
+    "Live Through This",
+    "Tour de France",          # 'tour' interior, not a bracketed tag
+    "Acoustic",                # a studio LP literally named Acoustic
+    "Alive 2007",
+    "Sessions",                # a studio LP named Sessions, no qualifier
+    "Living in the Material World",
+    "",
+])
+def test_is_live_release_keeps_studio_titles(title):
+    # The guard is load-bearing: dropping these would hide real studio albums.
+    assert not discovery._is_live_release(title)
+
+
+def test_exclude_live_albums_flag_drops_live_gap_only_when_enabled(monkeypatch):
+    # Drive the gap builder directly: no owned folders (find_existing_tracks
+    # returns nothing), so every catalog album is a fully-missing gap unless the
+    # opt-in live filter drops it.
+    monkeypatch.setattr(discovery, "find_existing_tracks",
+                        lambda *a, **k: ([], None))
+    studio = _album("a2", "Abbey Road", "The Beatles", 1969,
+                    [_qt(f"a{i}", f"ISRCA{i}") for i in range(10)])
+    live = _album("a3", "Live at the BBC", "The Beatles", 1994,
+                  [_qt(f"l{i}", f"ISRCL{i}") for i in range(10)])
+    opts = DiscoveryOpts(prefer_hires=True)
+
+    # Default OFF: the live album surfaces as a gap like any other.
+    monkeypatch.setattr(cfg, "EXCLUDE_LIVE_ALBUMS", False)
+    gaps = discovery.discover_fully_missing("The Beatles", [studio, live], opts)
+    assert _titles(gaps) == ["Abbey Road", "Live at the BBC"]
+
+    # Opt in: the live album is dropped, the studio gap is untouched.
+    monkeypatch.setattr(cfg, "EXCLUDE_LIVE_ALBUMS", True)
+    gaps2 = discovery.discover_fully_missing("The Beatles", [studio, live], opts)
+    assert _titles(gaps2) == ["Abbey Road"]
+
+
 def test_partial_owned_album_reports_the_real_track_gap(monkeypatch, tmp_path, beatles_search):
     full = _album("a1", "Abbey Road", "The Beatles", 1969,
                   [_qt(f"t{i}", f"ISRC{i}") for i in range(10)])

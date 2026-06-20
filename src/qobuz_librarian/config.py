@@ -481,5 +481,11 @@ PREFER_HIRES         = _env_bool("PREFER_HIRES",         True)
 CONSOLIDATE          = _env_bool("CONSOLIDATE",          False)
 MIGRATE_MULTI_ARTIST = _env_bool("MIGRATE_MULTI_ARTIST", False)
 
+# Drop obvious live/tour/session/acoustic releases from the "missing albums"
+# gap list. Off by default so behaviour is unchanged: many people do want the
+# live records, and the guard is conservative (it only fires on a clearly
+# tagged release, never on an album whose real title merely contains "Live").
+EXCLUDE_LIVE_ALBUMS = _env_bool("EXCLUDE_LIVE_ALBUMS", False)
+
 # ── Audio extensions ──────────────────────────────────────────────────────────
 AUDIO_EXTS = (".flac", ".m4a", ".mp3", ".aac", ".ogg", ".opus", ".wav")
