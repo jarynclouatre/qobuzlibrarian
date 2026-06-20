@@ -586,7 +586,7 @@ async def _http_exception_handler(request: Request, exc: StarletteHTTPException)
     """Render a styled page for a mistyped/stale URL instead of a bare
     ``{"detail": "Not Found"}``. API routes and every non-404 status keep the
     JSON shape callers expect."""
-    if exc.status_code == 404 and not request.url.path.startswith("/api/"):
+    if exc.status_code == 404 and not request.scope["path"].startswith("/api/"):
         return _tr(request, "error.html", {
             "code": 404,
             "title": "Page not found",

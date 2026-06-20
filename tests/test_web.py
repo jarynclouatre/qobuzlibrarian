@@ -2961,6 +2961,27 @@ def test_api_endpoint_requires_auth(monkeypatch, tmp_path):
         assert r.status_code == 401
 
 
+def test_malformed_host_cannot_bypass_auth(monkeypatch, tmp_path):
+    # CVE-2026-48710: Starlette rebuilds request.url.path from the client Host
+    # header, so a host like "example.com/login?x=" used to make the auth
+    # middleware read the path as "/login" and wave a protected route through
+    # with no session. The gate now reads request.scope["path"] (the real routed
+    # path), which a forged Host cannot touch — protected routes stay closed.
+    with _enable_auth(monkeypatch, tmp_path) as c:
+        bad = {"host": "example.com/login?x="}
+        # Page route: redirected to login, never served.
+        r = c.get("/settings", headers=bad, follow_redirects=False)
+        assert r.status_code == 303
+        assert r.headers["location"] == "/login"
+        # JSON route: 401, not a 200 leaking state.
+        r = c.get("/api/jobs", headers=bad, follow_redirects=False)
+        assert r.status_code == 401
+        # Write route is unreachable too (never a 200).
+        r = c.post("/queue/cancel-pending", headers=bad,
+                   follow_redirects=False)
+        assert r.status_code != 200
+
+
 def test_setup_creates_login_and_signs_in(monkeypatch, tmp_path):
     from qobuz_librarian.web import auth as web_auth
 

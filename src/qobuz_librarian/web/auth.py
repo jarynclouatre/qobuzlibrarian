@@ -390,7 +390,12 @@ class AuthMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request, call_next):
         if auth_disabled():
             return await call_next(request)
-        path = request.url.path
+        # Decide on the raw ASGI path, not request.url.path: Starlette rebuilds
+        # request.url from the client-supplied Host header, so a malformed Host
+        # ("example.com/login?x=") can make url.path read "/login" and turn a
+        # protected route into an open one (CVE-2026-48710). scope["path"] is the
+        # real routed path and is immune to Host-header confusion.
+        path = request.scope["path"]
         if path in _OPEN_PATHS or path.startswith(_OPEN_PREFIXES):
             return await call_next(request)
 
@@ -416,7 +421,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
         # API/SSE callers get a machine-readable 401. htmx requests get a
         # full-page redirect header (a 303 body would be swapped into a
         # fragment). Everything else is an ordinary browser redirect.
-        if request.url.path.startswith("/api/"):
+        if request.scope["path"].startswith("/api/"):
             return JSONResponse({"detail": "authentication required"},
                                 status_code=401)
         if request.headers.get("HX-Request") == "true":
