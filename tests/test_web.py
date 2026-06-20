@@ -563,6 +563,28 @@ def test_search_transient_branch_says_try_again(client, monkeypatch):
     assert "search failed" not in r.text.lower()
 
 
+def test_search_uses_a_generous_result_limit(client, monkeypatch):
+    # The front-page search was capped at 8, so a major artist surfaced almost
+    # nothing (the owner's first complaint). The handler must pass the configured
+    # limit through to Qobuz, and that default must be generous.
+    import qobuz_librarian.api.search as search_mod
+    import qobuz_librarian.web.app as app_mod
+    from qobuz_librarian import config as cfg
+    monkeypatch.setattr(app_mod, "_get_token", lambda: "tok")
+    seen = {}
+
+    def fake(q, t, limit=None):
+        seen["limit"] = limit
+        return []
+
+    monkeypatch.setattr(search_mod, "search_albums", fake)
+    r = client.post("/search", data={"q": "Paul McCartney"},
+                    headers={"HX-Request": "true"})
+    assert r.status_code == 200
+    assert seen.get("limit") == cfg.SEARCH_LIMIT
+    assert cfg.SEARCH_LIMIT >= 20
+
+
 def test_search_result_id_is_html_escaped(client, monkeypatch):
     import qobuz_librarian.api.search as search_mod
     import qobuz_librarian.library.catalog as cat

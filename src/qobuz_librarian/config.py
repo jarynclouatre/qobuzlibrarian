@@ -307,7 +307,10 @@ LYRICS_PROVIDERS = [p.strip() for p in
                     if p.strip()]
 
 # ── Timeouts / delays ─────────────────────────────────────────────────────────
-SEARCH_LIMIT     = _env("SEARCH_LIMIT",     8)
+# Results shown on the user-facing Search page. 8 was too few for a major
+# artist (a "Paul McCartney" search surfaced almost nothing); 25 shows a useful
+# page. The CLI fetches more; a web "load more" beyond this is a future add.
+SEARCH_LIMIT     = _env("SEARCH_LIMIT",     25)
 # Per-context search depth for internal matchers. ARTIST_LOOKUP_LIMIT scores
 # this many artist-search hits when resolving a name to an id; 5 was too few for
 # common names (the right artist could rank 6th+ and silently resolve to
