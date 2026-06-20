@@ -3030,6 +3030,34 @@ def test_malformed_host_cannot_bypass_auth(monkeypatch, tmp_path):
         assert r.status_code != 200
 
 
+def test_login_hash_runs_off_the_event_loop(monkeypatch, tmp_path):
+    # The 600k-round PBKDF2 must run in a worker thread, not on the event loop,
+    # so one login attempt can't freeze health/API/SSE on the single-worker
+    # server. A worker thread has no running loop, so get_running_loop() raises.
+    import asyncio as _asyncio
+    from qobuz_librarian.web import auth as web_auth
+    seen = {}
+    real = web_auth.verify_login
+
+    def spy(u, p):
+        try:
+            _asyncio.get_running_loop()
+            seen["on_loop"] = True
+        except RuntimeError:
+            seen["on_loop"] = False
+        return real(u, p)
+
+    monkeypatch.setattr(web_auth, "verify_login", spy)
+    with _enable_auth(monkeypatch, tmp_path) as c:
+        c.get("/login")
+        tok = c.cookies.get("qf_csrf")
+        c.post("/login",
+               data={"username": "admin", "password": "hunter2hunter",
+                     "_csrf_token": tok},
+               headers={"X-CSRF-Token": tok}, follow_redirects=False)
+    assert seen.get("on_loop") is False
+
+
 def test_setup_creates_login_and_signs_in(monkeypatch, tmp_path):
     from qobuz_librarian.web import auth as web_auth
 

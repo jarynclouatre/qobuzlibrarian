@@ -473,7 +473,13 @@ async def login_submit(request: Request, username: str = Form(""),
             request=request, name="login.html",
             context={"error": "Too many failed attempts — wait an hour and try again."},
             status_code=429)
-    if not web_auth.verify_login(username.strip(), password):
+    # Offload the 600k-round PBKDF2 to a thread so one login attempt can't stall
+    # the single-worker event loop (health, API and SSE all freeze during a KDF
+    # that runs on the loop thread).
+    loop = asyncio.get_running_loop()
+    ok = await loop.run_in_executor(
+        None, web_auth.verify_login, username.strip(), password)
+    if not ok:
         web_auth.record_login_failure(ip, username)
         return templates.TemplateResponse(
             request=request, name="login.html",
