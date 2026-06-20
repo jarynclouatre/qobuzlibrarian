@@ -458,14 +458,25 @@
         cb.style.outline = "2px solid #ef4444";
         setTimeout(function () { cb.style.outline = ""; }, 1500);
       }
+      // Disable the box until its POST resolves. Two rapid toggles otherwise fire
+      // two POSTs that can land out of order, leaving the server's saved flag
+      // disagreeing with the box on screen; serializing per-box keeps them in
+      // sync. Re-enable on both success and failure so a box never sticks.
+      cb.disabled = true;
       var body = "cid=" + encodeURIComponent(cb.value) + "&checked=" + (cb.checked ? "1" : "0");
       post("/jobs/" + id + "/select", body)
         .then(function (r) { return r.ok ? r.json() : Promise.reject(); })
-        .then(function (c) { if (c) applyCounts(c); updateHideLabels(); })
-        .catch(revert);
+        .then(function (c) { cb.disabled = false; if (c) applyCounts(c); updateHideLabels(); })
+        .catch(function () { cb.disabled = false; revert(); });
     }
 
+    // Guard against overlapping bulk runs: a second select-all/page tap before
+    // the first POST lands would race two whole-set writes whose order isn't
+    // guaranteed, leaving the server's selection disagreeing with the screen.
+    var bulkBusy = false;
     function bulkSelect(on, scope) {
+      if (bulkBusy) return Promise.resolve();
+      bulkBusy = true;
       var body = "on=" + (on ? "1" : "0") + "&scope=" + scope;
       if (scope === "page") {
         pageBox() && pageBox().querySelectorAll(".cb").forEach(function (cb) {
@@ -475,6 +486,7 @@
       return post("/jobs/" + id + "/select-all", body)
         .then(function (r) { return r.ok ? r.json() : null; })
         .then(function (c) {
+          bulkBusy = false;
           if (c) applyCounts(c);
           // Reflect the change on whatever's currently on screen.
           var on2 = on;
@@ -482,7 +494,8 @@
             pageBox() && pageBox().querySelectorAll(".cb").forEach(function (cb) { cb.checked = on2; });
           }
           updateHideLabels();
-        });
+        })
+        .catch(function () { bulkBusy = false; });
     }
 
     function groupSelect(det, on) {
