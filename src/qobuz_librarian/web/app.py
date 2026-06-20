@@ -3033,6 +3033,11 @@ def _job_to_dict(job, *, log_tail: int = 50):
 async def job_status(job_id: str):
     job = job_mgr.registry.get(job_id)
     if not job:
+        # A finished job evicted past MAX_FINISHED is still on disk; fall back
+        # to the archive so a poller gets its terminal status instead of a 404
+        # (mirrors how GET /jobs/{job_id} rehydrates from history).
+        job = job_mgr.load_historical_job(job_id)
+    if not job:
         raise HTTPException(status_code=404, detail="Job not found")
     return _job_to_dict(job)
 

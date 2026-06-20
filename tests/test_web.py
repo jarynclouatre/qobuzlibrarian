@@ -1790,6 +1790,36 @@ def test_job_status_api_returns_json_for_known_and_unknown_job(client):
     assert r2.json() == {"detail": "Job not found"}
 
 
+def test_job_status_api_falls_back_to_archive_after_eviction(client):
+    """A finished job evicted past MAX_FINISHED is still on disk; the status
+    endpoint must return its terminal state from the archive instead of 404
+    (matching how /jobs/{id} rehydrates from history)."""
+    from qobuz_librarian.web import job_persistence
+
+    job_persistence._reset_for_tests()
+    job_persistence.init()
+    try:
+        job = jm.Job(title="Evicted But Saved", status=jm.JobStatus.DONE)
+        job_persistence.persist(job)
+        _remove_job(job)  # gone from the registry, row stays on disk
+        assert jm.registry.get(job.id) is None
+
+        r = client.get(f"/api/jobs/{job.id}/status")
+        assert r.status_code == 200
+        data = r.json()
+        assert data["id"] == job.id
+        assert data["status"] == "done"
+        assert data["title"] == "Evicted But Saved"
+    finally:
+        job_persistence._disabled = True
+        if job_persistence._conn is not None:
+            try:
+                job_persistence._conn.close()
+            except Exception:
+                pass
+            job_persistence._conn = None
+
+
 def test_post_job_hook_receives_terminal_state_as_json(tmp_path, monkeypatch):
     import json
 
