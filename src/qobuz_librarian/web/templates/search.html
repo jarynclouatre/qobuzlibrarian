@@ -10,8 +10,7 @@
           hx-indicator="#search-spinner"
           class="flex flex-col gap-2">
       <input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}">
-      <div class="flex gap-2">
-        <div class="join" role="group" aria-label="Search for">
+      <div class="join self-center" role="group" aria-label="Search for">
           <label class="join-item btn btn-sm has-[:checked]:btn-primary">
             <input type="radio" name="kind" value="album" class="hidden" {% if kind != 'track' %}checked{% endif %}
                    hx-post="/search" hx-target="#results" hx-swap="innerHTML" hx-include="closest form">
@@ -22,7 +21,8 @@
                    hx-post="/search" hx-target="#results" hx-swap="innerHTML" hx-include="closest form">
             Tracks
           </label>
-        </div>
+      </div>
+      <div class="flex gap-2">
         <input type="text" name="q" value="{{ q or '' }}"
                aria-label="Search Qobuz"
                placeholder="{% if kind == 'track' %}Song or artist{% else %}Artist, album, or Qobuz URL{% endif %}"
