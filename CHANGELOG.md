@@ -4,6 +4,25 @@ All notable changes to Qobuz Librarian are recorded here, newest first. The
 project follows [semantic versioning](https://semver.org/); dates are when each
 version was tagged during local development.
 
+## [0.8.0] - 2026-06-20
+
+Quality-of-life and reliability improvements across search, scanning, and the web UI.
+
+**Search & scanning**
+
+- Search returns more results, so big artists surface properly.
+- Whole-library scans now show the full set instead of capping the list, and prolific artists are no longer cut short.
+- Artists sort by name ignoring a leading "The"/"A"/"An" (so "The Beatles" files under B).
+
+**Web UI**
+
+- The Search page lays out correctly on narrow phone screens.
+- Snappier under load, plus a few list/pagination edges tidied up.
+
+**Under the hood**
+
+- A range of correctness and reliability fixes across downloads and library maintenance, plus tighter build checks.
+
 ## [0.7.0] - 2026-06-18
 
 Strengthens the library repair scan so it can no longer report a corrupt file
