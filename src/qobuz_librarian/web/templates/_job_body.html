@@ -64,7 +64,7 @@
            the accurate label; fall back to a neutral word until the first tick
            lands so a non-download job never reads "Downloading". #}
         <span id="job-activity" aria-live="polite">{% if s == 'scanning' %}{{ job.progress_phase or 'Scanning' }}{% elif s == 'running' %}{{ job.progress_phase or 'Working' }}{% else %}Queued{% endif %}</span>
-        <span id="scan-elapsed" class="text-sm text-base-content/40 tabular-nums ml-2" data-start="{{ job.created_at }}"></span>
+        <span id="scan-elapsed" class="text-sm text-base-content/40 tabular-nums ml-2" data-start="{{ job.started_at or job.created_at }}"></span>
         {% if job.cancel_requested %}<span class="badge badge-ghost badge-sm ml-2">stopping</span>{% endif %}
         <span id="sse-reconnect" class="badge badge-warning badge-sm ml-2 hidden" role="status" aria-live="polite">connection lost — reconnecting…</span>
       </p>

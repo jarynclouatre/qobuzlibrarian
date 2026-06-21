@@ -168,6 +168,10 @@ class Job:
     execute_args: dict = field(default_factory=dict)
     cancel_requested: bool = False
     created_at: float = field(default_factory=time.time)
+    # When the job actually started working (left the queue). The elapsed clock
+    # counts from here so it shows scan/download time, not how long it sat
+    # pending; falls back to created_at while still queued or after a restart.
+    started_at: Optional[float] = None
     finished_at: Optional[float] = None
     _execute_fn: Optional[Callable] = field(default=None, repr=False)
     _subscribers: list = field(default_factory=list, repr=False)
@@ -710,6 +714,8 @@ def _worker_loop(work_queue: "queue.Queue"):
         # crashed job can't take down the whole queue.
         try:
             job.status = JobStatus.RUNNING
+            if job.started_at is None:
+                job.started_at = time.time()
             job_persistence.persist(job)
             _run_task(job, fn)
         except BaseException as e:  # noqa: BLE001 - must not die
@@ -766,6 +772,8 @@ def submit_scan(job: Job, scan_fn, execute_fn):
 
     def _scan(j: Job):
         j.status = JobStatus.SCANNING
+        if j.started_at is None:
+            j.started_at = time.time()
         j.phase = "scan"
         # Record SCANNING on disk so a restart mid-crawl restores through the
         # neutral "interrupted, resumes where it left off" path rather than the

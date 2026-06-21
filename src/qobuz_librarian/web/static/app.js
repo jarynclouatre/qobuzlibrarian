@@ -504,11 +504,10 @@
         .then(function (r) { return r.ok ? r.json() : null; })
         .then(function (c) {
           bulkBusy = false;
-          // Only mirror the change on screen if the server actually saved it.
-          // The old code flipped the boxes unconditionally, so a failed save
-          // left every box ticked while the server held none — approval would
-          // then act on a selection the user never really made. On failure,
-          // leave the screen as it was and flag it.
+          // Mirror the change on screen only once the server confirms the save,
+          // so a failed save can't leave boxes ticked that the server never
+          // recorded — which would approve a selection the user never made. On
+          // failure, leave the screen as it was and flag it.
           if (!c) { flashSelectError(); return; }
           applyCounts(c);
           var on2 = on;
@@ -537,9 +536,11 @@
       // contract), so a failure mid-batch leaves the already-saved boxes ticked,
       // the unsaved ones unticked, and the screen matching the server — never an
       // optimistic tick the server rejected.
+      if (det._selecting) return;  // a second tap mid-batch would race the chain
       var pending = Array.prototype.filter.call(det.querySelectorAll(".cb"),
         function (cb) { return cb.checked !== on; });
       if (!pending.length) return;
+      det._selecting = true;
       var failed = false;
       var chain = Promise.resolve(null);
       pending.forEach(function (cb) {
@@ -558,6 +559,7 @@
         }(cb, chain));
       });
       chain.then(function (c) {
+        det._selecting = false;
         if (c) applyCounts(c);
         if (failed) flashSelectError();
         updateHideLabels();
