@@ -2,10 +2,12 @@
 
 Two non-obvious bits of behaviour worth preserving:
 
-- `scan_dir_for_isrc_repairs` uses a dual-gate truncation test —
-  ``flen < qdur - 30s`` AND ``flen < qdur * 0.85``. Both must fire to
-  flag a file. Either alone produced false positives on short tracks
-  / live recordings.
+- `scan_dir_for_isrc_repairs` flags a file as truncated when it is both more
+  than 30 s short of its Qobuz duration AND either under 85% of it or more than
+  60 s short. The 30 s floor and the 85% ratio keep brief tracks / live
+  recordings from false-flagging on a small trim; the 60 s absolute cap stops a
+  long track (a 20-minute classical movement) from hiding a minute of missing
+  music behind the percentage.
 - `append_repair_log` replaces pipe characters in artist/album/title
   fields with slashes (AC|DC → AC/DC) so the pipe-delimited log format
   stays unambiguously parseable.
@@ -13,15 +15,63 @@ Two non-obvious bits of behaviour worth preserving:
 import fcntl
 import os
 import shutil
+import threading
 import time
 from pathlib import Path
 
 from qobuz_librarian import config as cfg
 from qobuz_librarian.api.search import find_qobuz_track_by_isrc
 from qobuz_librarian.integrations.rip import flac_audio_offset, flac_audio_ok
+from qobuz_librarian.library import repair_cache
 from qobuz_librarian.library.scanner import read_album_dir
 from qobuz_librarian.ui_cli.colors import C, fmt
 from qobuz_librarian.ui_cli.logging import log
+
+_lookup_lock = threading.Lock()
+_last_lookup = 0.0
+
+
+def _throttle_lookup():
+    """Pace live Qobuz ISRC lookups across all repair-scan workers so a cold deep
+    sweep (one lookup per track over several workers) doesn't burst the account.
+    Only live lookups call this; cache hits skip it. 0 interval disables it."""
+    global _last_lookup
+    interval = float(cfg.REPAIR_LOOKUP_MIN_INTERVAL)
+    if interval <= 0:
+        return
+    with _lookup_lock:
+        wait = interval - (time.time() - _last_lookup)
+        if wait > 0:
+            time.sleep(wait)
+        _last_lookup = time.time()
+
+
+def _qobuz_track_by_isrc(isrc, token):
+    """ISRC→Qobuz track, served from the on-disk cache when present so a re-scan
+    — and any album that shares the ISRC — skips the lookup. Only a positive
+    result is cached; a miss is left uncached so an outage doesn't stick."""
+    cached = repair_cache.get_track(isrc)
+    if cached is not None:
+        return cached
+    _throttle_lookup()
+    qt = find_qobuz_track_by_isrc(isrc, token)
+    if qt:
+        repair_cache.put_track(isrc, qt)
+    return qt
+
+
+def truncated_tracks_after_download(album_dir, token):
+    """Re-verify a freshly downloaded album's track lengths against Qobuz and
+    return the tracks that came up short. The download already drops files that
+    won't decode, but a clean truncation (decodes fine, header rewritten to the
+    short length) only shows against the real recording length. Best-effort: any
+    lookup hiccup returns an empty list so a finished download is never failed by
+    the check."""
+    try:
+        scan = scan_dir_for_isrc_repairs(album_dir, token, deep=True)
+    except Exception:
+        return []
+    return scan.get("verified_truncated", [])
 
 # Lossless FLAC compresses music to roughly 0.40-0.65 of raw PCM; even
 # very compressible material rarely lands below ~0.30. A file whose
@@ -54,9 +104,10 @@ def _flac_decode_ok(path):
 
 def scan_dir_for_isrc_repairs(album_dir, token,
                               *, min_short_seconds=30, max_ratio=0.85,
-                              deep=True, only_isrcs=None):
+                              max_short_seconds=60, deep=True, only_isrcs=None):
     """Pair each FLAC in album_dir to its Qobuz recording via ISRC, then flag
-    truncation by duration comparison (both gates: >30 s short AND <85% ratio).
+    truncation by duration comparison (>30 s short AND either <85% ratio or
+    >60 s short, so a long track can't hide a big shortfall behind the ratio).
 
     Returns a dict with four keys:
       verified_truncated  — ISRC match + duration short → safe to refill
@@ -199,7 +250,7 @@ def scan_dir_for_isrc_repairs(album_dir, token,
             report["verified_ok"] += 1
             continue
 
-        qt = find_qobuz_track_by_isrc(isrc, token)
+        qt = _qobuz_track_by_isrc(isrc, token)
         if qt is None:
             entry = {"path": path, "title": title, "isrc": isrc}
             # Tagged but not on Qobuz (Apple Music rip, delisted release, …) so
@@ -266,7 +317,9 @@ def scan_dir_for_isrc_repairs(album_dir, token,
                 })
                 continue
 
-        if flen > 0 and flen < (qdur - min_short_seconds) and flen < (qdur * max_ratio):
+        loss = qdur - flen
+        if (flen > 0 and loss > min_short_seconds
+                and (flen < qdur * max_ratio or loss > max_short_seconds)):
             report["verified_truncated"].append({
                 "path": path,
                 "file_length": flen,

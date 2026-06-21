@@ -12,9 +12,9 @@ The repair scan, rebuilt — it catches more, runs far faster, and shows what it
 
 - The whole-library repair scan now checks every track's length against its exact Qobuz recording, not only files that look obviously small. A track cut short at a frame boundary, with its FLAC header rewritten to the shorter length, decodes cleanly and passes the size check — so the old sweep marked it intact and moved on, and a genuinely damaged album could scan green. Every ISRC-tagged track is now duration-verified (the command-line sweep too).
 
-**Faster, and re-scans are nearly free**
+**Faster, and re-scans skip the network**
 
-- The sweep now checks several artists at once instead of plodding one at a time, so the first scan of a large library is several times quicker. Each album's result is cached against its files, so a re-scan re-checks only the albums that actually changed — repeating a scan of an unchanged library finishes in seconds instead of hours. Set `REPAIR_CACHE_ENABLED=false` to always re-verify from scratch, or `REPAIR_CACHE_TTL_DAYS` to change how often an untouched album is re-checked anyway.
+- The sweep now checks several artists at once instead of plodding one at a time, so the first scan of a large library is several times quicker. The slow part is the per-track Qobuz lookup, and that's now cached: a re-scan — and any album that shares a track's ISRC — skips the network round trip. The files themselves are still decode-tested fresh on every scan, so a re-scan still catches corruption that has appeared since the last one rather than trusting an old verdict. Set `REPAIR_CACHE_ENABLED=false` to skip the lookup cache, or `REPAIR_CACHE_TTL_DAYS` to change how often a cached lookup re-verifies against Qobuz.
 
 **The repair scan shows what it's doing**
 

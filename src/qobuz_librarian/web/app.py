@@ -276,6 +276,11 @@ async def _lifespan(_app: FastAPI):
                 _log.info("Pruned %d stale tag-cache entries.", n_pruned)
         except Exception as e:
             _log.debug("flac-cache prune error: %s", e)
+        try:
+            from qobuz_librarian.library import repair_cache
+            repair_cache.prune_expired()
+        except Exception as e:
+            _log.debug("repair-cache prune error: %s", e)
     asyncio.create_task(_bg_prune_flac_cache())
     job_mgr.start_worker()
     if not shutil.which("rip"):

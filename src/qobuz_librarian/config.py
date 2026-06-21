@@ -288,16 +288,13 @@ QOBUZ_APP_ID   = os.environ.get("QOBUZ_APP_ID",   "798273057")
 # streamrip quality code: 2=CD/16-bit·44.1kHz lossless, 3=24-bit ≤96kHz,
 # 4=24-bit ≤192kHz. Default 4: the highest quality your subscription serves
 # (hi-res where Qobuz has it). Drop to 2 for CD lossless if you want smaller
-# files. Passed to `rip -q`. Tier 1 (320kbps MP3) is intentionally unsupported:
-# the pipeline is FLAC-only and the post-download cleanup discards every
-# non-FLAC file, so a tier-1 download would be fetched and then deleted.
+# files. Passed to `rip -q`. The lossy MP3 tiers (0=128k, 1=320k) aren't
+# supported: the library is FLAC-only and discards non-FLAC after the rip, so a
+# lossy tier would fetch nothing — both are coerced to tier 2 (CD lossless).
 STREAMRIP_QUALITY = _env("STREAMRIP_QUALITY", 4)
-if STREAMRIP_QUALITY == 1:
-    # 320kbps MP3 would be ripped and then thrown away by the FLAC-only cleanup,
-    # i.e. the setting silently downloads nothing. Coerce to CD lossless (the
-    # smallest lossless tier, the closest honest match to "smaller files").
-    _warn("STREAMRIP_QUALITY=1 (320kbps MP3) isn't supported — the library is "
-          "FLAC-only, so lossy downloads are discarded after the rip. Using "
+if STREAMRIP_QUALITY in (0, 1):
+    _warn(f"STREAMRIP_QUALITY={STREAMRIP_QUALITY} is a lossy MP3 tier "
+          "(1=320kbps, 0=128kbps) the FLAC-only library can't keep — using "
           "tier 2 (CD lossless) instead.")
     STREAMRIP_QUALITY = 2
 elif STREAMRIP_QUALITY not in (2, 3, 4):
@@ -364,6 +361,14 @@ ARTIST_API_DELAY = _env_num_min("ARTIST_API_DELAY", 0.0, 0.0)
 # the old sequential behaviour.
 ARTIST_SCAN_WORKERS = _env_num_min("ARTIST_SCAN_WORKERS", 4, 1, 16)
 
+# Minimum gap (seconds) between live Qobuz ISRC lookups across all repair-scan
+# workers. A deep repair sweep does one lookup per track, fanned out over
+# ARTIST_SCAN_WORKERS, so a first scan of a big library could otherwise burst
+# the account; this paces the live calls (cache hits skip it). The ISRC cache
+# already makes re-scans and shared ISRCs free, so this only bounds the cold
+# scan. 0 disables it; the 429 back-off in api/client is still the backstop.
+REPAIR_LOOKUP_MIN_INTERVAL = _env_num_min("REPAIR_LOOKUP_MIN_INTERVAL", 0.05, 0.0)
+
 # Cache get_album() responses on disk (DATA_DIR/album_cache.db). An album's track
 # list is immutable, so this turns the per-owned-album fetch — the dominant cost
 # of a library scan — into a local lookup on re-scans. Off disables it.
@@ -374,11 +379,12 @@ ALBUM_CACHE_ENABLED = _env_bool("ALBUM_CACHE_ENABLED", True)
 # key self-invalidates when a file is edited/replaced. Off disables it.
 FLAC_CACHE_ENABLED = _env_bool("FLAC_CACHE_ENABLED", True)
 
-# Cache each album's repair-scan result on disk (DATA_DIR/repair_cache.db), keyed
-# on its audio files' name+size+mtime, so a re-scan re-checks only changed albums
-# instead of re-decoding + re-looking-up every track. Self-invalidates when a file
-# changes; entries also expire after REPAIR_CACHE_TTL_DAYS so an untouched album
-# still re-verifies against Qobuz periodically. Off disables it.
+# Cache the repair scan's Qobuz ISRC→track lookups on disk
+# (DATA_DIR/repair_cache.db), so a re-scan — and any album sharing an ISRC —
+# skips the network round trip. The files themselves are still decode-tested
+# fresh every scan, so this never hides on-disk corruption; only the lookup is
+# cached. Entries re-verify against Qobuz after REPAIR_CACHE_TTL_DAYS (0 keeps
+# them until the db is deleted). Off disables it.
 REPAIR_CACHE_ENABLED = _env_bool("REPAIR_CACHE_ENABLED", True)
 REPAIR_CACHE_TTL_DAYS = _env_num_min("REPAIR_CACHE_TTL_DAYS", 30, 0)
 

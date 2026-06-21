@@ -531,6 +531,12 @@ def main():
         flac_cache.prune_missing()
     except Exception as e:
         vlog(f"flac-cache prune error: {e}")
+    # Drop repair-cache ISRC lookups that have aged past the TTL.
+    try:
+        from qobuz_librarian.library import repair_cache
+        repair_cache.prune_expired()
+    except Exception as e:
+        vlog(f"repair-cache prune error: {e}")
     try:
         user_id, token = load_qobuz_token()
     except NoCredsError:

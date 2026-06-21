@@ -6,6 +6,7 @@ candidates to the job, and execution runs over the candidates the user kept.
 """
 import argparse
 import json
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -15,11 +16,10 @@ from qobuz_librarian.api.auth import AuthLost, QobuzUnavailable
 from qobuz_librarian.api.search import get_album
 from qobuz_librarian.library import hidden as hidden_mod
 from qobuz_librarian.library import new_releases as new_releases_mod
-from qobuz_librarian.library import repair_cache, scan_checkpoint
+from qobuz_librarian.library import scan_checkpoint
 from qobuz_librarian.library.catalog import (
     album_quality_label,
     album_year,
-    find_album_dir_filesystem,
     find_qobuz_album_for_dir,
     is_lossless_album,
 )
@@ -514,27 +514,6 @@ def scan_new_releases(job, token):
 
 # ── Execute ───────────────────────────────────────────────────────────────────
 
-def _warn_if_download_short(job, album, artist_name, token):
-    """Advisory post-download integrity check. The downloader already discards
-    tracks that won't decode, but a clean truncation (decodes fine, its FLAC
-    header rewritten to the short length) can slip past that gate. Re-verify the
-    just-downloaded album's track lengths against Qobuz — cheap, and the result
-    is cached for the next repair scan — and warn if a track came up short so it
-    can be repaired now. Best-effort: it never blocks or alters the download, and
-    any verify hiccup is swallowed (a successful download must not fail on it)."""
-    try:
-        album_dir = find_album_dir_filesystem(album)
-        if album_dir is None:
-            return
-        outcome = _cached_album_outcome(album_dir, artist_name or "", token)
-    except Exception:
-        return
-    if any(s.get("kind") == "repair" for s in outcome.get("specs", [])):
-        log.info(f"  ⚠  {album.get('title') or 'this album'} downloaded, but a "
-                 "track came up shorter than its Qobuz length — run Repair to "
-                 "refill it.")
-
-
 def execute_albums(job, chosen, token):
     """Download each selected album via the normal process_album path."""
     from qobuz_librarian.modes.process import process_album
@@ -584,7 +563,6 @@ def execute_albums(job, chosen, token):
                 partial += 1
             else:
                 ok += 1
-                _warn_if_download_short(job, full, cand.get("artist", ""), token)
         elif not (result and result.get("result") in _benign):
             failed += 1
         time.sleep(cfg.ARTIST_API_DELAY)
@@ -1059,7 +1037,7 @@ def _repair_album_outcome(album_dir, name, token):
     not-cacheable so a re-scan retries it rather than remembering the miss."""
     from qobuz_librarian.repair_log import scan_dir_for_isrc_repairs
     out = {"verified_ok": 0, "unverified": 0, "failed": 0, "specs": [],
-           "warns": [], "cacheable": True}
+           "warns": []}
     try:
         scan = scan_dir_for_isrc_repairs(album_dir, token, deep=True)
     except (AuthLost, QobuzUnavailable):
@@ -1067,7 +1045,6 @@ def _repair_album_outcome(album_dir, name, token):
     except Exception as e:
         out["warns"].append(f"    skipped {album_dir.name}: {e}")
         out["failed"] = 1
-        out["cacheable"] = False
         return out
     out["verified_ok"] = scan["verified_ok"]
     out["unverified"] = scan.get("unverified", 0)
@@ -1103,35 +1080,24 @@ def _repair_album_outcome(album_dir, name, token):
     return out
 
 
-def _cached_album_outcome(album_dir, name, token):
-    """Per-album repair outcome — served from the signature cache when the album
-    is unchanged, computed (and cached) otherwise. Shared by the sweep and the
-    post-download check so both reuse the same cached verification."""
-    sig = repair_cache.signature(album_dir)
-    outcome = repair_cache.get(album_dir, sig)
-    if outcome is None:
-        outcome = _repair_album_outcome(album_dir, name, token)
-        if outcome.pop("cacheable", False):
-            repair_cache.put(album_dir, sig, outcome)
-    return outcome
-
-
-def _scan_repair_artist(artist_dir, token, job):
+def _scan_repair_artist(artist_dir, token, job, beat=None):
     """Scan one artist's albums for damaged FLACs — runs on a pool worker.
 
     Returns ``(name, agg)``; ``agg`` carries per-artist counts and a list of
     review-candidate specs the caller adds on the single writer thread, so the
     candidate list and checkpoint stay single-writer (mirroring the library
-    scan). Each album's result is cached by its audio-file signature, so a
-    re-scan re-checks only changed albums. Bails between albums on cancel;
-    AuthLost / QobuzUnavailable propagate so the caller can stop the sweep."""
+    scan). Every album is decode-tested fresh each run so on-disk corruption is
+    always caught; the per-track Qobuz lookups are what's cached, so a re-scan
+    only re-reads files rather than re-crawling Qobuz. Bails between albums on
+    cancel; AuthLost / QobuzUnavailable propagate so the caller can stop the
+    sweep."""
     name = artist_dir.name
     agg = {"verified_ok": 0, "unverified": 0, "failed": 0, "checked": 0,
            "specs": []}
     for album_dir in list_artist_album_dirs(artist_dir):
         if job.cancel_requested:
             break
-        outcome = _cached_album_outcome(album_dir, name, token)
+        outcome = _repair_album_outcome(album_dir, name, token)
         agg["verified_ok"] += outcome.get("verified_ok", 0)
         agg["unverified"] += outcome.get("unverified", 0)
         agg["failed"] += outcome.get("failed", 0)
@@ -1139,7 +1105,25 @@ def _scan_repair_artist(artist_dir, token, job):
         agg["specs"].extend(outcome.get("specs", []))
         for w in outcome.get("warns", []):
             log.info(w)
+        if beat is not None:
+            _emit_repair_heartbeat(beat)
     return name, agg
+
+
+def _emit_repair_heartbeat(beat):
+    """Log the periodic 'still scanning' line from whichever worker crosses the
+    interval, so it keeps firing even while every worker is deep inside one large
+    artist and no future has completed — otherwise a long stretch with no
+    completed artist looks like a hang. Counts are shared under ``beat['lock']``."""
+    with beat["lock"]:
+        beat["albums"] += 1
+        if time.time() - beat["last"] < _REPAIR_HEARTBEAT_SECS:
+            return
+        beat["last"] = time.time()
+        albums, artists, flagged = beat["albums"], beat["artists"], beat["flagged"]
+        n = beat["n"]
+    log.info(f"  …still scanning — checked {albums:,} albums across "
+             f"{artists:,}/{n:,} artists; {plural(flagged, 'album')} flagged so far.")
 
 
 def scan_repairs(job, token):
@@ -1177,8 +1161,11 @@ def scan_repairs(job, token):
     n = len(artists)
     done = len(scanned)
     since_save = 0
-    checked_albums = 0
-    last_beat = time.time()
+    # Shared heartbeat state: workers bump it per album and one logs the periodic
+    # line when due, so progress keeps showing even while every worker is deep in
+    # one large artist and no future has completed (see _emit_repair_heartbeat).
+    beat = {"lock": threading.Lock(), "albums": 0, "artists": done,
+            "flagged": total, "n": n, "last": time.time()}
     # Show the progress bar immediately rather than a blank header until the
     # first artist comes back.
     job.push_progress("Checking for damaged files", done, n, "starting…",
@@ -1192,7 +1179,7 @@ def scan_repairs(job, token):
     from qobuz_librarian.web.jobs import pool_initializer_kwargs
     with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="repairscan",
                             **pool_initializer_kwargs()) as ex:
-        futures = {ex.submit(_scan_repair_artist, ad, token, job): ad
+        futures = {ex.submit(_scan_repair_artist, ad, token, job, beat): ad
                    for ad in todo}
         for fut in as_completed(futures):
             if job.cancel_requested:
@@ -1224,19 +1211,15 @@ def scan_repairs(job, token):
             n_verified += agg["verified_ok"]
             n_unverified += agg["unverified"]
             n_failed += agg["failed"]
-            checked_albums += agg["checked"]
             for spec in agg["specs"]:
                 job.add_candidate(**spec)
                 total += 1
             scanned.add(name)
+            with beat["lock"]:
+                beat["artists"] = done
+                beat["flagged"] = total
             job.push_progress("Checking for damaged files", done, n, name,
                               found=total)
-            now = time.time()
-            if now - last_beat >= _REPAIR_HEARTBEAT_SECS:
-                last_beat = now
-                log.info(f"  …still scanning — checked {checked_albums:,} albums "
-                         f"across {done:,}/{n:,} artists; "
-                         f"{plural(total, 'album')} flagged so far.")
             since_save += 1
             if since_save >= _CHECKPOINT_EVERY:
                 since_save = 0
@@ -1264,13 +1247,11 @@ def scan_repairs_for_artist(job, artist_name, token):
     """Same repair scan as ``scan_repairs`` but scoped to one artist's albums.
 
     A focused single-artist sweep so no checkpointing — the whole-library run
-    needs it because it goes for hours. deep=True is used here so every track
-    is verified against Qobuz rather than only the ones that look byte-short;
-    for a single artist that is acceptably fast. ISRC misses get the same
-    whole-album redownload fallback the library scan does.
+    needs it because it goes for hours. Builds each album's outcome with the
+    same _repair_album_outcome the library sweep uses, so both flag truncations
+    and ID-unverifiable damage identically.
     """
     from qobuz_librarian.library.discovery import resolve_artist_dir
-    from qobuz_librarian.repair_log import scan_dir_for_isrc_repairs
 
     clear_scan_caches()
     artist_dir = resolve_artist_dir(artist_name)
@@ -1293,51 +1274,12 @@ def scan_repairs_for_artist(job, artist_name, token):
             return
         job.push_progress("Checking for damaged files", i, len(album_dirs),
                           album_dir.name, found=total)
-        try:
-            scan = scan_dir_for_isrc_repairs(album_dir, token, deep=True)
-        except (AuthLost, QobuzUnavailable):
-            raise
-        except Exception as e:
-            log.info(f"    skipped {album_dir.name}: {e}")
-            continue
-        truncated = scan["verified_truncated"]
-        if truncated:
-            job.add_candidate(
-                kind="repair",
-                title=album_dir.name,
-                artist=name,
-                detail=f"{plural(len(truncated), 'truncated track')}",
-                payload={"album_dir": str(album_dir),
-                         "artist_name": name,
-                         "verified_truncated": truncated},
-            )
+        outcome = _repair_album_outcome(album_dir, name, token)
+        for spec in outcome.get("specs", []):
+            job.add_candidate(**spec)
             total += 1
-        suspicious = [e for e in scan.get("no_isrc_tag", [])
-                      if e.get("diagnostic")]
-        if suspicious:
-            matched = find_qobuz_album_for_dir(album_dir, name, token)
-            if matched and matched.get("id"):
-                m_title = matched.get("title") or album_dir.name
-                m_year = album_year(matched) or "?"
-                job.add_candidate(
-                    kind="redownload",
-                    title=album_dir.name,
-                    artist=name,
-                    detail=(f"{plural(len(suspicious), 'damaged file')} "
-                            f"can't be verified by ID — re-download the whole "
-                            f"album fresh as “{m_title}” ({m_year})"),
-                    payload={"album_dir": str(album_dir),
-                             "artist_name": name,
-                             "album_id": matched.get("id"),
-                             "matched_title": m_title},
-                )
-                total += 1
-            else:
-                for e in suspicious:
-                    log.info(f"    ⚠ {album_dir.name} — "
-                             f"{e.get('title') or '?'}: {e['diagnostic']}; "
-                             "couldn't match this folder to a Qobuz album "
-                             "to re-download — check by hand.")
+        for w in outcome.get("warns", []):
+            log.info(w)
     log.info(f"Done. {plural(total, 'album')} flagged.")
     if not total:
         job.summary = f"No damaged files found for {name}."

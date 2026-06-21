@@ -67,6 +67,10 @@ def _isolate_data_dir():
     # cache's own test re-enables it.
     cfg.ALBUM_CACHE_ENABLED  = False
     cfg.FLAC_CACHE_ENABLED   = False
+    cfg.REPAIR_CACHE_ENABLED = False
+    # No inter-lookup pacing in the deterministic suite — the repair tests mock
+    # the Qobuz lookup, so a real sleep between calls would only add dead time.
+    cfg.REPAIR_LOOKUP_MIN_INTERVAL = 0.0
     # Suppress write-through job persistence for the deterministic suite — a
     # shared jobs.db would otherwise leak historical rows between tests. The
     # persistence-specific tests flip this off with monkeypatch and a reset.
@@ -80,6 +84,7 @@ def _isolate_data_dir():
     prior_env = {k: os.environ.get(k) for k in
                  ("WEB_AUTH", "DATA_DIR", "NEW_RELEASE_CHECK_INTERVAL",
                   "AUTO_LIBRARY_SCAN", "ALBUM_CACHE_ENABLED", "FLAC_CACHE_ENABLED",
+                  "REPAIR_CACHE_ENABLED",
                   "QOBUZ_USER_AUTH_TOKEN", "QOBUZ_USER_ID", "STREAMRIP_CONFIG",
                   "MUSIC_ROOT")}
     os.environ["WEB_AUTH"] = "none"
@@ -91,6 +96,7 @@ def _isolate_data_dir():
     # of reverting on for the rest of the session.
     os.environ["ALBUM_CACHE_ENABLED"] = "false"
     os.environ["FLAC_CACHE_ENABLED"] = "false"
+    os.environ["REPAIR_CACHE_ENABLED"] = "false"
     # Same reasoning: clear the Qobuz creds env so a reload(cfg) in a test
     # doesn't pick a leftover dev-shell token back up. STREAMRIP_CONFIG is
     # pointed at the tmp dir above; this complements that by making sure the

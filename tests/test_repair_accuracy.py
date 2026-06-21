@@ -1,16 +1,14 @@
-"""Real-FLAC accuracy tests for the WHOLE-LIBRARY repair scan (deep=False).
+"""Real-FLAC accuracy tests for the ISRC repair scan's integrity check.
 
-The whole-library sweep (`flows.scan_repairs`) calls
-`scan_dir_for_isrc_repairs(..., deep=False)`. Before the 2026-06 fix that path
-counted any not-"byte-short" FLAC as verified_ok WITHOUT decoding it, so
-frame-CRC / middle-zero / partial-tail corruption with an intact STREAMINFO
-sailed through and the scan reported "No damaged files found". These tests build
-REAL corrupt FLACs and assert the shallow sweep actually catches them — the
-decode probe is the ground truth, and a repair scan must never call a file "ok"
-it never read.
+A repair scan must never call a file "ok" it never read: frame-CRC, middle-zero,
+or partial-tail corruption can leave the size and STREAMINFO intact, so only a
+real decode catches it. The shallow (deep=False) path is the strict case — it
+decode-probes every FLAC without a Qobuz call — and these build REAL corrupt
+FLACs to prove it flags them; the deep path adds the duration cross-check
+(last two tests). The decode probe is the ground truth.
 
 Network (Qobuz) is mocked; the FLAC decode path (`flac -t` via mutagen/flac) is
-real, so these are gated on ffmpeg + flac being present.
+real, so the real-FLAC tests are gated on ffmpeg + flac being present.
 """
 import os
 import shutil
@@ -152,9 +150,7 @@ def test_deep_scan_flags_decode_clean_but_short_via_duration(tmp_path, _need_too
     # shorter than its real Qobuz recording (a header-consistent truncation) must
     # be flagged by the deep duration cross-check. This is the exact "decodes fine
     # but cut short" mechanism — caught by the pure length comparison, NOT the
-    # byte-size or decode gate, so the entry carries no "reason" key. The named
-    # regression test in test_repair_scan_feedback.py mocks the scan, so this is
-    # the one that fails if the duration gate itself regresses.
+    # byte-size or decode gate, so the entry carries no "reason" key.
     album = tmp_path / "Jack's Mannequin" / "Everything In Transit (2005)"
     album.mkdir(parents=True)
     p = album / "04 - I'm Ready.flac"
@@ -172,3 +168,27 @@ def test_deep_scan_flags_decode_clean_but_short_via_duration(tmp_path, _need_too
         f"deep scan must flag a decode-clean but short FLAC (got {r})")
     # The pure-duration gate, not byte-size/decode — it sets no "reason".
     assert flagged["04 - I'm Ready.flac"].get("reason") is None
+
+
+def test_duration_gate_abs_cap_flags_long_track_short_by_over_a_minute(monkeypatch):
+    # A 10-minute track missing 69 s is still 88% of its length, so the 85% ratio
+    # gate alone would wave it through; the absolute 60 s cap must flag it anyway.
+    # A 40 s trim (under the cap, above 85%) stays unflagged so a small edit on a
+    # long track isn't false-flagged into an overwrite. Driven through mocked
+    # lengths so it needs no 10-minute fixture.
+    import qobuz_librarian.repair_log as rl
+
+    def entries(flen):
+        return [{"path": "/nonexistent/01.flac", "title": "t",
+                 "isrc": "USABC1234500", "length": flen,
+                 "sample_rate": 44100, "bits": 16, "channels": 2}]
+
+    qt = {"duration": 600.0, "title": "t", "track_number": 1, "isrc": "USABC1234500"}
+    monkeypatch.setattr(rl, "find_qobuz_track_by_isrc", lambda i, t: qt)
+
+    monkeypatch.setattr(rl, "read_album_dir", lambda d: entries(531.0))  # 69 s short
+    flagged = rl.scan_dir_for_isrc_repairs("/album", "tok", deep=True)["verified_truncated"]
+    assert len(flagged) == 1 and flagged[0].get("reason") is None
+
+    monkeypatch.setattr(rl, "read_album_dir", lambda d: entries(560.0))  # 40 s short
+    assert rl.scan_dir_for_isrc_repairs("/album", "tok", deep=True)["verified_truncated"] == []

@@ -1,24 +1,19 @@
-"""Per-album repair-scan result cache, keyed on the album folder's audio-file
-signature (each audio file's name + size + mtime).
+"""On-disk cache of Qobuz ISRC→track lookups — the one network cost of a repair scan.
 
-A repair scan is the slowest thing the tool does: it decode-tests every FLAC
-*and* looks every track up on Qobuz. Without a cache, a re-scan redoes all of
-that even when nothing changed. Caching each album's scan outcome against a
-signature of its audio files means an unchanged album costs one directory
-listing + a SQLite lookup instead of a full re-scan, so a re-scan only re-checks
-albums that actually changed.
+A repair scan resolves every track to its exact Qobuz recording by ISRC to
+compare durations, and that lookup (one search per track) is both the slow part
+and the only part that touches the network. An ISRC names a recording for good,
+so the result is safe to remember: a re-scan, and any album that shares the same
+ISRC, skips the lookup. The file itself is still decode-tested fresh on every
+scan, so corruption that turns up on disk later is always caught — only the
+network round trip is cached, never a verdict about a file.
 
-A stored result is trusted only while BOTH hold:
-
-* the album's audio files are byte-for-byte the same (a repaired/edited/added
-  file changes the signature, forcing a re-scan of just that album), and
-* it is younger than ``REPAIR_CACHE_TTL_DAYS`` — so even an untouched album
-  re-verifies against Qobuz at least that often, in case a track's catalogue
-  entry changed.
-
-The one gap (shared with ``flac_cache``) is an in-place edit that preserves both
-size and mtime, which keeps the cached result until the file next changes. Set
-``REPAIR_CACHE_ENABLED=false`` to disable; delete the db to force a full re-scan.
+An entry is reused while it is younger than ``REPAIR_CACHE_TTL_DAYS`` so a
+remembered track still re-checks against Qobuz that often, in case its catalogue
+entry changed; a TTL of 0 keeps entries until the db is deleted. Only a positive
+hit is stored — a lookup that found nothing (a transient outage, a delisted
+track) is never cached, so a hiccup can't freeze a "no match" in place. Set
+``REPAIR_CACHE_ENABLED=false`` to disable; delete the db to drop everything.
 """
 import json
 import sqlite3
@@ -31,6 +26,7 @@ from qobuz_librarian.ui_cli.logging import vlog
 
 _init_lock = threading.Lock()
 _initialized = False
+_generation = 0
 _local = threading.local()
 
 
@@ -46,8 +42,8 @@ def _is_corrupt_error(e: sqlite3.Error) -> bool:
 
 def _discard_corrupt_db() -> bool:
     """Delete a malformed cache db (+ WAL sidecars). The cache is derived data —
-    losing it just makes the next scan recompute, which beats a permanently dead
-    cache. Returns True if anything was cleared."""
+    losing it just makes the next scan look tracks up again, which beats a
+    permanently dead cache. Returns True if anything was cleared."""
     db = _db_path()
     cleared = False
     for p in (db, db.with_name(db.name + "-wal"), db.with_name(db.name + "-shm")):
@@ -64,9 +60,9 @@ def _discard_corrupt_db() -> bool:
 
 def _handle_db_error(e: sqlite3.Error) -> None:
     """Drop this thread's connection and, on a corrupt-db error, discard the
-    malformed file so the next _ensure() rebuilds — same recovery flac_cache
-    uses."""
-    global _initialized
+    malformed file and bump the generation so the other scan workers reopen
+    against the rebuilt db rather than keep writing into the deleted inode."""
+    global _initialized, _generation
     conn = getattr(_local, "conn", None)
     if conn is not None:
         try:
@@ -79,6 +75,7 @@ def _handle_db_error(e: sqlite3.Error) -> None:
     with _init_lock:
         if _initialized and _discard_corrupt_db():
             _initialized = False
+            _generation += 1
             import logging
             logging.getLogger("qobuz_librarian").info(
                 "repair cache was corrupt — discarded; it rebuilds on next scan")
@@ -104,9 +101,9 @@ def _ensure() -> bool:
                 try:
                     conn.execute("PRAGMA journal_mode=WAL")
                     conn.execute(
-                        "CREATE TABLE IF NOT EXISTS albums "
-                        "(path TEXT PRIMARY KEY, sig TEXT NOT NULL, "
-                        "stored_at INTEGER NOT NULL, payload TEXT NOT NULL)")
+                        "CREATE TABLE IF NOT EXISTS tracks "
+                        "(isrc TEXT PRIMARY KEY, stored_at INTEGER NOT NULL, "
+                        "payload TEXT NOT NULL)")
                     conn.commit()
                 finally:
                     conn.close()
@@ -122,114 +119,116 @@ def _ensure() -> bool:
 
 def _conn():
     """Connection scoped to the calling thread (SQLite connections can't be
-    shared across the scan's worker threads). synchronous=NORMAL — a row lost to
-    a crash just re-scans that album next run."""
+    shared across the scan's worker threads). Reopened when a corrupt-db recovery
+    on another thread has bumped the generation, so a worker mid-scan stops
+    writing into the discarded file. synchronous=NORMAL — a row lost to a crash
+    just costs one fresh lookup next run."""
     conn = getattr(_local, "conn", None)
+    if conn is not None and getattr(_local, "generation", None) != _generation:
+        try:
+            conn.close()
+        except sqlite3.Error:
+            pass
+        conn = None
+        _local.conn = None
     if conn is None:
         conn = sqlite3.connect(str(_db_path()), timeout=5)
         conn.execute("PRAGMA synchronous=NORMAL")
         _local.conn = conn
+        _local.generation = _generation
     return conn
 
 
-def signature(album_dir) -> str | None:
-    """A stable string over the album's audio files — sorted ``name|size|mtime_ns``
-    — that changes whenever any audio file is added, removed, replaced, or
-    re-encoded. Returns None if the folder can't be listed or holds no audio
-    (nothing to key on, so the caller scans without caching)."""
-    try:
-        exts = cfg.AUDIO_EXTS
-        parts = []
-        for p in sorted(Path(album_dir).iterdir()):
-            if p.suffix.lower() in exts:
-                try:
-                    st = p.stat()
-                except OSError:
-                    return None
-                parts.append(f"{p.name}|{st.st_size}|{st.st_mtime_ns}")
-        return "\n".join(parts) if parts else None
-    except (OSError, TypeError, ValueError):
-        return None
-
-
-def get(album_dir, sig) -> dict | None:
-    """The cached scan outcome for this album if its files are unchanged
-    (signature matches) and the entry is within REPAIR_CACHE_TTL_DAYS."""
-    if sig is None or not _ensure():
+def get_track(isrc) -> dict | None:
+    """The cached Qobuz track for ``isrc`` if one was stored within
+    REPAIR_CACHE_TTL_DAYS, else None so the caller does a live lookup."""
+    if not isrc or not _ensure():
         return None
     try:
         row = _conn().execute(
-            "SELECT sig, stored_at, payload FROM albums WHERE path = ?",
-            (str(album_dir),)).fetchone()
+            "SELECT stored_at, payload FROM tracks WHERE isrc = ?",
+            (isrc,)).fetchone()
     except sqlite3.Error as e:
         vlog(f"repair cache read failed: {e}")
         _handle_db_error(e)
         return None
-    if not row or row[0] != sig:
+    if not row:
         return None
     ttl = float(cfg.REPAIR_CACHE_TTL_DAYS) * 86400
-    if ttl > 0 and (time.time() - row[1]) > ttl:
+    if ttl > 0 and (time.time() - row[0]) > ttl:
         return None
     try:
-        return json.loads(row[2])
+        return json.loads(row[1])
     except (ValueError, TypeError):
         return None
 
 
-def put(album_dir, sig, payload) -> None:
-    """Store an album's scan outcome under its current signature. Pass the ``sig``
-    captured BEFORE the scan so a file edited mid-scan isn't paired with the
-    pre-edit result and served stale until it changes again."""
-    if sig is None or not isinstance(payload, dict) or not _ensure():
+def put_track(isrc, track) -> None:
+    """Remember a positive ISRC→track lookup. A None/empty result is never stored
+    so a transient miss can't later be served as a stable 'no match'."""
+    if not isrc or not isinstance(track, dict) or not track or not _ensure():
         return
     try:
-        data = json.dumps(payload)
+        data = json.dumps(track)
     except (TypeError, ValueError):
         return
     try:
         conn = _conn()
         conn.execute(
-            "INSERT OR REPLACE INTO albums (path, sig, stored_at, payload) "
-            "VALUES (?, ?, ?, ?)",
-            (str(album_dir), sig, int(time.time()), data))
+            "INSERT OR REPLACE INTO tracks (isrc, stored_at, payload) "
+            "VALUES (?, ?, ?)", (isrc, int(time.time()), data))
         conn.commit()
     except sqlite3.Error as e:
         vlog(f"repair cache write failed: {e}")
         _handle_db_error(e)
 
 
-def _json_safe_scan(scan: dict) -> dict:
-    """A JSON-serializable copy of a scan_dir_for_isrc_repairs() result. Its
-    ``verified_ok_isrcs`` is a set (everything else is already plain), so the raw
-    dict can't be json.dumps'd as-is — convert it to a sorted list."""
-    safe = dict(scan)
-    isrcs = safe.get("verified_ok_isrcs")
-    if isinstance(isrcs, set):
-        safe["verified_ok_isrcs"] = sorted(isrcs)
-    return safe
+def prune_expired(force: bool = False) -> int:
+    """Drop entries past the TTL so the db stays proportional to the library.
+
+    Throttled to once a day — a CLI session that opens and closes repeatedly
+    shouldn't re-walk the table each time. A TTL of 0 (keep forever) prunes
+    nothing. Returns the number removed.
+    """
+    if not _ensure():
+        return 0
+    ttl = float(cfg.REPAIR_CACHE_TTL_DAYS) * 86400
+    if ttl <= 0:
+        return 0
+    stamp = Path(str(cfg.DATA_DIR)) / ".repair_cache_prune"
+    if not force and stamp.exists():
+        try:
+            if (time.time() - stamp.stat().st_mtime) < 86400:
+                return 0
+        except OSError:
+            pass
+    cutoff = int(time.time() - ttl)
+    try:
+        conn = _conn()
+        cur = conn.execute("DELETE FROM tracks WHERE stored_at < ?", (cutoff,))
+        conn.commit()
+        removed = cur.rowcount or 0
+    except sqlite3.Error as e:
+        vlog(f"repair cache prune failed: {e}")
+        _handle_db_error(e)
+        return 0
+    try:
+        stamp.parent.mkdir(parents=True, exist_ok=True)
+        stamp.touch()
+    except OSError:
+        pass
+    return removed
 
 
-def cached_scan(album_dir, *, deep=True, compute):
-    """Run one album's deep repair scan, served from the signature cache when the
-    album is unchanged and the entry is fresh; ``compute()`` produces the raw
-    scan dict on a miss. Returns the (JSON-safe) scan dict.
-
-    The CLI whole-library sweep uses this so an unchanged re-scan skips the
-    per-track Qobuz lookups instead of re-crawling the whole library every run —
-    the same speedup the web sweep already gets, and it makes a re-run after an
-    interrupted sweep cheap. A shallow scan (deep=False) makes no Qobuz calls, so
-    it's already cheap and is never cached.
-
-    Stored under a ``scan::`` key namespace, separate from the web sweep's
-    per-album *outcome* cache, because the two keep different shapes for the same
-    album (raw scan here vs. built review candidates there)."""
-    if not deep:
-        return compute()
-    sig = signature(album_dir)
-    key = f"scan::{album_dir}"
-    cached = get(key, sig)
-    if cached is not None:
-        return cached
-    safe = _json_safe_scan(compute())
-    put(key, sig, safe)
-    return safe
+def _reset_for_tests() -> None:
+    global _initialized, _generation
+    conn = getattr(_local, "conn", None)
+    if conn is not None:
+        try:
+            conn.close()
+        except sqlite3.Error:
+            pass
+        _local.conn = None
+    _local.generation = None
+    _initialized = False
+    _generation = 0
