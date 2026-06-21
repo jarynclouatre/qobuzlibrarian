@@ -30,6 +30,23 @@ from qobuz_librarian.modes.consolidate import (
     match_sibling_track,
 )
 
+
+def _need_audio_tools():
+    if not (shutil.which("ffmpeg") and shutil.which("flac")):
+        pytest.skip("ffmpeg/flac not available")
+
+
+def _real_flac(path, *, seconds=2):
+    """Encode a short white-noise FLAC that actually decodes with ``flac -t``."""
+    import subprocess
+    path.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi",
+         "-i", f"anoisesrc=duration={seconds}:color=white:amplitude=0.5",
+         "-ac", "2", "-ar", "44100", "-sample_fmt", "s16", "-c:a", "flac",
+         str(path)], check=True)
+
+
 # ── backup_album_dir ─────────────────────────────────────────────────────────
 
 def test_cross_fs_backup_rejects_same_size_corruption(tmp_path, monkeypatch):
@@ -198,14 +215,34 @@ def test_restore_overwrites_partial_but_keeps_larger_good_file(tmp_path):
     assert (a / "album" / "01.flac").read_bytes() == b"FULL-ORIGINAL-CONTENT-XXXXXX"
 
     # Larger good import at dst -> kept, not downgraded by the truncated backup.
+    _need_audio_tools()
     b = tmp_path / "b"
     (b / "bk").mkdir(parents=True)
     (b / "album").mkdir()
     (b / "bk" / "01.flac").write_bytes(b"trunc")                          # 5B
-    good = b"GOOD-REFILL-FULL-LENGTH-FILE-CONTENT"                        # 36B
-    (b / "album" / "01.flac").write_bytes(good)
-    bk.restore_gap_fill_backup(b / "bk", b / "album")
+    _real_flac(b / "album" / "01.flac")          # a real, larger, decodable file
+    good = (b / "album" / "01.flac").read_bytes()
+    assert bk.restore_gap_fill_backup(b / "bk", b / "album") == 1
     assert (b / "album" / "01.flac").read_bytes() == good
+    assert not (b / "bk").exists()               # backup discarded
+
+
+def test_restore_does_not_keep_larger_but_corrupt_dst(tmp_path):
+    # keep_larger_dst trusts "larger" only when the destination actually decodes.
+    # A bigger-but-undecodable file at dst (a re-padded partial / corrupt refill)
+    # must NOT win over the backed-up original: the backup is restored over it so
+    # the only good copy isn't dropped on a byte count alone.
+    import qobuz_librarian.library.backup as bk
+    _need_audio_tools()
+    c = tmp_path / "c"
+    (c / "bk").mkdir(parents=True)
+    (c / "album").mkdir()
+    _real_flac(c / "bk" / "01.flac", seconds=2)          # good original (backup)
+    good = (c / "bk" / "01.flac").read_bytes()
+    # Corrupt file at dst, larger in bytes than the good backup but won't decode.
+    (c / "album" / "01.flac").write_bytes(b"\x00" * (len(good) + 4096))
+    assert bk.restore_gap_fill_backup(c / "bk", c / "album") == 1
+    assert (c / "album" / "01.flac").read_bytes() == good   # restored, not kept
 
 
 def test_age_sweep_keeps_any_backup_it_cannot_prove_redundant(tmp_path, monkeypatch):
@@ -246,7 +283,7 @@ def test_find_only_copy_backups_is_memoized_within_ttl(tmp_path, monkeypatch):
     bp.mkdir()
     (bp / "01.flac").write_bytes(b"x" * 5000)  # no sidecar → surfaces as orphan
 
-    bk._invalidate_only_copy_cache()
+    bk._only_copy_cache = None       # clear any cache a prior test left behind
     calls = {"n": 0}
     real_reap = bk._backup_safe_to_reap
 

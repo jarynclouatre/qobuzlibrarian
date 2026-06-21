@@ -1095,7 +1095,7 @@ def test_unreachable_qobuz_saves_token_but_flags_unverified(client, monkeypatch)
 def test_token_only_env_does_not_report_connected(client, monkeypatch, tmp_path):
     # QOBUZ_USER_AUTH_TOKEN set but no user id: our API calls work, but `rip`
     # downloads need a user id too, so a blank save must NOT flash a false green.
-    # It now shows the needuser banner instead of redirecting to connected=1.
+    # It shows the needuser banner rather than redirecting to connected=1.
     from qobuz_librarian import config as cfg
     monkeypatch.setattr(cfg, "QOBUZ_USER_AUTH_TOKEN", "envtok")
     monkeypatch.setattr(cfg, "QOBUZ_USER_ID", "")
@@ -1259,10 +1259,10 @@ def test_queue_awaiting_review_job_shows_review_and_cancel(client):
 
 
 def test_job_page_renders_archived_job_from_sqlite_after_eviction(client):
-    """Evicting a finished job from the in-memory registry used to make
-    /jobs/{id} silently 303 back to /queue, even though the row was still in
-    jobs.db. Now the page falls back to the persistence layer and shows the
-    "archived" banner instead of vanishing the history."""
+    """After a finished job is evicted from the in-memory registry, /jobs/{id}
+    must fall back to the persistence layer (the row is still in jobs.db) and
+    show the "archived" banner, rather than silently 303-ing back to /queue and
+    vanishing the history."""
     from qobuz_librarian.web import job_persistence
 
     # The session conftest disables persistence so tests don't share a jobs.db.
@@ -1930,8 +1930,8 @@ def test_jobs_list_returns_array_and_respects_filter(client):
 
 def test_jobs_list_reaches_history_past_registry_cap(client):
     """The registry only holds MAX_FINISHED finished jobs, so listing
-    `status=done` used to top out there. The API now also reaches the on-disk
-    archive, so a finished job evicted past the cap is still returned."""
+    `status=done` must also reach the on-disk archive — a finished job evicted
+    past the cap is still returned."""
     from qobuz_librarian.web import job_persistence
 
     job_persistence._reset_for_tests()
@@ -3136,10 +3136,10 @@ def test_api_endpoint_requires_auth(monkeypatch, tmp_path):
 
 def test_malformed_host_cannot_bypass_auth(monkeypatch, tmp_path):
     # CVE-2026-48710: Starlette rebuilds request.url.path from the client Host
-    # header, so a host like "example.com/login?x=" used to make the auth
-    # middleware read the path as "/login" and wave a protected route through
-    # with no session. The gate now reads request.scope["path"] (the real routed
-    # path), which a forged Host cannot touch — protected routes stay closed.
+    # header, so a host like "example.com/login?x=" can make the auth middleware
+    # read the path as "/login" and wave a protected route through with no
+    # session. The gate reads request.scope["path"] (the real routed path),
+    # which a forged Host cannot touch — protected routes stay closed.
     with _enable_auth(monkeypatch, tmp_path) as c:
         bad = {"host": "example.com/login?x="}
         # Page route: redirected to login, never served.

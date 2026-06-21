@@ -51,7 +51,7 @@ from qobuz_librarian.quality.decision import (
     existing_track_quality,
 )
 from qobuz_librarian.queue.executor import _pre_import_staging_hooks
-from qobuz_librarian.repair_log import truncated_tracks_after_download
+from qobuz_librarian.repair_log import warn_if_download_truncated
 from qobuz_librarian.ui_cli.colors import C, fmt, format_size, section, truncate
 from qobuz_librarian.ui_cli.errors import plural
 from qobuz_librarian.ui_cli.logging import log, vlog
@@ -1156,18 +1156,14 @@ def process_album(album, args, *, allow_force=True, label=None,
     # A clean import can still hide a truncated track: the download drops files
     # that won't decode, but one cut at a frame boundary with its FLAC header
     # rewritten short decodes fine and only shows against the real Qobuz length.
-    # Re-check the imported album's lengths and point the user at Repair. Shared
-    # by every caller of process_album (CLI, web download, upgrade re-rip) so the
-    # warning isn't web-only. Advisory: never alters or fails the download.
-    if result_status == "downloaded" and token and not getattr(args, "no_import", False):
+    # Re-check the imported album's lengths and point the user at Repair. The
+    # queue executor runs the same helper on its own download paths, so every
+    # download is covered. Advisory: never alters or fails the download.
+    if (result_status in ("downloaded", "partial") and token
+            and not getattr(args, "no_import", False)):
         final_dir = find_album_dir_filesystem(album)
         if final_dir:
-            short = truncated_tracks_after_download(final_dir, token)
-            if short:
-                log.info(fmt(C.YELLOW,
-                    f"  ⚠  {album.get('title') or 'this album'} imported, but "
-                    f"{plural(len(short), 'track')} came up shorter than the "
-                    "Qobuz length — run Repair to refill."))
+            warn_if_download_truncated(final_dir, token, album.get("title"))
 
     return {
         "result": result_status,

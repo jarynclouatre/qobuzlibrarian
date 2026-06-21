@@ -1494,10 +1494,9 @@ def find_qobuz_album_for_dir(album_dir: Path, artist_name: str, token,
     deluxe edition that maps to a different folder. The catalog fast-path is
     skipped when target_dir is set because it returns only one candidate.
     """
-    # Fast path: try pre-fetched catalog first.
-    # Catalog walk now also handles the target_dir case so
-    # upgrade walk doesn't fall back to the per-folder search API path
-    # for every single album by an artist (huge perf win on long catalogs).
+    # Fast path: try pre-fetched catalog first. The catalog walk also handles
+    # the target_dir case so the upgrade walk doesn't fall back to the per-folder
+    # search API path for every album by an artist (a big win on long catalogs).
     if catalog:
         if target_dir is None:
             local = match_dir_to_catalog(album_dir, catalog, artist_name, prefer_hires)

@@ -112,12 +112,12 @@ services:
       # RIP_TIMEOUT:               "900"   # per-album rip subprocess timeout (s)
       # DELAY_BETWEEN:             "1.0"   # pause between consecutive album downloads (s)
       # ARTIST_API_DELAY:          "0.0"   # pause between Qobuz API calls during library walks (s)
-      # SEARCH_LIMIT:              "8"     # search results per query
-      # ARTIST_CATALOG_LIMIT:      "500"   # max albums fetched per artist
+      # SEARCH_LIMIT:              "25"    # search results per query
+      # ARTIST_CATALOG_LIMIT:      "1000"  # max albums fetched per artist
       # MISSING_ALBUMS_MIN_TRACKS: "4"     # hide singles / very short EPs in the missing-albums step
 
       # ── Download quality ──────────────────────────────────────────────────
-      # streamrip quality: 1=320k, 2=CD/16-bit lossless, 3=24-bit ≤96kHz,
+      # streamrip quality: 2=CD/16-bit lossless, 3=24-bit ≤96kHz,
       # 4=24-bit ≤192kHz. Default 4 = the highest quality Qobuz has per release.
       # Set "2" for CD lossless if you'd rather have smaller files.
       STREAMRIP_QUALITY: "${STREAMRIP_QUALITY:-4}"

@@ -71,8 +71,8 @@
   });
 
   // Whole-library scan triggers are plain POST→redirect forms with no htmx
-  // feedback, so a slow start on a big library used to look frozen and invite a
-  // second click (which stacked a duplicate hours-long scan). Disable the
+  // feedback, so a slow start on a big library can look frozen and invite a
+  // second click (which would stack a duplicate hours-long scan). Disable the
   // button and show it working; the disable happens after the submit fires so
   // the request still goes out and the navigation isn't cancelled.
   document.addEventListener("submit", function (evt) {
@@ -184,10 +184,10 @@
     }
   });
 
-  // Flash banners. Every server-rendered alert driven by a one-shot query flag
-  // (?saved=1, ?error=…) used to stick to the URL forever — refreshing or
-  // sharing the page re-rendered the same banner. Strip the known flash params
-  // after first paint, and fade banners out so they don't dominate the screen.
+  // Flash banners. A server-rendered alert driven by a one-shot query flag
+  // (?saved=1, ?error=…) would otherwise stick to the URL forever — refreshing
+  // or sharing the page would re-render the same banner. Strip the known flash
+  // params after first paint, and fade banners out so they don't dominate.
   var FLASH_PARAMS = ["approved", "stale", "saved", "queued", "connected",
                       "unverified", "mode", "error"];
   function cleanFlashUrl() {
@@ -322,16 +322,22 @@
     var activity = document.getElementById("job-activity");
     var foundEl = document.getElementById("scan-found");
     var reconnect = document.getElementById("sse-reconnect");
-    // Live elapsed clock so a long, mostly-silent scan visibly ticks. Driven off
-    // the job's start time (data-start, epoch secs) so it stays accurate across a
-    // reload, and self-clears if the element leaves the DOM (htmx body swap).
+    // Live elapsed clock so a long, mostly-silent scan visibly ticks. The
+    // server-computed elapsed-at-load (its own now minus the job start) is the
+    // baseline, and the clock advances by the browser's own time since page load
+    // — so a phone whose wall clock is off from the server still reads right.
+    // Self-clears if the element leaves the DOM (htmx body swap).
     var elapsedEl = document.getElementById("scan-elapsed");
     var elapsedTimer = null;
     if (elapsedEl && elapsedEl.dataset.start) {
-      var startMs = parseFloat(elapsedEl.dataset.start) * 1000;
+      var serverStart = parseFloat(elapsedEl.dataset.start);
+      var serverNow = parseFloat(elapsedEl.dataset.now);
+      var elapsedAtLoad = (isFinite(serverNow) ? serverNow : Date.now() / 1000) - serverStart;
+      if (!(elapsedAtLoad >= 0)) elapsedAtLoad = 0;
+      var clientBase = Date.now();
       var tickElapsed = function () {
         if (!document.body.contains(elapsedEl)) { if (elapsedTimer) clearInterval(elapsedTimer); return; }
-        var secs = Math.max(0, Math.floor((Date.now() - startMs) / 1000));
+        var secs = Math.max(0, Math.floor(elapsedAtLoad + (Date.now() - clientBase) / 1000));
         var mm = Math.floor(secs / 60), ss = secs % 60;
         elapsedEl.textContent = "· " + mm + ":" + (ss < 10 ? "0" : "") + ss + " elapsed";
       };

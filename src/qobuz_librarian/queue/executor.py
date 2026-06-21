@@ -39,6 +39,7 @@ from qobuz_librarian.library.catalog import (
     prompt_and_migrate_multi_artist_folder,
 )
 from qobuz_librarian.library.scanner import clear_scan_caches
+from qobuz_librarian.repair_log import warn_if_download_truncated
 from qobuz_librarian.ui_cli.colors import C, fmt, section, truncate
 from qobuz_librarian.ui_cli.logging import log, vlog
 from qobuz_librarian.ui_cli.prompts import log_fetch
@@ -785,6 +786,22 @@ def _execute_download_queue(queue, args, token, *, on_progress=None):
         if not _queue_item_needs_retry(item):
             _drop(item)
         results.append(_resolve_queue_item(item, args, item_imported))
+
+        # Same post-import length recheck process_album runs, here covering every
+        # queue path (walk fill, artist/album queue, repair refill, resume,
+        # web single-track): a frame-boundary truncation decodes fine and only
+        # shows against the real Qobuz length. Advisory — it never alters the
+        # album, logs its own auth/outage case, and is wrapped so it can't take
+        # down a batch whose album already imported cleanly.
+        if (item_imported and token and not args.no_import
+                and item.get("n_ok", 0) > 0):
+            post_dir = item.get("_resolved_post_dir")
+            if post_dir is not None:
+                try:
+                    warn_if_download_truncated(
+                        post_dir, token, item["album"].get("title"))
+                except Exception as _e_rc:
+                    vlog(f"post-download recheck raised: {_e_rc}")
 
         # Qobuz throttles sustained bulk queues. When the last rip showed
         # throttle signals, pause longer than the normal inter-album gap

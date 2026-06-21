@@ -165,8 +165,8 @@ def set_credentials(username: str, password: str) -> bool:
                 os.unlink(tmp)
     except OSError:
         return False
-    # A password change (or first setup) invalidates every existing session:
-    # the old per-session tokens must no longer authenticate.
+    # A password change (or first setup) invalidates every existing session, so
+    # tokens minted under the prior password stop authenticating.
     revoke_all_sessions()
     return True
 

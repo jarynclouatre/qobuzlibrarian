@@ -176,7 +176,7 @@ Everything else is a behaviour toggle, settable live on **Settings** or as a def
 
 `DOWNSAMPLE_HIRES_ENABLED` only touches *new* downloads (88.2 / 176.4 / 352.8 kHz → 44.1; 96 / 192 / 384 → 48; bit depth preserved; originals replaced atomically, so an interrupt can't corrupt a track). To shrink hi-res already in your library, use the on-demand **Downsample** mode instead.
 
-Advanced thresholds — fuzzy-match cutoffs, `ARTIST_SCAN_WORKERS`, `ARTIST_API_DELAY`, `REPAIR_LOOKUP_MIN_INTERVAL` (paces a repair sweep's Qobuz lookups), retention windows, `POST_JOB_HOOK` — live in the `compose.yaml` env block, each with a working default; see `src/qobuz_librarian/config.py` for what each does. `POST_JOB_HOOK` runs in a shell, so only set it to a command you trust.
+Advanced thresholds — fuzzy-match cutoffs, `ARTIST_SCAN_WORKERS`, `ARTIST_API_DELAY`, `REPAIR_LOOKUP_MIN_INTERVAL` (paces a repair sweep's Qobuz lookups), retention windows, `POST_JOB_HOOK` — are env vars with working defaults; the common ones are shown (commented) in `compose.yaml`, the full set is in `.env.example`, and `src/qobuz_librarian/config.py` documents what each does. `POST_JOB_HOOK` runs in a shell, so only set it to a command you trust.
 
 ### beets & streamrip config
 

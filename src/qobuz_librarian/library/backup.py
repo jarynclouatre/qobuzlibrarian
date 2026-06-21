@@ -9,6 +9,7 @@ from datetime import datetime
 from pathlib import Path
 
 from qobuz_librarian import config as cfg
+from qobuz_librarian.integrations.rip import flac_audio_ok
 from qobuz_librarian.ui_cli.colors import C, fmt
 from qobuz_librarian.ui_cli.logging import log
 
@@ -78,21 +79,31 @@ def _file_digest(path: Path) -> str:
     return h.hexdigest()
 
 
-def _fsync(path: Path) -> None:
-    """Force a file's bytes (or a directory's entries) to stable storage.
+_FSYNC_UNSUPPORTED = {errno.EINVAL, errno.ENOTSUP,
+                      getattr(errno, "EOPNOTSUPP", errno.ENOTSUP)}
 
-    Best-effort — fsync isn't supported on every mount. A copy that's read back
-    for hashing only proves the bytes are in the page cache; forcing them to disk
-    before the original is deleted is what makes a verified copy survive a
-    delayed-writeback failure (ENOSPC/EIO during the lazy flush)."""
+
+def _fsync(path: Path) -> bool:
+    """Force a file's bytes (or a directory's entries) to stable storage, and
+    report whether the flush is trustworthy.
+
+    A copy that's read back for hashing only proves the bytes are in the page
+    cache; forcing them to disk before the original is deleted is what makes a
+    verified copy survive a delayed-writeback failure (ENOSPC/EIO during the lazy
+    flush). Returns True on a successful flush, and also True when the mount
+    simply can't fsync this object (EINVAL/ENOTSUP) — that's not a durability
+    failure and must not block an otherwise-verified restore. Returns False only
+    on a real flush failure, so a caller about to delete the only copy can keep
+    the backup instead. Best-effort callers ignore the result."""
     try:
         fd = os.open(str(path), os.O_RDONLY)
         try:
             os.fsync(fd)
         finally:
             os.close(fd)
-    except OSError:
-        pass
+        return True
+    except OSError as e:
+        return e.errno in _FSYNC_UNSUPPORTED
 
 
 def _fsync_tree(root: Path) -> None:
@@ -258,11 +269,6 @@ def pin_unverified_upgrade_backup(bp: Path) -> None:
 # e.g. a restore completing, that doesn't touch the parent's mtime).
 _ONLY_COPY_TTL_SEC = 10.0
 _only_copy_cache: tuple[float, float, list] | None = None
-
-
-def _invalidate_only_copy_cache() -> None:
-    global _only_copy_cache
-    _only_copy_cache = None
 
 
 def find_only_copy_backups():
@@ -593,7 +599,14 @@ def restore_gap_fill_backup(backup_path: Path, album_dir: Path,
         # original over it would be a downgrade. Leave the good file in place.
         try:
             if (keep_larger_dst and dst.exists()
-                    and dst.stat().st_size >= f.stat().st_size):
+                    and dst.stat().st_size >= f.stat().st_size
+                    and flac_audio_ok(dst) is not False):
+                # dst is larger AND decodes, so it's the good refill — keep it.
+                # "Larger" alone isn't "good": a bigger-but-corrupt partial must
+                # not win over the backed-up original, so a dst that fails to
+                # decode falls through to the verified restore below instead of
+                # discarding the backup. (flac_audio_ok is None when there's no
+                # flac tool to check with — then trust the size, as before.)
                 log.info(fmt(C.GRAY,
                     f"  · Keeping the file already at {dst.name} "
                     f"(>= the backed-up copy) rather than restoring over it."))
@@ -630,8 +643,18 @@ def restore_gap_fill_backup(backup_path: Path, album_dir: Path,
                     f"(content mismatch) — kept the backup copy."))
                 continue
             # Force the copy down before the swap, and the swap before the backup
-            # copy is deleted — this is the only copy of the track.
-            _fsync(tmp)
+            # copy is deleted — this is the only copy of the track. A flush that
+            # genuinely fails (ENOSPC/EIO) means the bytes aren't safely on disk,
+            # so keep the backup rather than swap-and-delete on top of an
+            # unflushed copy. (_fsync still returns True when the mount simply
+            # can't fsync, so this never blocks a normal restore.)
+            if not _fsync(tmp):
+                tmp.unlink(missing_ok=True)
+                n_failed += 1
+                log.info(fmt(C.YELLOW,
+                    f"  ⚠  Couldn't restore {f.name}: the copy couldn't be "
+                    f"flushed to disk — kept the backup copy."))
+                continue
             os.replace(str(tmp), str(dst))
             _fsync(dst.parent)
             # Destination is verifiably in place — the backup copy is now

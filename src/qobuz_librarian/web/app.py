@@ -404,6 +404,9 @@ except Exception:
     _APP_VERSION = "unknown"
 templates.env.globals["app_version"] = _APP_VERSION
 templates.env.globals["repo_url"] = "https://github.com/jarynclouatre/qobuz-librarian"
+# Server epoch at render, so a live elapsed clock can tick from a client-side
+# baseline instead of trusting the browser's wall clock against a server epoch.
+templates.env.globals["now_ts"] = time.time
 # Whether to show a Log out control — true only when auth is on and set up.
 templates.env.globals["auth_active"] = web_auth.auth_active
 
@@ -1173,9 +1176,8 @@ def _make_download_run(album, token, *, treat_as_new=False):
                        if r.get("n_fail") else "download or import failed")
         elif r.get("imported") and r.get("n_fail", 0) > 0:
             j.error = f"{plural(r['n_fail'], 'track')} failed — see job log"
-        # A successful job page used to show a blank summary line: the user
-        # couldn't tell what happened from the /jobs page without expanding
-        # the log. Surface a one-line outcome here.
+        # Surface a one-line outcome here so the /jobs page tells the user what
+        # happened without expanding the log.
         summary = _summarize_download_result(r)
         if summary:
             j.summary = summary
@@ -2168,9 +2170,9 @@ def _selection_payload(job):
 
 @app.post("/jobs/{job_id}/select")
 async def job_select(request: Request, job_id: str):
-    """Persist a single tick/untick. The review page no longer trusts the
-    posted checkboxes (pagination means most aren't in the DOM), so each toggle
-    saves immediately and the saved flags are the source of truth at download."""
+    """Persist a single tick/untick. The review page doesn't rely on the posted
+    checkboxes (pagination means most aren't in the DOM), so each toggle saves
+    immediately and the saved flags are the source of truth at download."""
     job = _get_reviewable_job(job_id)
     if not job or job.execute_kind not in _SELECTABLE_KINDS:
         return JSONResponse({"error": "not found"}, status_code=404)
@@ -2641,7 +2643,7 @@ def _settings_response(request, *, saved=False, queued=False, connected=False,
     # via the form is overridden on next process start — let the user know.
     import os
     # cfg.QOBUZ_USER_AUTH_TOKEN resolves QOBUZ_USER_AUTH_TOKEN_FILE too (the
-    # secret is no longer re-exported to os.environ), so a *_FILE deployment is
+    # secret isn't re-exported to os.environ), so a *_FILE deployment is
     # correctly recognised as env-provided.
     creds_from_env = bool(cfg.QOBUZ_USER_AUTH_TOKEN)
     cli_only_env = os.environ.get("QL_CLI_ONLY", "").strip().lower() in (

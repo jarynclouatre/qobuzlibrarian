@@ -227,9 +227,9 @@ def test_full_album_backs_up_present_tracks_before_rip(monkeypatch, tmp_path):
 
 def test_snapshot_staging_skips_the_beets_retry_tree(monkeypatch, tmp_path):
     """The retry-park tree (.beets_retry/) can hold hundreds of files from a
-    long-running session; snapshot_staging + files_added_since used to walk it
-    on every album, dominating per-album cost on big flushes. They now skip the
-    tree entirely; the rest of staging is captured as before."""
+    long-running session, so snapshot_staging + files_added_since must skip it
+    rather than walk it on every album (which would dominate per-album cost on
+    big flushes); the rest of staging is still captured."""
     from qobuz_librarian import config as cfg
     from qobuz_librarian.integrations import rip
 

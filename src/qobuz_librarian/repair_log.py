@@ -20,6 +20,7 @@ import time
 from pathlib import Path
 
 from qobuz_librarian import config as cfg
+from qobuz_librarian.api.auth import AuthLost, QobuzUnavailable
 from qobuz_librarian.api.search import find_qobuz_track_by_isrc
 from qobuz_librarian.integrations.rip import flac_audio_offset, flac_audio_ok
 from qobuz_librarian.library import repair_cache
@@ -64,14 +65,40 @@ def truncated_tracks_after_download(album_dir, token):
     """Re-verify a freshly downloaded album's track lengths against Qobuz and
     return the tracks that came up short. The download already drops files that
     won't decode, but a clean truncation (decodes fine, header rewritten to the
-    short length) only shows against the real recording length. Best-effort: any
+    short length) only shows against the real recording length. Best-effort: a
     lookup hiccup returns an empty list so a finished download is never failed by
-    the check."""
+    the check. AuthLost / QobuzUnavailable propagate, though: an expired token or
+    an outage means the lengths weren't actually verified, so a caller must be
+    able to tell that apart from a clean album rather than read it as 'all fine'."""
     try:
         scan = scan_dir_for_isrc_repairs(album_dir, token, deep=True)
+    except (AuthLost, QobuzUnavailable):
+        raise
     except Exception:
         return []
     return scan.get("verified_truncated", [])
+
+
+def warn_if_download_truncated(album_dir, token, label):
+    """Run the post-download truncation recheck and log a Repair nudge for any
+    track shorter than its real Qobuz recording. Advisory only — it never alters
+    or fails the download. A clean run logs nothing; a lost token or a Qobuz
+    outage says so plainly (so an unverified album isn't mistaken for a clean
+    one) instead of silently reporting nothing. Returns the short-track list."""
+    try:
+        short = truncated_tracks_after_download(album_dir, token)
+    except (AuthLost, QobuzUnavailable):
+        log.info(fmt(C.YELLOW,
+            f"  ⚠  {label or 'this album'} imported, but its track lengths "
+            "couldn't be verified against Qobuz (auth lost or Qobuz "
+            "unavailable) — re-run Repair once Qobuz is reachable."))
+        return []
+    if short:
+        n = len(short)
+        log.info(fmt(C.YELLOW,
+            f"  ⚠  {label or 'this album'}: {n} track{'s' if n != 1 else ''} "
+            "shorter than the Qobuz length — run Repair to refill."))
+    return short
 
 # Lossless FLAC compresses music to roughly 0.40-0.65 of raw PCM; even
 # very compressible material rarely lands below ~0.30. A file whose
@@ -124,14 +151,13 @@ def scan_dir_for_isrc_repairs(album_dir, token,
     a file is only ever counted verified_ok when it actually decodes — frame-CRC
     and middle-zero damage that leaves the size + STREAMINFO intact is caught.
     The `deep` flag controls only the Qobuz duration cross-check, not whether we
-    read the file: deep=True (single-album repair) looks every track up on Qobuz
-    to also catch a file that decodes fine but is genuinely shorter than the real
-    recording. Both the web and CLI whole-library sweeps pass deep=True for this
-    reason — a track truncated at a frame boundary with its STREAMINFO rewritten
-    to the short length decodes fine and isn't byte-short, so only the duration
-    cross-check catches it. deep=False stays the cheaper mode (a Qobuz call only
-    on a byte-short OR won't-decode track) but the sweeps no longer use it. When
-    the `flac` tool is absent a file can't be decode-checked and is counted
+    read the file: deep=True (single-album repair and both whole-library sweeps)
+    looks every track up on Qobuz to also catch a file that decodes fine but is
+    genuinely shorter than the real recording — a track truncated at a frame
+    boundary with its STREAMINFO rewritten to the short length decodes fine and
+    isn't byte-short, so only the duration cross-check catches it. deep=False is
+    the cheaper mode, a Qobuz call only on a byte-short or won't-decode track.
+    When the `flac` tool is absent a file can't be decode-checked and is counted
     `unverified`, never ok.
 
     only_isrcs: when given (a set of normalised ISRCs), tracks whose ISRC is not
@@ -191,13 +217,13 @@ def scan_dir_for_isrc_repairs(album_dir, token,
                     "before refilling")
             # A no-ISRC file can't be ISRC-refilled, but it can still be
             # *broken* — a normal-size FLAC with frame-CRC damage or a middle-
-            # zero gap passes the size check yet won't decode. On a deep scan
-            # (single album, or a whole-FLAC pass) probe it locally so a clean
+            # zero gap passes the size check yet won't decode. A deep scan
+            # (single album, or a whole-FLAC pass) probes it locally so a clean
             # non-Qobuz library still gets its corrupt files surfaced — no token
-            # or ISRC needed. The sweeps now run deep, so a corrupt no-ISRC file
-            # is surfaced library-wide; in the cheaper deep=False mode it still
-            # trips the byte-size gate below once it has an ISRC. (No-op when the
-            # flac tool is absent.)
+            # or ISRC needed. The whole-library sweeps run deep, so a corrupt
+            # no-ISRC file is surfaced library-wide; the cheaper deep=False mode
+            # catches it via the byte-size gate below once it has an ISRC. (No-op
+            # when the flac tool is absent.)
             elif path and not _flac_decode_ok(path):
                 entry["diagnostic"] = (
                     "won't decode (frame-CRC or mid-file damage); "
@@ -209,9 +235,9 @@ def scan_dir_for_isrc_repairs(album_dir, token,
         # STREAMINFO still claims the full duration while the file on disk is
         # far too small — provable from the header and size alone, no network.
         # The cheap deep=False mode only looks a file up on Qobuz when it trips
-        # this gate; deep=True — which the sweeps now use — verifies every track,
-        # also catching a file that decodes fine but is genuinely shorter than
-        # the real recording, at one Qobuz call per track (cached on re-scans).
+        # this gate; deep=True (used by the sweeps) verifies every track, also
+        # catching a file that decodes fine but is genuinely shorter than the
+        # real recording, at one Qobuz call per track (cached on re-scans).
         sample_rate = int(et.get("sample_rate") or 0)
         bits = int(et.get("bits") or 0)
         channels = int(et.get("channels") or 2)

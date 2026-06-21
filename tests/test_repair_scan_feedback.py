@@ -9,8 +9,11 @@ length recheck.
 """
 import logging
 
+import pytest
+
 from qobuz_librarian import config as cfg
 from qobuz_librarian import repair_log
+from qobuz_librarian.api.auth import AuthLost, QobuzUnavailable
 from qobuz_librarian.library import repair_cache
 from qobuz_librarian.web import flows
 
@@ -219,8 +222,8 @@ def test_isrc_lookup_is_cached_not_re_fetched(monkeypatch):
 
 
 def test_truncated_after_download_returns_short_and_swallows_errors(monkeypatch):
-    # The shared post-download recheck (used by every download path) returns the
-    # tracks that came up short, and a verify hiccup never fails the download.
+    # truncated_tracks_after_download returns the tracks that came up short, and
+    # a verify hiccup returns [] so a finished download is never failed by it.
     monkeypatch.setattr(repair_log, "scan_dir_for_isrc_repairs",
                         lambda album_dir, token, deep=True:
                         {"verified_truncated": [{"title": "X"}]})
@@ -234,11 +237,165 @@ def test_truncated_after_download_returns_short_and_swallows_errors(monkeypatch)
 
 
 def test_persisted_quality_tier_1_coerces_to_lossless(monkeypatch):
-    # A settings.json from before the lossy tiers were dropped can still carry
-    # STREAMRIP_QUALITY=1. The load path must honour it as CD lossless (tier 2),
-    # not let it fail the choices check and revert to the default (tier 4, the
-    # largest files) — the opposite of the "smaller files" the user picked.
+    # A persisted STREAMRIP_QUALITY=1 (a lossy MP3 tier the FLAC-only pipeline
+    # can't keep) must load as CD lossless (tier 2), not fail the choices check
+    # and revert to the default (tier 4, the largest files) — the opposite of
+    # the "smaller files" a tier-1 pick intends.
     from qobuz_librarian.web import settings_store
     monkeypatch.setattr(cfg, "STREAMRIP_QUALITY", 4)
     settings_store._apply({"STREAMRIP_QUALITY": "1"})
     assert cfg.STREAMRIP_QUALITY == 2
+
+
+def test_persisted_quality_tier_1_rewritten_out_of_settings_file(tmp_path, monkeypatch):
+    # load() doesn't just coerce a stale lossy tier in cfg — it normalises it on
+    # disk so the value doesn't linger and re-coerce on every startup.
+    import json
+
+    from qobuz_librarian.web import settings_store
+    sfile = tmp_path / "settings.json"
+    monkeypatch.setattr(settings_store, "SETTINGS_FILE", sfile)
+    monkeypatch.setattr(cfg, "STREAMRIP_QUALITY", 4)
+    sfile.write_text(json.dumps({"STREAMRIP_QUALITY": "1"}), encoding="utf-8")
+    settings_store.load()
+    assert json.loads(sfile.read_text(encoding="utf-8"))["STREAMRIP_QUALITY"] == "2"
+
+
+def test_truncated_after_download_propagates_abort_signals(monkeypatch):
+    # AuthLost / QobuzUnavailable mean the lengths weren't actually verified, so
+    # they must propagate rather than be swallowed as "[] → all fine" — otherwise
+    # a token that dies mid-recheck hides itself and the album reads as clean.
+    for exc in (AuthLost, QobuzUnavailable):
+        def boom(*a, _e=exc, **k):
+            raise _e("x")
+        monkeypatch.setattr(repair_log, "scan_dir_for_isrc_repairs", boom)
+        with pytest.raises(exc):
+            repair_log.truncated_tracks_after_download("/music/A/Al", "tok")
+
+
+def test_warn_if_download_truncated_surfaces_auth_loss_without_raising(monkeypatch, caplog):
+    # The user-facing recheck wrapper turns an abort signal into a clear "couldn't
+    # verify" log and returns [] — it must never crash a finished download, but it
+    # must not silently report a clean bill of health either.
+    def boom(*a, **k):
+        raise AuthLost("token gone")
+    monkeypatch.setattr(repair_log, "scan_dir_for_isrc_repairs", boom)
+    with caplog.at_level(logging.INFO):
+        assert repair_log.warn_if_download_truncated("/music/A/Al", "tok", "Album") == []
+    assert "couldn't be verified" in caplog.text.lower()
+
+
+def test_prune_expired_drops_stale_keeps_fresh_and_throttles(monkeypatch, tmp_path):
+    import json
+    import sqlite3
+    import time as _time
+    monkeypatch.setattr(cfg, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(cfg, "REPAIR_CACHE_ENABLED", True)
+    monkeypatch.setattr(cfg, "REPAIR_CACHE_TTL_DAYS", 30)
+    repair_cache._reset_for_tests()
+    try:
+        assert repair_cache._ensure()
+        now = int(_time.time())
+        conn = repair_cache._conn()
+        conn.execute(
+            "INSERT OR REPLACE INTO tracks (isrc, stored_at, payload) VALUES (?,?,?)",
+            ("USOLD0000001", now - 40 * 86400, json.dumps({"id": 1})))
+        conn.commit()
+        repair_cache.put_track("USNEW0000001", {"id": 2, "isrc": "USNEW0000001"})
+
+        assert repair_cache.prune_expired(force=True) == 1   # only the stale row
+        with sqlite3.connect(str(tmp_path / "repair_cache.db")) as c:
+            rows = {r[0] for r in c.execute("SELECT isrc FROM tracks")}
+        assert rows == {"USNEW0000001"}
+
+        # A second stale row plus a non-force prune: the daily throttle (the force
+        # run above just stamped it) skips the walk, so the stale row survives.
+        conn = repair_cache._conn()
+        conn.execute(
+            "INSERT OR REPLACE INTO tracks (isrc, stored_at, payload) VALUES (?,?,?)",
+            ("USOLD0000002", now - 40 * 86400, json.dumps({"id": 3})))
+        conn.commit()
+        assert repair_cache.prune_expired() == 0             # throttled
+        with sqlite3.connect(str(tmp_path / "repair_cache.db")) as c:
+            rows = {r[0] for r in c.execute("SELECT isrc FROM tracks")}
+        assert "USOLD0000002" in rows
+
+        # TTL of 0 means keep-forever: even forced, nothing is pruned.
+        monkeypatch.setattr(cfg, "REPAIR_CACHE_TTL_DAYS", 0)
+        assert repair_cache.prune_expired(force=True) == 0
+    finally:
+        repair_cache._reset_for_tests()
+
+
+def test_repair_cache_heals_on_corrupt_db(monkeypatch, tmp_path):
+    monkeypatch.setattr(cfg, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(cfg, "REPAIR_CACHE_ENABLED", True)
+    repair_cache._reset_for_tests()
+    try:
+        repair_cache.put_track("USRC0000001", {"id": 1, "isrc": "USRC0000001"})
+        assert repair_cache.get_track("USRC0000001") == {"id": 1, "isrc": "USRC0000001"}
+        gen0 = repair_cache._generation
+        # Corrupt the db on disk and drop this thread's open handle so the next
+        # op reopens against the malformed file.
+        (tmp_path / "repair_cache.db").write_bytes(b"not a sqlite database, junk")
+        repair_cache._local.conn = None
+        # A read against the corrupt file heals (returns None, no raise) and bumps
+        # the generation so other workers reopen against the rebuilt db.
+        assert repair_cache.get_track("USRC0000001") is None
+        assert repair_cache._generation == gen0 + 1
+        # The cache rebuilds transparently on the next write.
+        repair_cache.put_track("USRC0000002", {"id": 2, "isrc": "USRC0000002"})
+        assert repair_cache.get_track("USRC0000002") == {"id": 2, "isrc": "USRC0000002"}
+    finally:
+        repair_cache._reset_for_tests()
+
+
+def test_repair_cache_conn_reopens_after_generation_bump(monkeypatch, tmp_path):
+    # A worker mid-scan must stop writing into a db another worker discarded: a
+    # bumped generation forces _conn() to drop and replace this thread's handle.
+    monkeypatch.setattr(cfg, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(cfg, "REPAIR_CACHE_ENABLED", True)
+    repair_cache._reset_for_tests()
+    try:
+        assert repair_cache._ensure()
+        c1 = repair_cache._conn()
+        assert repair_cache._local.generation == repair_cache._generation
+        repair_cache._generation += 1            # simulate another worker's recovery
+        c2 = repair_cache._conn()
+        assert c2 is not c1
+        assert repair_cache._local.generation == repair_cache._generation
+    finally:
+        repair_cache._reset_for_tests()
+
+
+def test_scan_dir_caches_isrc_lookups_across_runs(monkeypatch, tmp_path):
+    # End to end: with the cache on, a second scan_dir_for_isrc_repairs over the
+    # same album issues ZERO Qobuz ISRC lookups (served from cache) while still
+    # re-running the local decode probe on every file each time.
+    monkeypatch.setattr(cfg, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(cfg, "REPAIR_CACHE_ENABLED", True)
+    repair_cache._reset_for_tests()
+    calls = []
+
+    def fake_lookup(isrc, token):
+        calls.append(isrc)
+        return {"duration": 200.0, "title": "t", "track_number": 1, "isrc": isrc}
+
+    decode_calls = []
+
+    def fake_decode(path):
+        decode_calls.append(path)
+        return True
+
+    entries = [{"path": "/nonexistent/01.flac", "title": "t",
+                "isrc": "USABC1234500", "length": 200.0,
+                "sample_rate": 44100, "bits": 16, "channels": 2}]
+    monkeypatch.setattr(repair_log, "find_qobuz_track_by_isrc", fake_lookup)
+    monkeypatch.setattr(repair_log, "read_album_dir", lambda d: entries)
+    monkeypatch.setattr(repair_log, "_flac_decode_ok", fake_decode)
+    try:
+        repair_log.scan_dir_for_isrc_repairs("/album", "tok", deep=True)
+        repair_log.scan_dir_for_isrc_repairs("/album", "tok", deep=True)
+        assert calls == ["USABC1234500"]        # second scan hit the cache
+    finally:
+        repair_cache._reset_for_tests()

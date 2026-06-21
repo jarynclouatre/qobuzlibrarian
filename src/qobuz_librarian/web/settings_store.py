@@ -285,11 +285,11 @@ def _apply(values: dict):
         elif kind == "enum":
             v = str(raw or "").strip().lower()
             if key == "STREAMRIP_QUALITY" and v in ("0", "1"):
-                # A settings file from before the lossy tiers were dropped can
-                # still carry 0/1. They're MP3 the FLAC-only pipeline discards,
-                # so honour the saved value as the smallest lossless tier rather
-                # than letting it fail the choices check and revert to the
-                # default (the largest tier) — matching config.py's env path.
+                # 0/1 are lossy MP3 tiers the FLAC-only pipeline discards. Coerce
+                # them to the smallest lossless tier so the saved value is honoured
+                # as 2 rather than failing the choices check and reverting to the
+                # default (the largest tier). config.py applies the same coercion
+                # on the env path.
                 v = "2"
             if choices and v not in choices:
                 continue  # ignore garbage, keep current
@@ -313,6 +313,13 @@ def load():
             data = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
             if isinstance(data, dict):
                 _apply(data)
+                # _apply coerces a persisted lossy STREAMRIP_QUALITY (0/1) to 2
+                # in cfg; normalise it on disk too so the stale value doesn't
+                # linger and get re-coerced on every load. Best-effort — cfg is
+                # already correct regardless of whether the rewrite lands.
+                if str(data.get("STREAMRIP_QUALITY", "")).strip() in ("0", "1"):
+                    data["STREAMRIP_QUALITY"] = "2"
+                    _atomic_write_settings(data)
     except (OSError, ValueError) as exc:
         # A corrupt or unreadable file would otherwise revert every behaviour
         # setting to its env default with no hint why — say so once.
@@ -354,6 +361,25 @@ def drain_pending():
 _save_lock = threading.Lock()
 
 
+def _atomic_write_settings(data: dict) -> bool:
+    """Persist the settings dict to SETTINGS_FILE atomically (temp + os.replace).
+    Returns True on success, False on any OSError."""
+    try:
+        SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=str(SETTINGS_FILE.parent),
+                                   prefix=".qobuz_settings.", suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2)
+            os.replace(tmp, SETTINGS_FILE)
+        finally:
+            if os.path.exists(tmp):
+                os.unlink(tmp)
+        return True
+    except OSError:
+        return False
+
+
 def save(values: dict):
     """Apply settings and persist them atomically. Returns (ok, warnings).
 
@@ -389,6 +415,8 @@ def _save_locked(values: dict):
         # on-disk file stays consistent with cfg.
         if kind == "enum" and choices:
             v = str(values[key] or "").strip().lower()
+            if key == "STREAMRIP_QUALITY" and v in ("0", "1"):
+                v = "2"  # lossy tiers the FLAC pipeline discards (see _apply)
             if v not in choices:
                 continue
             merged[key] = v  # persist the normalised value, matching cfg
@@ -415,17 +443,4 @@ def _save_locked(values: dict):
             _pending_apply = None
             _apply(merged)
 
-    try:
-        SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
-        fd, tmp = tempfile.mkstemp(dir=str(SETTINGS_FILE.parent),
-                                   prefix=".qobuz_settings.", suffix=".tmp")
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                json.dump(merged, f, indent=2)
-            os.replace(tmp, SETTINGS_FILE)
-        finally:
-            if os.path.exists(tmp):
-                os.unlink(tmp)
-        return True, warnings
-    except OSError:
-        return False, warnings
+    return _atomic_write_settings(merged), warnings

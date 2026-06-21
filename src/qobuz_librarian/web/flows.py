@@ -1031,10 +1031,9 @@ def execute_downsamples(job, chosen):
 # ── Repair flow ───────────────────────────────────────────────────────────────
 
 def _repair_album_outcome(album_dir, name, token):
-    """Scan one album → a cacheable outcome dict: counts, review-candidate specs,
-    and any log lines to emit. AuthLost / QobuzUnavailable propagate (they stop
-    the sweep); any other scan error is recorded as a failed album and marked
-    not-cacheable so a re-scan retries it rather than remembering the miss."""
+    """Scan one album into an outcome dict: counts, review-candidate specs, and
+    any log lines to emit. AuthLost / QobuzUnavailable propagate (they stop the
+    sweep); any other scan error is recorded as a failed album."""
     from qobuz_librarian.repair_log import scan_dir_for_isrc_repairs
     out = {"verified_ok": 0, "unverified": 0, "failed": 0, "specs": [],
            "warns": []}

@@ -418,3 +418,73 @@ def test_push_progress_streams_separately_and_stays_out_of_the_log():
     # the live header instead of a blank bar
     snap = job.subscribe().get_nowait()
     assert snap.startswith(jm.PROGRESS_PREFIX)
+
+
+def test_queue_runs_post_download_truncation_recheck_on_success(monkeypatch, tmp_path):
+    # The post-download length recheck must fire on the QUEUE path too — walk,
+    # artist/album queue, resume, repair refill and the web single-track grab all
+    # flow through _execute_download_queue, so a clean truncation in a freshly
+    # filled album would otherwise never be surfaced on the bulk-fill workflow.
+    from qobuz_librarian.queue import executor
+
+    post_dir = tmp_path / "music" / "Artist" / "Album"
+    post_dir.mkdir(parents=True)
+    (post_dir / "01.flac").write_bytes(b"\x00" * 1000)
+
+    rechecked = []
+    monkeypatch.setattr(executor, "staging_preflight", lambda args: None)
+    monkeypatch.setattr(executor, "_reimport_parked_albums", lambda: False)
+    monkeypatch.setattr(executor, "snapshot_staging", lambda: set())
+    monkeypatch.setattr(executor, "is_cancel_requested", lambda: False)
+    monkeypatch.setattr(executor, "_download_for_queue_item",
+                        lambda item: item.update(n_ok=1, n_fail=0, n_lossy=0, elapsed=0.0))
+    monkeypatch.setattr(executor, "_staged_album_dirs", lambda item: [post_dir])
+    monkeypatch.setattr(executor, "_run_pre_import_hooks_for_dirs", lambda dirs, args: [])
+    monkeypatch.setattr(executor, "_import_album_with_retry", lambda dirs: True)
+    monkeypatch.setattr(executor, "find_album_dir_filesystem", lambda _a: post_dir)
+    monkeypatch.setattr(executor, "_count_audio_files_in", lambda _d: 1)
+    monkeypatch.setattr(executor, "cleanup_duplicate_art", lambda _d: 0)
+    monkeypatch.setattr(executor, "_is_split_album_merge", lambda *a: False)
+    monkeypatch.setattr(executor, "_consolidate_duplicate_albums", lambda: None)
+    monkeypatch.setattr(executor, "write_post_import_sidecars", lambda dirs: None)
+    monkeypatch.setattr(executor, "log_fetch", lambda payload: None)
+    monkeypatch.setattr(executor, "warn_if_download_truncated",
+                        lambda d, token, label: rechecked.append((d, token, label)) or [])
+
+    item = _qitem(title="Album",
+                  album={"id": "A", "title": "Album", "artist": {"name": "Artist"},
+                         "tracks": {"items": []}},
+                  album_dir=post_dir)
+    args = Namespace(dry_run=False, no_import=False, migrate_multi_artist=False,
+                     consolidate=False)
+    results, drained = executor._execute_download_queue([item], args, "tok")
+
+    assert results and results[0]["result"] == "downloaded"
+    assert rechecked == [(post_dir, "tok", "Album")]
+
+
+def test_queue_skips_recheck_when_nothing_imported(monkeypatch, tmp_path):
+    # A download that imported nothing must NOT run the recheck (there's nothing
+    # fresh to verify, and the album dir may not even exist yet).
+    from qobuz_librarian.queue import executor
+
+    rechecked = []
+    monkeypatch.setattr(executor, "staging_preflight", lambda args: None)
+    monkeypatch.setattr(executor, "_reimport_parked_albums", lambda: False)
+    monkeypatch.setattr(executor, "snapshot_staging", lambda: set())
+    monkeypatch.setattr(executor, "is_cancel_requested", lambda: False)
+    monkeypatch.setattr(executor, "_download_for_queue_item",
+                        lambda item: item.update(n_ok=0, n_fail=1, n_lossy=0, elapsed=0.0))
+    monkeypatch.setattr(executor, "find_album_dir_filesystem", lambda _a: None)
+    monkeypatch.setattr(executor, "log_fetch", lambda payload: None)
+    monkeypatch.setattr(executor, "warn_if_download_truncated",
+                        lambda d, token, label: rechecked.append(d) or [])
+
+    item = _qitem(title="Album",
+                  album={"id": "A", "title": "Album", "artist": {"name": "Artist"},
+                         "tracks": {"items": []}},
+                  album_dir=tmp_path / "music" / "Artist" / "Album")
+    args = Namespace(dry_run=False, no_import=False, migrate_multi_artist=False,
+                     consolidate=False)
+    executor._execute_download_queue([item], args, "tok")
+    assert rechecked == []

@@ -237,8 +237,7 @@ def test_fuzzy_match_to_a_different_album_is_not_a_false_partial_gap(monkeypatch
 
 def test_deluxe_edition_gap_measured_against_the_owned_edition(monkeypatch, tmp_path, beatles_search):
     # The folder is an anniversary edition; the gap must be computed against the
-    # edition that folder actually is (14 tracks), not the standard release —
-    # the catalog-driven approach used to mismeasure this.
+    # edition that folder actually is (14 tracks), not the standard release.
     deluxe = _album("dlx", "Severed Survival", "Autopsy", 1989,
                     [_qt(f"s{i}", f"ISRCS{i}") for i in range(14)])
     res = _run(monkeypatch, tmp_path,

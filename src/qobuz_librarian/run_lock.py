@@ -30,10 +30,9 @@ class LockBusy(Exception):
 def _warn_lockless(detail: str) -> None:
     """Loudly flag that the run is proceeding without the single-instance lock.
 
-    Returning None from acquire() used to be silent, so a CLI run on an
-    unwritable/lockless DATA_DIR could race the web worker into /staging with
-    no signal at all. This is a real corruption risk, so warn at WARNING level
-    (always shown), not the verbose-only vlog the PID-write path uses.
+    Without the lock a CLI run on an unwritable/lockless DATA_DIR can race the
+    web worker into /staging — a real corruption risk — so flag it at WARNING
+    level (always shown), not the verbose-only vlog the PID-write path uses.
     """
     import logging
 

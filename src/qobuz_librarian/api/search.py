@@ -76,12 +76,24 @@ def _envelope(data, key):
     return obj if isinstance(obj, dict) else {}
 
 
+def _items(data, key):
+    """The ``data[key]['items']`` list with only its dict members, or [] when
+    that items array is missing or the wrong type. A malformed/error 200 body
+    can put a bare string or a list of primitives where an items array belongs;
+    returning [] keeps the per-item normalisation that follows from crashing on
+    a non-dict, so callers that only catch QobuzError aren't bypassed."""
+    items = _envelope(data, key).get("items")
+    if not isinstance(items, list):
+        return []
+    return [x for x in items if isinstance(x, dict)]
+
+
 def search_albums(query, token, limit=None):
     limit = limit if limit is not None else config.SEARCH_LIMIT
     data = _expect_dict(
         qobuz_get("album/search", {"query": query, "limit": limit}, token),
         "album/search")
-    items = _envelope(data, "albums").get("items") or []
+    items = _items(data, "albums")
     for a in items:
         _normalize_album_fields(a)
     return items
@@ -91,9 +103,9 @@ def search_artists(query, token, limit=10):
     data = _expect_dict(
         qobuz_get("artist/search", {"query": query, "limit": limit}, token),
         "artist/search")
-    items = _envelope(data, "artists").get("items") or []
+    items = _items(data, "artists")
     for a in items:
-        if isinstance(a, dict) and "name" in a:
+        if "name" in a:
             a["name"] = clean_qobuz_string(a.get("name"))
     return items
 
@@ -140,7 +152,7 @@ def search_tracks(query, token, limit=10):
     data = _expect_dict(
         qobuz_get("track/search", {"query": query, "limit": limit}, token),
         "track/search")
-    items = _envelope(data, "tracks").get("items") or []
+    items = _items(data, "tracks")
     for t in items:
         _normalize_track_fields(t)
     return items
@@ -211,7 +223,9 @@ def get_artist_albums(artist_id, token, limit=None, fresh=False):
             "offset": offset,
         }, token), "artist/get")
         albums_obj = _envelope(data, "albums")
-        block = albums_obj.get("items") or []
+        _albums_raw = albums_obj.get("items")
+        block = ([a for a in _albums_raw if isinstance(a, dict)]
+                 if isinstance(_albums_raw, list) else [])
         if qobuz_total is None:
             t = albums_obj.get("total")
             if isinstance(t, bool):

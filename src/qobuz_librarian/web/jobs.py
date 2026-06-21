@@ -337,8 +337,8 @@ class Job:
             else:
                 # Append regardless of whether the cap was hit EARLIER: a
                 # mid-scan hide can shrink the list back below the cap, and a
-                # candidate we actually appended must return its real cid — the
-                # sticky _candidate_cap_noted flag used to swallow it as None.
+                # candidate we actually appended must return its real cid, not
+                # be swallowed as None by the sticky _candidate_cap_noted flag.
                 seq = self._cand_seq
                 self._cand_seq += 1
                 self.candidates.append({
@@ -364,7 +364,7 @@ class Job:
     def selected_candidates(self) -> list:
         return [c for c in self.candidates if c.get("selected")]
 
-    # ── selection (server-backed; the review UI no longer trusts form ticks) ──
+    # ── selection (server-backed; the review UI reads ticks here, not the form) ──
     def set_selected(self, cid: str, on: bool) -> bool:
         """Flip one candidate's selected flag. Returns True if a row changed."""
         with self._lock:

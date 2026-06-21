@@ -176,9 +176,9 @@ def test_downsample_hires_env_var_compat(restore_config, monkeypatch):
 
 
 def test_downsample_hires_typo_warns_instead_of_silently_off(restore_config, monkeypatch, capsys):
-    # Beta-test finding: a typo'd DOWNSAMPLE_HIRES_ENABLED used to silently
-    # resolve to False with no warning, while LYRICS_FORMAT=banana correctly
-    # warned. Route both through _env_bool so the contract matches. _warn
+    # A typo'd DOWNSAMPLE_HIRES_ENABLED must warn rather than silently resolve
+    # to False (the way LYRICS_FORMAT=banana warns); both go through _env_bool
+    # so the contract matches. _warn
     # writes to stderr; capture there.
     monkeypatch.delenv("COMPRESS_ENABLED", raising=False)
     monkeypatch.setenv("DOWNSAMPLE_HIRES_ENABLED", "banana")
@@ -192,9 +192,9 @@ def test_downsample_hires_typo_warns_instead_of_silently_off(restore_config, mon
 
 
 def test_artist_scan_workers_clamps_an_absurd_high_value(restore_config, monkeypatch, capsys):
-    # Beta-test finding: a typo'd ARTIST_SCAN_WORKERS=999999 used to slip
-    # through (only the floor at 1 was enforced) and would spawn a 999999-
-    # thread pool. _env_num_min now takes a maximum too.
+    # A typo'd ARTIST_SCAN_WORKERS=999999 must be clamped, not slip through to
+    # spawn a 999999-thread pool (a floor at 1 alone isn't enough); _env_num_min
+    # enforces a maximum too.
     monkeypatch.setenv("ARTIST_SCAN_WORKERS", "999999")
     import importlib
 

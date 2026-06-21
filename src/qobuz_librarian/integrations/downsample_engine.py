@@ -25,6 +25,23 @@ from pathlib import Path
 
 from qobuz_librarian.integrations.rip import flac_audio_offset
 
+
+def _fsync_quiet(path):
+    """Best-effort fsync of a file or directory. The downsample swap overwrites
+    the only lossless master in place, so the encoded replacement (and its
+    directory entry) must reach stable storage before the swap and unlink — a
+    crash between the lazy writeback and the delete would otherwise strand a
+    half-written file in the master's place. No-op on a mount that can't
+    fsync."""
+    try:
+        fd = os.open(str(path), os.O_RDONLY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+    except OSError:
+        pass
+
 # Downsampling needs ffmpeg to resample AND flac to verify the result. The
 # overwrite is in-place and irreversible, so without the verifier there's no way
 # to confirm a good encode replaced the only hi-res copy — treat the feature as
@@ -403,8 +420,10 @@ def resample_one(rel, sr, rate, af_filter, *, base_dir=None):
             os.chmod(str(tmp), src_mode)
         except OSError:
             pass
+        _fsync_quiet(tmp)
         os.replace(str(tmp), str(src))
         tmp = None
+        _fsync_quiet(src.parent)
         return (rel, sr, rate, in_size - out_size, None)
     except subprocess.TimeoutExpired:
         return (rel, sr, rate, None,

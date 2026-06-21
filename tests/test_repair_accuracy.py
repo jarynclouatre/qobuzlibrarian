@@ -192,3 +192,22 @@ def test_duration_gate_abs_cap_flags_long_track_short_by_over_a_minute(monkeypat
 
     monkeypatch.setattr(rl, "read_album_dir", lambda d: entries(560.0))  # 40 s short
     assert rl.scan_dir_for_isrc_repairs("/album", "tok", deep=True)["verified_truncated"] == []
+
+
+def test_duration_gate_ignores_unreadable_length_tag(monkeypatch):
+    # A healthy track whose STREAMINFO length tag is unreadable (flen=0, with a
+    # positive Qobuz duration) must NOT be scored a 100%-truncation and then
+    # deleted+refilled. The `flen > 0` guard on the duration gate is the only
+    # thing preventing that; remove it and this flips to a false positive.
+    import qobuz_librarian.repair_log as rl
+
+    entries = [{"path": "/nonexistent/01.flac", "title": "t",
+                "isrc": "USABC1234500", "length": 0.0,
+                "sample_rate": 44100, "bits": 16, "channels": 2}]
+    qt = {"duration": 200.0, "title": "t", "track_number": 1, "isrc": "USABC1234500"}
+    monkeypatch.setattr(rl, "find_qobuz_track_by_isrc", lambda i, t: qt)
+    monkeypatch.setattr(rl, "read_album_dir", lambda d: entries)
+
+    r = rl.scan_dir_for_isrc_repairs("/album", "tok", deep=True)
+    assert r["verified_truncated"] == []
+    assert r["verified_ok"] == 1

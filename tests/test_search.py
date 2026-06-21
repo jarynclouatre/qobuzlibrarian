@@ -79,6 +79,40 @@ def test_search_guards_malformed_bodies():
         assert search_tracks("q", "tok") == []
 
 
+def test_search_items_non_list_yields_empty_not_crash():
+    # items present but the wrong type (a CDN/proxy error page parsed to a bare
+    # string, or a list of primitives) must not crash the per-item normalisation:
+    # a non-list items becomes [], and a list keeps only its dict members.
+    with patch("qobuz_librarian.api.search.qobuz_get",
+               return_value={"albums": {"items": "junk"}}):
+        assert search_albums("q", "tok") == []
+    with patch("qobuz_librarian.api.search.qobuz_get",
+               return_value={"tracks": {"items": 42}}):
+        assert search_tracks("q", "tok") == []
+    with patch("qobuz_librarian.api.search.qobuz_get",
+               return_value={"artists": {"items": "x"}}):
+        assert search_artists("q", "tok") == []
+    with patch("qobuz_librarian.api.search.qobuz_get",
+               return_value={"tracks": {"items": [1, None, {"id": 5}]}}):
+        assert search_tracks("q", "tok") == [{"id": 5}]
+    # get_artist_albums reads the same envelope: a non-list items must not crash
+    # its pagination loop either.
+    with patch("qobuz_librarian.api.search.qobuz_get",
+               return_value={"albums": {"items": "junk", "total": 0}}):
+        items, _ = get_artist_albums("aid", "tok")
+        assert items == []
+
+
+def test_find_qobuz_track_by_isrc_returns_none_on_unparseable_items():
+    # find_qobuz_track_by_isrc is called from the repair sweep, which catches
+    # only QobuzError around it. A malformed 200 whose tracks.items is a bare
+    # string must return None (its documented contract), not raise AttributeError
+    # and abort the whole library scan.
+    with patch("qobuz_librarian.api.search.qobuz_get",
+               return_value={"tracks": {"items": "<html>error</html>"}}):
+        assert find_qobuz_track_by_isrc("USRC1234567", "tok") is None
+
+
 def test_get_artist_albums_paginates_and_stops_early():
     page1 = {"albums": {"items": [{"id": i} for i in range(100)], "total": 105}}
     page2 = {"albums": {"items": [{"id": i} for i in range(100, 105)]}}
@@ -242,8 +276,8 @@ def test_album_cache_rebuilds_corrupt_db(tmp_path, monkeypatch):
     monkeypatch.setattr(cfg, "DATA_DIR", tmp_path)
     monkeypatch.setattr(cfg, "ALBUM_CACHE_ENABLED", True)
     album_cache._reset_for_tests()
-    # A truncated/garbage db file used to disable the cache for the whole
-    # process; it should instead be discarded and rebuilt so caching resumes.
+    # A truncated/garbage db file must not disable the cache for the whole
+    # process; it should be discarded and rebuilt so caching resumes.
     (tmp_path / "album_cache.db").write_bytes(b"not a sqlite database, just junk")
     try:
         album_cache.put("ALB9", {"id": "ALB9", "title": "X"})
