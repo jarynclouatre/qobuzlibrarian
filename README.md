@@ -166,6 +166,8 @@ Everything else is a behaviour toggle, settable live on **Settings** or as a def
 | `AUTO_LIBRARY_SCAN` | `true` | Run the one-time library scan on first launch |
 | `NEW_RELEASE_CHECK_INTERVAL` | — | How often to auto-check for new releases (also set on Settings) |
 | `ARTIST_CATALOG_CACHE_TTL` | — | How long artist album-lists stay cached |
+| `REPAIR_CACHE_ENABLED` | `true` | Cache the repair scan's Qobuz ISRC lookups so a re-scan skips the network (files are still decode-tested fresh every scan) |
+| `REPAIR_CACHE_TTL_DAYS` | `30` | How long a cached ISRC lookup is reused before re-verifying against Qobuz (`0` = keep until the db is deleted) |
 | `AUTO_UPGRADE_ENABLED` | `false` | Surface upgrades during ordinary gap-fill walks |
 | `DOWNSAMPLE_HIRES_ENABLED` | `false` | Downsample hi-res FLACs as they download (see below) |
 | `UPGRADE_SINGLES_ENABLED` | `false` | Let the Upgrade walk re-rip tracks you pulled as singles |
@@ -174,7 +176,7 @@ Everything else is a behaviour toggle, settable live on **Settings** or as a def
 
 `DOWNSAMPLE_HIRES_ENABLED` only touches *new* downloads (88.2 / 176.4 / 352.8 kHz → 44.1; 96 / 192 / 384 → 48; bit depth preserved; originals replaced atomically, so an interrupt can't corrupt a track). To shrink hi-res already in your library, use the on-demand **Downsample** mode instead.
 
-Advanced thresholds — fuzzy-match cutoffs, `ARTIST_SCAN_WORKERS`, `ARTIST_API_DELAY`, retention windows, `POST_JOB_HOOK` — live in the `compose.yaml` env block, each with a working default; see `src/qobuz_librarian/config.py` for what each does. `POST_JOB_HOOK` runs in a shell, so only set it to a command you trust.
+Advanced thresholds — fuzzy-match cutoffs, `ARTIST_SCAN_WORKERS`, `ARTIST_API_DELAY`, `REPAIR_LOOKUP_MIN_INTERVAL` (paces a repair sweep's Qobuz lookups), retention windows, `POST_JOB_HOOK` — live in the `compose.yaml` env block, each with a working default; see `src/qobuz_librarian/config.py` for what each does. `POST_JOB_HOOK` runs in a shell, so only set it to a command you trust.
 
 ### beets & streamrip config
 
@@ -272,6 +274,7 @@ A library-wide scan makes roughly one Qobuz call per artist directory (cached on
 Scans run on their own, but only to *show* you things. On first launch it runs a one-time library scan (`AUTO_LIBRARY_SCAN`); after that it periodically checks for new releases (`NEW_RELEASE_CHECK_INTERVAL`, also on Settings). Both only read Qobuz and park a review list — nothing downloads or changes a file until you approve it.
 
 - **Gap-fill only ever adds** missing tracks — it never deletes or rewrites one.
+- **After a download finishes**, it re-checks the new album's track lengths against Qobuz and prints a note (run **Repair**) if one came up short — a clean truncation can decode fine yet be cut, so this is an extra read-only Qobuz check on every completed download; it never deletes or changes a file.
 - **Upgrade** and **Downsample** replace files, but only when you start them. Upgrade backs up the originals first (`UPGRADE_BACKUP_RETENTION_DAYS`); Downsample rewrites in place with no backup, so it verifies every file decodes before replacing and pre-selects nothing.
 - **Lyrics** writes lyric tags or `.lrc` sidecars into existing tracks, never the audio — on import (`LYRICS_ENABLED`) and via the on-demand Lyrics mode.
 - **Consolidation** (`CONSOLIDATE`, off) merges duplicate album folders. It's CLI-only — it needs per-folder confirmation the web UI has no screen for, so web downloads always skip it regardless of the setting.
@@ -286,7 +289,7 @@ PUID=1000   # id -u
 PGID=1000   # id -g
 ```
 
-On boot it chowns the app-managed volumes (`config`, `data`, `staging`, `upgrade_backups`) to that user and warns if a mounted path isn't writable. `/music` is deliberately left alone — it's often a large NAS mount — so make sure the run user can write to it. If your music share is read-only, append `:ro` to the `/music` bind; scans and upgrade detection still work, but `QL_CHECK_VOLUMES=1` will then return 503 on scan endpoints (the write test fails), so leave that flag unset in that case. To run as root, set `PUID=0` / `PGID=0`.
+On boot it chowns the app-managed volumes (`config`, `data`, `staging`, `upgrade_backups`) to that user and warns if a mounted path isn't writable. `/music` is deliberately left alone — it's often a large NAS mount — so make sure the run user can write to it. If your music share is read-only, append `:ro` to the `/music` bind; scans and upgrade detection still work, but `QL_CHECK_VOLUMES=1` will then return 503 on scan endpoints (the write test fails), so leave that flag unset in that case. To run as root, set `PUID=0` and `PGID=0` explicitly — a non-numeric value (a typo) makes the container refuse to start rather than silently fall back to root and undo the non-root isolation.
 
 If the bind dirs were auto-created as root on first `up`, chown them before enabling those settings, or you'll get the "volume not writable" warning every boot:
 
