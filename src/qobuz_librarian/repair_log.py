@@ -266,7 +266,7 @@ def scan_dir_for_isrc_repairs(album_dir, token,
                 })
                 continue
 
-        if flen < (qdur - min_short_seconds) and flen < (qdur * max_ratio):
+        if flen > 0 and flen < (qdur - min_short_seconds) and flen < (qdur * max_ratio):
             report["verified_truncated"].append({
                 "path": path,
                 "file_length": flen,

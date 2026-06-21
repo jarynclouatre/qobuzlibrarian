@@ -140,6 +140,12 @@ def test_repair_scan_verifies_every_track_deep(monkeypatch):
     # Jack's Mannequin / "Everything In Transit") is checked against its real
     # Qobuz length instead of being passed as ok. Regression guard for the
     # deep=False blind spot.
+    #
+    # NOTE: this mocks scan_dir_for_isrc_repairs, so it only pins that the sweep
+    # passes deep=True and propagates a truncation into job.candidates — it does
+    # NOT exercise the duration comparison itself. The real end-to-end gate (a
+    # decode-clean but short FLAC actually flagged) lives in
+    # test_repair_accuracy.py::test_deep_scan_flags_decode_clean_but_short_via_duration.
     seen_deep = []
 
     def fake_scan(album_dir, token, deep=False):

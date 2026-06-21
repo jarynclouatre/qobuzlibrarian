@@ -144,3 +144,31 @@ def test_shallow_scan_does_not_false_flag_healthy(tmp_path, _need_tools):
 
     assert r["verified_truncated"] == [], f"healthy files must not be flagged (got {r})"
     assert r["verified_ok"] == 2
+
+
+def test_deep_scan_flags_decode_clean_but_short_via_duration(tmp_path, _need_tools):
+    # The Jack's Mannequin / "Everything In Transit" ground-truth gate, exercised
+    # against a REAL FLAC end to end: a file that decodes perfectly but is far
+    # shorter than its real Qobuz recording (a header-consistent truncation) must
+    # be flagged by the deep duration cross-check. This is the exact "decodes fine
+    # but cut short" mechanism — caught by the pure length comparison, NOT the
+    # byte-size or decode gate, so the entry carries no "reason" key. The named
+    # regression test in test_repair_scan_feedback.py mocks the scan, so this is
+    # the one that fails if the duration gate itself regresses.
+    album = tmp_path / "Jack's Mannequin" / "Everything In Transit (2005)"
+    album.mkdir(parents=True)
+    p = album / "04 - I'm Ready.flac"
+    _make_flac(p, seconds=3)                    # decodes clean, ~3s
+    assert _decodes(p), "fixture must decode cleanly"
+
+    long_qt = {"duration": 235.0, "title": "I'm Ready", "track_number": 4,
+               "isrc": "USABC1234500"}
+    with patch("qobuz_librarian.repair_log.find_qobuz_track_by_isrc",
+               return_value=long_qt):
+        r = scan_dir_for_isrc_repairs(album, "token", deep=True)
+
+    flagged = {Path(e["path"]).name: e for e in r["verified_truncated"]}
+    assert "04 - I'm Ready.flac" in flagged, (
+        f"deep scan must flag a decode-clean but short FLAC (got {r})")
+    # The pure-duration gate, not byte-size/decode — it sets no "reason".
+    assert flagged["04 - I'm Ready.flac"].get("reason") is None
