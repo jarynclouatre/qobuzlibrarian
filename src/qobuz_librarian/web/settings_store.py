@@ -284,6 +284,13 @@ def _apply(values: dict):
             setattr(cfg, key, items)
         elif kind == "enum":
             v = str(raw or "").strip().lower()
+            if key == "STREAMRIP_QUALITY" and v in ("0", "1"):
+                # A settings file from before the lossy tiers were dropped can
+                # still carry 0/1. They're MP3 the FLAC-only pipeline discards,
+                # so honour the saved value as the smallest lossless tier rather
+                # than letting it fail the choices check and revert to the
+                # default (the largest tier) — matching config.py's env path.
+                v = "2"
             if choices and v not in choices:
                 continue  # ignore garbage, keep current
             # A few enums are ints on cfg (quality tier, cache seconds) — keep
