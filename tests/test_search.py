@@ -60,6 +60,25 @@ def test_search_helpers_extract_items_or_empty():
         assert search_albums("q", "tok") == []
 
 
+def test_search_guards_malformed_bodies():
+    # A non-dict top-level body (a CDN/proxy error page served as a JSON list or
+    # string) becomes the QobuzError callers already handle, not a raw .get crash.
+    for bad in (["x"], "error", 42, None):
+        with patch("qobuz_librarian.api.search.qobuz_get", return_value=bad):
+            try:
+                search_albums("q", "tok")
+            except QobuzError:
+                pass
+            else:
+                raise AssertionError(f"expected QobuzError for body {bad!r}")
+    # A truthy but non-dict envelope (albums is a list/string) must yield [] via
+    # the envelope guard rather than crashing on .get("items").
+    with patch("qobuz_librarian.api.search.qobuz_get", return_value={"albums": ["x"]}):
+        assert search_albums("q", "tok") == []
+    with patch("qobuz_librarian.api.search.qobuz_get", return_value={"tracks": "oops"}):
+        assert search_tracks("q", "tok") == []
+
+
 def test_get_artist_albums_paginates_and_stops_early():
     page1 = {"albums": {"items": [{"id": i} for i in range(100)], "total": 105}}
     page2 = {"albums": {"items": [{"id": i} for i in range(100, 105)]}}

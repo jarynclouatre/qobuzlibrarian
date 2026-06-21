@@ -67,12 +67,21 @@ def _expect_dict(data, endpoint):
     return data
 
 
+def _envelope(data, key):
+    """The ``data[key]`` sub-object as a dict, or {} when it's missing or a
+    non-dict. The top-level body is dict-checked by _expect_dict, but a
+    malformed response can still put a list/str where the albums/artists/tracks
+    envelope is expected, which would crash the ``.get('items')`` that follows."""
+    obj = data.get(key)
+    return obj if isinstance(obj, dict) else {}
+
+
 def search_albums(query, token, limit=None):
     limit = limit if limit is not None else config.SEARCH_LIMIT
     data = _expect_dict(
         qobuz_get("album/search", {"query": query, "limit": limit}, token),
         "album/search")
-    items = (data.get("albums") or {}).get("items") or []
+    items = _envelope(data, "albums").get("items") or []
     for a in items:
         _normalize_album_fields(a)
     return items
@@ -82,7 +91,7 @@ def search_artists(query, token, limit=10):
     data = _expect_dict(
         qobuz_get("artist/search", {"query": query, "limit": limit}, token),
         "artist/search")
-    items = (data.get("artists") or {}).get("items") or []
+    items = _envelope(data, "artists").get("items") or []
     for a in items:
         if isinstance(a, dict) and "name" in a:
             a["name"] = clean_qobuz_string(a.get("name"))
@@ -131,7 +140,7 @@ def search_tracks(query, token, limit=10):
     data = _expect_dict(
         qobuz_get("track/search", {"query": query, "limit": limit}, token),
         "track/search")
-    items = (data.get("tracks") or {}).get("items") or []
+    items = _envelope(data, "tracks").get("items") or []
     for t in items:
         _normalize_track_fields(t)
     return items
@@ -201,7 +210,7 @@ def get_artist_albums(artist_id, token, limit=None, fresh=False):
             "limit": want,
             "offset": offset,
         }, token), "artist/get")
-        albums_obj = data.get("albums") or {}
+        albums_obj = _envelope(data, "albums")
         block = albums_obj.get("items") or []
         if qobuz_total is None:
             t = albums_obj.get("total")
