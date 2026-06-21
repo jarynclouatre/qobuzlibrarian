@@ -57,9 +57,21 @@ def _normalize_track_fields(track):
 
 
 # ── Album / artist / track search ─────────────────────────────────────────────
+def _expect_dict(data, endpoint):
+    """qobuz_get returns r.json() untyped, so a malformed/error 200 body
+    (a JSON list/str/number — e.g. a CDN/proxy error page served with 200) would
+    crash on the `.get` below and escape callers that only catch QobuzError.
+    Turn it into the QobuzError they already handle, matching get_album."""
+    if not isinstance(data, dict):
+        raise QobuzError(f"{endpoint} returned a non-dict response")
+    return data
+
+
 def search_albums(query, token, limit=None):
     limit = limit if limit is not None else config.SEARCH_LIMIT
-    data = qobuz_get("album/search", {"query": query, "limit": limit}, token)
+    data = _expect_dict(
+        qobuz_get("album/search", {"query": query, "limit": limit}, token),
+        "album/search")
     items = (data.get("albums") or {}).get("items") or []
     for a in items:
         _normalize_album_fields(a)
@@ -67,7 +79,9 @@ def search_albums(query, token, limit=None):
 
 
 def search_artists(query, token, limit=10):
-    data = qobuz_get("artist/search", {"query": query, "limit": limit}, token)
+    data = _expect_dict(
+        qobuz_get("artist/search", {"query": query, "limit": limit}, token),
+        "artist/search")
     items = (data.get("artists") or {}).get("items") or []
     for a in items:
         if isinstance(a, dict) and "name" in a:
@@ -114,7 +128,9 @@ def search_tracks(query, token, limit=10):
     on-disk files to exact-recording replacements without album-level
     edition guessing.
     """
-    data = qobuz_get("track/search", {"query": query, "limit": limit}, token)
+    data = _expect_dict(
+        qobuz_get("track/search", {"query": query, "limit": limit}, token),
+        "track/search")
     items = (data.get("tracks") or {}).get("items") or []
     for t in items:
         _normalize_track_fields(t)
@@ -179,12 +195,12 @@ def get_artist_albums(artist_id, token, limit=None, fresh=False):
     page_size = config.ARTIST_CATALOG_PAGE
     while len(items) < limit:
         want = min(page_size, limit - len(items))
-        data = qobuz_get("artist/get", {
+        data = _expect_dict(qobuz_get("artist/get", {
             "artist_id": artist_id,
             "extra": "albums",
             "limit": want,
             "offset": offset,
-        }, token)
+        }, token), "artist/get")
         albums_obj = data.get("albums") or {}
         block = albums_obj.get("items") or []
         if qobuz_total is None:
