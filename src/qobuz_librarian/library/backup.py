@@ -569,20 +569,22 @@ def restore_gap_fill_backup(backup_path: Path, album_dir: Path,
             # atomically. os.replace is atomic when tmp and dst share a
             # filesystem (tmp lives in dst.parent, so they do) and it
             # overwrites any partial the failed rip left at dst.
-            shutil.copy2(str(f), str(tmp))
             # This backup file is the ONLY copy (originals were moved here), so
-            # verify the copy is byte-complete BEFORE the destructive swap. A
-            # short copy that copy2 didn't raise on (truncating/overlay FS,
-            # quota cutoff, sparse mismatch) must not overwrite dst and then
-            # delete the source — that would destroy the only good copy.
-            src_size = f.stat().st_size
-            copied = tmp.stat().st_size if tmp.exists() else -1
-            if copied != src_size:
+            # content-verify the copy (sha256) BEFORE the destructive swap. A
+            # short OR same-size-corrupt copy that copy2 didn't raise on
+            # (truncating/overlay FS, quota cutoff, sparse mismatch) must not
+            # overwrite dst and then delete the source — that would destroy the
+            # only good copy. Mirrors backup_gap_fill_files / restore_upgrade_backup,
+            # which already content-verify; a size check alone misses a same-size
+            # corruption.
+            src_digest = _file_digest(f)
+            shutil.copy2(str(f), str(tmp))
+            if _file_digest(tmp) != src_digest:
                 tmp.unlink(missing_ok=True)
                 n_failed += 1
                 log.info(fmt(C.YELLOW,
-                    f"  ⚠  Couldn't restore {f.name}: short copy "
-                    f"({copied}/{src_size} bytes) — kept the backup copy."))
+                    f"  ⚠  Couldn't restore {f.name}: copy verification failed "
+                    f"(content mismatch) — kept the backup copy."))
                 continue
             os.replace(str(tmp), str(dst))
             # Destination is verifiably in place — the backup copy is now
