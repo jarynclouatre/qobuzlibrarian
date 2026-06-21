@@ -1076,6 +1076,41 @@ def test_album_repair_mode_returns_none_when_user_cancels_the_picker():
         assert run_album_repair_mode(rargs, "tok", loop=False) is None
 
 
+def test_cli_library_repair_sweep_scans_deep(monkeypatch):
+    # The CLI whole-library (__ALL__) sweep must scan deep=True so it catches the
+    # same header-consistent truncations the web sweep does (the Jack's Mannequin
+    # gate). The web side is pinned in test_repair_scan_feedback.py; this guards
+    # the CLI path so a revert of repair.py's deep=True can't silently reopen the
+    # blind spot for CLI users.
+    import types
+
+    from qobuz_librarian.modes import repair as repair_mod
+    from qobuz_librarian.modes.repair import run_album_repair_mode
+
+    seen_deep = []
+
+    def fake_scan(album_dir, token, deep=False):
+        seen_deep.append(deep)
+        return {"verified_truncated": [], "verified_ok": 1,
+                "isrc_no_match": [], "no_isrc_tag": []}
+
+    adir = types.SimpleNamespace(name="Jack's Mannequin")
+    aldir = types.SimpleNamespace(name="Everything In Transit (2005)")
+    monkeypatch.setattr(repair_mod, "_prompt_library_album_for_repair",
+                        lambda args, token: ("__ALL__", None))
+    monkeypatch.setattr(repair_mod, "_all_library_album_dirs",
+                        lambda: [(adir, aldir)])
+    monkeypatch.setattr(repair_mod, "scan_dir_for_isrc_repairs", fake_scan)
+    monkeypatch.setattr(repair_mod, "clear_scan_caches", lambda: None)
+    monkeypatch.setattr(repair_mod, "section", lambda *a: None)
+
+    rargs = types.SimpleNamespace(query=None, dry_run=False, force=False, yes=False,
+                                   no_import=False, verbose=False, consolidate=False,
+                                   no_upgrade=False, prefer_hires=False, no_compress=False)
+    assert run_album_repair_mode(rargs, "tok", loop=False) is None
+    assert seen_deep == [True], f"CLI sweep must scan deep=True, got {seen_deep}"
+
+
 def test_upgrade_walk_mode_returns_none_on_an_empty_library():
     import types
 
