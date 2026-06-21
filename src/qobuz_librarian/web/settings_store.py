@@ -65,7 +65,7 @@ TEXT_FIELDS = [
     ("STREAMRIP_QUALITY", "Download quality",
      "Sets the maximum quality to request. Qobuz serves the best it has for "
      "each album up to this — hi-res isn't available for everything.",
-     "enum", ["4", "3", "2", "1"], ""),
+     "enum", ["4", "3", "2"], ""),
     ("LYRICS_FORMAT", "Lyrics format",
      "How lyrics are written when fetched.",
      "enum", ["embed", "sidecar", "both"], ""),
@@ -122,7 +122,6 @@ ENUM_OPTION_LABELS = {
         "4": "24-bit ≤192 kHz",
         "3": "24-bit ≤96 kHz",
         "2": "16-bit / 44.1 kHz",
-        "1": "320 kbps MP3",
     },
     "ARTIST_CATALOG_CACHE_TTL": {
         "86400": "1 day",

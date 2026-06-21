@@ -104,8 +104,11 @@ APP_USER="root"
 case "${PUID}${PGID}" in
     *[!0-9]*)
         # gosu needs a numeric uid:gid; a name like "appuser" would make the
-        # final exec fail fatally. Warn and stay root instead.
-        echo "[warn] PUID/PGID must be numeric (got ${PUID}:${PGID}); running as root." >&2
+        # final exec fail fatally. Fail closed rather than silently running as
+        # root: root must be the explicit, valid pair 0:0, never the accidental
+        # result of a typo'd PUID/PGID.
+        echo "[fatal] PUID/PGID must be numeric (got ${PUID}:${PGID}). Refusing to start; set a numeric PUID/PGID, or PUID=0 PGID=0 to run as root deliberately." >&2
+        exit 1
         ;;
     *)
         APP_USER="${PUID}:${PGID}"

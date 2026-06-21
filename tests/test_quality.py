@@ -30,6 +30,28 @@ def test_streamrip_quality_cap_tracks_the_current_tier(monkeypatch):
     assert streamrip_quality_cap() == (24, 192000)
 
 
+def test_streamrip_quality_tier_1_coerces_to_lossless(monkeypatch, capsys):
+    # Tier 1 (320kbps MP3) is unsupported: the pipeline is FLAC-only and the
+    # post-download cleanup discards every non-FLAC file, so a tier-1 setting
+    # would rip each track and then delete it — the setting silently downloads
+    # nothing. config must coerce it to a lossless tier and say so, not pass 1
+    # through to a download that vanishes.
+    import importlib
+
+    from qobuz_librarian import config as cfg
+    monkeypatch.setenv("STREAMRIP_QUALITY", "1")
+    importlib.reload(cfg)
+    try:
+        err = capsys.readouterr().err
+        assert cfg.STREAMRIP_QUALITY == 2          # coerced to CD lossless, not left at 1
+        assert "STREAMRIP_QUALITY" in err and "320" in err
+    finally:
+        # streamrip_quality_cap() reads cfg.STREAMRIP_QUALITY live, so reset it
+        # here (not only via teardown) so tier 2 can't leak into later tests.
+        monkeypatch.delenv("STREAMRIP_QUALITY", raising=False)
+        importlib.reload(cfg)
+
+
 def test_album_max_quality_normalises_khz_and_applies_cap(monkeypatch):
     monkeypatch.setattr("qobuz_librarian.config.DOWNSAMPLE_HIRES_ENABLED", False)
     monkeypatch.setattr("qobuz_librarian.config.STREAMRIP_QUALITY", 3)

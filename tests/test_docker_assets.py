@@ -107,10 +107,13 @@ def test_entrypoint_defaults_to_nonroot_user(tmp_path):
     assert "Running as 1000:1000" in r.stdout
 
 
-def test_entrypoint_warns_when_puid_is_non_numeric(tmp_path):
+def test_entrypoint_fails_closed_when_puid_is_non_numeric(tmp_path):
+    # A non-numeric PUID/PGID (a typo) must NOT silently fall back to running as
+    # root — that defeats the non-root isolation. The entrypoint refuses to start
+    # instead; running as root requires the explicit numeric pair 0:0.
     cfg = _make_config(tmp_path, "[database]\n")
     r = _run_entrypoint_head(tmp_path,
         {"CONFIG_DIR": str(cfg), "PUID": "appuser", "PGID": "1000"},
         capture=True)
-    assert r.returncode == 0
+    assert r.returncode != 0
     assert "must be numeric" in r.stderr

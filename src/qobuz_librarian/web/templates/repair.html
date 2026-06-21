@@ -7,13 +7,17 @@
   <a href="/repair/history" class="btn btn-ghost btn-sm">View history</a>
 </div>
 <p class="text-base-content/60 mb-2">
-  Scan every album for truncated or partially-downloaded FLACs. Each file is
-  matched to its exact Qobuz recording by ISRC, so a flagged file is genuinely
-  short — not just a different master. You pick which albums to repair;
-  broken files are backed up before being refilled.
+  Scan every album for truncated or partially-downloaded FLACs. Every track's
+  length is checked against its exact Qobuz recording by ISRC — so even a file
+  that plays fine but is cut short (or had its header rewritten to hide the
+  truncation) is caught, not just an obviously tiny one. You pick which albums
+  to repair; broken files are backed up before being refilled.
 </p>
 <p class="text-base-content/40 text-sm mb-6">
-  Slow: one Qobuz call per track. A 20k-track library takes a couple of hours.
+  Thorough: every track's length is checked against Qobuz. The first full scan of
+  a large library can take a while, but it runs several artists at once and caches
+  results, so re-scans only re-check what changed. Open the scan to watch it work
+  live — it lists only problems, so quiet stretches are normal.
 </p>
 
 {% if creds_ok %}

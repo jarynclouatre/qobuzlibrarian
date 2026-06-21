@@ -608,9 +608,11 @@ def _scan_report_repair(album_dir, artist_name, args, token, deep=True,
     Returns "repaired" | "clean" | "skipped" | "failed". Raises AuthLost to
     the caller (it decides whether to abort the whole run/sweep). Shared by
     the single-album picker path and the whole-library sweep so both behave
-    identically per album. A whole-library sweep passes deep=False so healthy
-    tracks skip the per-track Qobuz lookup (fast); a single album stays deep
-    so every track is verified.
+    identically per album. Both the sweep and a single album pass deep=True, so
+    every track's length is verified against its real Qobuz recording — catching
+    a file that decodes fine but is short (truncated with its STREAMINFO rewritten
+    to match). That costs one Qobuz call per track (cached on re-scans), so a
+    sweep runs for a while on a big library.
 
     quiet=True (the sweep) prints nothing for a healthy album — no header, no
     "nothing to repair" — so a clean library doesn't bury its handful of real
@@ -780,7 +782,7 @@ def run_album_repair_mode(args, token, *, loop=False):
                         try:
                             status = _scan_report_repair(
                                 aldir, adir.name, args, token,
-                                deep=False, quiet=True)
+                                deep=True, quiet=True)
                         except AuthLost:
                             print()
                             die(fmt(C.RED, _REPAIR_AUTH_LOST), EXIT_AUTH)

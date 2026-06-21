@@ -1,5 +1,6 @@
 """Upgrade and gap-fill backup/restore functions."""
 import errno
+import hashlib
 import os
 import re
 import shutil
@@ -65,6 +66,46 @@ def _tree_stats(d: Path):
     except OSError:
         return None
     return (n_files, n_bytes)
+
+
+def _file_digest(path: Path) -> str:
+    """sha256 hex of a file's bytes, read in chunks so a large FLAC isn't loaded
+    into memory all at once."""
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _tree_digest(d: Path):
+    """{relative-path: (size, sha256)} for every regular file under tree d, or
+    None on any stat/read error or an unexpected special file. Symlinks are
+    recorded by their target, not followed.
+
+    This content-verifies a cross-filesystem copy before the source is deleted: a
+    same-size copy that differs by even one byte — a transfer glitch, a partial
+    write that got re-padded — fails the match, where the old
+    (file_count, total_bytes) check waved it through and then removed the
+    original."""
+    out = {}
+    try:
+        for f in d.rglob("*"):
+            rel = str(f.relative_to(d))
+            if f.is_symlink():
+                out[rel] = ("symlink", os.readlink(str(f)))
+                continue
+            if f.is_dir():
+                continue
+            if not f.is_file():
+                return None  # socket/fifo/device — refuse rather than guess
+            try:
+                out[rel] = (f.stat().st_size, _file_digest(f))
+            except OSError:
+                return None
+    except OSError:
+        return None
+    return out
 
 
 # A backup records the folder it was taken from, so a sweep can tell a backup
@@ -285,6 +326,16 @@ def backup_album_dir(album_dir: Path):
             f"  ✗  Couldn't stat source tree at {album_dir}; refusing to back up."))
         return None
     n_files, total_bytes = src_stats
+    # Content fingerprint of the source, taken before the copy: the post-copy
+    # check compares bytes (sha256), not just (count, total_bytes), so a
+    # same-size corruption can't pass as a valid backup and let the original be
+    # deleted.
+    src_digest = _tree_digest(album_dir)
+    if src_digest is None:
+        log.info(fmt(C.RED,
+            f"  ✗  Couldn't read source tree at {album_dir} (unreadable or a "
+            "special file); refusing to back up."))
+        return None
     log.info(fmt(C.GRAY,
         f"  ⤷  Cross-filesystem backup: copying {n_files} file(s) / "
         f"{total_bytes / 1024 / 1024:.1f} MB to {cfg.UPGRADE_BACKUP_DIR}…"))
@@ -292,11 +343,10 @@ def backup_album_dir(album_dir: Path):
     bp_partial = bp.with_name(bp.name + ".partial")
     try:
         shutil.copytree(str(album_dir), str(bp_partial), symlinks=True)
-        dst_stats = _tree_stats(bp_partial)
-        if dst_stats != src_stats:
+        if _tree_digest(bp_partial) != src_digest:
             log.info(fmt(C.RED,
-                f"  ✗  Backup verification failed: source {src_stats} vs "
-                f"copy {dst_stats}. Refusing to proceed."))
+                "  ✗  Backup verification failed: the copy doesn't match the "
+                "source byte-for-byte. Refusing to proceed."))
             shutil.rmtree(str(bp_partial), ignore_errors=True)
             return None
         # Atomic commit (same-fs rename within UPGRADE_BACKUP_DIR).
@@ -395,17 +445,16 @@ def backup_gap_fill_files(file_paths, album_dir: Path):
                 # same-filesystem guess here — fall back to copy + verify
                 # size + remove source. A mid-copy failure leaves the
                 # source intact.
-                src_size = src.stat().st_size
+                # Content-verify the copy (sha256) before unlinking the source,
+                # so a same-size transfer corruption can't delete the original.
+                src_digest = _file_digest(src)
                 shutil.copy2(str(src), str(dst))
-                # Read the size before unlinking — re-stat'ing dst after the
-                # unlink would raise FileNotFoundError and mask the real reason.
-                dst_size = dst.stat().st_size
-                if dst_size != src_size:
+                if _file_digest(dst) != src_digest:
                     try:
                         dst.unlink()
                     except OSError:
                         pass
-                    raise OSError(f"copy size mismatch ({dst_size} != {src_size})")
+                    raise OSError("copy content mismatch (verification failed)")
                 src.unlink()
         except (OSError, shutil.Error) as e:
             log.info(fmt(C.YELLOW,
@@ -712,9 +761,9 @@ def restore_upgrade_backup(backup_path: Path, original_path: Path) -> bool:
             restoring = original_path.with_name(original_path.name + ".restoring")
             if restoring.exists():
                 shutil.rmtree(str(restoring), ignore_errors=True)
-            src_stats = _tree_stats(backup_path)
+            src_digest = _tree_digest(backup_path)
             shutil.copytree(str(backup_path), str(restoring), symlinks=True)
-            if src_stats is None or _tree_stats(restoring) != src_stats:
+            if src_digest is None or _tree_digest(restoring) != src_digest:
                 shutil.rmtree(str(restoring), ignore_errors=True)
                 log.info(fmt(C.RED,
                     f"  ✗  Restore verification failed; backup kept at "

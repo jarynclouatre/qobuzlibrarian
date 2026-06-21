@@ -32,6 +32,37 @@ from qobuz_librarian.modes.consolidate import (
 
 # ── backup_album_dir ─────────────────────────────────────────────────────────
 
+def test_cross_fs_backup_rejects_same_size_corruption(tmp_path, monkeypatch):
+    # A cross-filesystem backup must content-verify the copy, not just match
+    # (file count, total bytes). A same-size but different-content copy — a
+    # silent transfer corruption — must be rejected and the original left intact,
+    # never deleted as a corrupt sole backup. Reproduces the audit's injection:
+    # the old size-only check accepted this and then removed the source.
+    monkeypatch.setattr("qobuz_librarian.config.UPGRADE_BACKUP_DIR", tmp_path / "backups")
+    # Force the cross-filesystem copy-verify path (tmp_path is one filesystem).
+    monkeypatch.setattr("qobuz_librarian.library.backup._same_filesystem",
+                        lambda a, b: False)
+    album = tmp_path / "Album (2026)"
+    album.mkdir()
+    original = b"REAL-FLAC-AUDIO-CONTENT"
+    (album / "01.flac").write_bytes(original)
+
+    real_copytree = shutil.copytree
+
+    def corrupt_copytree(src, dst, *a, **k):
+        real_copytree(src, dst, *a, **k)
+        for f in (tmp_path / "backups").rglob("*"):
+            if f.is_file():
+                f.write_bytes(b"\x00" * f.stat().st_size)  # same size, wrong bytes
+        return dst
+
+    monkeypatch.setattr("qobuz_librarian.library.backup.shutil.copytree",
+                        corrupt_copytree)
+    bp = backup_album_dir(album)
+    assert bp is None                                     # verification rejected the copy
+    assert (album / "01.flac").read_bytes() == original   # source preserved, not deleted
+
+
 def test_backup_album_dir_moves_and_refuses_symlinks(tmp_path, monkeypatch):
     monkeypatch.setattr("qobuz_librarian.config.UPGRADE_BACKUP_DIR", tmp_path / "backups")
     album = tmp_path / "My Album"

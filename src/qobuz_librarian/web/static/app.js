@@ -322,6 +322,22 @@
     var activity = document.getElementById("job-activity");
     var foundEl = document.getElementById("scan-found");
     var reconnect = document.getElementById("sse-reconnect");
+    // Live elapsed clock so a long, mostly-silent scan visibly ticks. Driven off
+    // the job's start time (data-start, epoch secs) so it stays accurate across a
+    // reload, and self-clears if the element leaves the DOM (htmx body swap).
+    var elapsedEl = document.getElementById("scan-elapsed");
+    var elapsedTimer = null;
+    if (elapsedEl && elapsedEl.dataset.start) {
+      var startMs = parseFloat(elapsedEl.dataset.start) * 1000;
+      var tickElapsed = function () {
+        if (!document.body.contains(elapsedEl)) { if (elapsedTimer) clearInterval(elapsedTimer); return; }
+        var secs = Math.max(0, Math.floor((Date.now() - startMs) / 1000));
+        var mm = Math.floor(secs / 60), ss = secs % 60;
+        elapsedEl.textContent = "· " + mm + ":" + (ss < 10 ? "0" : "") + ss + " elapsed";
+      };
+      tickElapsed();
+      elapsedTimer = setInterval(tickElapsed, 1000);
+    }
     var baseTitle = document.title;
     var titleSet = false;
     // Running tally of artists that turned up a hit, fed by progress 'hit'
@@ -376,6 +392,7 @@
     });
     src.addEventListener("done", function () {
       src.close();
+      if (elapsedTimer) clearInterval(elapsedTimer);
       document.title = baseTitle;
       if (window.qlDismissAllFlashes) window.qlDismissAllFlashes();
       // Scan finished → load the (now-final) server-rendered body, which for a
@@ -487,35 +504,64 @@
         .then(function (r) { return r.ok ? r.json() : null; })
         .then(function (c) {
           bulkBusy = false;
-          if (c) applyCounts(c);
-          // Reflect the change on whatever's currently on screen.
+          // Only mirror the change on screen if the server actually saved it.
+          // The old code flipped the boxes unconditionally, so a failed save
+          // left every box ticked while the server held none — approval would
+          // then act on a selection the user never really made. On failure,
+          // leave the screen as it was and flag it.
+          if (!c) { flashSelectError(); return; }
+          applyCounts(c);
           var on2 = on;
           if (scope === "all" || scope === "page") {
             pageBox() && pageBox().querySelectorAll(".cb").forEach(function (cb) { cb.checked = on2; });
           }
           updateHideLabels();
         })
-        .catch(function () { bulkBusy = false; });
+        .catch(function () { bulkBusy = false; flashSelectError(); });
+    }
+
+    // Briefly red-outline the on-screen checkboxes when a bulk/group save fails,
+    // matching the per-tick revert's visual cue, so the user knows the action
+    // didn't take and can retry rather than trusting a stale tick.
+    function flashSelectError() {
+      var box = pageBox();
+      if (!box) return;
+      box.querySelectorAll(".cb").forEach(function (cb) {
+        cb.style.outline = "2px solid #ef4444";
+        setTimeout(function () { cb.style.outline = ""; }, 1500);
+      });
     }
 
     function groupSelect(det, on) {
-      var cbs = det.querySelectorAll(".cb");
+      // Flip each box only AFTER its save is confirmed (the per-tick path's
+      // contract), so a failure mid-batch leaves the already-saved boxes ticked,
+      // the unsaved ones unticked, and the screen matching the server — never an
+      // optimistic tick the server rejected.
+      var pending = Array.prototype.filter.call(det.querySelectorAll(".cb"),
+        function (cb) { return cb.checked !== on; });
+      if (!pending.length) return;
+      var failed = false;
       var chain = Promise.resolve(null);
-      cbs.forEach(function (cb) {
-        if (cb.checked !== on) {
-          cb.checked = on;
-          // Capture cb.value in the closure; chain each POST sequentially so
-          // the final .then() always receives the last-completed response.
-          chain = (function (val, prev) {
-            return prev.then(function () {
-              return post("/jobs/" + id + "/select",
-                "cid=" + encodeURIComponent(val) + "&checked=" + (on ? "1" : "0"))
-                .then(function (r) { return r.ok ? r.json() : null; });
-            });
-          }(cb.value, chain));
-        }
+      pending.forEach(function (cb) {
+        chain = (function (box, prev) {
+          return prev.then(function (acc) {
+            if (failed) return acc;
+            return post("/jobs/" + id + "/select",
+              "cid=" + encodeURIComponent(box.value) + "&checked=" + (on ? "1" : "0"))
+              .then(function (r) {
+                if (!r.ok) { failed = true; return acc; }
+                box.checked = on;
+                return r.json();
+              })
+              .catch(function () { failed = true; return acc; });
+          });
+        }(cb, chain));
       });
-      chain.then(function (c) { if (c) applyCounts(c); updateHideLabels(); });
+      chain.then(function (c) {
+        if (c) applyCounts(c);
+        if (failed) flashSelectError();
+        updateHideLabels();
+      });
     }
 
     // The per-artist Hide button hides everything not ticked, so label it for

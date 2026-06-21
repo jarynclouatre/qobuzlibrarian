@@ -50,7 +50,7 @@ Qobuz Librarian downloads music from Qobuz — a single album, an artist's whole
 
 **Library maintenance.**
 
-- ISRC-anchored repair finds truncated or short FLACs and refills the exact missing tracks, leaving good files alone. A deep single-album scan also flags FLACs that won't decode — even without an ISRC tag or a Qobuz match — so a library brought from elsewhere still gets its corrupt files surfaced.
+- ISRC-anchored repair finds truncated or short FLACs and refills the exact missing tracks, leaving good files alone. Every track's length is checked against its real Qobuz recording, so a file that plays fine but is cut short (or had its header rewritten to hide the truncation) is caught too — not just an obviously tiny one. It also flags FLACs that won't decode even without an ISRC tag or a Qobuz match, so a library brought from elsewhere still gets its corrupt files surfaced.
 - Consolidates duplicate and sibling album folders; handles multi-artist and "Various Artists" layouts; edition-aware name matching and dedup.
 - One-time **Migrate** of a messy or untagged collection into the `Artist/Album (Year)/` layout — tags first, optional AcoustID, copies by default.
 
@@ -89,8 +89,7 @@ A fresh install downloads at tier `4` — the best Qobuz serves per release (24-
 |---|---|---|
 | `4` | 24-bit ≤192 kHz | Default; archival |
 | `3` | 24-bit ≤96 kHz | Hi-res, smaller cap |
-| `2` | 16-bit / 44.1 kHz | CD lossless |
-| `1` | 320 kbps | Lossy, smallest |
+| `2` | 16-bit / 44.1 kHz | CD lossless, smallest |
 
 To keep hi-res masters at a saner size, pull tier `4` and either enable import-time downsampling (`DOWNSAMPLE_HIRES_ENABLED`) or run **Downsample** on demand.
 
@@ -159,7 +158,7 @@ Everything else is a behaviour toggle, settable live on **Settings** or as a def
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `STREAMRIP_QUALITY` | `4` | Download tier 1–4 (see [Download quality](#download-quality)) |
+| `STREAMRIP_QUALITY` | `4` | Download tier 2–4 (see [Download quality](#download-quality)) |
 | `LYRICS_ENABLED` | `true` | Fetch lyrics on import |
 | `LYRICS_FORMAT` | `embed` | `embed` (FLAC tag), `sidecar` (.lrc), or `both` |
 | `LYRICS_PROVIDERS` | *(auto)* | Ordered comma list, e.g. `Lrclib,NetEase` |

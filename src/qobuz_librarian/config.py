@@ -285,15 +285,25 @@ QOBUZ_API_BASE = os.environ.get("QOBUZ_API_BASE", "https://www.qobuz.com/api.jso
 QOBUZ_APP_ID   = os.environ.get("QOBUZ_APP_ID",   "798273057")
 
 # ── Download quality ──────────────────────────────────────────────────────────
-# streamrip quality code: 1=320kbps, 2=CD/16-bit·44.1kHz lossless,
-# 3=24-bit ≤96kHz, 4=24-bit ≤192kHz. Default 4: the highest quality your
-# subscription serves (hi-res where Qobuz has it). Drop to 2 for CD
-# lossless if you want smaller files. Passed to `rip -q`.
+# streamrip quality code: 2=CD/16-bit·44.1kHz lossless, 3=24-bit ≤96kHz,
+# 4=24-bit ≤192kHz. Default 4: the highest quality your subscription serves
+# (hi-res where Qobuz has it). Drop to 2 for CD lossless if you want smaller
+# files. Passed to `rip -q`. Tier 1 (320kbps MP3) is intentionally unsupported:
+# the pipeline is FLAC-only and the post-download cleanup discards every
+# non-FLAC file, so a tier-1 download would be fetched and then deleted.
 STREAMRIP_QUALITY = _env("STREAMRIP_QUALITY", 4)
-if STREAMRIP_QUALITY not in (1, 2, 3, 4):
+if STREAMRIP_QUALITY == 1:
+    # 320kbps MP3 would be ripped and then thrown away by the FLAC-only cleanup,
+    # i.e. the setting silently downloads nothing. Coerce to CD lossless (the
+    # smallest lossless tier, the closest honest match to "smaller files").
+    _warn("STREAMRIP_QUALITY=1 (320kbps MP3) isn't supported — the library is "
+          "FLAC-only, so lossy downloads are discarded after the rip. Using "
+          "tier 2 (CD lossless) instead.")
+    STREAMRIP_QUALITY = 2
+elif STREAMRIP_QUALITY not in (2, 3, 4):
     # Out-of-range goes straight to `rip -q`, which then fails the download
     # with an opaque usage error. Fall back to the highest tier loudly.
-    _warn(f"STREAMRIP_QUALITY={STREAMRIP_QUALITY!r} isn't a tier (1-4); using 4.")
+    _warn(f"STREAMRIP_QUALITY={STREAMRIP_QUALITY!r} isn't a tier (2-4); using 4.")
     STREAMRIP_QUALITY = 4
 
 # ── Lyrics ────────────────────────────────────────────────────────────────────
@@ -363,6 +373,14 @@ ALBUM_CACHE_ENABLED = _env_bool("ALBUM_CACHE_ENABLED", True)
 # mtime+size, so unchanged files aren't re-parsed by mutagen on every scan. The
 # key self-invalidates when a file is edited/replaced. Off disables it.
 FLAC_CACHE_ENABLED = _env_bool("FLAC_CACHE_ENABLED", True)
+
+# Cache each album's repair-scan result on disk (DATA_DIR/repair_cache.db), keyed
+# on its audio files' name+size+mtime, so a re-scan re-checks only changed albums
+# instead of re-decoding + re-looking-up every track. Self-invalidates when a file
+# changes; entries also expire after REPAIR_CACHE_TTL_DAYS so an untouched album
+# still re-verifies against Qobuz periodically. Off disables it.
+REPAIR_CACHE_ENABLED = _env_bool("REPAIR_CACHE_ENABLED", True)
+REPAIR_CACHE_TTL_DAYS = _env_num_min("REPAIR_CACHE_TTL_DAYS", 30, 0)
 
 # How long (seconds) a cached artist catalog (get_artist_albums) is reused before
 # re-fetching. Catalogs change only when an artist puts out something new, so a

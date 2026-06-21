@@ -4,6 +4,42 @@ All notable changes to Qobuz Librarian are recorded here, newest first. The
 project follows [semantic versioning](https://semver.org/); dates are when each
 version was tagged during local development.
 
+## [0.9.0] - 2026-06-21
+
+The repair scan, rebuilt — it catches more, runs far faster, and shows what it's doing — plus reliability and safety fixes from a follow-up audit. The one changed default: the unusable 320 kbps tier is gone.
+
+**Repair catches truncated files that still play**
+
+- The whole-library repair scan now checks every track's length against its exact Qobuz recording, not only files that look obviously small. A track cut short at a frame boundary, with its FLAC header rewritten to the shorter length, decodes cleanly and passes the size check — so the old sweep marked it intact and moved on, and a genuinely damaged album could scan green. Every ISRC-tagged track is now duration-verified (the command-line sweep too).
+
+**Faster, and re-scans are nearly free**
+
+- The sweep now checks several artists at once instead of plodding one at a time, so the first scan of a large library is several times quicker. Each album's result is cached against its files, so a re-scan re-checks only the albums that actually changed — repeating a scan of an unchanged library finishes in seconds instead of hours. Set `REPAIR_CACHE_ENABLED=false` to always re-verify from scratch, or `REPAIR_CACHE_TTL_DAYS` to change how often an untouched album is re-checked anyway.
+
+**The repair scan shows what it's doing**
+
+- A clean library prints nothing for long stretches — only problems are listed — which used to read as a hang on "Waiting for output…". The scan now shows a live "now checking" line, a periodic "still scanning — checked N albums…" heartbeat, and an elapsed clock, with the activity log open by default, so a long scan visibly works instead of looking frozen.
+
+**Fresh downloads are double-checked**
+
+- After an album finishes downloading, its track lengths are re-checked against Qobuz. The downloader already discards tracks that won't decode, but a clean truncation (decodes fine, header rewritten short) could slip past that — now it's caught right after the download with a note to repair it, instead of waiting to be found by a later scan.
+
+**Backups verify contents, not just size**
+
+- Cross-filesystem backup, restore, and gap-fill now verify the copy by hashing its contents before the original is deleted, instead of trusting a matching file count and total byte size. A same-size corruption — a transfer glitch, or a partial write re-padded back to length — used to pass the size check, and the source was then removed, leaving the damaged copy as the only one. The copy is now compared byte-for-byte and any mismatch aborts the operation with the original left untouched.
+
+**Download quality**
+
+- The 320 kbps MP3 tier is removed. The pipeline is FLAC-only and the post-download cleanup discards any non-FLAC file, so choosing that tier downloaded each track and then deleted it — the setting silently fetched nothing. It's gone from Settings and the docs, and an existing `STREAMRIP_QUALITY=1` is now coerced to CD lossless (the smallest lossless tier) with a clear message rather than passed straight through.
+
+**Container runs as the user you asked for**
+
+- A non-numeric `PUID`/`PGID` (a typo) used to log a warning and then silently run the container as root, defeating the non-root isolation. It now refuses to start; running as root requires the explicit, valid pair `PUID=0 PGID=0`.
+
+**Review selection matches the server**
+
+- Select-all and the per-artist select now tick boxes only after the server confirms each save. A failed save used to leave boxes ticked while the server held none, so approval acted on a selection you never really made; a failure now flags the affected boxes and leaves the rest alone so you can retry.
+
 ## [0.8.0] - 2026-06-20
 
 Quality-of-life and reliability improvements across search, scanning, and the web UI.

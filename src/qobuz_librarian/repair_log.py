@@ -75,10 +75,13 @@ def scan_dir_for_isrc_repairs(album_dir, token,
     The `deep` flag controls only the Qobuz duration cross-check, not whether we
     read the file: deep=True (single-album repair) looks every track up on Qobuz
     to also catch a file that decodes fine but is genuinely shorter than the real
-    recording. A whole-library sweep passes deep=False and only spends a Qobuz
-    call on a track that already looks suspect (byte-short OR won't decode), so a
-    healthy library still avoids one API call per track. When the `flac` tool is
-    absent a file can't be decode-checked and is counted `unverified`, never ok.
+    recording. Both the web and CLI whole-library sweeps pass deep=True for this
+    reason — a track truncated at a frame boundary with its STREAMINFO rewritten
+    to the short length decodes fine and isn't byte-short, so only the duration
+    cross-check catches it. deep=False stays the cheaper mode (a Qobuz call only
+    on a byte-short OR won't-decode track) but the sweeps no longer use it. When
+    the `flac` tool is absent a file can't be decode-checked and is counted
+    `unverified`, never ok.
 
     only_isrcs: when given (a set of normalised ISRCs), tracks whose ISRC is not
     in the set are counted as verified_ok without an API call. _refills_intact
@@ -140,10 +143,10 @@ def scan_dir_for_isrc_repairs(album_dir, token,
             # zero gap passes the size check yet won't decode. On a deep scan
             # (single album, or a whole-FLAC pass) probe it locally so a clean
             # non-Qobuz library still gets its corrupt files surfaced — no token
-            # or ISRC needed. The whole-library sweep (deep=False) skips this to
-            # stay fast; a corrupt file there still trips the byte-size gate
-            # below once it has an ISRC, and a deep single-album scan catches
-            # the rest. (No-op when the flac tool is absent.)
+            # or ISRC needed. The sweeps now run deep, so a corrupt no-ISRC file
+            # is surfaced library-wide; in the cheaper deep=False mode it still
+            # trips the byte-size gate below once it has an ISRC. (No-op when the
+            # flac tool is absent.)
             elif path and not _flac_decode_ok(path):
                 entry["diagnostic"] = (
                     "won't decode (frame-CRC or mid-file damage); "
@@ -154,11 +157,10 @@ def scan_dir_for_isrc_repairs(album_dir, token,
         # Local-first truncation gate. A cut-off download leaves a FLAC whose
         # STREAMINFO still claims the full duration while the file on disk is
         # far too small — provable from the header and size alone, no network.
-        # In a library sweep (deep=False) only files that trip this cheap check
-        # are looked up on Qobuz to confirm and find the refill source, so a
-        # healthy library finishes in minutes. deep=True verifies every track,
-        # which also catches a file that decodes fine but is genuinely shorter
-        # than the real recording.
+        # The cheap deep=False mode only looks a file up on Qobuz when it trips
+        # this gate; deep=True — which the sweeps now use — verifies every track,
+        # also catching a file that decodes fine but is genuinely shorter than
+        # the real recording, at one Qobuz call per track (cached on re-scans).
         sample_rate = int(et.get("sample_rate") or 0)
         bits = int(et.get("bits") or 0)
         channels = int(et.get("channels") or 2)
