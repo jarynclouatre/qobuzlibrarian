@@ -196,3 +196,40 @@ def put(album_dir, sig, payload) -> None:
     except sqlite3.Error as e:
         vlog(f"repair cache write failed: {e}")
         _handle_db_error(e)
+
+
+def _json_safe_scan(scan: dict) -> dict:
+    """A JSON-serializable copy of a scan_dir_for_isrc_repairs() result. Its
+    ``verified_ok_isrcs`` is a set (everything else is already plain), so the raw
+    dict can't be json.dumps'd as-is — convert it to a sorted list."""
+    safe = dict(scan)
+    isrcs = safe.get("verified_ok_isrcs")
+    if isinstance(isrcs, set):
+        safe["verified_ok_isrcs"] = sorted(isrcs)
+    return safe
+
+
+def cached_scan(album_dir, *, deep=True, compute):
+    """Run one album's deep repair scan, served from the signature cache when the
+    album is unchanged and the entry is fresh; ``compute()`` produces the raw
+    scan dict on a miss. Returns the (JSON-safe) scan dict.
+
+    The CLI whole-library sweep uses this so an unchanged re-scan skips the
+    per-track Qobuz lookups instead of re-crawling the whole library every run —
+    the same speedup the web sweep already gets, and it makes a re-run after an
+    interrupted sweep cheap. A shallow scan (deep=False) makes no Qobuz calls, so
+    it's already cheap and is never cached.
+
+    Stored under a ``scan::`` key namespace, separate from the web sweep's
+    per-album *outcome* cache, because the two keep different shapes for the same
+    album (raw scan here vs. built review candidates there)."""
+    if not deep:
+        return compute()
+    sig = signature(album_dir)
+    key = f"scan::{album_dir}"
+    cached = get(key, sig)
+    if cached is not None:
+        return cached
+    safe = _json_safe_scan(compute())
+    put(key, sig, safe)
+    return safe

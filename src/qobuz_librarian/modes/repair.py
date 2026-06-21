@@ -7,6 +7,7 @@ from pathlib import Path
 from qobuz_librarian import config as cfg
 from qobuz_librarian.api.auth import AuthLost, QobuzError, QobuzUnavailable
 from qobuz_librarian.api.search import get_album
+from qobuz_librarian.library import repair_cache
 from qobuz_librarian.library.backup import backup_gap_fill_files, restore_gap_fill_backup
 from qobuz_librarian.library.catalog import (
     _norm_isrc,
@@ -626,7 +627,9 @@ def _scan_report_repair(album_dir, artist_name, args, token, deep=True,
             "  Resolving every FLAC by ISRC against Qobuz "
             "(no album-edition guessing) …"))
 
-    scan = scan_dir_for_isrc_repairs(album_dir, token, deep=deep)
+    scan = repair_cache.cached_scan(
+        album_dir, deep=deep,
+        compute=lambda: scan_dir_for_isrc_repairs(album_dir, token, deep=deep))
     verified_truncated = scan["verified_truncated"]
     verified_ok        = scan["verified_ok"]
     isrc_no_match      = scan["isrc_no_match"]

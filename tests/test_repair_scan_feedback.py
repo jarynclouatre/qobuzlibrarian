@@ -221,6 +221,40 @@ def test_repair_rescan_skips_unchanged_album(tmp_path, monkeypatch):
     assert len(calls) == 1  # unchanged album → served from cache, not re-scanned
 
 
+def test_cached_scan_caches_deep_and_invalidates_on_change(tmp_path):
+    # The CLI sweep routes its per-album scan through repair_cache.cached_scan, so
+    # an unchanged album must skip the expensive per-track Qobuz crawl on a
+    # re-scan, a shallow scan must never be cached, and any file change must force
+    # a recompute.
+    from qobuz_librarian.library import repair_cache
+    album = tmp_path / "Artist" / "Album (2020)"
+    album.mkdir(parents=True)
+    (album / "01.flac").write_bytes(b"x" * 4000)
+
+    calls = []
+
+    def compute():
+        calls.append(1)
+        return {"verified_ok": 1, "verified_truncated": [], "isrc_no_match": [],
+                "no_isrc_tag": [], "verified_ok_isrcs": {"USABC1234500"}}
+
+    repair_cache.cached_scan(album, deep=True, compute=compute)  # populate
+    second = repair_cache.cached_scan(album, deep=True, compute=compute)
+    assert len(calls) == 1, "unchanged album must be served from the cache"
+    assert second["verified_ok"] == 1
+    # the set field round-trips through the cache as a JSON-safe sorted list
+    assert sorted(second["verified_ok_isrcs"]) == ["USABC1234500"]
+
+    # a shallow scan is cheap and is never cached
+    repair_cache.cached_scan(album, deep=False, compute=compute)
+    assert len(calls) == 2
+
+    # editing a file changes the signature → recompute, never serve stale
+    (album / "01.flac").write_bytes(b"y" * 9000)
+    repair_cache.cached_scan(album, deep=True, compute=compute)
+    assert len(calls) == 3
+
+
 def test_download_short_warns_advisory(monkeypatch):
     # A clean truncation decodes fine, so the download's decode gate can't see it;
     # the post-download verify must surface it as an advisory warning.
