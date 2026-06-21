@@ -34,10 +34,9 @@ from qobuz_librarian.modes.consolidate import (
 
 def test_cross_fs_backup_rejects_same_size_corruption(tmp_path, monkeypatch):
     # A cross-filesystem backup must content-verify the copy, not just match
-    # (file count, total bytes). A same-size but different-content copy — a
-    # silent transfer corruption — must be rejected and the original left intact,
-    # never deleted as a corrupt sole backup. Reproduces the audit's injection:
-    # the old size-only check accepted this and then removed the source.
+    # (file count, total bytes). A same-size but different-content copy — a silent
+    # transfer corruption — must be rejected and the original left intact, never
+    # deleted as a corrupt sole backup.
     monkeypatch.setattr("qobuz_librarian.config.UPGRADE_BACKUP_DIR", tmp_path / "backups")
     # Force the cross-filesystem copy-verify path (tmp_path is one filesystem).
     monkeypatch.setattr("qobuz_librarian.library.backup._same_filesystem",
@@ -61,6 +60,32 @@ def test_cross_fs_backup_rejects_same_size_corruption(tmp_path, monkeypatch):
     bp = backup_album_dir(album)
     assert bp is None                                     # verification rejected the copy
     assert (album / "01.flac").read_bytes() == original   # source preserved, not deleted
+
+
+def test_gap_fill_restore_rejects_same_size_corrupt_copy(tmp_path, monkeypatch):
+    # restore_gap_fill_backup moves the ONLY copy of each track back, so the copy
+    # must be content-verified before the source is dropped. A same-size but
+    # corrupt copy must fail the check: the backup is kept and the destination is
+    # not left holding garbage.
+    from pathlib import Path
+
+    album = tmp_path / "Album"
+    backup = tmp_path / "bp"
+    backup.mkdir()
+    (backup / "01.flac").write_bytes(b"GOOD-ORIGINAL-AUDIO")
+
+    real_copy2 = shutil.copy2
+
+    def corrupt_copy2(src, dst, *a, **k):
+        real_copy2(src, dst, *a, **k)
+        Path(dst).write_bytes(b"\x00" * Path(dst).stat().st_size)  # same size, wrong bytes
+        return dst
+
+    monkeypatch.setattr("qobuz_librarian.library.backup.shutil.copy2", corrupt_copy2)
+    n = restore_gap_fill_backup(backup, album, keep_larger_dst=False)
+    assert n == 0                                   # nothing restored
+    assert (backup / "01.flac").exists()            # the only copy is preserved
+    assert not (album / "01.flac").exists()         # destination not left corrupt
 
 
 def test_backup_album_dir_moves_and_refuses_symlinks(tmp_path, monkeypatch):

@@ -78,22 +78,60 @@ def _file_digest(path: Path) -> str:
     return h.hexdigest()
 
 
+def _fsync(path: Path) -> None:
+    """Force a file's bytes (or a directory's entries) to stable storage.
+
+    Best-effort — fsync isn't supported on every mount. A copy that's read back
+    for hashing only proves the bytes are in the page cache; forcing them to disk
+    before the original is deleted is what makes a verified copy survive a
+    delayed-writeback failure (ENOSPC/EIO during the lazy flush)."""
+    try:
+        fd = os.open(str(path), os.O_RDONLY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+    except OSError:
+        pass
+
+
+def _fsync_tree(root: Path) -> None:
+    """fsync every file and directory under ``root`` (and root itself) so a
+    verified copytree is durable before the source it mirrors is removed."""
+    try:
+        for f in root.rglob("*"):
+            if not f.is_symlink():
+                _fsync(f)
+    except OSError:
+        pass
+    _fsync(root)
+
+
 def _tree_digest(d: Path):
     """{relative-path: (size, sha256)} for every regular file under tree d, or
-    None on any stat/read error or an unexpected special file. Symlinks are
-    recorded by their target, not followed.
+    None on any stat/read error, an unexpected special file, or a symlink whose
+    target points outside the tree.
 
-    This content-verifies a cross-filesystem copy before the source is deleted: a
+    Content-verifies a cross-filesystem copy before the source is deleted: a
     same-size copy that differs by even one byte — a transfer glitch, a partial
-    write that got re-padded — fails the match, where the old
-    (file_count, total_bytes) check waved it through and then removed the
-    original."""
+    write that got re-padded — fails the match, so it can't pass as a valid
+    backup and let the original be removed. A symlink whose target lives outside
+    the tree isn't copied as bytes, so it can't be content-verified — refuse the
+    whole backup rather than record it by target string alone."""
     out = {}
     try:
+        base = d.resolve()
         for f in d.rglob("*"):
             rel = str(f.relative_to(d))
             if f.is_symlink():
-                out[rel] = ("symlink", os.readlink(str(f)))
+                target = os.readlink(str(f))
+                resolved = (Path(target) if os.path.isabs(target)
+                            else f.parent / target).resolve()
+                try:
+                    resolved.relative_to(base)
+                except ValueError:
+                    return None  # target escapes the tree — can't verify its bytes
+                out[rel] = ("symlink", target)
                 continue
             if f.is_dir():
                 continue
@@ -349,8 +387,11 @@ def backup_album_dir(album_dir: Path):
                 "source byte-for-byte. Refusing to proceed."))
             shutil.rmtree(str(bp_partial), ignore_errors=True)
             return None
-        # Atomic commit (same-fs rename within UPGRADE_BACKUP_DIR).
+        # Force the copy to stable storage before the original is removed below,
+        # then commit atomically (same-fs rename within UPGRADE_BACKUP_DIR).
+        _fsync_tree(bp_partial)
         os.rename(str(bp_partial), str(bp))
+        _fsync(bp.parent)
     except KeyboardInterrupt:
         log.info(fmt(C.YELLOW,
             f"\n  ⚠  Backup interrupted mid-copy. Original at {album_dir} "
@@ -455,6 +496,8 @@ def backup_gap_fill_files(file_paths, album_dir: Path):
                     except OSError:
                         pass
                     raise OSError("copy content mismatch (verification failed)")
+                _fsync(dst)
+                _fsync(dst.parent)
                 src.unlink()
         except (OSError, shutil.Error) as e:
             log.info(fmt(C.YELLOW,
@@ -586,7 +629,11 @@ def restore_gap_fill_backup(backup_path: Path, album_dir: Path,
                     f"  ⚠  Couldn't restore {f.name}: copy verification failed "
                     f"(content mismatch) — kept the backup copy."))
                 continue
+            # Force the copy down before the swap, and the swap before the backup
+            # copy is deleted — this is the only copy of the track.
+            _fsync(tmp)
             os.replace(str(tmp), str(dst))
+            _fsync(dst.parent)
             # Destination is verifiably in place — the backup copy is now
             # redundant. A failure to unlink it here is non-fatal: the
             # end-of-function rmtree clears the whole backup dir.
@@ -696,8 +743,7 @@ def restore_upgrade_backup(backup_path: Path, original_path: Path) -> bool:
                 except Exception as e:
                     # Forget is best-effort: if beets is missing or the DB
                     # is locked, restore still proceeds. The user only sees
-                    # ghost entries until a manual `beet update`, which is
-                    # the same outcome the old code always produced.
+                    # ghost entries until a manual `beet update`.
                     log.info(fmt(C.YELLOW,
                         f"  · Couldn't pre-clear partial-import entries from "
                         f"beets ({e}); they may show as ghosts until "
@@ -772,7 +818,10 @@ def restore_upgrade_backup(backup_path: Path, original_path: Path) -> bool:
                     f"{backup_path}.\n     Manual restore: mv {backup_path!s} "
                     f"{original_path!s}"))
                 return False
+            # Durable before the backup (the only copy) is removed below.
+            _fsync_tree(restoring)
             os.rename(str(restoring), str(original_path))
+            _fsync(original_path.parent)
             shutil.rmtree(str(backup_path), ignore_errors=True)
         try:
             (original_path / _ORIGIN_SIDECAR).unlink(missing_ok=True)
