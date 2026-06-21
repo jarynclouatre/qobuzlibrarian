@@ -2,9 +2,9 @@
 from qobuz_librarian import config as cfg
 
 # Highest (bit_depth, sample_rate_hz) streamrip delivers per quality tier:
-# 1=320 MP3, 2=16/44.1, 3=24-bit up to 96kHz, 4=24-bit up to 192kHz.
+# 2=16/44.1, 3=24-bit up to 96kHz, 4=24-bit up to 192kHz. Tier 1 (320 MP3) was
+# dropped — config coerces it to 2 at load and Settings only offers 2-4.
 _STREAMRIP_QUALITY_CAPS = {
-    1: (16, 44100),
     2: (16, 44100),
     3: (24, 96000),
     4: (24, 192000),
@@ -17,7 +17,7 @@ def streamrip_quality_cap():
 
     rip.py invokes streamrip with `-q cfg.STREAMRIP_QUALITY`, and that flag
     overrides streamrip's own config — so STREAMRIP_QUALITY (env / Settings)
-    is authoritative. config validates it to a 1-4 tier at load and the
+    is authoritative. config validates it to a 2-4 tier at load and the
     Settings page only accepts those values, so this is a live tier lookup:
     reading it fresh each call means a quality change takes effect at once.
     """

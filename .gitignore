@@ -12,6 +12,8 @@ venv/
 .pytest_cache/
 .coverage
 htmlcov/
+*.bak
+*.bak_*
 
 # Node + Tailwind build
 node_modules/
