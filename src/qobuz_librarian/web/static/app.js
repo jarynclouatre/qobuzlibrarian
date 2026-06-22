@@ -227,11 +227,16 @@
   // content would be CSP-blocked. These bind on load and re-bind after each
   // swap; a dataset flag stops a node from binding twice.
 
-  function fmtProgress(p, verb) {
+  function fmtProgress(p, verb, withItem) {
+    if (withItem === undefined) withItem = true;
+    // The dashboard card stays a stable "Scanning N / M" — the per-artist item
+    // cycles (artist name ↔ album tally) and reads as flicker on a glance card;
+    // the detail lives on the job page. The queue card keeps its item.
+    var item = (withItem && p.item) ? " · " + p.item : "";
     if (p.total > 0) {
-      return verb + " " + p.current + " / " + p.total + (p.item ? " · " + p.item : "");
+      return verb + " " + p.current + " / " + p.total + item;
     }
-    if (p.phase) return p.phase + (p.item ? " · " + p.item : "");
+    if (p.phase) return p.phase + item;
     return "";
   }
 
@@ -267,7 +272,8 @@
       var p; try { p = JSON.parse(e.data); } catch (_) { return; }
       var el = document.getElementById(progId);
       if (!el) return;
-      var txt = fmtProgress(p, status === "scanning" ? "Scanning" : (p.phase || "Downloading"));
+      var txt = fmtProgress(p, status === "scanning" ? "Scanning" : (p.phase || "Downloading"),
+                            surface !== "dashboard");
       if (txt) el.textContent = txt;
     });
     src.addEventListener("done", function () {

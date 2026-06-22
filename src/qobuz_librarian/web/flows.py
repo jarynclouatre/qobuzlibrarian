@@ -1149,8 +1149,8 @@ def _emit_repair_heartbeat(beat, job, artist_name):
         albums, artists, flagged, n = (beat["albums"], beat["artists"],
                                        beat["flagged"], beat["n"])
     job.push_progress("Checking for damaged files", artists, n,
-                      f'Scanning "{artist_name}" · {albums:,} albums · '
-                      f'{flagged:,} flagged', found=flagged)
+                      f'"{artist_name}" · {albums:,} albums · {flagged:,} flagged',
+                      found=flagged)
 
 
 def scan_repairs(job, token):

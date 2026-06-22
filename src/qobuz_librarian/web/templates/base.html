@@ -31,10 +31,11 @@
   <meta name="apple-mobile-web-app-title" content="Qobuz Librarian">
   <!-- Vendored locally so the UI works on air-gapped / offline NAS boxes.
        Pinned versions; refresh from upstream when bumping. -->
-  <!-- ?v= the app version so a release busts a returning visitor's cached
-       CSS/JS instead of leaving them on the previous version's files. -->
+  <!-- ?v= a content hash of the assets, so any change to the CSS/JS busts a
+       returning visitor's cache (between releases too), and an unchanged asset
+       stays cached across a release. -->
   <link rel="preload" href="/static/vendor/inter/inter-latin.woff2" as="font" type="font/woff2" crossorigin>
-  <link href="/static/dist/app.css?v={{ app_version }}" rel="stylesheet">
+  <link href="/static/dist/app.css?v={{ asset_version }}" rel="stylesheet">
   <script src="/static/vendor/htmx-1.9.12.min.js"></script>
   <script nonce="{{ request.state.csp_nonce }}">
     // HTMX POSTs go through the CSRF middleware; lift the token from the
@@ -48,7 +49,7 @@
   <!-- CSP-safe htmx event handlers — see web/static/app.js. Replaces the
        inline-attribute style htmx 1.9 evaluates via new Function, which
        the page CSP correctly forbids ('unsafe-eval' not allowed). -->
-  <script src="/static/app.js?v={{ app_version }}"></script>
+  <script src="/static/app.js?v={{ asset_version }}"></script>
 </head>
 <body class="min-h-screen bg-base-100 flex flex-col">
 
@@ -204,8 +205,8 @@
 
   <script nonce="{{ request.state.csp_nonce }}">
     if ('serviceWorker' in navigator) {
-      // ?v= the app version so a release invalidates the SW + its caches.
-      navigator.serviceWorker.register('/sw.js?v={{ app_version }}');
+      // ?v= the asset content hash so changed assets invalidate the SW + caches.
+      navigator.serviceWorker.register('/sw.js?v={{ asset_version }}');
     }
     // Close the mobile nav dropdown when a link inside it is tapped — daisyUI
     // otherwise keeps it open until focus drops, which feels broken on slow

@@ -317,8 +317,10 @@ def list_artist_album_dirs(artist_dir: Path):
     if empties:
         names = ", ".join(empties[:5])
         more = f" (+{len(empties) - 5} more)" if len(empties) > 5 else ""
-        log.info(f"  · {artist_dir.name}: skipping {len(empties)} empty album "
-                 f"folder(s): {names}{more}.")
+        # Verbose-only: in a whole-library sweep this fires per artist and floods
+        # the activity log. It's a hand-clean hint, not something every scan needs.
+        vlog(f"  · {artist_dir.name}: skipping {len(empties)} empty album "
+             f"folder(s): {names}{more}.")
     return albums
 
 

@@ -1,6 +1,7 @@
 """FastAPI web application for Qobuz Librarian."""
 import asyncio
 import concurrent.futures
+import hashlib
 import html
 import threading
 import time
@@ -415,12 +416,31 @@ static_dir.mkdir(exist_ok=True)
 app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
 
 
-# Bake the running version into the worker so its cache name changes on every
-# release. The script bytes then differ release-to-release, which is what makes
-# the browser actually pick up the new worker and purge the stale caches —
-# a fixed cache name left returning visitors on old assets after an upgrade.
+def _asset_version() -> str:
+    """Cache-bust key derived from the CONTENT of the served assets, not the
+    release version. It changes whenever app.js / app.css / sw.js change, so an
+    edit between releases reaches a returning visitor (and the service worker)
+    without a version bump — and an unchanged asset keeps its cache across one.
+    The semantic app_version is for display only."""
+    h = hashlib.sha256()
+    for name in ("app.js", "dist/app.css", "sw.js"):
+        try:
+            h.update((static_dir / name).read_bytes())
+        except OSError:
+            pass
+    return h.hexdigest()[:12] or _APP_VERSION
+
+
+_ASSET_VERSION = _asset_version()
+templates.env.globals["asset_version"] = _ASSET_VERSION
+
+
+# Bake the asset version into the worker so its cache name changes whenever the
+# served assets change. The script bytes then differ, which is what makes the
+# browser pick up the new worker and purge stale caches — a fixed cache name
+# left returning visitors on old assets.
 _SW_JS = (static_dir / "sw.js").read_text(encoding="utf-8").replace(
-    "__APP_VERSION__", _APP_VERSION)
+    "__APP_VERSION__", _ASSET_VERSION)
 
 
 @app.get("/sw.js")

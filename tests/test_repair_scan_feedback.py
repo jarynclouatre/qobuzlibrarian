@@ -120,7 +120,7 @@ def test_repair_scan_emits_heartbeat_on_clean_library(monkeypatch):
     assert any("healthy albums stay quiet" in m for m in records)
     # A clean library still ticks a visible live status — in the progress line,
     # not the log — so the scan never reads as hung.
-    assert any(it.startswith('Scanning "') for it in job.progress_items)
+    assert any(it.startswith('"') for it in job.progress_items)
 
 
 def test_repair_scan_heartbeat_is_throttled(monkeypatch):
@@ -133,7 +133,7 @@ def test_repair_scan_heartbeat_is_throttled(monkeypatch):
     job = _RecordingJob()
     flows.scan_repairs(job, "token")
 
-    beats = [it for it in job.progress_items if it.startswith('Scanning "')]
+    beats = [it for it in job.progress_items if it.startswith('"')]
     assert beats == []  # throttled out entirely within one fast pass
 
 

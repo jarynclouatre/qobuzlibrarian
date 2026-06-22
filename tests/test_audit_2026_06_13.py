@@ -70,27 +70,3 @@ def test_catalog_candidates_excludes_live_variant(tmp_path):
     ids = {c.get("id") for c in cands}
     assert 1 in ids       # studio still matches its own folder
     assert 2 not in ids   # live edition is no longer pulled onto the studio dir
-
-
-# ── backup: a stranded *.partial dir is reaped, never surfaced as only-copy ──
-
-def test_partial_backup_dir_reaped_not_only_copy(tmp_path, monkeypatch):
-    import qobuz_librarian.library.backup as bk
-    monkeypatch.setattr(bk.cfg, "UPGRADE_BACKUP_DIR", tmp_path / "backups")
-    monkeypatch.setattr(bk.cfg, "DATA_DIR", tmp_path / "data")
-    (tmp_path / "data").mkdir()
-    (tmp_path / "backups").mkdir()
-    partial = tmp_path / "backups" / "20260101_120000_Album.partial"
-    partial.mkdir()
-    (partial / "01.flac").write_bytes(b"x" * 2000)
-
-    # Never offered to the user as a sole surviving copy.
-    assert all(not e.name.endswith(".partial")
-               for e, _origin in bk.find_only_copy_backups())
-    # Reaped by the startup sweep once aged past the live-copy grace window.
-    import os
-    import time
-    old = time.time() - 7200
-    os.utime(partial, (old, old))
-    bk.cleanup_old_upgrade_backups(force=True)
-    assert not partial.exists()

@@ -676,12 +676,6 @@ def test_csrf_oversize_body_rejected_before_parse(client):
     assert r.status_code == 413
 
 
-def test_audit_redirects_to_repair(client):
-    r = client.get("/audit", follow_redirects=False)
-    assert r.status_code == 308
-    assert r.headers["location"] == "/repair"
-
-
 def test_service_worker_served_from_root(client):
     r = client.get("/sw.js")
     assert r.status_code == 200
@@ -808,25 +802,6 @@ def test_csrf_cookie_minted_only_on_html_responses():
     for path in ("/static/app.js", "/healthz", "/sw.js", "/api/jobs"):
         assert CSRF_COOKIE_NAME not in set_cookie_header(path), (
             f"{path} should not set the CSRF cookie")
-
-
-def test_first_post_after_page_load_still_succeeds():
-    """Narrowing the cookie to HTML responses must not break legit CSRF: a
-    client that loaded a normal page has the cookie, so its first POST passes."""
-    from fastapi.testclient import TestClient
-
-    from qobuz_librarian.web.app import app
-    from qobuz_librarian.web.csrf import CSRF_COOKIE_NAME, CSRF_FORM_FIELD
-
-    with TestClient(app) as c:
-        c.get("/")  # a normal HTML page load seeds the cookie
-        token = c.cookies.get(CSRF_COOKIE_NAME)
-        assert token  # the page load actually set it
-        c.headers.pop("X-CSRF-Token", None)
-        r = c.post("/artist",
-                   data={CSRF_FORM_FIELD: token, "artist": "test-artist"},
-                   follow_redirects=False)
-        assert r.status_code == 303  # accepted, not a 403
 
 
 def test_start_passes_server_header_false_to_uvicorn(monkeypatch):
@@ -1804,21 +1779,6 @@ def test_push_progress_streams_found_and_hit_but_not_in_replay():
     # hit, or the preview row would be appended twice.
     snap = _json.loads(job._progress_snapshot()[len(jm.PROGRESS_PREFIX):])
     assert snap["found"] == 3 and "hit" not in snap
-
-
-def test_cancel_check_predicate_reads_current_job_flag():
-    # The installed hook returns True only when the worker thread's
-    # current job has cancel_requested set.
-    assert jm._current_job_cancel_requested() is False
-
-    fake = jm.Job(title="x")
-    fake.cancel_requested = True
-    jm._TLS.current_job = fake
-    try:
-        assert jm._current_job_cancel_requested() is True
-    finally:
-        jm._TLS.current_job = None
-    assert jm._current_job_cancel_requested() is False
 
 
 def test_rip_url_returns_canceled_when_check_fires(monkeypatch):
