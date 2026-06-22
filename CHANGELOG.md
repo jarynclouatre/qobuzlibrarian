@@ -4,6 +4,12 @@ All notable changes to Qobuz Librarian are recorded here, newest first. The
 project follows [semantic versioning](https://semver.org/); dates are when each
 version was tagged during local development.
 
+## [0.9.1] - 2026-06-21
+
+**Repair scan — cleaner live activity**
+
+- A whole-library repair scan now shows its progress as a single status line under the progress bar — `Scanning "<artist>" · N albums · M flagged`, refreshing a couple of times a second — instead of appending a "still scanning…" line to the activity log every few seconds. The activity log now lists only flagged albums (the actual findings), and a finished scan no longer keeps hundreds of heartbeat lines.
+
 ## [0.9.0] - 2026-06-21
 
 The repair scan, rebuilt — it catches more, runs far faster, and shows what it's doing — plus reliability and safety fixes from a follow-up audit. The one changed default: the unusable 320 kbps tier is gone.
