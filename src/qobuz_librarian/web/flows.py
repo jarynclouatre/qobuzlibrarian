@@ -230,19 +230,21 @@ def scan_artist(job, query, token):
                        "try the artist's exact name as Qobuz lists it.")
         return
     log.info(f"  Matched: {result.artist_name}. Scanning catalog for gaps…")
-    # Flag (and pre-tick) albums new since the last time this artist was checked,
-    # sharing the baseline with the library-wide new-release check. The rest stay
-    # unticked — one artist can have dozens of albums, so don't queue the lot.
+    # Badge albums released since the last check (sharing the library-wide
+    # new-release baseline + cutoff). Everything stays unticked — one artist can
+    # have dozens of albums, so a single click must not queue the lot.
     aid = str(result.artist_id)
     baseline = seen.get(aid)
     known = set(baseline or [])
     n_new = 0
     for gap in result.gaps:
+        # New = appeared since this artist was last baselined. Everything stays
+        # un-ticked so one click can't queue the lot; the badge marks the new ones.
         is_new = baseline is not None and str(gap.qobuz_album.get("id")) not in known
         if is_new:
             n_new += 1
         _add_gap_candidate(job, gap, result.artist_name,
-                           selected=is_new, is_new=is_new)
+                           selected=False, is_new=is_new)
     # Don't overwrite this artist's baseline from a transient short-page fetch —
     # a partial discography would dump the dropped albums as "new" next check.
     if not result.catalog_incomplete:
@@ -251,7 +253,7 @@ def scan_artist(job, query, token):
         new_releases_mod.record_artist_seen(aid, current_ids)
     msg = f"  {plural(len(result.gaps), 'missing album')} found for {result.artist_name}"
     if n_new:
-        msg += f" — {n_new} new since your last check, pre-ticked"
+        msg += f" — {n_new} new since your last check"
     log.info(msg + ".")
     flush_resolve_cache()
     _record_last_scan()
@@ -437,6 +439,14 @@ def scan_new_releases(job, token):
         return
     state = new_releases_mod.load()
     seen = state.get("seen") or {}
+    # If the catalog fetch limit has grown since the baseline was captured, the
+    # old baseline is missing everything past the previous cap — a plain diff
+    # would dump that whole back-slice as "new". Re-baseline this run instead
+    # (record the wider snapshot, surface nothing); real diffs resume next run. A
+    # pre-tracking baseline (limit unknown) re-baselines once, then gets stamped.
+    cur_limit = int(cfg.ARTIST_CATALOG_LIMIT)
+    prev_limit = state.get("baseline_limit")
+    rebaseline = prev_limit is None or cur_limit > int(prev_limit)
     hidden = hidden_mod.load()
     opts = DiscoveryOpts(prefer_hires=cfg.PREFER_HIRES)
     log.info(f"Checking {plural(len(artists), 'artist')} for new releases…")
@@ -453,7 +463,8 @@ def scan_new_releases(job, token):
                             **pool_initializer_kwargs()) as ex:
         futures = {ex.submit(find_new_releases_for_artist, ad.name, token=token,
                              opts=opts, seen_by_id=seen, hidden=hidden,
-                             single_store=hidden, artist_dir=ad): ad
+                             single_store=hidden, artist_dir=ad,
+                             baseline_only=rebaseline): ad
                    for ad in artists}
         for fut in as_completed(futures):
             if job.cancel_requested:
@@ -476,8 +487,11 @@ def scan_new_releases(job, token):
             if result.artist_id and not getattr(result, "fetch_failed", False):
                 current_seen[result.artist_id] = result.current_ids
             for gap in result.new_gaps:
+                # Leave new releases UN-ticked, like the library gap list: a
+                # review is for picking, and one tap must never queue the whole
+                # list of rips. The "new" badge still flags them for the eye.
                 _add_gap_candidate(job, gap, result.artist_name,
-                                   selected=True, is_new=True)
+                                   selected=False, is_new=True)
                 total += 1
             hit = ({"artist": result.artist_name, "albums": len(result.new_gaps)}
                    if result.new_gaps else None)
@@ -489,11 +503,17 @@ def scan_new_releases(job, token):
                          f"{plural(len(result.new_gaps), 'new release')}")
     flush_resolve_cache()
     if not job.cancel_requested:
-        # Merge over the prior baseline, don't replace it: an artist that errored
-        # this run keeps its old entry (a bad run can't wipe the baseline), while
-        # reached artists get refreshed. A clean check crawled every artist, so it
-        # establishes the baseline too (a manual check before any library scan).
-        new_releases_mod.mark_run({**seen, **current_seen}, complete=True)
+        # UNION each reached artist's snapshot into the prior baseline rather than
+        # replacing it. A catalog bigger than the fetch cap comes back as a
+        # different slice each run, so a replace would let an id that rotated out
+        # of this run's window re-surface as "new" next time, so the count would
+        # never converge. Unioning only ever grows an artist's baseline, so the
+        # diff settles. An artist that errored this run keeps
+        # its old entry; a clean check establishes the baseline like a library scan.
+        merged = dict(seen)
+        for aid, ids in current_seen.items():
+            merged[aid] = sorted(set(merged.get(aid, [])) | set(ids))
+        new_releases_mod.mark_run(merged, complete=True, baseline_limit=cur_limit)
     if job.cancel_requested:
         # A cancelled crawl only reached a fraction of the artists, so it can't
         # claim "No new releases" or "First check recorded" definitively.
@@ -501,7 +521,11 @@ def scan_new_releases(job, token):
                        f"{plural(total, 'new release')} found so far.")
         log.info(job.summary)
         return
-    if total:
+    if rebaseline and seen:
+        job.summary = ("Catalog list widened since the last check — re-recorded "
+                       "the baseline. New releases will show from here.")
+        log.info("Re-baselined after a catalog-limit change; nothing surfaced.")
+    elif total:
         job.summary = f"{plural(total, 'new release')} found across the library."
         log.info(f"Done. {plural(total, 'new release')} across the library.")
     elif not seen:

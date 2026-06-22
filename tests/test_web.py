@@ -353,6 +353,33 @@ def test_second_downsample_scan_folds_onto_the_active_one(client, monkeypatch):
     assert len(submitted) == 1            # only one scan ever submitted
 
 
+def test_rescan_supersedes_a_stale_parked_review(monkeypatch):
+    # Re-running a scan while a prior result of the SAME kind is parked for review
+    # must supersede the stale review (cancel it), not stack a second one — parked
+    # reviews never self-clear, so stacking would pile up forever (the repair-scan
+    # "4 candidates" that kept doubling).
+    import qobuz_librarian.web.app as app_mod
+
+    submitted, canceled = [], []
+    stale = jm.Job(title="Repair scan")
+    stale.execute_kind = "repair"
+    stale.status = jm.JobStatus.AWAITING_REVIEW
+
+    monkeypatch.setattr(app_mod.job_mgr, "submit_scan",
+                        lambda job, scan_fn, execute_fn: submitted.append(job))
+    monkeypatch.setattr(app_mod.job_mgr, "cancel_review", lambda j: canceled.append(j))
+    monkeypatch.setattr(app_mod.job_mgr.registry, "pending_and_running", lambda: [])
+    monkeypatch.setattr(app_mod.job_mgr.registry, "awaiting_review", lambda: [stale])
+
+    fresh = jm.Job(title="Repair scan")
+    fresh.execute_kind = "repair"
+    result = app_mod._submit_scan_deduped(fresh, lambda j: None, lambda j, c: None, "repair")
+
+    assert result is fresh         # caller goes to the new scan, not the stale review
+    assert canceled == [stale]     # the stale parked review was superseded
+    assert submitted == [fresh]    # exactly one fresh scan submitted
+
+
 def test_lyrics_scan_needs_no_credentials(client, monkeypatch):
     # Lyric fetching is local — the route must not gate on a Qobuz token, and it
     # submits a simple run-to-completion job rather than a scan/review.

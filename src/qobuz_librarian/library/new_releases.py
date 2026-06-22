@@ -24,7 +24,7 @@ def load() -> dict:
     "baseline_complete": bool, "auto_scan_attempted": bool}``, tolerating a
     missing or corrupt file with an empty baseline."""
     base = {"last_run": None, "seen": {}, "baseline_complete": False,
-            "auto_scan_attempted": False}
+            "auto_scan_attempted": False, "baseline_limit": None}
     try:
         data = json.loads(cfg.NEW_RELEASE_STATE_FILE.read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -41,6 +41,13 @@ def load() -> dict:
     lr = data.get("last_run")
     if isinstance(lr, (int, float)):
         base["last_run"] = float(lr)
+    # The ARTIST_CATALOG_LIMIT the baseline was captured under. If the limit later
+    # grows, the baseline is missing albums past the old cap, so the check
+    # re-baselines (rather than dumping that back-slice as "new"). None = unknown
+    # (a baseline from before this was tracked) → treated as needing a re-baseline.
+    bl = data.get("baseline_limit")
+    if isinstance(bl, int) and not isinstance(bl, bool):
+        base["baseline_limit"] = bl
     base["baseline_complete"] = bool(data.get("baseline_complete"))
     base["auto_scan_attempted"] = bool(data.get("auto_scan_attempted"))
     return base
@@ -61,17 +68,25 @@ def last_run() -> float | None:
     return load().get("last_run")
 
 
-def mark_run(seen, when=None, complete=False) -> None:
+def baseline_limit() -> int | None:
+    """The ARTIST_CATALOG_LIMIT the baseline was captured under, or None if a
+    pre-tracking baseline. The check re-baselines when the live limit exceeds it."""
+    return load().get("baseline_limit")
+
+
+def mark_run(seen, when=None, complete=False, baseline_limit=None) -> None:
     """Persist the updated per-artist catalog snapshot and the run time, keeping
     the other fields (load-update-save, not a fresh dict). complete=True also
-    marks the baseline ready — a full new-release check crawls every artist, so
-    a clean one establishes the baseline just like a library scan does."""
+    marks the baseline ready (a full check crawls every artist, like a library
+    scan); baseline_limit records the catalog cap this snapshot was taken at."""
     with _lock:
         state = load()
         state["seen"] = seen
         state["last_run"] = when if when is not None else time.time()
         if complete:
             state["baseline_complete"] = True
+        if baseline_limit is not None:
+            state["baseline_limit"] = int(baseline_limit)
         save(state)
 
 
@@ -90,6 +105,9 @@ def seed_baseline(seen) -> None:
         state = load()
         state["seen"] = {str(k): list(v) for k, v in (seen or {}).items()}
         state["baseline_complete"] = True
+        # Stamp the cap this snapshot was taken at, so a later limit bump triggers
+        # a re-baseline instead of surfacing the newly-visible back-slice as "new".
+        state["baseline_limit"] = int(cfg.ARTIST_CATALOG_LIMIT)
         save(state)
 
 

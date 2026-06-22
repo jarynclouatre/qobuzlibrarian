@@ -6,6 +6,14 @@ version was tagged during local development.
 
 ## [0.9.1] - 2026-06-21
 
+**Reviews no longer pile up**
+
+- Re-running a scan — repair, library gap-fill, upgrade, or downsample — replaces its earlier pending review instead of stacking a second one. A parked review doesn't clear itself, so without this a repeat scan left a duplicate "N candidates" review sitting on the dashboard every time.
+
+**"New releases" means actually new**
+
+- The new-release check flags an album when it appears in an artist's catalog and you don't own it — including an old album Qobuz only just added, which is genuinely new to you. The fix is in keeping the baseline trustworthy so this can't dump your back-catalog: a catalog bigger than the fetch limit is recorded but not diffed (its order isn't stable run to run), the baseline grows by union instead of being overwritten, and when the catalog fetch limit itself grows the check re-baselines once rather than treating the newly-visible older albums as fresh arrivals. Candidates default to un-ticked, so a review never queues a pile of downloads in one tap.
+
 **Repair scan — cleaner live activity**
 
 - A whole-library repair scan now shows its progress as a single status line under the progress bar — `Scanning "<artist>" · N albums · M flagged`, refreshing a couple of times a second — instead of appending a "still scanning…" line to the activity log every few seconds. The activity log now lists only flagged albums (the actual findings), and a finished scan no longer keeps hundreds of heartbeat lines.

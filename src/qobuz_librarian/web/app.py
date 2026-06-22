@@ -779,6 +779,14 @@ def _submit_scan_deduped(job, scan_fn, execute_fn, *kinds, statuses=("pending", 
         existing = _active_scan(*kinds, statuses=statuses)
         if existing is not None:
             return existing
+        # A re-scan supersedes a stale parked review of the same kind instead of
+        # stacking a second one. The fresh scan re-derives its candidates from the
+        # current library, so the old awaiting-review result is obsolete — and
+        # parked reviews never self-clear, so without this they pile up forever.
+        # A running download isn't touched (only pending/scanning gate above).
+        for old in job_mgr.registry.awaiting_review():
+            if getattr(old, "execute_kind", "") in kinds:
+                job_mgr.cancel_review(old)
         job_mgr.submit_scan(job, scan_fn, execute_fn)
         return job
 

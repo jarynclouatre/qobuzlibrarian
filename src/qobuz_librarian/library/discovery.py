@@ -565,7 +565,8 @@ def find_missing_for_artist(query, *, token, opts=None, artist_dir=None,
 
 
 def find_new_releases_for_artist(query, *, token, opts=None, seen_by_id=None,
-                                 hidden=None, single_store=None, artist_dir=None):
+                                 hidden=None, single_store=None, artist_dir=None,
+                                 baseline_only=False):
     """Albums new to this artist's Qobuz catalog since the last check that the
     user doesn't own and hasn't hidden — the cheap "what's new" path.
 
@@ -607,6 +608,18 @@ def find_new_releases_for_artist(query, *, token, opts=None, seen_by_id=None,
     lossless = [a for a in catalog if is_lossless_album(a)]
     current_ids = [str(a["id"]) for a in lossless if a.get("id") is not None]
 
+    # Two cases where we record the snapshot as baseline but surface NOTHING:
+    #  - capped: a catalogue bigger than the fetch cap comes back as a different
+    #    unstable slice each run (Qobuz has no stable sort), so the diff can't be
+    #    trusted — it would oscillate and dump old albums as "new".
+    #  - baseline_only: a re-baseline pass (the caller saw the catalog limit grow
+    #    since the baseline was captured), so a now-wider fetch isn't mistaken for
+    #    a pile of new arrivals.
+    capped = (len(catalog) >= cfg.ARTIST_CATALOG_LIMIT
+              or (_total is not None and _total > cfg.ARTIST_CATALOG_LIMIT))
+    if capped or baseline_only:
+        return NewReleaseResult(artist_id, artist_name, [], current_ids)
+
     album_dirs = list_artist_album_dirs(artist_dir) if artist_dir else []
     # Still record the baseline so a later real album doesn't dump the back
     # catalogue as "new" — but an artist you own only singles by isn't one
@@ -618,6 +631,11 @@ def find_new_releases_for_artist(query, *, token, opts=None, seen_by_id=None,
     if seen is None:
         return NewReleaseResult(artist_id, artist_name, [], current_ids)
 
+    # "New" = appeared in the catalogue since the baseline — including an old
+    # album Qobuz only just added, which is genuinely new TO YOU. The baseline is
+    # kept trustworthy upstream (capped catalogues are skipped above, the limit-
+    # change re-baseline is handled by the caller, and the baseline is unioned not
+    # overwritten), so a plain set difference can't dump the back catalogue.
     seen_set = set(seen)
     fresh = [a for a in lossless if str(a.get("id")) not in seen_set]
     if not fresh:
