@@ -311,6 +311,69 @@ def test_undo_matches_by_track_number_when_grab_had_no_isrc(
         _remove_job(job)
 
 
+def test_undo_no_isrc_removes_the_grabbed_disc_not_a_same_numbered_twin(
+        client, monkeypatch, fresh_singles, tmp_path):
+    # Grab a no-ISRC track that lives on CD2 of a multi-disc album where CD1 has
+    # a track with the SAME per-disc number. Undo must delete the CD2 track the
+    # grab added — never CD1's same-numbered file. The grab records its disc so
+    # the number-only fallback can't pick the wrong disc.
+    import qobuz_librarian.api.search as search_mod
+    import qobuz_librarian.integrations.beets as beets_mod
+    import qobuz_librarian.library.catalog as cat_mod
+    import qobuz_librarian.library.scanner as scanner_mod
+    import qobuz_librarian.queue.executor as ex_mod
+    import qobuz_librarian.web.app as app_mod
+
+    d = tmp_path / "Artist" / "Box Set (2020)"
+    cd1 = d / "CD1"
+    cd2 = d / "CD2"
+    cd1.mkdir(parents=True)
+    cd2.mkdir(parents=True)
+    cd1_twin = cd1 / "03 - Disc One Three.flac"
+    cd2_grabbed = cd2 / "03 - Disc Two Three.flac"
+    cd1_twin.write_bytes(b"cd1")
+    cd2_grabbed.write_bytes(b"cd2")
+
+    monkeypatch.setattr(app_mod, "_get_token", lambda: "tok")
+    monkeypatch.setattr(search_mod, "get_album", lambda _id, _tok: {
+        "id": "albx", "title": "Box Set", "year": 2020,
+        "artist": {"name": "Artist"},
+        "tracks": {"items": [
+            {"id": "t_a", "title": "A", "track_number": 1, "media_number": 1},
+            {"id": "t_b", "title": "B", "track_number": 2, "media_number": 1},
+            {"id": "cd2t3", "title": "Disc Two Three",
+             "track_number": 3, "media_number": 2}]}})
+    monkeypatch.setattr(cat_mod, "find_existing_tracks", lambda *a, **k: ([], None))
+
+    def fake_exec(queue, *a, **k):
+        queue[0]["n_ok"] = 1
+        queue[0]["imported"] = True
+        queue[0]["n_fail"] = 0
+        queue[0]["_resolved_post_dir"] = str(d)
+    monkeypatch.setattr(ex_mod, "_execute_download_queue", fake_exec)
+
+    jm.start_worker()
+    r = client.post("/download", data={"album_id": "albx", "track_id": "cd2t3"},
+                    follow_redirects=False)
+    assert r.status_code in (200, 303)
+    job = [j for j in list(jm.registry._jobs.values())
+           if getattr(j, "album_id", None) == "albx"][0]
+    try:
+        assert _wait_for(lambda: job.status in (jm.JobStatus.DONE, jm.JobStatus.FAILED))
+        assert job.status == jm.JobStatus.DONE
+        assert job.single.get("disc_no") == 2
+
+        monkeypatch.setattr(scanner_mod, "read_album_dir", lambda _d: [
+            {"path": str(cd1_twin), "isrc": "", "tracknumber": 3, "discnumber": 1},
+            {"path": str(cd2_grabbed), "isrc": "", "tracknumber": 3, "discnumber": 2}])
+        monkeypatch.setattr(beets_mod, "forget_beets_entries", lambda paths: len(paths))
+        client.post(f"/jobs/{job.id}/undo", follow_redirects=False)
+        assert not cd2_grabbed.exists()
+        assert cd1_twin.exists()
+    finally:
+        _remove_job(job)
+
+
 def test_undo_with_no_isrc_or_track_number_deletes_nothing(
         client, monkeypatch, fresh_singles, tmp_path):
     # Neither an ISRC nor a track number to match on: two missing values must not

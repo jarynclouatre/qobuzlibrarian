@@ -25,32 +25,32 @@
 {% endif %}
 
 {% if creds_ok and creds_token_valid == False %}
-<div class="alert alert-warning mb-6">
-  <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 shrink-0" fill="none"
+<div class="ql-notice ql-notice-warning mb-6 flex items-start gap-3 p-4">
+  <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 shrink-0 text-warning" fill="none"
        viewBox="0 0 24 24" stroke="currentColor">
     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
           d="M12 9v2m0 4h.01M5 19h14a2 2 0 0 0 1.84-2.75L13.74 4a2 2 0 0 0-3.5 0L3.18 16.25A2 2 0 0 0 5 19z"/>
   </svg>
-  <span>Your saved token isn't authenticating against Qobuz any more —
+  <span class="min-w-0 flex-1 text-sm">Your saved token isn't authenticating against Qobuz any more —
     re-paste it on the <a href="/settings" class="link">Settings page</a>.</span>
 </div>
 {% endif %}
 
 {% if lyric_retry_count %}
 <!-- Lyric retry manifest present — surface it so web-only users don't miss it -->
-<div class="alert alert-info mb-6 flex-wrap gap-2">
-  <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 shrink-0" fill="none"
+<div class="ql-notice ql-notice-info mb-6 flex items-start flex-wrap gap-3 p-4">
+  <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 shrink-0 text-info" fill="none"
        viewBox="0 0 24 24" stroke="currentColor">
     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
           d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
   </svg>
-  <span>
+  <span class="min-w-0 flex-1 text-sm">
     <strong>{{ lyric_retry_count }} track{{ 's' if lyric_retry_count != 1 }} need{{ 's' if lyric_retry_count == 1 }} a lyric retry</strong>
     — providers were unavailable or rate-limited during the last import.
   </span>
-  <form action="/lyric-retry" method="post" class="ml-auto">
+  <form action="/lyric-retry" method="post" class="ml-auto shrink-0">
     <input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}">
-    <button type="submit" class="btn btn-sm btn-info">Retry now</button>
+    <button type="submit" class="btn btn-sm btn-primary">Retry now</button>
   </form>
 </div>
 {% endif %}
@@ -59,13 +59,13 @@
 <!-- Files left in staging by an interrupted import — the CLI warns about
      these at startup; the web had no equivalent signal. Suppressed while a
      job is running (those files are mid-import, not stranded). -->
-<div class="alert alert-warning mb-6">
-  <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 shrink-0" fill="none"
+<div class="ql-notice ql-notice-warning mb-6 flex items-start gap-3 p-4">
+  <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 shrink-0 text-warning" fill="none"
        viewBox="0 0 24 24" stroke="currentColor">
     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
           d="M12 9v2m0 4h.01M5 19h14a2 2 0 0 0 1.84-2.75L13.74 4a2 2 0 0 0-3.5 0L3.18 16.25A2 2 0 0 0 5 19z"/>
   </svg>
-  <span>
+  <span class="min-w-0 flex-1 text-sm">
     <strong>{{ staging_album_count }} album folder{{ 's' if staging_album_count != 1 }} left in staging</strong>
     from an interrupted import — they'll be imported with your next download.
   </span>
@@ -75,55 +75,78 @@
 {% if creds_ok and not baseline_complete %}
 <!-- First-run setup: until a full library scan has seeded the new-release
      baseline, frame what's happening rather than leaving the user guessing. -->
-<div class="alert alert-info mb-6 flex-wrap gap-2">
-  <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 shrink-0" fill="none"
+<div class="ql-notice ql-notice-info mb-6 flex items-start flex-wrap gap-3 p-4">
+  <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 shrink-0 text-info" fill="none"
        viewBox="0 0 24 24" stroke="currentColor">
     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
           d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 0 0-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 0 0 3.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 0 0 3.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 0 0-3.09 3.09zM18.259 8.715L18 9.75l-.259-1.035a3.375 3.375 0 0 0-2.456-2.456L14.25 6l1.035-.259a3.375 3.375 0 0 0 2.456-2.456L18 2.25l.259 1.035a3.375 3.375 0 0 0 2.456 2.456L21.75 6l-1.035.259a3.375 3.375 0 0 0-2.456 2.456z"/>
   </svg>
-  <span>
+  <span class="min-w-0 flex-1 text-sm">
     {% if setup_scanning %}
-    <strong>Setting up your library…</strong> Your first scan is running — it finds
-    the albums you're missing and switches on new-release alerts. Track it on the
-    <a href="/queue" class="link">Queue</a>.
+    <strong>Setting up your library…</strong> Your first scan is running — finding the albums you're missing and switching on new-release alerts once it finishes.
     {% else %}
-    <strong>One-time setup:</strong> a library scan finds your missing albums and
-    turns on new-release alerts for the artists you have.
+    <strong>One-time setup:</strong> new-release alerts stay off until a library scan finishes once. It finds the albums you're missing, and picks up where it left off if interrupted.
     {% endif %}
   </span>
   {% if not setup_scanning %}
-  <form action="/library" method="post" class="ml-auto">
+  <form action="/library" method="post" class="ml-auto shrink-0">
     <input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}">
     <input type="hidden" name="mode" value="missing_albums">
-    <button type="submit" class="btn btn-sm btn-info">{% if scan_resumable %}Resume scan{% else %}Run library scan{% endif %}</button>
+    <button type="submit" class="btn btn-sm btn-primary">{% if scan_resumable %}Resume scan{% else %}Run library scan{% endif %}</button>
   </form>
   {% endif %}
+</div>
+{% endif %}
+
+{% if creds_ok and baseline_complete and library_resume %}
+<!-- A gap scan was interrupted AFTER the baseline was already established. The
+     setup banner above only fires before the first scan completes, so without
+     this an interrupted scan would surface solely on /library — exactly the
+     "the homepage never told me a scan wasn't finished" gap. Resume routes to
+     /library, which restores the right scan kind from the checkpoint. -->
+<div class="ql-notice ql-notice-info mb-6 flex items-start flex-wrap gap-3 p-4">
+  <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 shrink-0 text-info" fill="none"
+       viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
+    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+          d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+  </svg>
+  <span class="min-w-0 flex-1 text-sm">
+    <strong>A library scan was interrupted</strong> — {{ library_resume.done }} artist{{ 's' if library_resume.done != 1 }} already checked. Resume to finish it.
+  </span>
+  {# Resume in one tap: POST the checkpoint's own mode straight to /library, which
+     picks the saved checkpoint up and continues from artist N+1 — no second
+     "pick a mode and press Start" page. Same mechanism the first-run setup
+     banner's Resume uses. #}
+  <form action="/library" method="post" class="ml-auto shrink-0" data-busy-submit>
+    <input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}">
+    <input type="hidden" name="mode" value="{{ 'partial_fill' if library_resume.kind == 'partial' else 'missing_albums' }}">
+    <button type="submit" class="btn btn-sm btn-primary">Resume scan</button>
+  </form>
 </div>
 {% endif %}
 
 {% if new_release_review %}
 <!-- The automatic (or manual) new-release check found albums you don't own and
      parked them for review. Surfaced up front so new releases come to you. -->
-<div class="alert alert-success mb-6 flex-wrap gap-2">
-  <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 shrink-0" fill="none"
+<div class="ql-notice ql-notice-success mb-6 flex items-start flex-wrap gap-3 p-4">
+  <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 shrink-0 text-success" fill="none"
        viewBox="0 0 24 24" stroke="currentColor">
     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
           d="M9 18V6l10-2v12M9 18a2 2 0 1 1-4 0 2 2 0 0 1 4 0zm10-2a2 2 0 1 1-4 0 2 2 0 0 1 4 0z"/>
   </svg>
-  <span>
+  <span class="min-w-0 flex-1 text-sm">
     <strong>{{ new_release_review.count }} new release{{ 's' if new_release_review.count != 1 }}</strong>
     by artists in your library — review and pick what to download.
   </span>
-  <a href="/jobs/{{ new_release_review.id }}" class="btn btn-sm btn-success ml-auto">Review</a>
+  <a href="/jobs/{{ new_release_review.id }}" class="btn btn-sm btn-primary ml-auto shrink-0">Review</a>
 </div>
 {% endif %}
 
 <!-- Hero + search. The navbar already carries the logo + wordmark, so the hero
      leads with the tagline (as the page heading) over a single logo mark rather
      than repeating the lockup. -->
-<section class="text-center pt-4 pb-8">
-  <img src="/static/icon.png" alt="" class="h-14 w-14 rounded-2xl mx-auto mb-4 shadow-lg">
-  <h1 class="text-xl sm:text-2xl font-semibold max-w-xl mx-auto text-balance">Build and maintain a complete, lossless library from Qobuz.</h1>
+<section class="text-center pt-2 pb-8">
+  <h1 class="text-2xl sm:text-3xl font-semibold max-w-xl mx-auto text-balance leading-tight">Build and maintain a complete, lossless library from Qobuz.</h1>
 
   {% if not creds_ok %}
   <a href="/settings" class="btn btn-primary btn-lg mt-6">Set up your Qobuz account</a>
@@ -158,9 +181,6 @@
         <span class="hidden sm:inline">Search</span>
       </button>
     </div>
-    <p class="text-xs text-base-content/50 px-1">
-      Searching <strong>Tracks</strong> grabs a single song — it won't nag you to finish the album.
-    </p>
   </form>
   {% endif %}
 </section>
@@ -169,11 +189,10 @@
 
 <!-- Quick actions -->
 {% if creds_ok %}
+<p class="ql-eyebrow mb-3">Quick actions</p>
 <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-6">
   <a href="/artist"
-     class="card bg-base-200 border border-base-300/60 shadow-sm
-            hover:border-primary/50 hover:-translate-y-0.5 hover:shadow-md
-            transition-all duration-150">
+     class="ql-tile card bg-base-200 border border-base-300/60 hover:border-primary/60">
     <div class="card-body p-5 items-center text-center gap-1">
       <span class="grid place-items-center h-11 w-11 rounded-full bg-primary/10 text-primary mb-1">
         <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -185,9 +204,7 @@
     </div>
   </a>
   <a href="/library"
-     class="card bg-base-200 border border-base-300/60 shadow-sm
-            hover:border-primary/50 hover:-translate-y-0.5 hover:shadow-md
-            transition-all duration-150">
+     class="ql-tile card bg-base-200 border border-base-300/60 hover:border-primary/60">
     <div class="card-body p-5 items-center text-center gap-1">
       <span class="grid place-items-center h-11 w-11 rounded-full bg-primary/10 text-primary mb-1">
         <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -196,13 +213,11 @@
         </svg>
       </span>
       <span class="font-semibold">Library</span>
-      <span class="text-xs text-base-content/50">Find every missing album</span>
+      <span class="text-xs text-base-content/50">Find what you're missing</span>
     </div>
   </a>
   <a href="/upgrade"
-     class="card bg-base-200 border border-base-300/60 shadow-sm
-            hover:border-primary/50 hover:-translate-y-0.5 hover:shadow-md
-            transition-all duration-150">
+     class="ql-tile card bg-base-200 border border-base-300/60 hover:border-primary/60">
     <div class="card-body p-5 items-center text-center gap-1">
       <span class="grid place-items-center h-11 w-11 rounded-full bg-primary/10 text-primary mb-1">
         <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -214,9 +229,7 @@
     </div>
   </a>
   <a href="/repair"
-     class="card bg-base-200 border border-base-300/60 shadow-sm
-            hover:border-primary/50 hover:-translate-y-0.5 hover:shadow-md
-            transition-all duration-150">
+     class="ql-tile card bg-base-200 border border-base-300/60 hover:border-primary/60">
     <div class="card-body p-5 items-center text-center gap-1">
       <span class="grid place-items-center h-11 w-11 rounded-full bg-primary/10 text-primary mb-1">
         <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -235,18 +248,19 @@
 {% set _banner_id = new_release_review.id if new_release_review else '' %}
 {% set other_review = review | rejectattr('id', 'equalto', _banner_id) | list %}
 {% if other_review %}
-<div class="card bg-base-200 border border-info shadow mb-6">
+<div class="card bg-base-200 border border-base-300/60 shadow mb-6">
   <div class="card-body">
     <h2 class="card-title text-info text-base">Waiting for your review</h2>
     <div class="space-y-2 mt-1">
       {% for job in other_review %}
+      {% set _n = job.candidates | length %}
+      {% set _is_repair = job.execute_kind == 'repair' %}
       <div class="flex items-center justify-between gap-3">
         <div class="min-w-0">
-          <p class="font-medium truncate">{% if job.artist %}{{ job.artist }} — {% endif %}{{ job.title }}</p>
-          <p class="text-xs text-base-content/50">
-            {% set _n = job.candidates | length %}{{ _n }} candidate{% if _n != 1 %}s{% endif %}</p>
+          <p class="font-medium truncate">{% if _is_repair %}Repair results ready{% else %}{% if job.artist %}{{ job.artist }} — {% endif %}{{ job.title }}{% endif %}</p>
+          <p class="text-xs text-base-content/50">{{ _n }} {% if _is_repair %}damaged album{% else %}candidate{% endif %}{% if _n != 1 %}s{% endif %}{% if _is_repair %} to repair{% endif %}</p>
         </div>
-        <a href="/jobs/{{ job.id }}" class="btn btn-sm btn-info shrink-0">Review</a>
+        <a href="{{ '/repair' if _is_repair else '/jobs/' ~ job.id }}" class="btn btn-sm btn-primary shrink-0">{% if _is_repair %}Review damaged albums{% else %}Review{% endif %}</a>
       </div>
       {% endfor %}
     </div>
@@ -279,7 +293,7 @@
           <p class="font-semibold truncate">{% if j.artist %}{{ j.artist }} — {% endif %}{{ j.title }}</p>
           <p id="dash-prog-{{ j.id }}" class="text-sm text-base-content/60 mt-1 truncate">
             {%- if j.progress_total > 0 -%}
-            {% if j.status.value == 'scanning' %}Scanning{% else %}Downloading{% endif %} {{ j.progress_current }} / {{ j.progress_total }}
+            {% if j.status.value == 'scanning' %}Scanning{% else %}Downloading{% endif %} {{ j.progress_current }} / {{ j.progress_total }}{% if j.progress_unit %} {{ j.progress_unit }}{{ 's' if j.progress_total != 1 }}{% endif %}
             {%- elif j.progress_phase -%}
             {{ j.progress_phase }}
             {%- else -%}
@@ -289,8 +303,9 @@
         </div>
         <form action="/jobs/{{ j.id }}/cancel" method="post" class="relative z-10 shrink-0">
           <input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}">
+          {% set _cancel_label = 'Cancel scan' if j.status.value == 'scanning' else 'Cancel download' %}
           <button type="submit" class="btn btn-sm btn-ghost btn-square min-h-[44px] min-w-[44px]"
-                  title="Cancel scan" aria-label="Cancel scan">×</button>
+                  title="{{ _cancel_label }}" aria-label="{{ _cancel_label }}">×</button>
         </form>
       </div>
     </div>
@@ -315,12 +330,12 @@
 <div class="card bg-base-200 border border-base-300/60 shadow-sm">
   <div class="card-body">
     <div class="flex items-baseline justify-between mb-3">
-      <h2 class="text-xs font-semibold uppercase tracking-wider text-base-content/50">Recent downloads</h2>
+      <h2 class="ql-eyebrow">Recent downloads</h2>
       {% if last_library_scan or last_new_release_check %}
-      <span class="text-xs text-base-content/40">
-        {%- if last_library_scan %}Scanned {{ last_library_scan }}{% endif -%}
+      <span class="readout text-xs text-base-content/40">
+        {%- if last_library_scan %}Library scanned {{ last_library_scan }}{% endif -%}
         {%- if last_library_scan and last_new_release_check %} · {% endif -%}
-        {%- if last_new_release_check %}New-release check {{ last_new_release_check }}{% endif -%}
+        {%- if last_new_release_check %}Auto-checked for new releases {{ last_new_release_check }}{% endif -%}
       </span>
       {% endif %}
     </div>
@@ -367,7 +382,7 @@
               d="M9 18V6l10-2v12M9 18a2 2 0 1 1-4 0 2 2 0 0 1 4 0zm10-2a2 2 0 1 1-4 0 2 2 0 0 1 4 0z"/>
       </svg>
       <p class="font-medium text-base-content/60">Nothing downloaded yet.</p>
-      <p class="text-xs text-base-content/40">Open <a href="/search" class="link">Search</a> to find an album or artist.</p>
+      <p class="text-xs text-base-content/40">Search above to find an album or artist.</p>
     </div>
     {% endif %}
   </div>

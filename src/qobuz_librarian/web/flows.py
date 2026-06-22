@@ -255,6 +255,19 @@ def scan_artist(job, query, token):
     if n_new:
         msg += f" — {n_new} new since your last check"
     log.info(msg + ".")
+    # Frame the review the way every other scan kind does: say what these are
+    # (albums you don't own), not just a bare list. The page shows job.summary
+    # above the candidates; without it an artist scan opened straight to an
+    # unexplained checklist.
+    n = len(result.gaps)
+    if n:
+        job.summary = (f"{plural(n, 'album')} {result.artist_name} has on Qobuz "
+                       "that aren't in your library")
+        if n_new:
+            job.summary += f" — {n_new} new since your last check"
+    else:
+        job.summary = (f"No missing albums for {result.artist_name} — your library "
+                       "already has everything Qobuz lists.")
     flush_resolve_cache()
     _record_last_scan()
 
@@ -363,7 +376,7 @@ def scan_library(job, token, partial_only=False):
                 # resume retries it rather than baking in a transient miss.
                 log.info(f"    skipped {futures[fut].name}: {e}")
                 job.push_progress("Scanning library", done, n, futures[fut].name,
-                                  found=total)
+                                  found=total, unit="artist")
                 continue
             scanned.add(name)
             if artist_id and catalog_ids is not None:
@@ -378,7 +391,7 @@ def scan_library(job, token, partial_only=False):
             hit = ({"artist": artist_name or name, "albums": len(gaps)}
                    if gaps else None)
             job.push_progress("Scanning library", done, n, artist_name or name,
-                              found=total, hit=hit)
+                              found=total, hit=hit, unit="artist")
             if gaps:
                 tail = "with gaps" if partial_only else "to fill"
                 log.info(f"  {artist_name} — {plural(len(gaps), 'album')} {tail}")
@@ -482,7 +495,7 @@ def scan_new_releases(job, token):
             except Exception as e:
                 log.info(f"    skipped {futures[fut].name}: {e}")
                 job.push_progress("Checking for new releases", done, n,
-                                  futures[fut].name, found=total)
+                                  futures[fut].name, found=total, unit="artist")
                 continue
             if result.artist_id and not getattr(result, "fetch_failed", False):
                 current_seen[result.artist_id] = result.current_ids
@@ -497,7 +510,7 @@ def scan_new_releases(job, token):
                    if result.new_gaps else None)
             job.push_progress("Checking for new releases", done, n,
                               result.artist_name or futures[fut].name,
-                              found=total, hit=hit)
+                              found=total, hit=hit, unit="artist")
             if result.new_gaps:
                 log.info(f"  {result.artist_name} — "
                          f"{plural(len(result.new_gaps), 'new release')}")
@@ -563,6 +576,9 @@ def execute_albums(job, chosen, token):
         album_id = cand["payload"].get("album_id")
         label = f"[{i}/{len(chosen)}] {cand.get('artist','')} — {cand['title']}"
         log.info(label)
+        job._progress_scope = (i, len(chosen), "album")
+        job.push_progress("Downloading albums", i, len(chosen),
+                          f"{cand.get('artist','')} — {cand['title']}", unit="album")
         try:
             full = get_album(album_id, token)
         except (AuthLost, QobuzUnavailable):
@@ -591,6 +607,7 @@ def execute_albums(job, chosen, token):
         elif not (result and result.get("result") in _benign):
             failed += 1
         time.sleep(cfg.ARTIST_API_DELAY)
+    job._progress_scope = None
     if job.cancel_requested:
         job.summary = (f"Stopped early — {ok} downloaded, "
                        f"{len(chosen) - processed} not started.")
@@ -669,7 +686,8 @@ def scan_upgrades(job, token):
                 raise
             except Exception as e:
                 log.info(f"    skipped {name}: {e}")
-                job.push_progress("Scanning for upgrades", done, n, name, found=total)
+                job.push_progress("Scanning for upgrades", done, n, name,
+                                  found=total, unit="artist")
                 continue
             added = 0
             for c in cands:
@@ -698,7 +716,7 @@ def scan_upgrades(job, token):
                 added += 1
             hit = {"artist": name, "albums": added} if added else None
             job.push_progress("Scanning for upgrades", done, n, name,
-                              found=total, hit=hit)
+                              found=total, hit=hit, unit="artist")
             if added:
                 log.info(f"  {name} — {plural(added, 'album')} to upgrade")
     if not job.cancel_requested:
@@ -804,6 +822,9 @@ def execute_upgrades(job, chosen, token):
         album_id = cand["payload"].get("album_id")
         log.info(f"[{i}/{len(chosen)}] {cand.get('artist','')} — "
                  f"{cand.get('title') or '?'}")
+        job._progress_scope = (i, len(chosen), "album")
+        job.push_progress("Upgrading albums", i, len(chosen),
+                          f"{cand.get('artist','')} — {cand.get('title') or '?'}", unit="album")
         try:
             album = get_album(album_id, token)
         except (AuthLost, QobuzUnavailable):
@@ -858,6 +879,7 @@ def execute_upgrades(job, chosen, token):
         elif _res not in _skip:
             failed += 1
         time.sleep(cfg.ARTIST_API_DELAY)
+    job._progress_scope = None
     if job.cancel_requested:
         job.summary = (f"Stopped early — {ok} upgraded, "
                        f"{len(chosen) - processed} not started.")
@@ -909,7 +931,8 @@ def scan_downsamples(job):
             cands = scan_artist_for_downsample(ad)
         except Exception as e:
             log.info(f"    skipped {name}: {e}")
-            job.push_progress("Scanning for hi-res files", done, n, name, found=total)
+            job.push_progress("Scanning for hi-res files", done, n, name,
+                              found=total, unit="artist")
             continue
         added = 0
         for c in cands:
@@ -931,7 +954,7 @@ def scan_downsamples(job):
             added += 1
         hit = {"artist": name, "albums": added} if added else None
         job.push_progress("Scanning for hi-res files", done, n, name,
-                          found=total, hit=hit)
+                          found=total, hit=hit, unit="artist")
         if added:
             log.info(f"  {name} — {plural(added, 'album')} above CD rate")
     if not job.cancel_requested:
@@ -1020,6 +1043,9 @@ def execute_downsamples(job, chosen):
         album_dir = Path((cand.get("payload") or {}).get("album_dir", ""))
         title = cand.get("title") or album_dir.name
         log.info(f"[{i}/{len(chosen)}] {cand.get('artist', '')} — {title}")
+        job._progress_scope = (i, len(chosen), "album")
+        job.push_progress("Downsampling albums", i, len(chosen),
+                          f"{cand.get('artist', '')} — {title}", unit="album")
         if not album_dir.is_dir():
             log.info("  skipped: folder no longer exists")
             skipped += 1
@@ -1036,6 +1062,7 @@ def execute_downsamples(job, chosen):
             shrunk += 1
         total_saved += res.get("saved_bytes", 0)
         total_errors += res.get("errors", 0)
+    job._progress_scope = None
     if job.cancel_requested:
         job.summary = (f"Stopped early — shrank {plural(shrunk, 'album')} "
                        f"({format_size(total_saved)} reclaimed), "
@@ -1134,6 +1161,23 @@ def _scan_repair_artist(artist_dir, token, job, beat=None):
     return name, agg
 
 
+def _repair_item(artist, albums, flagged):
+    """One consistent live-status line for the whole-library repair sweep.
+
+    Every progress push during the sweep — the per-album heartbeat, the
+    per-artist completion tick, and the failure tick — renders through this so
+    the job page's detail line updates *in place* (the artist and the counts
+    climbing) instead of structurally flip-flopping between an artist-name form
+    and a bare-tally form, which reads as flicker. ``artist`` is whichever one a
+    worker is currently grinding on (carried in ``beat['current']``); it is
+    empty only in the opening instant before the first heartbeat fires, where a
+    neutral label stands in."""
+    if not artist and not albums:
+        return "Starting…"
+    who = artist or "your library"
+    return f"{who} · {albums:,} albums checked · {flagged:,} flagged"
+
+
 def _emit_repair_heartbeat(beat, job, artist_name):
     """Refresh the live progress line from whichever worker crosses the interval,
     so it keeps ticking even while every worker is deep inside one large artist
@@ -1146,11 +1190,16 @@ def _emit_repair_heartbeat(beat, job, artist_name):
         if time.time() - beat["last"] < _REPAIR_HEARTBEAT_SECS:
             return
         beat["last"] = time.time()
+        # Advance the displayed artist only when the throttled beat actually
+        # fires, so the detail line names a stable artist for a calm interval
+        # (rather than hopping every time a worker finishes a small one), while
+        # the completion ticks in between keep the bar and counts climbing.
+        beat["current"] = artist_name
         albums, artists, flagged, n = (beat["albums"], beat["artists"],
                                        beat["flagged"], beat["n"])
-    job.push_progress("Checking for damaged files", artists, n,
-                      f'"{artist_name}" · {albums:,} albums · {flagged:,} flagged',
-                      found=flagged)
+        item = _repair_item(artist_name, albums, flagged)
+    job.push_progress("Checking for damaged files", artists, n, item,
+                      found=flagged, unit="artist")
 
 
 def scan_repairs(job, token):
@@ -1192,11 +1241,11 @@ def scan_repairs(job, token):
     # line when due, so progress keeps showing even while every worker is deep in
     # one large artist and no future has completed (see _emit_repair_heartbeat).
     beat = {"lock": threading.Lock(), "albums": 0, "artists": done,
-            "flagged": total, "n": n, "last": time.time()}
+            "flagged": total, "n": n, "last": time.time(), "current": ""}
     # Show the progress bar immediately rather than a blank header until the
     # first artist comes back.
-    job.push_progress("Checking for damaged files", done, n, "starting…",
-                      found=total)
+    job.push_progress("Checking for damaged files", done, n,
+                      _repair_item("", 0, total), found=total, unit="artist")
     workers = max(1, int(cfg.ARTIST_SCAN_WORKERS))
     # Scan artists in parallel (each worker gets its own HTTP session), but add
     # candidates, advance progress, and write the checkpoint on THIS one thread
@@ -1232,8 +1281,13 @@ def scan_repairs(job, token):
                 # resume retries it rather than baking in a transient miss.
                 log.info(f"    skipped {futures[fut].name}: {e}")
                 n_failed += 1
+                with beat["lock"]:
+                    beat["artists"] = done
+                    albums_seen = beat["albums"]
+                    current = beat["current"]
                 job.push_progress("Checking for damaged files", done, n,
-                                  futures[fut].name, found=total)
+                                  _repair_item(current, albums_seen, total),
+                                  found=total, unit="artist")
                 continue
             n_verified += agg["verified_ok"]
             n_unverified += agg["unverified"]
@@ -1246,9 +1300,10 @@ def scan_repairs(job, token):
                 beat["artists"] = done
                 beat["flagged"] = total
                 albums_seen = beat["albums"]
+                current = beat["current"]
             job.push_progress("Checking for damaged files", done, n,
-                              f'{albums_seen:,} albums · {total:,} flagged',
-                              found=total)
+                              _repair_item(current, albums_seen, total),
+                              found=total, unit="artist")
             since_save += 1
             if since_save >= _CHECKPOINT_EVERY:
                 since_save = 0
@@ -1302,7 +1357,7 @@ def scan_repairs_for_artist(job, artist_name, token):
             log.info("Cancelled — stopping scan.")
             return
         job.push_progress("Checking for damaged files", i, len(album_dirs),
-                          album_dir.name, found=total)
+                          album_dir.name, found=total, unit="album")
         outcome = _repair_album_outcome(album_dir, name, token)
         for spec in outcome.get("specs", []):
             job.add_candidate(**spec)
@@ -1389,6 +1444,12 @@ def execute_repairs(job, chosen, token):
             break
         processed = i
         p = cand["payload"]
+        # Pin the progress card to album-level scope so the inner per-album
+        # phases (download / import / downsample) read "album i / N" instead of
+        # resetting it to 1 / 1 — the card now reflects the whole batch.
+        job._progress_scope = (i, len(chosen), "album")
+        job.push_progress("Repairing damaged albums", i, len(chosen),
+                          f"{p['artist_name']} — {cand['title']}", unit="album")
         log.info(f"[{i}/{len(chosen)}] {p['artist_name']} — {cand['title']}")
         try:
             if cand.get("kind") == "redownload":
@@ -1412,6 +1473,7 @@ def execute_repairs(job, chosen, token):
         else:
             failed += 1
         time.sleep(cfg.ARTIST_API_DELAY)
+    job._progress_scope = None
     if job.cancel_requested:
         job.summary = (f"Stopped early — {fixed} repaired, "
                        f"{len(chosen) - processed} not started.")

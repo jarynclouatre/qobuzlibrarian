@@ -1,6 +1,22 @@
 <div id="job-content" data-job-id="{{ job.id }}"
   {%- if job.status.value == 'awaiting_review' %} data-job-view="review"
   {%- elif job.status.value in ('pending', 'scanning', 'running') %} data-job-view="progress"{% endif %}>
+  {% if job.execute_kind == 'repair' %}
+  {# Repair is one task with three phases. This strip replaces the generic job
+     header so /repair (and this page) read as a single workflow with a clear
+     next step. It sits inside #job-content, so the SSE content-swap advances it
+     along with the body (scan → review → repair → done). #}
+  {% set _st = job.status.value %}
+  {% set _ph = 'scan' if _st in ('pending','scanning') else ('review' if _st == 'awaiting_review' else ('repair' if _st == 'running' else 'done')) %}
+  <div class="flex items-center gap-2 mb-5 text-xs font-medium select-none" aria-label="Repair phase: {{ _ph }}">
+    {% for key, label in [('scan','Scan'), ('review','Review'), ('repair','Repair')] %}
+    {% set _done = (key == 'scan' and _ph in ('scan','review','repair','done')) or (key == 'review' and _ph in ('review','repair','done')) or (key == 'repair' and _ph in ('repair','done')) %}
+    <span class="grid place-items-center h-6 w-6 rounded-full shrink-0 {{ 'bg-primary text-primary-content' if _done else 'bg-base-300 text-base-content/50' }}">{{ loop.index }}</span>
+    <span class="{{ 'text-base-content' if _done else 'text-base-content/40' }}">{{ label }}</span>
+    {% if not loop.last %}<span class="flex-1 h-px min-w-[1rem] {{ 'bg-primary/40' if _done else 'bg-base-300' }}"></span>{% endif %}
+    {% endfor %}
+  </div>
+  {% else %}
   <div class="flex items-center justify-between gap-3 mb-1">
     <h1 class="text-2xl font-bold">{% if job.artist %}{{ job.artist }} — {% endif %}{{ job.title }}</h1>
     <span id="job-status-badge" class="badge whitespace-nowrap shrink-0
@@ -11,6 +27,7 @@
       {%- else %} badge-warning{% endif %}">{{ job.status.value.replace('_', ' ').replace('canceled', 'cancelled') }}</span>
   </div>
   <p class="text-xs text-base-content/40 mb-6">Job {{ job.id }}</p>
+  {% endif %}
 
   {% set s = job.status.value %}
 
@@ -76,6 +93,18 @@
       {% endif %}
     </div>
 
+    {# Why a queued scan isn't moving yet: scans share ONE worker, so it waits
+       behind whatever holds it. Spell that out instead of a bare "Queued" with
+       an empty log. It starts on its own when the one ahead finishes. #}
+    {% if s == 'pending' and queue_wait is defined and queue_wait %}
+    <div class="alert alert-info mb-3 py-2 text-sm" id="queue-wait-note">
+      <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/>
+      </svg>
+      <span>Waiting for “{{ queue_wait.ahead_title }}” to finish — only one {{ 'scan' if queue_wait.lane == 'scan' else 'download' }} runs at a time{% if queue_wait.position > 1 %} ({{ queue_wait.position }} ahead of yours){% endif %}. Yours starts automatically.</span>
+    </div>
+    {% endif %}
+
     <div id="progress-card" class="card bg-base-200 mb-3 hidden">
       <div class="card-body py-4">
         <div class="flex items-baseline justify-between gap-3 mb-2">
@@ -93,12 +122,13 @@
     <p id="scan-found" class="text-sm text-base-content/60 mb-3" aria-live="polite"></p>
     {% endif %}
 
-    {# A repair sweep shows its liveness in the progress line above (it ticks even
-       while a worker is deep in one artist); the log below carries only flagged
-       albums, so open it by default so a problem shows the moment it's found.
-       Other scans show a tally above and stay collapsed. #}
-    <details class="mt-1"{% if s == 'scanning' and job.execute_kind == 'repair' %} open{% endif %}>
-      <summary class="text-sm text-base-content/50 cursor-pointer select-none">{% if s == 'scanning' and job.execute_kind == 'repair' %}Flagged albums — problems appear here as they're found{% elif s in ('scanning', 'running') %}Live activity{% else %}Show details{% endif %}</summary>
+    {# The calm summary is the progress card above — for a repair sweep its detail
+       line reads "artist · N albums checked · K flagged", which carries the live
+       signal. The raw per-item log is secondary, kept collapsed under a quiet
+       disclosure (repair's flagged albums are listed for triage in the Review
+       phase next). Other scans show a tally above and stay collapsed too. #}
+    <details class="mt-1">
+      <summary class="text-sm text-base-content/50 cursor-pointer select-none">{% if s in ('scanning', 'running') %}Activity log{% else %}Show details{% endif %}</summary>
       <div class="log-console mt-2" id="log"></div>
     </details>
   {# ── Finished ─────────────────────────────────────────────────────────── #}

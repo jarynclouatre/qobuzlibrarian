@@ -20,11 +20,11 @@
   <div class="flex flex-wrap items-center gap-x-3 gap-y-1 px-4 py-3 bg-base-200 rounded-lg">
     <div class="shrink-0">
       {% if job.status == 'done' %}
-        <span class="text-success text-lg" role="img" aria-label="Done" title="Done">✓</span>
+        <span class="badge badge-sm badge-success gap-1">✓ Done</span>
       {% elif job.status == 'canceled' %}
-        <span class="text-base-content/40 text-lg" role="img" aria-label="Cancelled" title="Cancelled">⊘</span>
+        <span class="badge badge-sm badge-ghost gap-1">⊘ Cancelled</span>
       {% else %}
-        <span class="text-error text-lg" role="img" aria-label="Failed" title="Failed">✗</span>
+        <span class="badge badge-sm badge-error gap-1">✗ Failed</span>
       {% endif %}
     </div>
     <div class="min-w-0 flex-1">

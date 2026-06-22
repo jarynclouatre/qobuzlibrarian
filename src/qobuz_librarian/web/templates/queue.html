@@ -25,7 +25,7 @@
 <div class="mb-6 space-y-4">
   {% for job in pending %}
   <div class="card bg-base-200 shadow {% if job.status.value == 'running' %}border border-warning{% endif %}"
-       {% if job.status.value in ('running', 'scanning') %}data-job-card data-job-id="{{ job.id }}" data-job-surface="queue" data-job-status="{{ job.status.value }}"{% endif %}>
+       {% if job.status.value in ('running', 'scanning', 'pending') %}data-job-card data-job-id="{{ job.id }}" data-job-surface="queue" data-job-status="{{ job.status.value }}"{% endif %}>
     <div class="card-body">
       <div class="flex items-start justify-between gap-3">
         <div class="min-w-0 flex-1">
@@ -51,7 +51,7 @@
           {% elif job.status.value == 'scanning' %}
           <p id="card-prog-{{ job.id }}" class="text-sm text-base-content/60">
             {%- if job.progress_total > 0 -%}
-            Scanning {{ job.progress_current }} / {{ job.progress_total }}{% if job.progress_item %} · {{ job.progress_item }}{% endif %}
+            Scanning {{ job.progress_current }} / {{ job.progress_total }}{% if job.progress_unit %} {{ job.progress_unit }}{{ 's' if job.progress_total != 1 }}{% endif %}{% if job.progress_item %} · {{ job.progress_item }}{% endif %}
             {%- elif job.progress_phase -%}
             {{ job.progress_phase }}
             {%- else -%}
@@ -61,11 +61,23 @@
           {% elif job.status.value == 'running' %}
           <p id="card-prog-{{ job.id }}" class="text-sm text-base-content/60">
             {%- if job.progress_total > 0 -%}
-            {{ job.progress_phase or 'Downloading' }} {{ job.progress_current }} / {{ job.progress_total }}{% if job.progress_item %} · {{ job.progress_item }}{% endif %}
+            {{ job.progress_phase or 'Downloading' }} {{ job.progress_current }} / {{ job.progress_total }}{% if job.progress_unit %} {{ job.progress_unit }}{{ 's' if job.progress_total != 1 }}{% endif %}{% if job.progress_item %} · {{ job.progress_item }}{% endif %}
             {%- elif job.progress_phase -%}
             {{ job.progress_phase }}
             {%- else -%}
             Downloading…
+            {%- endif -%}
+          </p>
+          {% elif job.status.value == 'pending' %}
+          {# Why it hasn't started: scans share one worker, downloads another, so a
+             job only waits behind others in its own lane. Spell that out instead of
+             a bare "Queued"; it flips to a live card the moment it starts. #}
+          {% set qw = (queue_waits or {}).get(job.id) %}
+          <p id="card-prog-{{ job.id }}" class="text-sm text-base-content/60">
+            {%- if qw -%}
+            Waiting for “{{ qw.ahead_title }}” to finish — only one {{ 'scan' if qw.lane == 'scan' else 'download' }} runs at a time{% if qw.position > 1 %} ({{ qw.position }} ahead of yours){% endif %}. Starts automatically.
+            {%- else -%}
+            Starting…
             {%- endif -%}
           </p>
           {% endif %}

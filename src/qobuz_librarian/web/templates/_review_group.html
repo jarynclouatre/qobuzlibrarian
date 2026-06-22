@@ -30,6 +30,21 @@
         <span class="font-medium">{{ c.title }}</span>{% if c.payload.is_new %}
         <span class="badge badge-primary badge-xs align-middle ml-1">new</span>{% endif %}
         <span class="block text-xs text-base-content/40">{{ c.detail }}</span>
+        {# Repair: name the actual damaged tracks (track no. + title), not just a
+           count — the per-track data is already in the candidate payload. #}
+        {% if c.payload.verified_truncated %}
+        <span class="block mt-1.5 pl-2 border-l-2 border-warning/40 space-y-0.5">
+          {% for t in c.payload.verified_truncated[:12] %}
+          <span class="block text-xs text-base-content/60 truncate">
+            <span class="readout text-base-content/40">{% if t.track_number %}{{ '%02d'|format(t.track_number) }}{% else %}··{% endif %}</span>
+            {{ t.title }}{% if t.reason == 'decode_failed' %} <span class="text-base-content/40">· won't decode</span>{% endif %}
+          </span>
+          {% endfor %}
+          {% if (c.payload.verified_truncated | length) > 12 %}
+          <span class="block text-xs text-base-content/40">+{{ (c.payload.verified_truncated | length) - 12 }} more</span>
+          {% endif %}
+        </span>
+        {% endif %}
       </span>
     </label>
     {% endfor %}

@@ -148,6 +148,10 @@ class Job:
     progress_total: int   = 0
     progress_item: str    = ""
     progress_found: int   = 0   # running tally of results found so far
+    # What current/total are counting, so the UI can label a bare "12 / 350"
+    # ("artist", "album", "track"). Empty → no unit shown (e.g. downloads, where
+    # the album title + track item already make the count's meaning obvious).
+    progress_unit: str    = ""
     log_lines: list   = field(default_factory=list)
     # Review candidates: each is a dict
     #   {cid, kind, title, artist, detail, payload, selected}
@@ -182,6 +186,13 @@ class Job:
     _cand_seq: int = field(default=0, repr=False)
     # Set once a scan hits JOB_CANDIDATE_CAP and stops listing further finds.
     _candidate_cap_noted: bool = field(default=False, repr=False)
+    # When set to (current, total, unit), push_progress reports THESE counts in
+    # place of the caller's — so a multi-item execute (repairing 16 albums) keeps
+    # the progress card on "album 3 / 16" even while each album's inner phases
+    # (download, import, downsample) report their own 1 / 1. Set/cleared by the
+    # execute loop; None = normal pass-through. The phase + item still come from
+    # the inner call, so the card reads e.g. "Importing… · 3/16 · <album>".
+    _progress_scope: Optional[tuple] = field(default=None, repr=False)
 
     # ── logging / streaming ──────────────────────────────────────────────────
     def _fan_out(self, line: str):
@@ -235,7 +246,7 @@ class Job:
         self._fan_out(STREAM_END)
 
     def push_progress(self, phase, current=0, total=0, item="", found=0,
-                      hit=None):
+                      hit=None, unit=""):
         """Update the live progress header (phase + counts) and stream it as a
         distinct event. Kept out of log_lines so it never clutters the log or
         gets replayed line-by-line on reconnect; the latest snapshot is re-sent
@@ -244,7 +255,14 @@ class Job:
         ``found`` is a running tally (e.g. albums with gaps so far); ``hit`` is
         a one-off {artist, albums} the scanning page appends to its live preview
         — it is deliberately left out of the stored snapshot so a reconnect
-        replay doesn't duplicate a preview row."""
+        replay doesn't duplicate a preview row. ``unit`` names what current/total
+        count ("artist"/"album"/"track") so the UI can label the bare numbers."""
+        # An execute loop can pin the counts to an overall scope (e.g. album
+        # 3/16) so inner per-album phases don't reset the card to 1/1. The
+        # caller's phase, item, and found still pass through.
+        scope = self._progress_scope
+        if scope is not None:
+            current, total, unit = scope
         # Write the snapshot fields under the lock so a reconnecting subscriber
         # reading them via _progress_snapshot() (also under the lock) can't catch
         # a torn mix — e.g. the new phase label with the previous phase's counts.
@@ -254,8 +272,13 @@ class Job:
             self.progress_total = total
             self.progress_item = item
             self.progress_found = found
+            self.progress_unit = unit
         payload = {"phase": phase, "current": current, "total": total,
                    "item": item, "found": found}
+        # Optional keys mirror `hit`: kept out of the payload when unset so the
+        # common case stays lean and existing consumers see no new field.
+        if unit:
+            payload["unit"] = unit
         if hit:
             payload["hit"] = hit
         self._fan_out(PROGRESS_PREFIX + json.dumps(payload))
@@ -269,10 +292,13 @@ class Job:
         self._fan_out(REVIEW_CHANGED)
 
     def _progress_snapshot(self) -> str:
-        return PROGRESS_PREFIX + json.dumps({
+        snap = {
             "phase": self.progress_phase, "current": self.progress_current,
             "total": self.progress_total, "item": self.progress_item,
-            "found": self.progress_found})
+            "found": self.progress_found}
+        if self.progress_unit:
+            snap["unit"] = self.progress_unit
+        return PROGRESS_PREFIX + json.dumps(snap)
 
     # Cap replay so a late subscriber doesn't get thousands of historical
     # lines blasted at them (and so the bounded queue isn't filled by
@@ -814,6 +840,11 @@ def approve(job: Job, selected_ids=None) -> bool:
             return False
         job.status = JobStatus.PENDING
         job.finished_at = None
+        # Restart the elapsed clock at approve so the execute phase (downloading /
+        # repairing) times itself — otherwise it keeps counting from the scan
+        # start and folds in however long the results sat awaiting review, making
+        # "Downloading · 1:17" read as download time when it was mostly browsing.
+        job.started_at = time.time()
         if selected_ids is not None:
             keep = set(selected_ids)
             for c in job.candidates:

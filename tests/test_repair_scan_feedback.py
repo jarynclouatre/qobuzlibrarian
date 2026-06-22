@@ -39,7 +39,8 @@ class _RecordingJob:
         self.summary = ""
         self.progress_items = []   # the `item` of every push_progress call
 
-    def push_progress(self, phase, current=0, total=0, item="", found=0, hit=None):
+    def push_progress(self, phase, current=0, total=0, item="", found=0, hit=None,
+                      unit=""):
         self.progress_items.append(item)
 
     def push_line(self, line):
@@ -119,22 +120,31 @@ def test_repair_scan_emits_heartbeat_on_clean_library(monkeypatch):
     # The opening line sets expectations instead of going silent.
     assert any("healthy albums stay quiet" in m for m in records)
     # A clean library still ticks a visible live status — in the progress line,
-    # not the log — so the scan never reads as hung.
-    assert any(it.startswith('"') for it in job.progress_items)
+    # not the log — so the scan never reads as hung. With the beat firing on
+    # every album there are more pushes than the one-per-artist completion ticks
+    # alone (the opener + N completions would be N + 1).
+    assert len(job.progress_items) > len(artists) + 1
+    # Every live line is the one consistent shape — "<artist> · N albums checked
+    # · M flagged" (or the opening "Starting…") — naming the artist a worker is
+    # on rather than flicking between an artist form and a bare-tally form.
+    assert any("Artist 0" in it for it in job.progress_items)
+    assert all("albums checked" in it or it == "Starting…"
+               for it in job.progress_items)
 
 
 def test_repair_scan_heartbeat_is_throttled(monkeypatch):
     # With a long heartbeat window and a fast (clean) scan, no mid-artist beat
-    # should fire per album — the whole point of the time throttle. (Per-artist
-    # completion still refreshes the line; only the heartbeat is gated.)
+    # should fire per album — the whole point of the time throttle. Per-artist
+    # completion still refreshes the line; only the heartbeat is gated. So the
+    # only pushes are the opening frame plus one per finished artist.
     artists = [_FakeArtist(f"Artist {i}", [_FakeAlbum(f"Album {i}")])
                for i in range(8)]
     _wire(monkeypatch, artists, heartbeat_secs=3600)
     job = _RecordingJob()
     flows.scan_repairs(job, "token")
 
-    beats = [it for it in job.progress_items if it.startswith('"')]
-    assert beats == []  # throttled out entirely within one fast pass
+    # opener + one completion tick per artist, nothing extra from the throttle.
+    assert len(job.progress_items) == len(artists) + 1
 
 
 def test_repair_scan_verifies_every_track_deep(monkeypatch):

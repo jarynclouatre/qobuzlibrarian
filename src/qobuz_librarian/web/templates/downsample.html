@@ -7,20 +7,13 @@
 
 <h1 class="text-2xl font-bold mb-2">Downsample to CD rate</h1>
 <p class="text-base-content/60 mb-2">
-  Find FLACs in your library stored above CD rate (88.2 / 96 / 176.4 / 192 /
-  352.8 / 384&nbsp;kHz) and shrink them to 44.1 / 48&nbsp;kHz to reclaim space —
-  most playback gear can't tell the difference. You review the list and tick the
-  albums to shrink; nothing is selected by default.
+  Shrinks hi-res FLACs above CD rate down to 44.1 / 48&nbsp;kHz to reclaim space — most playback gear can't tell the difference.
 </p>
-<div class="alert alert-warning mb-2">
-  <span><strong>This can't be undone.</strong> Each file is rewritten in place and
-    the hi-res original is not kept — re-downloading hi-res later would just
-    reverse the saving. Every file is verified to decode cleanly before it
-    replaces the original.</span>
+<div class="ql-notice ql-notice-warning mb-3 p-3 text-sm">
+  <span><strong>This can't be undone.</strong> Files are rewritten in place and the hi-res original isn't kept.</span>
 </div>
-<p class="text-base-content/40 text-sm mb-2">
-  Local only — no Qobuz login needed. Only FLAC files are touched; lossy files and
-  files already at CD rate are left alone.
+<p class="text-base-content/40 text-sm mb-3">
+  {% if last_run %}Last downsample scan {{ last_run }}.{% else %}No downsample scan has finished yet.{% endif %}
 </p>
 {% if hidden_count %}
 <p class="mb-6">
@@ -37,11 +30,6 @@
   <button type="submit" class="btn btn-primary"
           data-confirm="Scan the library for hi-res files? You review and pick what to shrink before anything changes.">Start downsample scan</button>
 </form>
-{% if creds_ok %}
-<p class="text-xs text-base-content/50 mt-3">
-  Just one artist? <a href="/artist" class="link">Use the Artist page</a> — same scan, scoped to their albums only.
-</p>
-{% endif %}
 {% else %}
 <div class="alert alert-warning">
   <span>Downsampling isn't available on this server (the resample helper is missing).</span>

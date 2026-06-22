@@ -251,6 +251,43 @@ def run_album_download(*, album, missing, present, album_dir, snapshot,
                 log.info(fmt(C.GREEN,
                     f"  ✓  Retry recovered {len(retry_kept)} track(s)"))
 
+    # A HARD failure (rip errored with no file landing at all — distinct from a
+    # file that landed lossy/broken, retried above) gets one more per-track pull
+    # before it's given up on: a transient 5xx / momentary network blip usually
+    # clears on a second attempt, and otherwise the user has to re-run the whole
+    # repair or download just for that one track. One retry, no loop; the
+    # reconcile below un-fails anything this lands. Skipped on a cancel, and only
+    # for tracks that still have no clean file on disk.
+    if failed_tracks and missing and not is_cancel_requested():
+        kept_norms = {match_key_from_stem(p) for p in kept}
+        failed_norms = {_bare_title(ft) for ft in failed_tracks}
+        hard_targets = [t for t in missing
+                        if t.get("id")
+                        and _bare_title(t.get("title")) in failed_norms
+                        and _bare_title(t.get("title")) not in kept_norms]
+        if hard_targets:
+            log.info(fmt(C.GRAY,
+                f"  ↻  Retrying {len(hard_targets)} failed download(s) once "
+                "via per-track URL"))
+            hard_snapshot = snapshot_staging()
+            for t in hard_targets:
+                rc, out = rip_url(f"https://play.qobuz.com/track/{t['id']}",
+                                  timeout=cfg.RIP_TIMEOUT, quality=quality)
+                if detect_auth_lost(out):
+                    raise AuthLost("rip output contained auth-lost markers")
+                if detect_disk_full(out):
+                    raise OSError(28, f"No space left on device at {cfg.STAGING_DIR}")
+                rate_limited = rate_limited or detect_rate_limited(out)
+                time.sleep(cfg.DELAY_BETWEEN)
+            hard_kept, _, _ = cleanup_lossy(
+                [f for f in files_added_since(hard_snapshot)
+                 if f.suffix.lower() in cfg.AUDIO_EXTS])
+            if hard_kept:
+                kept = kept + hard_kept
+                n_ok = len(kept)
+                log.info(fmt(C.GREEN,
+                    f"  ✓  Retry recovered {len(hard_kept)} failed download(s)"))
+
     # `n_lossy`/`lossy_tracks` stay the count and stems of everything discarded
     # (lossy + broken) — the album-whole gates and the reconciliation math key
     # off "did every track land as a clean FLAC", which both kinds fail.

@@ -732,6 +732,9 @@ def test_execute_upgrades_does_not_flip_global_cfg(monkeypatch):
 
     class _FakeJob:
         cancel_requested = False
+        _progress_scope = None
+        def push_progress(self, *a, **k):
+            pass
     chosen = [{
         "artist": "Artist", "title": "A",
         "payload": {"album_id": "1"},

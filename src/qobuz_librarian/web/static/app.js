@@ -221,20 +221,45 @@
     document.querySelectorAll("[data-flash]").forEach(fade);
   };
 
+  // A programmatic toast in the #download-toast corner, matching the queued
+  // confirmation's styling and auto-dismiss. Used when a background job ends in
+  // a state worth surfacing (a failed download) but no htmx response carried a
+  // banner — without this it would just vanish from the list like a success.
+  function showToast(message, kind) {
+    var host = document.getElementById("download-toast");
+    if (!host) return;
+    var el = document.createElement("div");
+    el.className = "alert alert-" + (kind || "info");
+    el.setAttribute("data-flash", "");
+    el.setAttribute("role", "status");
+    var span = document.createElement("span");
+    span.textContent = message;
+    el.appendChild(span);
+    host.appendChild(el);
+    setTimeout(function () { fade(el); }, 8000);
+  }
+
   // ── Live job/queue streams ─────────────────────────────────────────────
   // Kept out of the partials htmx swaps in: a nonce can't survive an htmx swap
   // (the fragment's nonce ≠ the live document's), so an inline block in swapped
   // content would be CSP-blocked. These bind on load and re-bind after each
   // swap; a dataset flag stops a node from binding twice.
 
+  // Label a bare "12 / 350" with what it counts ("artists"/"albums"/"tracks")
+  // so the numbers aren't a guess. The server sends the singular unit; pluralise
+  // by the total. Empty when the push carried no unit (e.g. a download).
+  function unitSuffix(p) {
+    return p.unit ? " " + p.unit + (p.total === 1 ? "" : "s") : "";
+  }
+
   function fmtProgress(p, verb, withItem) {
     if (withItem === undefined) withItem = true;
-    // The dashboard card stays a stable "Scanning N / M" — the per-artist item
-    // cycles (artist name ↔ album tally) and reads as flicker on a glance card;
-    // the detail lives on the job page. The queue card keeps its item.
+    // The dashboard card stays a stable "Scanning N / M artists" — the per-artist
+    // item cycles (artist name ↔ album tally) and reads as flicker on a glance
+    // card; the detail lives on the job page. The queue card keeps its item.
     var item = (withItem && p.item) ? " · " + p.item : "";
     if (p.total > 0) {
-      return verb + " " + p.current + " / " + p.total + item;
+      return verb + " " + p.current + " / " + p.total + unitSuffix(p) + item;
     }
     if (p.phase) return p.phase + item;
     return "";
@@ -246,13 +271,24 @@
     if (card.dataset.sseWired === "1") return;
     card.dataset.sseWired = "1";
     var id = card.dataset.jobId;
-    var surface = card.dataset.jobSurface;   // "dashboard" | "queue"
+    var surface = card.dataset.jobSurface;   // "dashboard" | "queue" | "repair"
     var status = card.dataset.jobStatus;
     if (!id || !surface) return;
-    var progId = (surface === "dashboard" ? "dash-prog-" : "card-prog-") + id;
-    var containerId = surface === "dashboard" ? "dashboard-active" : "queue-body";
+    // A queue card rendered while still PENDING shows the "waiting behind X"
+    // explainer; the moment it actually starts (first progress event) we re-pull
+    // the queue so it flips to a live Scanning/Downloading card. Guarded so the
+    // re-pull fires once.
+    var flippedFromPending = false;
+    var progId = (surface === "dashboard" ? "dash-prog-"
+                : surface === "repair" ? "repair-prog-" : "card-prog-") + id;
+    // The repair card lives on a page htmx never swaps, so it has no swap-out
+    // container to watch — it tears down on the stream's done/close instead.
+    var containerId = surface === "dashboard" ? "dashboard-active"
+                    : surface === "queue" ? "queue-body" : "";
     var reconnect = surface === "dashboard"
-      ? document.getElementById("dash-reconnect-" + id) : null;
+      ? document.getElementById("dash-reconnect-" + id)
+      : surface === "repair"
+      ? document.getElementById("repair-reconnect-" + id) : null;
     var src = new EventSource("/api/jobs/" + id + "/stream");
     function shut() {
       try { src.close(); } catch (e) {}
@@ -262,22 +298,82 @@
       if (e.detail && e.detail.target && e.detail.target.id === containerId) shut();
     }
     document.addEventListener("htmx:beforeSwap", onSwap);
+    // The repair card streams the flagged-album log inline so the sweep is
+    // watched right here, not on a tapped-through page. A card that loaded
+    // queued (pending, behind another scan) flips to "Scanning" on first output.
+    var repairLog = surface === "repair" ? document.getElementById("repair-log-" + id) : null;
+    var repairBadge = surface === "repair" ? document.getElementById("repair-badge-" + id) : null;
+    var repairWait = surface === "repair" ? document.getElementById("repair-wait-" + id) : null;
+    var repairStarted = status !== "pending";
+    var repairOpened = false;
+    function repairMarkStarted() {
+      if (repairStarted) return;
+      repairStarted = true;
+      if (repairBadge) { repairBadge.textContent = "Scanning"; repairBadge.className = "badge badge-info badge-sm"; }
+      if (repairWait) repairWait.classList.add("hidden");
+    }
+    if (surface === "repair") {
+      src.onmessage = function (e) {
+        repairMarkStarted();
+        if (repairLog) { repairLog.appendChild(document.createTextNode(e.data + "\n")); repairLog.scrollTop = repairLog.scrollHeight; }
+      };
+    }
     if (reconnect) {
-      src.onopen = function () { reconnect.classList.add("hidden"); };
+      src.onopen = function () {
+        reconnect.classList.add("hidden");
+        // Reconnect replays the tail — clear so it repopulates the inline log
+        // instead of doubling it. Not on first open (nothing to double yet).
+        if (surface === "repair" && repairOpened && repairLog) repairLog.textContent = "";
+        repairOpened = true;
+      };
       src.onerror = function () {
         if (src.readyState !== EventSource.CLOSED) reconnect.classList.remove("hidden");
       };
     }
     src.addEventListener("progress", function (e) {
       var p; try { p = JSON.parse(e.data); } catch (_) { return; }
+      // A pending queue card just received its first progress → the job started.
+      // Re-render the queue so the badge/border/cancel flip to the running shape
+      // (the bare "Queued + waiting" card can't restyle itself in place).
+      if (surface === "queue" && status === "pending" && !flippedFromPending) {
+        flippedFromPending = true;
+        shut();
+        if (window.htmx) {
+          window.htmx.ajax("GET", "/queue",
+            { target: "#queue-body", swap: "outerHTML", select: "#queue-body" });
+        }
+        return;
+      }
+      if (surface === "repair") repairMarkStarted();
       var el = document.getElementById(progId);
       if (!el) return;
-      var txt = fmtProgress(p, status === "scanning" ? "Scanning" : (p.phase || "Downloading"),
-                            surface !== "dashboard");
+      // The repair card shows the sweep's own rich detail line (current artist ·
+      // albums checked · flagged) verbatim — it's already a stable single line,
+      // so no "Scanning N / M" wrapper. Fall back to the count if it's empty.
+      var txt = surface === "repair"
+        ? (p.item || fmtProgress(p, "Scanning", false))
+        : fmtProgress(p, status === "scanning" ? "Scanning" : (p.phase || "Downloading"),
+                      surface !== "dashboard");
       if (txt) el.textContent = txt;
     });
-    src.addEventListener("done", function () {
+    src.addEventListener("done", function (e) {
       shut();
+      if (surface === "repair") {
+        // Scan finished → the job left scanning for its results. Go to the job
+        // page so the user lands on the flagged-album review, not a stale form.
+        location.href = "/jobs/" + id;
+        return;
+      }
+      // A FAILED job just drops out of the active/queue list with the same empty
+      // state as a clean finish. Flash a toast so a failed download isn't lost
+      // silently — History keeps the detail and a Retry. (A user-initiated
+      // cancel is expected, so it doesn't toast.)
+      var endStatus = (e && e.data) ? ("" + e.data).trim() : "";
+      if (endStatus === "failed") {
+        var t = card.querySelector('a[href^="/jobs/"]');
+        var label = ((t && t.textContent) || "A job").replace(/\s+/g, " ").trim();
+        showToast(label + " failed — open History for details.", "error");
+      }
       if (surface === "dashboard") {
         // Don't yank the user mid-search — if search results are showing, drop
         // just THIS finished card. Hiding the whole #dashboard-active container
@@ -363,10 +459,19 @@
         ? "Found " + plural(foundAlbums, "album") + " across " + plural(foundArtists, "artist") + " so far…"
         : "";
     }
+    // A job that loaded PENDING shows a "waiting behind X" note and a "Queued"
+    // label; the first streamed line or progress tick means the worker picked it
+    // up, so clear that state live instead of leaving it stale until the swap.
+    var waitNote = document.getElementById("queue-wait-note");
+    function clearQueuedState() {
+      if (waitNote) { waitNote.classList.add("hidden"); waitNote = null; }
+      if (activity && activity.textContent === "Queued") activity.textContent = "Scanning";
+    }
     var src = new EventSource("/api/jobs/" + id + "/stream");
     var opened = false;
     src.onmessage = function (e) {
       if (!titleSet) { document.title = "▶ " + baseTitle; titleSet = true; }
+      clearQueuedState();
       if (logEl) { logEl.appendChild(document.createTextNode(e.data + "\n")); logEl.scrollTop = logEl.scrollHeight; }
     };
     src.onopen = function () {
@@ -389,11 +494,12 @@
     };
     src.addEventListener("progress", function (e) {
       var p; try { p = JSON.parse(e.data); } catch (_) { return; }
+      clearQueuedState();
       if (window.qlDismissAllFlashes) window.qlDismissAllFlashes();
       if (activity && p.phase && activity.textContent !== p.phase) activity.textContent = p.phase;
       if (card) card.classList.remove("hidden");
       if (label) label.textContent = p.phase || "Working";
-      var ct = p.total > 0 ? p.current + " / " + p.total : (p.current ? String(p.current) : "");
+      var ct = p.total > 0 ? p.current + " / " + p.total + unitSuffix(p) : (p.current ? String(p.current) : "");
       if (count) count.textContent = ct;
       if (bar) { if (p.total > 0) { bar.max = 100; bar.value = Math.round(p.current / p.total * 100); } else { bar.removeAttribute("value"); } }
       if (item) item.textContent = p.item || "";

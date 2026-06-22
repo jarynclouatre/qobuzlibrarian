@@ -187,7 +187,7 @@
     {% else %}
     <div class="flex items-center gap-3 flex-wrap">
       <span class="badge badge-success gap-1">Web app active</span>
-      <span class="text-sm text-base-content/70">The CLI is locked out.</span>
+      <span class="text-sm text-base-content/70">Command-line tool is paused — this is normal.</span>
       <form action="/settings/mode" method="post" class="ml-auto">
         <input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}">
         <input type="hidden" name="target" value="cli">

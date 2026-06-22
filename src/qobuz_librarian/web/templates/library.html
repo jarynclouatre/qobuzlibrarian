@@ -2,15 +2,19 @@
 {% block title %}Library — Qobuz Librarian{% endblock %}
 {% block content %}
 
-<h1 class="text-2xl font-bold mb-2">Library gap scan</h1>
+<h1 class="text-2xl font-bold mb-2">Scan your library</h1>
 <p class="text-base-content/60 mb-2">
-  Walk every artist folder in your library, check each against Qobuz, and
-  list every album you're missing. Review and approve the list before
-  anything downloads.
+  Checks every artist in your library against Qobuz and lists what you're missing.
 </p>
-<p class="text-base-content/40 text-sm mb-2">
-  Roughly one Qobuz call per artist, with a small pause between each.
+{% if creds_ok %}
+<p class="text-base-content/40 text-sm mb-3">
+  {%- if last_full_scan -%}
+  Last scan {{ last_full_scan }}{% if not baseline_complete %} · the first full scan hasn't finished yet, so new-release alerts are still off{% endif %}.
+  {%- else -%}
+  No scan has finished yet — new-release alerts switch on once the first one completes.
+  {%- endif -%}
 </p>
+{% endif %}
 {% if hidden_count %}
 <p class="mb-6">
   <a href="/library/hidden" class="link link-hover text-sm">
@@ -21,11 +25,11 @@
 {% endif %}
 
 {% if creds_ok and library_resume %}
-<div class="alert alert-info mb-4">
-  <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
+<div class="ql-notice ql-notice-info mb-4 flex items-start gap-3 p-3 text-sm">
+  <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 shrink-0 text-info" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
   </svg>
-  <span>A {% if library_resume.kind == 'partial' %}partial-fill{% else %}library{% endif %} scan was interrupted — {{ library_resume.done }} artist{{ 's' if library_resume.done != 1 }} already checked. <strong>{% if library_resume.kind == 'partial' %}Fill gaps in albums you own{% else %}Find missing albums{% endif %}</strong> is pre-selected to continue from there; pick a different option to start a fresh scan instead.</span>
+  <span class="min-w-0 flex-1">A scan was interrupted — {{ library_resume.done }} artist{{ 's' if library_resume.done != 1 }} already checked. Continue below to resume it, or choose a different mode to start a separate scan — the interrupted one stays saved either way.</span>
 </div>
 {% endif %}
 
@@ -38,7 +42,7 @@
              {% if not library_resume or library_resume.kind == 'missing' %}checked{% endif %}>
       <div>
         <div class="font-medium">Find missing albums</div>
-        <div class="text-sm text-base-content/50">Surface albums you don't have at all.</div>
+        <div class="text-sm text-base-content/50">Albums you don't own at all.</div>
       </div>
     </label>
     <label class="flex items-start gap-3 cursor-pointer">
@@ -46,14 +50,14 @@
              {% if library_resume and library_resume.kind == 'partial' %}checked{% endif %}>
       <div>
         <div class="font-medium">Fill gaps in albums you own</div>
-        <div class="text-sm text-base-content/50">Only albums already in your library that are missing some tracks — not ones you don't have at all.</div>
+        <div class="text-sm text-base-content/50">Albums you own that are missing tracks.</div>
       </div>
     </label>
     <label class="flex items-start gap-3 cursor-pointer">
       <input type="radio" name="mode" value="new_releases" class="radio radio-primary mt-1">
       <div>
         <div class="font-medium">Check for new releases</div>
-        <div class="text-sm text-base-content/50">Recent releases by artists you collect that you don't own yet — quick to check, and you pick what to download.</div>
+        <div class="text-sm text-base-content/50">Recent releases you don't own yet.</div>
       </div>
     </label>
   </div>

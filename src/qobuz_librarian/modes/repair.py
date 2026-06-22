@@ -547,13 +547,17 @@ def repair_album_dir(album_dir, verified_truncated, artist_name, args, token):
                     pass
             elif back_in_place:
                 # The re-downloaded tracks are physically back but couldn't be
-                # verified as intact (still truncated, or no ISRC to check
-                # against). Keep the originals — deleting the only other copy on
-                # a presence check alone is how a bad re-rip silently replaces a
-                # good-enough track with a worse one.
+                # verified as intact (still short of the listed length, or no ISRC
+                # to check against). Keep the originals — deleting the only other
+                # copy on a presence check alone is how a bad re-rip silently
+                # replaces a good-enough track with a worse one. When the refill is
+                # also short, Qobuz's own master is truncated: re-running won't fix
+                # it, so say so rather than implying a retry would help.
                 log.info(fmt(C.YELLOW,
-                    f"  ⚠  Re-downloaded tracks couldn't be verified as intact; "
-                    f"keeping the originals at:\n     {backup_path}"))
+                    f"  ⚠  The re-download is also short of its listed length — "
+                    f"Qobuz's own copy looks truncated, so this track can't be "
+                    f"repaired from Qobuz. Kept your original; re-running won't "
+                    f"change it. Backup:\n     {backup_path}"))
             elif n_fail_final > 0:
                 log.info(fmt(C.YELLOW,
                     f"  ⚠  {n_fail_final} track(s) failed to re-download. "

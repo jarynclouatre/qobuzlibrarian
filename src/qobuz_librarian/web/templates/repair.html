@@ -2,25 +2,23 @@
 {% block title %}Repair — Qobuz Librarian{% endblock %}
 {% block content %}
 
-<div class="flex items-center justify-between gap-3 mb-2">
+<div class="flex items-center justify-between gap-3 mb-4">
   <h1 class="text-2xl font-bold">Repair</h1>
   <a href="/repair/history" class="btn btn-ghost btn-sm">View history</a>
 </div>
-<p class="text-base-content/60 mb-2">
-  Scan every album for truncated or partially-downloaded FLACs. Every track's
-  length is checked against its exact Qobuz recording by ISRC — so even a file
-  that plays fine but is cut short (or had its header rewritten to hide the
-  truncation) is caught, not just an obviously tiny one. You pick which albums
-  to repair; broken files are backed up before being refilled.
-</p>
-<p class="text-base-content/40 text-sm mb-6">
-  Thorough: every track's length is checked against Qobuz. The first full scan of
-  a large library can take a while, but it runs several artists at once and caches
-  results, so re-scans only re-check what changed. Open the scan to watch it work
-  live — it lists only problems, so quiet stretches are normal.
-</p>
 
 {% if creds_ok %}
+{% if repair_job %}
+{# A repair job owns this surface across every phase. Render its live body inline
+   — scanning → review → repairing → done — so the whole task stays on /repair
+   instead of handing a parked review off to /jobs/{id}. The phase strip + body
+   live inside #job-content, so the SSE content-swap advances them together. #}
+{% with job = repair_job %}{% include "_job_body.html" %}{% endwith %}
+{% else %}
+{# Idle: start (or resume an interrupted sweep). #}
+<p class="text-base-content/60 mb-6">
+  Finds truncated or partially-downloaded FLACs — even ones that still play — by checking each track's length against its Qobuz recording by ISRC. Broken files are backed up before refilling.
+</p>
 {% if repair_resume %}
 <div class="alert alert-info mb-4">
   <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
@@ -32,11 +30,9 @@
 <form action="/repair" method="post" data-busy-submit>
   <input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}">
   <button type="submit" class="btn btn-primary"
-          {% if repair_resume %}data-confirm="Continue the repair scan from where it left off?"{% else %}data-confirm="Start a full repair scan? This can take a couple of hours on a large library."{% endif %}>{% if repair_resume %}Resume repair scan{% else %}Start repair scan{% endif %}</button>
+          {% if repair_resume %}data-confirm="Continue the repair scan from where it left off?"{% else %}data-confirm="Start a full repair scan? This can take a couple of hours on a large library."{% endif %}>{% if repair_resume %}Resume scan{% else %}Scan library for damaged tracks{% endif %}</button>
 </form>
-<p class="text-xs text-base-content/50 mt-3">
-  Just one artist? <a href="/artist" class="link">Use the Artist page</a> — same scan, scoped to their albums only.
-</p>
+{% endif %}
 {% else %}
 <div class="alert alert-warning">
   <span>No Qobuz credentials set —

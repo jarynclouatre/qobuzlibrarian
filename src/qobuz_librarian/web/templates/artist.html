@@ -2,14 +2,7 @@
 {% block title %}Artist — Qobuz Librarian{% endblock %}
 {% block content %}
 
-<h1 class="text-2xl font-bold mb-2">For one artist</h1>
-<p class="text-base-content/60 mb-6">
-  Type an artist name and pick what to do for them. <strong>Find missing</strong> is the usual
-  one — looks up their Qobuz catalogue and shows what's missing or new. The other tools work
-  on what's already in your library: check for higher-quality copies on Qobuz, refill any
-  files that have got truncated, fill in any missing lyrics, or downsample hi-res files to
-  save space.
-</p>
+<h1 class="text-2xl font-bold mb-6">For one artist</h1>
 
 {% if error %}
 <div class="alert alert-error mb-4" data-flash><span>{{ error }}</span></div>
@@ -41,15 +34,6 @@
                 aria-label="Find hi-res files to downsample for this artist">Downsample hi-res</button>
       </div>
     </form>
-
-    <p class="text-xs text-base-content/40 mt-4">
-      Want all of these for the whole library instead?
-      <a href="/library" class="link">Library scan</a>,
-      <a href="/upgrade" class="link">Upgrade</a>,
-      <a href="/lyrics" class="link">Lyrics</a>,
-      <a href="/repair" class="link">Repair</a>,
-      <a href="/downsample" class="link">Downsample</a>.
-    </p>
   </div>
 </div>
 {% else %}

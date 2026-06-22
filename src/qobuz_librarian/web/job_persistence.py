@@ -311,6 +311,29 @@ def history_page(limit: int, offset: int) -> list[dict]:
     } for r in rows]
 
 
+def last_finished_at(execute_kind: str) -> Optional[float]:
+    """When a job of this ``execute_kind`` last finished cleanly, or None — backs
+    the per-tool "Last scan …" freshness line. Only DONE counts (a failed/cancelled
+    run isn't a completed pass), and the archive outlives the in-memory cap, so the
+    line survives restarts. Reads the durable jobs.db rather than a separate stamp
+    file so there's nothing extra to keep in sync."""
+    if not execute_kind:
+        return None
+    with _lock:
+        conn = _get_conn()
+        if conn is None:
+            return None
+        try:
+            row = conn.execute(
+                "SELECT MAX(finished_at) FROM jobs "
+                "WHERE status='done' AND execute_kind=? AND finished_at IS NOT NULL",
+                (execute_kind,),
+            ).fetchone()
+        except sqlite3.Error:
+            return None
+    return row[0] if row and row[0] is not None else None
+
+
 def clear_history() -> None:
     """Delete every finished job from disk — the user clearing the History
     record. In-flight jobs are untouched."""

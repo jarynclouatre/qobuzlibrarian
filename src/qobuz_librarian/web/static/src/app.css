@@ -72,6 +72,83 @@
   --color-info-content: oklch(99% 0.01 245);
 }
 
+/* ──────────────────────────────────────────────────────────────────────────
+   Faceplate — the UI as the control surface of a hi-fi component. Matte panels
+   lit from above, hairline seams, teal reserved for the "powered / active"
+   state. Everything quiet so the readouts and any live teal are what the eye
+   catches. Night carries the depth; winter (light) stays clean and flat.
+   ────────────────────────────────────────────────────────────────────────── */
+
+/* A deep matte field with one faint top sheen, like a brushed faceplate lit
+   from above — never competes with text, and stays put while the page scrolls. */
+[data-theme="night"] body {
+  background-image: radial-gradient(118% 72% at 50% -12%,
+    oklch(36% 0.034 200 / 0.30), transparent 58%);
+  background-repeat: no-repeat;
+  background-attachment: fixed;
+}
+
+/* Headings set tighter — confident, not default. */
+h1, h2 { letter-spacing: -0.021em; }
+h3     { letter-spacing: -0.014em; }
+
+/* Sticky machined edge instead of a heavy drop shadow: a hairline seam + a hint
+   of blur read as the thin top edge of a faceplate. */
+.ql-header {
+  position: sticky; top: 0; z-index: 30;
+  box-shadow: none;
+  border-bottom: 1px solid var(--color-base-300);
+  -webkit-backdrop-filter: saturate(1.1) blur(8px);
+  backdrop-filter: saturate(1.1) blur(8px);
+  background-color: color-mix(in oklab, var(--color-base-200) 90%, transparent);
+}
+[data-theme="night"] .ql-header { border-bottom-color: oklch(100% 0 0 / 0.08); }
+
+/* Panels seated and lit from above: a 1px inner top highlight is the machined
+   edge; the layered shadow seats them on the field. Night only — winter keeps
+   daisyUI's clean flat card. */
+[data-theme="night"] .card {
+  box-shadow:
+    inset 0 1px 0 0 oklch(100% 0 0 / 0.05),
+    0 1px 2px oklch(0% 0 0 / 0.22),
+    0 16px 32px -20px oklch(0% 0 0 / 0.62);
+}
+
+/* Tactile panel buttons — a hair of lift on hover, press settles it back, like
+   a physical control rather than a flat link. */
+.ql-tile { transition: transform 140ms ease, border-color 140ms ease, background-color 140ms ease; }
+.ql-tile:hover { transform: translateY(-2px); }
+.ql-tile:active { transform: translateY(0); }
+@media (hover: none) { .ql-tile:hover { transform: none; } }
+
+/* Eyebrow: a small tracked-out panel label, not a heading. */
+.ql-eyebrow {
+  font-size: 0.6875rem; font-weight: 600; letter-spacing: 0.13em;
+  text-transform: uppercase; opacity: 0.5;
+}
+
+/* Spec readout — the instrument-gauge voice for counts, sizes, tiers and the
+   phase strip: mono + tabular so figures sit in fixed columns. */
+.readout {
+  font-family: 'Cascadia Code','Fira Code','Consolas',ui-monospace,monospace;
+  font-variant-numeric: tabular-nums; letter-spacing: 0.01em;
+}
+
+/* Quiet notice — a tinted panel seamed with a colour bar on the left, instead of
+   a fully-saturated block that shouts over the page. Text stays base-content
+   (readable); the seam + faint tint carry the status hue. Set the hue with a
+   .ql-notice-{info,success,warning} modifier; the icon keeps its own text-* hue. */
+.ql-notice {
+  --ql-seam: var(--color-base-content);
+  border: 1px solid color-mix(in oklab, var(--ql-seam) 22%, transparent);
+  border-left: 3px solid var(--ql-seam);
+  background-color: color-mix(in oklab, var(--ql-seam) 9%, var(--color-base-200));
+  border-radius: 0.625rem;
+}
+.ql-notice-info    { --ql-seam: var(--color-info); }
+.ql-notice-success { --ql-seam: var(--color-success); }
+.ql-notice-warning { --ql-seam: var(--color-warning); }
+
 /* Log/scan console — a deliberate terminal look. Dark in both themes would read
    as washed-out on a light page, so it follows the theme: a GitHub-style light
    code block under winter, the dark console under night. */

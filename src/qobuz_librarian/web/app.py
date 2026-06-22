@@ -776,6 +776,53 @@ def _active_scan(*kinds, statuses=("pending", "scanning")):
     return None
 
 
+def _queue_wait(job):
+    """Describe what a PENDING job is waiting behind on its worker lane, so the
+    UI can explain the wait instead of showing a bare "Queued". Scans share one
+    worker and downloads another (see web/jobs.py), so a job only waits behind
+    others in its OWN lane (job.kind: "scan" | "download"). ``position`` counts
+    how many run before it (the one holding the worker + any earlier-queued).
+    Returns {"ahead_title", "lane", "position"} or None when nothing's ahead —
+    i.e. it's about to start, so there's nothing to explain."""
+    if job.status != job_mgr.JobStatus.PENDING:
+        return None
+    holder = None
+    ahead = 0
+    for j in job_mgr.registry.all():
+        if j.id == job.id or j.kind != job.kind:
+            continue
+        if j.status in (job_mgr.JobStatus.SCANNING, job_mgr.JobStatus.RUNNING):
+            holder = j  # the job actually occupying this lane's worker right now
+        elif (j.status == job_mgr.JobStatus.PENDING
+              and (j.created_at or 0) < (job.created_at or 0)):
+            ahead += 1
+    if holder is None and ahead == 0:
+        return None
+    return {
+        "ahead_title": holder.title if holder else "",
+        "lane": job.kind,
+        "position": ahead + (1 if holder else 0),
+    }
+
+
+def _repair_current_job():
+    """The repair job that owns the /repair surface right now: the most recent
+    repair job still pending / scanning / awaiting-review / running. None means
+    the surface is idle (show the start-or-resume form). This is what lets
+    /repair stay the single authoritative repair page across every phase instead
+    of handing a parked review off to /jobs/{id} — and it's why a review is never
+    hidden behind a "Start scan" button that would silently discard it."""
+    states = (job_mgr.JobStatus.PENDING, job_mgr.JobStatus.SCANNING,
+              job_mgr.JobStatus.AWAITING_REVIEW, job_mgr.JobStatus.RUNNING)
+    cur = None
+    for j in job_mgr.registry.all():
+        if getattr(j, "execute_kind", "") != "repair" or j.status not in states:
+            continue
+        if cur is None or (j.created_at or 0) >= (cur.created_at or 0):
+            cur = j
+    return cur
+
+
 async def _submit_scan_deduped_async(job, scan_fn, execute_fn, *kinds, **kw):
     """Run _submit_scan_deduped off the event loop.
 
@@ -900,6 +947,13 @@ async def dashboard(request: Request):
             "baseline_complete": new_releases.is_baseline_complete(),
             "setup_scanning": _active_library_scan() is not None,
             "scan_resumable": scan_checkpoint.pending() is not None,
+            # An interrupted gap-scan, surfaced on the dashboard the way /library
+            # already does — gated on no scan running. The setup banner above
+            # covers the not-yet-baselined case, so index.html shows THIS only
+            # once a baseline exists; otherwise the two would double up.
+            "library_resume": (lambda cp: cp if cp is not None
+                               and _active_library_scan() is None else None)(
+                                   scan_checkpoint.pending()),
             # tail-only read so a long-running install with a multi-MB fetch log
             # doesn't slurp the whole file on every dashboard load.
             "recent": list(reversed(_read_fetch_log(limit_tail=8))),
@@ -1285,6 +1339,7 @@ def _make_single_track_run(album, track, token):
             "dir": qi.get("_resolved_post_dir") or (str(album_dir) if album_dir else ""),
             "isrc": track.get("isrc") or "",
             "track_no": track.get("track_number"),
+            "disc_no": track.get("media_number") or 1,
             "title": t_title, "artist": artist, "album": title,
             "marked": marked, "new_folder": album_dir is None,
         }
@@ -1550,9 +1605,14 @@ async def library_page(request: Request):
     cp = scan_checkpoint.pending()
     library_resume = (cp if cp is not None and _active_scan("library") is None
                       else None)
+    from qobuz_librarian.library import new_releases
     return _tr(request, "library.html", {
         "creds_ok": creds_ok, "page": "library",
         "library_resume": library_resume,
+        # Freshness line: when a full gap scan last completed, and whether one
+        # ever has (the new-release baseline is only seeded by a clean finish).
+        "last_full_scan": _last_scan_age(),
+        "baseline_complete": new_releases.is_baseline_complete(),
         "hidden_count": hidden_mod.count(hidden_mod.SCOPE_MISSING)})
 
 
@@ -1634,6 +1694,7 @@ async def upgrade_page(request: Request):
     creds_ok = bool(_read_creds().get("auth_token"))
     return _tr(request, "upgrade.html", {
         "creds_ok": creds_ok, "page": "upgrade",
+        "last_run": _tool_last_run_age("upgrade"),
         "hidden_count": hidden_mod.count(hidden_mod.SCOPE_UPGRADE)})
 
 
@@ -1714,6 +1775,7 @@ async def downsample_page(request: Request):
         "page": "downsample",
         "have_downsample": HAVE_DOWNSAMPLE,
         "creds_ok": bool(_read_creds().get("auth_token")),
+        "last_run": _tool_last_run_age("downsample"),
         "hidden_count": hidden_mod.count(hidden_mod.SCOPE_DOWNSAMPLE)})
 
 
@@ -1773,16 +1835,29 @@ async def downsample_scan_artist(request: Request, artist: str = Form("")):
 
 
 @app.get("/repair", response_class=HTMLResponse)
-async def repair_page(request: Request):
+async def repair_page(request: Request, page: int = 1):
     from qobuz_librarian.library import scan_checkpoint
     creds_ok = bool(_read_creds().get("auth_token"))
-    # Surface a resume only for a genuinely interrupted sweep — not one whose
-    # periodic checkpoint exists because a repair scan is running right now.
-    cp = scan_checkpoint.load("repair")
-    resume = (None if cp is None or _active_scan("repair") is not None
-              else {"done": len(cp["scanned"]), "found": len(cp["candidates"])})
-    return _tr(request, "repair.html",
-               {"creds_ok": creds_ok, "page": "repair", "repair_resume": resume})
+    # /repair is the SINGLE authoritative repair surface. When a repair job is in
+    # flight or has results parked for review, render its live body inline here
+    # (scanning → review → repairing → done) instead of bouncing to /jobs/{id}.
+    # Only a genuinely idle surface shows the start/resume form — so a parked
+    # review is never hidden behind a "Start scan" button (clicking which would
+    # silently discard those results via the rescan dedup).
+    rjob = _repair_current_job()
+    ctx = {"creds_ok": creds_ok, "page": "repair", "repair_job": rjob,
+           "JobStatus": job_mgr.JobStatus}
+    if rjob is not None:
+        ctx["queue_wait"] = _queue_wait(rjob)
+        ctx.update(_review_context(rjob, page))
+    else:
+        # Idle: offer a resume only for a genuinely interrupted sweep (a stale
+        # checkpoint), not one left by a run that's still active above.
+        cp = scan_checkpoint.load("repair")
+        ctx["repair_resume"] = (
+            {"done": len(cp["scanned"]), "found": len(cp["candidates"])}
+            if cp is not None else None)
+    return _tr(request, "repair.html", ctx)
 
 
 @app.post("/repair")
@@ -1797,12 +1872,17 @@ async def repair_scan(request: Request):
     from qobuz_librarian.web import flows
     job = job_mgr.Job(title="Repair scan")
     job.execute_kind = "repair"
+    job.review_verb = "Repair"  # the action refills damaged tracks, not a download
     job = await _submit_scan_deduped_async(
         job,
         lambda j: flows.scan_repairs(j, _get_token()),
         lambda j, chosen: flows.execute_repairs(j, chosen, _get_token()),
         "repair")
-    return RedirectResponse(url=f"/jobs/{job.id}", status_code=303)
+    # Land back on /repair so the sweep is watched live right here — its card
+    # streams each flagged album inline (and explains the wait if it's queued
+    # behind another scan). When the scan finishes, the card's SSE done-handler
+    # forwards to the job page's flagged-album review.
+    return RedirectResponse(url="/repair", status_code=303)
 
 
 @app.post("/repair/artist")
@@ -1823,6 +1903,7 @@ async def repair_scan_artist(request: Request, artist: str = Form("")):
     from qobuz_librarian.web import flows
     job = job_mgr.Job(title="Repair scan", artist=name)
     job.execute_kind = "repair"
+    job.review_verb = "Repair"  # the action refills damaged tracks, not a download
     job = await _submit_scan_deduped_async(
         job,
         lambda j: flows.scan_repairs_for_artist(j, name, _get_token()),
@@ -1857,6 +1938,7 @@ async def lyrics_page(request: Request):
         "page": "lyrics",
         "have_lyrics": AVAILABLE,
         "creds_ok": bool(_read_creds().get("auth_token")),
+        "last_run": _tool_last_run_age("lyrics"),
         "lyrics_format": (cfg.LYRICS_FORMAT or "embed").lower(),
         "providers": providers,
     })
@@ -2023,6 +2105,7 @@ async def job_page(request: Request, job_id: str, approved: bool = False,
     ctx = {"job": job, "page": "queue",
            "approved": approved, "stale": stale,
            "historical": historical,
+           "queue_wait": _queue_wait(job),
            "JobStatus": job_mgr.JobStatus}
     ctx.update(_review_context(job, page))
     return _tr(request, "job.html", ctx)
@@ -2059,7 +2142,8 @@ async def job_content(request: Request, job_id: str, page: int = 1):
         job = job_mgr.load_historical_job(job_id)
         if job is None:
             return HTMLResponse("", status_code=404)
-    ctx = {"job": job, "JobStatus": job_mgr.JobStatus}
+    ctx = {"job": job, "JobStatus": job_mgr.JobStatus,
+           "queue_wait": _queue_wait(job)}
     ctx.update(_review_context(job, page))
     return _tr(request, "_job_body.html", ctx)
 
@@ -2098,7 +2182,10 @@ async def job_approve(request: Request, job_id: str):
     loop = asyncio.get_running_loop()
     approved = await loop.run_in_executor(None, lambda: job_mgr.approve(job, None))
     flag = "approved=1" if approved else "stale=1"
-    return RedirectResponse(url=f"/jobs/{job_id}?{flag}", status_code=303)
+    # Repair stays on its single surface (/repair) through the repairing phase;
+    # every other kind keeps using the job page.
+    dest = "/repair" if job.execute_kind == "repair" else f"/jobs/{job_id}"
+    return RedirectResponse(url=f"{dest}?{flag}", status_code=303)
 
 
 # Scan kinds that get the paced-triage surface (unticked, hideable, live-fill).
@@ -2388,23 +2475,37 @@ async def job_undo(request: Request, job_id: str):
         from qobuz_librarian.library.scanner import read_album_dir
         d = Path(info["dir"])
         want = (info.get("isrc") or "").replace("-", "").upper().strip()
+        track_no = info.get("track_no")
+        disc_no = info.get("disc_no")
         removed = None
         try:
-            for et in read_album_dir(d):
-                ei = (et.get("isrc") or "").replace("-", "").upper().strip()
-                # read_album_dir keys the track number as "tracknumber"; match on
-                # that, and only fall back to it when there's no ISRC AND we have a
-                # real number to compare — two missing numbers must never read as
-                # equal, or the fallback would delete an unrelated track.
-                same = ((want and ei == want)
-                        or (not want and info.get("track_no") is not None
-                            and et.get("tracknumber") == info.get("track_no")))
-                if same:
-                    p = Path(et.get("path") or "")
-                    if p.exists():
-                        p.unlink()
-                        removed = p
-                    break
+            tracks = read_album_dir(d)
+            if want:
+                target = next(
+                    (et for et in tracks
+                     if (et.get("isrc") or "").replace("-", "").upper().strip() == want),
+                    None)
+            elif track_no is not None:
+                # No ISRC to match on: fall back to the track number. A multi-disc
+                # album can carry that same per-disc number on another disc, so
+                # require the recorded disc to match — undo must remove the track
+                # the grab added, never its twin. A record from before the disc
+                # was captured only deletes when the number is unique in the folder.
+                numbered = [et for et in tracks
+                            if et.get("tracknumber") == track_no]
+                if disc_no is not None:
+                    target = next(
+                        (et for et in numbered
+                         if (et.get("discnumber") or 1) == disc_no), None)
+                else:
+                    target = numbered[0] if len(numbered) == 1 else None
+            else:
+                target = None
+            if target is not None:
+                p = Path(target.get("path") or "")
+                if p.exists():
+                    p.unlink()
+                    removed = p
         except OSError:
             pass
         if removed is not None:
@@ -2469,9 +2570,13 @@ async def job_cancel(request: Request, job_id: str):
     # the event loop and stall every SSE stream for a large review.
     loop = asyncio.get_running_loop()
     await loop.run_in_executor(None, lambda: job_mgr.request_cancel(job))
-    # A review discard is instant → queue. A running/scanning job stops
-    # cooperatively → keep them on the job page to watch it wind down.
-    dest = "/queue" if was_review else f"/jobs/{job_id}"
+    # Repair stays on its single surface either way (idle start form once the
+    # cancel lands). Otherwise: a review discard is instant → queue; a
+    # running/scanning job stops cooperatively → keep them on the job page.
+    if job.execute_kind == "repair":
+        dest = "/repair"
+    else:
+        dest = "/queue" if was_review else f"/jobs/{job_id}"
     return RedirectResponse(url=dest, status_code=303)
 
 
@@ -2480,8 +2585,13 @@ async def queue_page(request: Request, error: str = ""):
     """The Queue tab: jobs in flight (pending / scanning / running / awaiting
     review). Finished jobs live in the History tab, which reads the durable
     archive rather than the capped in-memory set."""
+    pending = job_mgr.registry.pending_and_running()
     return _tr(request, "queue.html", {
-        "pending": job_mgr.registry.pending_and_running(),
+        "pending": pending,
+        # Per-pending-job "waiting behind X" explainer, the same one the single
+        # job page shows — so the Queue list says why a job hasn't started
+        # instead of a bare "Queued". None for anything already running.
+        "queue_waits": {j.id: _queue_wait(j) for j in pending},
         "error": error[:200],
         "page": "queue",
         "active_tab": "queue",
@@ -3170,6 +3280,16 @@ def _last_new_release_check_age() -> str | None:
     the user can see how fresh the auto-check's signal is."""
     from qobuz_librarian.library import new_releases
     ts = new_releases.last_run()
+    return _format_age(ts) if ts is not None else None
+
+
+def _tool_last_run_age(execute_kind: str) -> str | None:
+    """Human-readable age of the last clean run of a tool scan (upgrade /
+    downsample / lyrics), or None if it's never completed. Lets each tool page
+    show a 'Last scan: 3 days ago / Never run' line so a visit isn't
+    indistinguishable from the first — read from the durable job archive."""
+    from qobuz_librarian.web import job_persistence
+    ts = job_persistence.last_finished_at(execute_kind)
     return _format_age(ts) if ts is not None else None
 
 
