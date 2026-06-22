@@ -93,12 +93,12 @@
     <p id="scan-found" class="text-sm text-base-content/60 mb-3" aria-live="polite"></p>
     {% endif %}
 
-    {# A repair sweep prints only problems, so its log reads as a live "still
-       scanning…" heartbeat — open it by default so the scan visibly works
-       instead of hiding behind a collapsed toggle. Other scans show a tally
-       above and stay collapsed. #}
+    {# A repair sweep shows its liveness in the progress line above (it ticks even
+       while a worker is deep in one artist); the log below carries only flagged
+       albums, so open it by default so a problem shows the moment it's found.
+       Other scans show a tally above and stay collapsed. #}
     <details class="mt-1"{% if s == 'scanning' and job.execute_kind == 'repair' %} open{% endif %}>
-      <summary class="text-sm text-base-content/50 cursor-pointer select-none">{% if s in ('scanning', 'running') %}Live activity{% else %}Show details{% endif %}</summary>
+      <summary class="text-sm text-base-content/50 cursor-pointer select-none">{% if s == 'scanning' and job.execute_kind == 'repair' %}Flagged albums — problems appear here as they're found{% elif s in ('scanning', 'running') %}Live activity{% else %}Show details{% endif %}</summary>
       <div class="log-console mt-2" id="log"></div>
     </details>
   {# ── Finished ─────────────────────────────────────────────────────────── #}

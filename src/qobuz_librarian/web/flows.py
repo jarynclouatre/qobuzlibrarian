@@ -280,11 +280,12 @@ def _scan_library_artist(artist_dir, token, partial_only, hidden):
 
 
 _CHECKPOINT_EVERY = 15  # artists between progress saves (resume granularity)
-# Seconds between "still scanning" proof-of-life log lines during the whole-
-# library repair sweep (see scan_repairs). A clean library logs nothing for
-# minutes (only problems print), which reads as a hang — this keeps the web
-# console alive. Long enough that a fast cached re-scan doesn't flood the log.
-_REPAIR_HEARTBEAT_SECS = 12
+# Seconds between live-status refreshes during the whole-library repair sweep
+# (see scan_repairs). A clean library logs nothing for minutes (only problems
+# print), which would read as a hang — so a worker refreshes the in-place
+# progress line this often, keeping the scan visibly alive. Short, because it
+# rewrites one line rather than appending to the log.
+_REPAIR_HEARTBEAT_SECS = 2
 
 
 def scan_library(job, token, partial_only=False):
@@ -1105,24 +1106,27 @@ def _scan_repair_artist(artist_dir, token, job, beat=None):
         for w in outcome.get("warns", []):
             log.info(w)
         if beat is not None:
-            _emit_repair_heartbeat(beat)
+            _emit_repair_heartbeat(beat, job, name)
     return name, agg
 
 
-def _emit_repair_heartbeat(beat):
-    """Log the periodic 'still scanning' line from whichever worker crosses the
-    interval, so it keeps firing even while every worker is deep inside one large
-    artist and no future has completed — otherwise a long stretch with no
-    completed artist looks like a hang. Counts are shared under ``beat['lock']``."""
+def _emit_repair_heartbeat(beat, job, artist_name):
+    """Refresh the live progress line from whichever worker crosses the interval,
+    so it keeps ticking even while every worker is deep inside one large artist
+    and no future has completed — otherwise a long stretch with no completed
+    artist looks like a hang. Pushed through the progress channel, not the log,
+    so the activity log stays a list of flagged albums rather than a scroll of
+    heartbeats. Counts are shared under ``beat['lock']``."""
     with beat["lock"]:
         beat["albums"] += 1
         if time.time() - beat["last"] < _REPAIR_HEARTBEAT_SECS:
             return
         beat["last"] = time.time()
-        albums, artists, flagged = beat["albums"], beat["artists"], beat["flagged"]
-        n = beat["n"]
-    log.info(f"  …still scanning — checked {albums:,} albums across "
-             f"{artists:,}/{n:,} artists; {plural(flagged, 'album')} flagged so far.")
+        albums, artists, flagged, n = (beat["albums"], beat["artists"],
+                                       beat["flagged"], beat["n"])
+    job.push_progress("Checking for damaged files", artists, n,
+                      f'Scanning "{artist_name}" · {albums:,} albums · '
+                      f'{flagged:,} flagged', found=flagged)
 
 
 def scan_repairs(job, token):
@@ -1217,7 +1221,9 @@ def scan_repairs(job, token):
             with beat["lock"]:
                 beat["artists"] = done
                 beat["flagged"] = total
-            job.push_progress("Checking for damaged files", done, n, name,
+                albums_seen = beat["albums"]
+            job.push_progress("Checking for damaged files", done, n,
+                              f'{albums_seen:,} albums · {total:,} flagged',
                               found=total)
             since_save += 1
             if since_save >= _CHECKPOINT_EVERY:

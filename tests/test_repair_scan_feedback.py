@@ -1,11 +1,10 @@
 """The whole-library repair sweep must give continuous proof-of-life.
 
 A clean library logs nothing for minutes (only damaged albums print), so the
-sweep advances the progress header per artist and logs a time-throttled "still
-scanning" heartbeat — emitted by whichever worker crosses the interval, so it
-keeps ticking even while every worker is deep inside one large artist. These
-tests pin that feedback, plus the ISRC-lookup cache and the post-download
-length recheck.
+sweep keeps an in-place progress line ticking — refreshed by whichever worker
+crosses the interval, so it stays alive even while every worker is deep inside
+one large artist. These tests pin that feedback, plus the ISRC-lookup cache and
+the post-download length recheck.
 """
 import logging
 
@@ -97,11 +96,10 @@ def test_repair_scan_reports_per_artist_progress(monkeypatch):
 
     flows.scan_repairs(job, "token")
 
-    # The sweep fans artists out to workers but advances progress on the single
-    # writer thread as each artist completes, so every artist name shows up in
-    # the live "now checking" header.
-    assert "Aretha Franklin" in job.progress_items
-    assert "Beyonce" in job.progress_items
+    # Workers refresh the live progress line with the artist they're scanning, so
+    # each artist's name shows up in the in-place status as the sweep runs.
+    assert any("Aretha Franklin" in it for it in job.progress_items)
+    assert any("Beyonce" in it for it in job.progress_items)
     # Clean library → nothing flagged.
     assert job.candidates == []
 
@@ -120,25 +118,22 @@ def test_repair_scan_emits_heartbeat_on_clean_library(monkeypatch):
 
     # The opening line sets expectations instead of going silent.
     assert any("healthy albums stay quiet" in m for m in records)
-    # A clean library still produces visible "still scanning" proof-of-life.
-    assert any("still scanning" in m for m in records)
+    # A clean library still ticks a visible live status — in the progress line,
+    # not the log — so the scan never reads as hung.
+    assert any(it.startswith('Scanning "') for it in job.progress_items)
 
 
 def test_repair_scan_heartbeat_is_throttled(monkeypatch):
-    # With a long heartbeat window and a fast (clean) scan, the loop should NOT
-    # log a beat per album — the whole point of the time throttle.
+    # With a long heartbeat window and a fast (clean) scan, no mid-artist beat
+    # should fire per album — the whole point of the time throttle. (Per-artist
+    # completion still refreshes the line; only the heartbeat is gated.)
     artists = [_FakeArtist(f"Artist {i}", [_FakeAlbum(f"Album {i}")])
                for i in range(8)]
     _wire(monkeypatch, artists, heartbeat_secs=3600)
-    logger, h, prev, records = _capture_qobuz_log()
     job = _RecordingJob()
-    try:
-        flows.scan_repairs(job, "token")
-    finally:
-        logger.removeHandler(h)
-        logger.setLevel(prev)
+    flows.scan_repairs(job, "token")
 
-    beats = [m for m in records if "still scanning" in m]
+    beats = [it for it in job.progress_items if it.startswith('Scanning "')]
     assert beats == []  # throttled out entirely within one fast pass
 
 
