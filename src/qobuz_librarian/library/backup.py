@@ -738,7 +738,10 @@ def restore_upgrade_backup(backup_path: Path, original_path: Path) -> bool:
             bk_files, bk_bytes = bk_stats
             orig_files, orig_bytes = orig_stats
 
-            if bk_bytes >= orig_bytes:
+            # Strictly bigger only: a byte-equal partial isn't "more data" to
+            # restore, so leave it rather than churn the live dir on a tie — both
+            # copies are kept for the user to reconcile.
+            if bk_bytes > orig_bytes:
                 log.info(fmt(C.YELLOW,
                     f"  ⚠  Replacing partial dir ({orig_files} file(s), "
                     f"{orig_bytes / 1024 / 1024:.1f} MB) with backup "
@@ -847,7 +850,8 @@ def restore_upgrade_backup(backup_path: Path, original_path: Path) -> bool:
             _fsync(original_path.parent)
             shutil.rmtree(str(backup_path), ignore_errors=True)
         try:
-            (original_path / _ORIGIN_SIDECAR).unlink(missing_ok=True)
+            for sidecar in _SIDECARS:
+                (original_path / sidecar).unlink(missing_ok=True)
         except OSError:
             pass
         return True

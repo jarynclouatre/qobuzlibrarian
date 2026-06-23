@@ -10,7 +10,6 @@ what's a false match — lives in library.discovery, the one engine the web
 scans share. This module is the terminal face: prompts, sibling cleanup, the
 two-step presentation.
 """
-import shutil
 import time
 
 from qobuz_librarian import config as cfg
@@ -103,22 +102,6 @@ def run_artist_gap_fill(artist_name, artist_dir, args, token, *,
         return [], {}, set(), set(), None, None
 
     sibling_choices = {}  # picked_dir -> [siblings to delete after fill]
-
-    def _delete_siblings_of_complete(picked):
-        # Only for an already-complete pick: no download runs, so the executor
-        # never sees this folder and won't clean its siblings. When an album IS
-        # downloaded, the executor deletes the siblings itself, gated on a clean
-        # result (no failed or lossy tracks) — don't second-guess it here.
-        for sib in sibling_choices.get(picked, []):
-            if not sib.exists():
-                continue
-            try:
-                shutil.rmtree(sib)
-                log.info(fmt(C.GRAY, f"    🗑  Removed sibling: {sib.name}."))
-            except OSError as e:
-                log.info(fmt(C.YELLOW,
-                    f"    ⚠  Couldn't remove {sib.name}: {e}."))
-        sibling_choices[picked] = []
 
     # Resolve the artist + pre-fetch the catalog. The catalog feeds both the
     # sibling quality labels and the per-folder match (zero search-API cost when

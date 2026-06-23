@@ -147,6 +147,59 @@ def test_treat_as_new_downloads_an_owned_album_as_a_separate_edition(monkeypatch
     assert consolidate_seen == [False]
 
 
+def test_post_import_consolidation_is_skipped_for_a_treat_as_new_edition(monkeypatch, tmp_path):
+    # treat_as_new keeps a download as its own edition; post-import consolidation
+    # folds editions together by deleting overlapping sibling tracks. The two are
+    # mutually exclusive — consolidation must never run for a deliberately-separate
+    # edition, or it would delete the very tracks treat_as_new set out to keep apart.
+    from qobuz_librarian import config as cfg
+    from qobuz_librarian.modes import process as proc
+
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    monkeypatch.setattr(cfg, "STAGING_DIR", staging)
+    monkeypatch.setattr(cfg, "AUTO_UPGRADE_ENABLED", False)
+
+    tracks = [{"id": 1, "title": "A", "track_number": 1},
+              {"id": 2, "title": "B", "track_number": 2}]
+    album = {"id": "X", "title": "Alb", "artist": {"name": "Ar"},
+             "maximum_bit_depth": 24, "maximum_sampling_rate": 96.0,
+             "tracks": {"items": tracks}}
+
+    monkeypatch.setattr(proc, "is_lossless_album", lambda _a: True)
+    monkeypatch.setattr(proc, "find_existing_tracks", lambda _a: ([], None))
+    monkeypatch.setattr(proc, "compute_missing", lambda q, _e: (q, []))
+    monkeypatch.setattr(proc, "find_album_dir_filesystem", lambda _a: None)
+    monkeypatch.setattr(proc, "staging_preflight", lambda _a: None)
+    monkeypatch.setattr(proc, "snapshot_staging", lambda: set())
+    monkeypatch.setattr(proc, "is_cancel_requested", lambda: False)
+    monkeypatch.setattr(proc, "_pre_import_staging_hooks", lambda _a: [])
+    monkeypatch.setattr(proc, "cleanup_duplicate_art", lambda _d: 0)
+    monkeypatch.setattr(proc, "write_post_import_sidecars", lambda _ds: None)
+    monkeypatch.setattr(proc, "sweep_staging_artwork", lambda: None)
+    monkeypatch.setattr(proc, "print_album_summary", lambda *a, **k: None)
+    monkeypatch.setattr(proc, "log_fetch", lambda _e: None)
+    monkeypatch.setattr(proc, "beets_import_paths", lambda *a, **k: True)
+
+    def fake_download(**kw):
+        kw["result"].update(n_ok=2, n_fail=0, n_lossy=0, failed_tracks=[],
+                            lossy_tracks=[], elapsed=0.0, gap_fill_backup_path=None)
+        return kw["result"]
+    monkeypatch.setattr(proc, "run_album_download", fake_download)
+
+    runs = []
+    monkeypatch.setattr(proc, "consolidate_albums", lambda _alb, _args: runs.append(1) or 0)
+
+    # Normal edition with --consolidate: consolidation runs.
+    proc.process_album(album, _args(consolidate=True), token="tok")
+    assert runs == [1]
+
+    # Same flag, but treat_as_new: consolidation is skipped.
+    runs.clear()
+    proc.process_album(album, _args(consolidate=True), token="tok", treat_as_new=True)
+    assert runs == []
+
+
 def test_gap_fill_backup_restored_when_track_returns_lossy(monkeypatch, tmp_path):
     """A full-album gap-fill stashes the owned tracks before re-ripping; if a
     re-ripped track comes back lossy, process_album's finally restores them."""

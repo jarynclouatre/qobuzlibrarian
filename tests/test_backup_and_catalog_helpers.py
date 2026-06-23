@@ -447,6 +447,22 @@ def test_restore_upgrade_backup_keeps_a_bigger_partial(tmp_path):
     assert (original / "huge.flac").exists()
 
 
+def test_restore_upgrade_backup_does_not_replace_a_byte_equal_partial(tmp_path):
+    # A backup only auto-overwrites a partial that holds LESS data. A byte-equal
+    # destination isn't "more data" to restore, so leave it rather than churn the
+    # live dir (delete + move) on a tie; both copies are kept to reconcile.
+    backup = tmp_path / "backup"
+    backup.mkdir()
+    (backup / "01.flac").write_bytes(b"a" * 100_000)
+    original = tmp_path / "original"
+    original.mkdir()
+    (original / "01.flac").write_bytes(b"b" * 100_000)   # same byte count → a tie
+
+    assert restore_upgrade_backup(backup, original) is False
+    assert (original / "01.flac").read_bytes() == b"b" * 100_000   # untouched
+    assert backup.exists()                                          # backup kept
+
+
 def test_restore_upgrade_backup_survives_rmtree_failure_mid_walk(tmp_path):
     # The partial-removal rmtree fails — backup must NOT be deleted; it's
     # the only surviving copy.
@@ -559,6 +575,25 @@ def test_restore_upgrade_backup_exdev_verifies_before_dropping_backup(tmp_path, 
     assert (backup / "track1.flac").exists() and (backup / "track2.flac").exists()
     assert not original.exists()
     assert not original.with_name(original.name + ".restoring").exists()
+
+
+def test_restore_upgrade_backup_strips_all_backup_sentinels(tmp_path):
+    # A restored backup must not leak ANY of its bookkeeping sentinels into the
+    # live library — not just the origin marker. The sibling gap-fill restore
+    # filters every sentinel; this one only stripped the origin one, so a
+    # partial-restore / unverified-upgrade marker could land beside the music.
+    import qobuz_librarian.library.backup as bkmod
+    backup = tmp_path / "backup"
+    backup.mkdir()
+    (backup / "01 - Track.flac").write_bytes(b"a" * 100_000)
+    for sidecar in bkmod._SIDECARS:
+        (backup / sidecar).write_text("x")
+    original = tmp_path / "Album"  # absent → straight to the move branch
+
+    assert bkmod.restore_upgrade_backup(backup, original) is True
+    assert (original / "01 - Track.flac").exists()
+    for sidecar in bkmod._SIDECARS:
+        assert not (original / sidecar).exists(), f"{sidecar} leaked into the live tree"
 
 
 # ── backup_gap_fill_files ───────────────────────────────────────────────────

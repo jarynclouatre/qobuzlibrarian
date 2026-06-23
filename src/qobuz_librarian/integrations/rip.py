@@ -532,6 +532,22 @@ def _dir_has_audio(d):
     return False
 
 
+def _album_root_has_audio(p):
+    """True when the staging album that contains p still holds audio anywhere
+    under it — so p (a nested cover.jpg / booklet, or a residue-named art dir) is
+    sidecar art for a real leftover, not an orphaned stray. Checks the album root,
+    not p's immediate folder, so art tucked in a subfolder of a real album is
+    spared too. A file or dir directly in STAGING_DIR has no album above it, so
+    this is False — a genuine orphan."""
+    try:
+        rel = p.relative_to(cfg.STAGING_DIR)
+    except ValueError:
+        return False
+    if len(rel.parts) < 2:
+        return False
+    return _dir_has_audio(cfg.STAGING_DIR / rel.parts[0])
+
+
 def cleanup_staging_residue():
     """Remove known streamrip non-audio residue from STAGING_DIR.
 
@@ -565,18 +581,22 @@ def cleanup_staging_residue():
                 pass
         try:
             if p.is_file() and p.suffix.lower() in _RESIDUE_EXTS:
-                # Don't sweep art/metadata that belongs to a real leftover
-                # album the user is about to import: a cover.jpg beside the
-                # tracks is the filesystem fetchart source under
-                # ARTWORK=sidecar. Only unlink residue whose containing album
-                # dir holds no audio (an orphaned stray). Files directly in
-                # STAGING_DIR root have no album dir, so they're always orphans.
-                if p.parent != cfg.STAGING_DIR and _dir_has_audio(p.parent):
+                # Don't sweep art/metadata that belongs to a real leftover album
+                # the user is about to import: a cover.jpg beside the tracks (or in
+                # a booklet/scans subfolder) is the filesystem fetchart source
+                # under ARTWORK=sidecar. Spare any residue whose album root still
+                # holds audio; files directly in STAGING_DIR have no album, so
+                # they're always orphans.
+                if _album_root_has_audio(p):
                     continue
                 p.unlink()
                 removed += 1
                 vlog(f"residue removed: {p.relative_to(cfg.STAGING_DIR)}")
             elif p.is_dir() and p.name.lower() in _RESIDUE_NAMES:
+                # An artwork/cover dir inside a real leftover album is that
+                # album's art, not a stray — spare it like the nested-file case.
+                if _album_root_has_audio(p):
+                    continue
                 if not _dir_is_all_residue(p):
                     vlog(f"residue dir kept (contains non-residue files): "
                          f"{p.relative_to(cfg.STAGING_DIR)}")

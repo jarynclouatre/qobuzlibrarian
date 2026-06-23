@@ -180,7 +180,11 @@ def read_album_dir(album_dir: Path):
         tags = read_audio_meta(f)
         if tags is None:
             stem = f.stem
-            m = re.match(r"^(\d+)\s*-\s*(.+)$", stem)
+            # Strip a leading track-number token in any common form — "NN - ",
+            # "NN. ", "NN ", "NN-" — so a dot/space-named untagged rip matches the
+            # Qobuz title instead of keeping the digits and reading as missing. A
+            # bare number with no separator ("1979") is left alone.
+            m = re.match(r"^(\d+)[\s.\-]+(.+)$", stem)
             # Derive the disc from a "Disc N" / "CD N" parent so two same-titled
             # tracks on different discs don't collapse to one (disc, title) key.
             disc_m = re.match(r"(?:disc|cd)\s*0*(\d+)", f.parent.name, re.IGNORECASE)

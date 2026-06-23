@@ -187,6 +187,32 @@ def test_cleanup_staging_residue_removes_image_only_residue_dir(tmp_path, monkey
     assert not cover.exists()
 
 
+def test_cleanup_staging_residue_keeps_nested_art_of_a_leftover_album(tmp_path, monkeypatch):
+    # Scans/booklet art often sit in a subfolder of the album, not beside the
+    # tracks. The sweep checked the file's immediate folder for audio, so a nested
+    # cover/booklet of a real leftover (audio at the album root) got swept. Any
+    # audio under the album root means its art is sidecar, not an orphaned stray.
+    monkeypatch.setattr("qobuz_librarian.config.STAGING_DIR", tmp_path)
+    album = tmp_path / "Artist" / "Album"
+    (album / "scans").mkdir(parents=True)
+    (album / "booklet").mkdir()
+    (album / "01 - Track.flac").write_bytes(b"audio data" * 1000)
+    (album / "scans" / "cover.jpg").write_bytes(b"img")
+    (album / "booklet" / "notes.pdf").write_bytes(b"%PDF-1.4")
+    # A residue-named art dir inside the same album is the album's art too.
+    (album / "artwork").mkdir()
+    (album / "artwork" / "back.jpg").write_bytes(b"img")
+    # A genuine orphan (no audio under its album root) with the same nesting goes.
+    (tmp_path / "Orphan" / "scans").mkdir(parents=True)
+    (tmp_path / "Orphan" / "scans" / "cover.jpg").write_bytes(b"img")
+
+    cleanup_staging_residue()
+    assert (album / "scans" / "cover.jpg").exists()
+    assert (album / "booklet" / "notes.pdf").exists()
+    assert (album / "artwork").exists()                       # residue-named dir spared
+    assert not (tmp_path / "Orphan" / "scans" / "cover.jpg").exists()
+
+
 # ── beets: split-folder merge ─────────────────────────────────────────────
 
 def test_merge_split_folder_moves_unique_and_skips_collisions(tmp_path):

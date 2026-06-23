@@ -995,7 +995,10 @@ def process_album(album, args, *, allow_force=True, label=None,
 
     # ── Consolidation ────────────────────────────────────────────────────────
     n_consolidated = 0
-    if args.consolidate:
+    # treat_as_new keeps this download as its own edition; consolidation folds
+    # editions together by deleting overlapping sibling tracks, so the two are
+    # mutually exclusive — never consolidate a deliberately-separate edition.
+    if args.consolidate and not treat_as_new:
         if imported:
             try:
                 n_consolidated = consolidate_albums(album, args)

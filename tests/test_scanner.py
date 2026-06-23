@@ -79,6 +79,21 @@ def test_read_album_dir_filename_fallback_and_mutagen_meta(tmp_path):
     assert result[0]["title"] == "Real Title" and result[0]["bits"] == 24
 
 
+def test_read_album_dir_strips_dot_and_space_track_prefixes(tmp_path):
+    # mutagen can't read these, so the filename is the only title source. Legacy
+    # "NN. Title" / "NN Title" rips must have the leading track number stripped
+    # like "NN - Title" does, or the digits stay in the title and the track reads
+    # as missing (spurious re-download) while the file reads as an extra.
+    (tmp_path / "03. Dotted Song.flac").write_bytes(b"")
+    (tmp_path / "04 Spaced Song.flac").write_bytes(b"")
+    (tmp_path / "05.Glued Song.flac").write_bytes(b"")
+    with patch("qobuz_librarian.library.scanner.HAVE_MUTAGEN", False):
+        by_title = {t["title"]: t["tracknumber"] for t in read_album_dir(tmp_path)}
+    assert by_title.get("Dotted Song") == 3
+    assert by_title.get("Spaced Song") == 4
+    assert by_title.get("Glued Song") == 5
+
+
 def test_read_album_dir_survives_a_symlink_loop(tmp_path):
     album = tmp_path / "Album"
     album.mkdir()
