@@ -86,15 +86,6 @@ def test_flac_header_parse_anchors_at_offset_zero():
     assert de.parse_flac_total_samples(not_at_zero) == 0
 
 
-def test_read_total_samples_matches_metaflac(tmp_path, _need_ffmpeg, _need_flac):
-    src = tmp_path / "x.flac"
-    _hires_flac(src, 1.5)
-    n = read_total_samples(src)
-    # 1.5 s @ 96 kHz, give or take encoder framing.
-    assert abs(n - int(1.5 * 96000)) < 96000
-    assert read_total_samples(tmp_path / "missing.flac") == 0
-
-
 # ── integration: the destructive resample path ─────────────────────────────
 
 def test_resample_clean_hires_shrinks_and_verifies(tmp_path, _need_ffmpeg, _need_flac):

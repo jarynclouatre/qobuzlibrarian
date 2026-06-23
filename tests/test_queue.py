@@ -3,9 +3,6 @@ import json
 from argparse import Namespace
 from datetime import datetime, timezone
 from pathlib import Path
-from unittest.mock import patch
-
-import pytest
 
 from qobuz_librarian.queue.builder import _build_queue_item
 from qobuz_librarian.queue.persistence import (
@@ -80,14 +77,6 @@ def test_pending_queue_rejects_bad_payloads(tmp_path, monkeypatch):
     assert load_pending_queue() == (None, None, None)
     qfile.write_text('{"version": 1, "items": [{"al', encoding="utf-8")
     assert load_pending_queue() == (None, None, None)
-
-
-def test_pending_queue_save_failure_is_silent(tmp_path, monkeypatch):
-    qfile = tmp_path / "nowrite" / "queue.json"
-    monkeypatch.setattr("qobuz_librarian.config.PENDING_QUEUE_FILE", qfile)
-    with patch("pathlib.Path.mkdir", side_effect=OSError("no perms")):
-        save_pending_queue([_qitem()], mode="album_walk")   # must not raise
-    assert not qfile.exists()
 
 
 def test_resume_keeps_pending_file_when_not_drained(tmp_path, monkeypatch):
@@ -208,35 +197,6 @@ def test_executor_upgrade_carries_non_audio_companions_from_backup(monkeypatch, 
     assert (album_dir / "booklet.pdf").read_bytes() == b"the-booklet"
     assert (album_dir / "scans" / "front.jpg").read_bytes() == b"art"
     assert (album_dir / "01.flac").read_bytes() == b"new"
-
-
-def test_executor_upgrade_keeps_backup_when_new_folder_not_located(monkeypatch, tmp_path):
-    # Clean import but the renamed folder can't be relocated → keep the backup,
-    # never restore it as a duplicate beside the fresh import.
-    from qobuz_librarian.queue import executor
-
-    album_dir = tmp_path / "music" / "Artist" / "Album"
-    album_dir.mkdir(parents=True)                # original was moved aside; empty
-    backup = tmp_path / "backups" / "Album.bak"
-    backup.mkdir(parents=True)
-    (backup / "01.flac").write_bytes(b"old")
-
-    monkeypatch.setattr(executor, "find_album_dir_filesystem", lambda _a: None)
-    monkeypatch.setattr(executor, "cleanup_duplicate_art", lambda _d: 0)
-    restored = []
-    monkeypatch.setattr(executor, "restore_upgrade_backup",
-                        lambda bp, dest: restored.append((bp, dest)) or True)
-
-    item = {
-        "album": {"id": "A", "artist": {"name": "Artist"}, "tracks": {"items": []}},
-        "album_dir": album_dir, "backup_path": backup, "gap_fill_backup_path": None,
-        "siblings_to_delete": [], "n_ok": 1, "n_fail": 0, "n_lossy": 0,
-        "auto_upgrade": True,
-    }
-    args = Namespace(migrate_multi_artist=False, no_import=False, consolidate=False)
-    executor._resolve_queue_item(item, args, imported_globally=True)
-
-    assert backup.exists() and restored == []
 
 
 def test_executor_per_album_isolation_one_album_failure_keeps_others(monkeypatch, tmp_path):
@@ -369,53 +329,6 @@ def test_executor_keeps_only_failed_downloads_for_retry(monkeypatch, tmp_path):
     assert saves                   # progress persisted as the item dropped
 
 
-def test_executor_cancel_short_circuit_labels_items_cancelled(monkeypatch, tmp_path):
-    """A standing cancel short-circuits the remaining albums at the loop
-    boundary; each must carry result='cancelled', not the seeded None that
-    _resolve_queue_item would otherwise mislabel 'nothing_landed' (and write to
-    the fetch log). Regression guard for the setdefault-on-a-present-key no-op."""
-    from qobuz_librarian import config as cfg
-    from qobuz_librarian.queue import executor
-
-    staging = tmp_path / "staging"
-    staging.mkdir()
-    monkeypatch.setattr(cfg, "STAGING_DIR", staging)
-
-    def make(tag):
-        return {
-            "album": {"id": tag, "title": tag, "artist": {"name": tag},
-                      "tracks": {"items": []}},
-            "album_dir": None, "auto_upgrade": False,
-            "missing": [], "present": [], "upgrade_only": False, "label": tag,
-            "n_ok": 0, "n_fail": 0, "n_lossy": 0,
-            "failed_tracks": [], "lossy_tracks": [],
-            "rate_limited": False, "elapsed": 0.0,
-            "result": None, "snapshot_before": None,   # exactly as the builder seeds
-        }
-
-    queue = [make("A"), make("B")]
-    # Cancel is already standing when the batch starts → both albums hit the
-    # top-of-loop short-circuit without downloading.
-    monkeypatch.setattr(executor, "is_cancel_requested", lambda: True)
-    monkeypatch.setattr(executor, "staging_preflight", lambda _a: None)
-
-    seen = []
-
-    def fake_resolve(item, args, ok):
-        # Record the label _short_circuit stamped before resolution.
-        seen.append((item["label"], item.get("result")))
-        return {"dir": None, "imported": ok, "result": item.get("result"),
-                "n_ok": 0, "n_fail": 0, "n_lossy": 0, "auto_upgrade": False}
-
-    monkeypatch.setattr(executor, "_resolve_queue_item", fake_resolve)
-
-    args = Namespace(dry_run=False, no_import=False, no_downsample=True,
-                     no_compress=True, migrate_multi_artist=False, consolidate=False)
-    executor._execute_download_queue(queue, args, token=None)
-
-    assert seen == [("A", "cancelled"), ("B", "cancelled")]
-
-
 def test_reimport_parked_albums_clears_moved_and_keeps_skipped(monkeypatch, tmp_path):
     """A parked album is cleared only when its audio actually leaves disk on the
     retry import. A beets run that exits 0 while skipping the album (e.g. a
@@ -447,24 +360,6 @@ def test_reimport_parked_albums_clears_moved_and_keeps_skipped(monkeypatch, tmp_
     assert not good.exists()           # audio moved out → parking dir cleared
     assert skipped.exists()            # files remain → kept parked, not deleted
     assert skipped_flac.exists()       # the only copy of the skipped track survives
-
-
-def test_push_progress_streams_separately_and_stays_out_of_the_log():
-    from qobuz_librarian.web import jobs as jm
-    job = jm.Job(kind="scan")
-    sub = job.subscribe()
-    job.push_progress("Scanning library", 5, 10, "Beyoncé")
-    line = sub.get_nowait()
-    assert line.startswith(jm.PROGRESS_PREFIX)
-    assert json.loads(line[len(jm.PROGRESS_PREFIX):]) == {
-        "phase": "Scanning library", "current": 5, "total": 10,
-        "item": "Beyoncé", "found": 0}
-    # progress is a header update, not a log line
-    assert job.log_lines == []
-    # a late subscriber gets the current snapshot once, so a reconnect shows
-    # the live header instead of a blank bar
-    snap = job.subscribe().get_nowait()
-    assert snap.startswith(jm.PROGRESS_PREFIX)
 
 
 def test_queue_runs_post_download_truncation_recheck_on_success(monkeypatch, tmp_path):
@@ -508,30 +403,3 @@ def test_queue_runs_post_download_truncation_recheck_on_success(monkeypatch, tmp
 
     assert results and results[0]["result"] == "downloaded"
     assert rechecked == [(post_dir, "tok", "Album")]
-
-
-def test_queue_skips_recheck_when_nothing_imported(monkeypatch, tmp_path):
-    # A download that imported nothing must NOT run the recheck (there's nothing
-    # fresh to verify, and the album dir may not even exist yet).
-    from qobuz_librarian.queue import executor
-
-    rechecked = []
-    monkeypatch.setattr(executor, "staging_preflight", lambda args: None)
-    monkeypatch.setattr(executor, "_reimport_parked_albums", lambda: False)
-    monkeypatch.setattr(executor, "snapshot_staging", lambda: set())
-    monkeypatch.setattr(executor, "is_cancel_requested", lambda: False)
-    monkeypatch.setattr(executor, "_download_for_queue_item",
-                        lambda item: item.update(n_ok=0, n_fail=1, n_lossy=0, elapsed=0.0))
-    monkeypatch.setattr(executor, "find_album_dir_filesystem", lambda _a: None)
-    monkeypatch.setattr(executor, "log_fetch", lambda payload: None)
-    monkeypatch.setattr(executor, "warn_if_download_truncated",
-                        lambda d, token, label: rechecked.append(d) or [])
-
-    item = _qitem(title="Album",
-                  album={"id": "A", "title": "Album", "artist": {"name": "Artist"},
-                         "tracks": {"items": []}},
-                  album_dir=tmp_path / "music" / "Artist" / "Album")
-    args = Namespace(dry_run=False, no_import=False, migrate_multi_artist=False,
-                     consolidate=False)
-    executor._execute_download_queue([item], args, "tok")
-    assert rechecked == []

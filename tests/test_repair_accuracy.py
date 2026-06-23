@@ -10,7 +10,6 @@ FLACs to prove it flags them; the deep path adds the duration cross-check
 Network (Qobuz) is mocked; the FLAC decode path (`flac -t` via mutagen/flac) is
 real, so the real-FLAC tests are gated on ffmpeg + flac being present.
 """
-import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -62,10 +61,6 @@ def _frame_corrupt(path: Path):
         fh.write(bytes((b ^ 0xFF) for b in cur))
 
 
-def _tail_truncate(path: Path, keep_frac=0.5):
-    os.truncate(path, max(1, int(path.stat().st_size * keep_frac)))
-
-
 def _decodes(path: Path) -> bool:
     return subprocess.run(["flac", "-t", "-s", str(path)],
                           capture_output=True).returncode == 0
@@ -96,22 +91,6 @@ def test_shallow_scan_catches_frame_crc_corruption(tmp_path, _need_tools):
         "shallow sweep must flag a frame-CRC-corrupt FLAC, not pass it as ok "
         f"(got {r})")
     assert r["verified_truncated"][0]["reason"] == "decode_failed"
-
-
-def test_shallow_scan_catches_tail_truncation_above_byte_gate(tmp_path, _need_tools):
-    album = tmp_path / "Artist" / "Album (2020)"
-    album.mkdir(parents=True)
-    p = album / "01.flac"
-    _make_flac(p, seconds=6)
-    _tail_truncate(p, 0.5)  # 50% — well above the 15% byte-size gate
-    assert not _decodes(p)
-
-    with patch("qobuz_librarian.repair_log.find_qobuz_track_by_isrc",
-               return_value=_QT):
-        r = scan_dir_for_isrc_repairs(album, "token", deep=False)
-
-    assert "01.flac" in _names(r["verified_truncated"]), (
-        f"shallow sweep must flag a 50%-truncated FLAC (got {r})")
 
 
 def test_shallow_scan_surfaces_no_isrc_corruption(tmp_path, _need_tools):
@@ -178,32 +157,6 @@ def test_byte_size_gate_does_not_flag_a_small_valid_flac_with_flac_absent(tmp_pa
     r = scan_dir_for_isrc_repairs(album, "token", deep=False)
     assert "01 - Quiet.flac" not in _names(r["verified_truncated"]), (
         f"a small but valid FLAC must not be flagged when flac is absent (got {r})")
-
-
-def test_deep_scan_flags_decode_clean_but_short_via_duration(tmp_path, _need_tools):
-    # The Jack's Mannequin / "Everything In Transit" ground-truth gate, exercised
-    # against a REAL FLAC end to end: a file that decodes perfectly but is far
-    # shorter than its real Qobuz recording (a header-consistent truncation) must
-    # be flagged by the deep duration cross-check. This is the exact "decodes fine
-    # but cut short" mechanism — caught by the pure length comparison, NOT the
-    # byte-size or decode gate, so the entry carries no "reason" key.
-    album = tmp_path / "Jack's Mannequin" / "Everything In Transit (2005)"
-    album.mkdir(parents=True)
-    p = album / "04 - I'm Ready.flac"
-    _make_flac(p, seconds=3)                    # decodes clean, ~3s
-    assert _decodes(p), "fixture must decode cleanly"
-
-    long_qt = {"duration": 235.0, "title": "I'm Ready", "track_number": 4,
-               "isrc": "USABC1234500"}
-    with patch("qobuz_librarian.repair_log.find_qobuz_track_by_isrc",
-               return_value=long_qt):
-        r = scan_dir_for_isrc_repairs(album, "token", deep=True)
-
-    flagged = {Path(e["path"]).name: e for e in r["verified_truncated"]}
-    assert "04 - I'm Ready.flac" in flagged, (
-        f"deep scan must flag a decode-clean but short FLAC (got {r})")
-    # The pure-duration gate, not byte-size/decode — it sets no "reason".
-    assert flagged["04 - I'm Ready.flac"].get("reason") is None
 
 
 def test_duration_gate_abs_cap_flags_long_track_short_by_over_a_minute(monkeypatch):

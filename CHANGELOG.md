@@ -4,7 +4,7 @@ All notable changes to Qobuz Librarian are recorded here, newest first. The
 project follows [semantic versioning](https://semver.org/); dates are when each
 version was tagged during local development.
 
-## [0.9.1] - 2026-06-21
+## [0.9.1] - 2026-06-23
 
 **Reviews no longer pile up**
 

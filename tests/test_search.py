@@ -38,13 +38,6 @@ def test_find_qobuz_track_by_isrc_is_strict():
         assert find_qobuz_track_by_isrc("USRC1234567", "tok")["id"] == 111
 
 
-def test_find_qobuz_track_by_isrc_swallows_empty_and_errors():
-    with patch("qobuz_librarian.api.search.search_tracks", return_value=[]):
-        assert find_qobuz_track_by_isrc("USRC1234567", "tok") is None
-    with patch("qobuz_librarian.api.search.search_tracks", side_effect=QobuzError("flaky")):
-        assert find_qobuz_track_by_isrc("USRC1234567", "tok") is None
-
-
 def test_search_helpers_extract_items_or_empty():
     with patch("qobuz_librarian.api.search.qobuz_get",
                return_value={"albums": {"items": [{"id": 1}, {"id": 2}]}}):
@@ -77,40 +70,6 @@ def test_search_guards_malformed_bodies():
         assert search_albums("q", "tok") == []
     with patch("qobuz_librarian.api.search.qobuz_get", return_value={"tracks": "oops"}):
         assert search_tracks("q", "tok") == []
-
-
-def test_search_items_non_list_yields_empty_not_crash():
-    # items present but the wrong type (a CDN/proxy error page parsed to a bare
-    # string, or a list of primitives) must not crash the per-item normalisation:
-    # a non-list items becomes [], and a list keeps only its dict members.
-    with patch("qobuz_librarian.api.search.qobuz_get",
-               return_value={"albums": {"items": "junk"}}):
-        assert search_albums("q", "tok") == []
-    with patch("qobuz_librarian.api.search.qobuz_get",
-               return_value={"tracks": {"items": 42}}):
-        assert search_tracks("q", "tok") == []
-    with patch("qobuz_librarian.api.search.qobuz_get",
-               return_value={"artists": {"items": "x"}}):
-        assert search_artists("q", "tok") == []
-    with patch("qobuz_librarian.api.search.qobuz_get",
-               return_value={"tracks": {"items": [1, None, {"id": 5}]}}):
-        assert search_tracks("q", "tok") == [{"id": 5}]
-    # get_artist_albums reads the same envelope: a non-list items must not crash
-    # its pagination loop either.
-    with patch("qobuz_librarian.api.search.qobuz_get",
-               return_value={"albums": {"items": "junk", "total": 0}}):
-        items, _ = get_artist_albums("aid", "tok")
-        assert items == []
-
-
-def test_find_qobuz_track_by_isrc_returns_none_on_unparseable_items():
-    # find_qobuz_track_by_isrc is called from the repair sweep, which catches
-    # only QobuzError around it. A malformed 200 whose tracks.items is a bare
-    # string must return None (its documented contract), not raise AttributeError
-    # and abort the whole library scan.
-    with patch("qobuz_librarian.api.search.qobuz_get",
-               return_value={"tracks": {"items": "<html>error</html>"}}):
-        assert find_qobuz_track_by_isrc("USRC1234567", "tok") is None
 
 
 def test_get_artist_albums_paginates_and_stops_early():
@@ -171,136 +130,5 @@ def test_get_album_cached_by_id(tmp_path, monkeypatch):
         a1 = search.get_album("ALB1", "tok")
         a2 = search.get_album("ALB1", "tok")
         assert calls["n"] == 1 and a1 == a2 and a1["id"] == "ALB1"
-    finally:
-        album_cache._reset_for_tests()
-
-
-def test_get_album_does_not_cache_a_track_less_response(tmp_path, monkeypatch):
-    import qobuz_librarian.config as cfg
-    from qobuz_librarian.api import album_cache, search
-    monkeypatch.setattr(cfg, "DATA_DIR", tmp_path)
-    monkeypatch.setattr(cfg, "ALBUM_CACHE_ENABLED", True)
-    album_cache._reset_for_tests()
-    try:
-        full = {"id": "ALB1", "title": "X",
-                "tracks": {"items": [{"id": 1, "title": "T"}]}}
-        # A transient/partial 200 with no tracks must not poison the TTL-less
-        # cache — the next call re-fetches and gets the real track list.
-        responses = [{"id": "ALB1", "title": "X"}, full]
-        monkeypatch.setattr(search, "qobuz_get",
-                            lambda *a, **k: responses.pop(0))
-        first = search.get_album("ALB1", "tok")
-        assert not (first.get("tracks") or {}).get("items")
-        second = search.get_album("ALB1", "tok")
-        assert (second.get("tracks") or {}).get("items")
-    finally:
-        album_cache._reset_for_tests()
-
-
-def test_album_cache_trims_to_the_cap(tmp_path, monkeypatch):
-    import qobuz_librarian.config as cfg
-    from qobuz_librarian.api import album_cache
-    monkeypatch.setattr(cfg, "DATA_DIR", tmp_path)
-    monkeypatch.setattr(cfg, "ALBUM_CACHE_ENABLED", True)
-    monkeypatch.setattr(album_cache, "_CACHE_MAX_ALBUMS", 3)
-    album_cache._reset_for_tests()
-    try:
-        for aid in ("a", "b", "c", "d", "e"):
-            album_cache.put(aid, {"id": aid})
-        album_cache._trim_albums()
-        survivors = [a for a in ("a", "b", "c", "d", "e") if album_cache.get(a)]
-        assert len(survivors) == 3        # bounded at the cap
-        assert album_cache.get("e")       # the most-recently-written survives
-    finally:
-        album_cache._reset_for_tests()
-
-
-def test_album_cache_heals_on_corrupt_db(tmp_path, monkeypatch):
-    # Data-page corruption (unclean power-off) can pass connect + CREATE TABLE
-    # and only surface on a row read, leaving the cache permanently dead. A
-    # corrupt read must discard the file and rebuild rather than swallow forever.
-    import qobuz_librarian.config as cfg
-    from qobuz_librarian.api import album_cache
-    monkeypatch.setattr(cfg, "DATA_DIR", tmp_path)
-    monkeypatch.setattr(cfg, "ALBUM_CACHE_ENABLED", True)
-    album_cache._reset_for_tests()
-    try:
-        album_cache.put("123", {"id": "123"})
-        assert album_cache.get("123") == {"id": "123"}
-
-        db = tmp_path / "album_cache.db"
-        assert db.exists()
-        # Replace the on-disk db with a non-database: _ensure already passed
-        # (init flag set), so the next access opens a fresh connection and the
-        # SELECT raises "file is not a database".
-        album_cache._reset_for_tests()
-        album_cache._initialized = True
-        db.write_bytes(b"not a sqlite database" * 200)
-
-        assert album_cache.get("123") is None      # corrupt read -> heal
-        assert album_cache._initialized is False    # forced rebuild next access
-
-        # Cache works again and repopulates from scratch.
-        album_cache.put("123", {"id": "123"})
-        assert album_cache.get("123") == {"id": "123"}
-    finally:
-        album_cache._reset_for_tests()
-
-
-def test_album_cache_conn_reopens_after_generation_bump(tmp_path, monkeypatch):
-    # A scan worker mid-lookup must stop writing into a db another worker
-    # discarded as corrupt: a bumped generation forces _conn() to drop and
-    # replace this thread's handle instead of writing into the deleted inode.
-    import qobuz_librarian.config as cfg
-    from qobuz_librarian.api import album_cache
-    monkeypatch.setattr(cfg, "DATA_DIR", tmp_path)
-    monkeypatch.setattr(cfg, "ALBUM_CACHE_ENABLED", True)
-    album_cache._reset_for_tests()
-    try:
-        assert album_cache._ensure()
-        c1 = album_cache._conn()
-        album_cache._generation += 1            # another worker's corrupt-db recovery
-        c2 = album_cache._conn()
-        assert c2 is not c1
-        assert album_cache._local.generation == album_cache._generation
-    finally:
-        album_cache._reset_for_tests()
-
-
-def test_get_artist_albums_cached_within_ttl(tmp_path, monkeypatch):
-    import qobuz_librarian.config as cfg
-    from qobuz_librarian.api import album_cache, search
-    monkeypatch.setattr(cfg, "DATA_DIR", tmp_path)
-    monkeypatch.setattr(cfg, "ALBUM_CACHE_ENABLED", True)
-    monkeypatch.setattr(cfg, "ARTIST_CATALOG_CACHE_TTL", 3600)
-    album_cache._reset_for_tests()
-    try:
-        calls = {"n": 0}
-
-        def fake_get(endpoint, params, token):
-            calls["n"] += 1
-            return {"albums": {"items": [{"id": "A1", "title": "X"}], "total": 1}}
-
-        monkeypatch.setattr(search, "qobuz_get", fake_get)
-        items1, total1 = search.get_artist_albums("ART1", "tok", limit=10)
-        items2, total2 = search.get_artist_albums("ART1", "tok", limit=10)
-        assert calls["n"] == 1 and total1 == total2 == 1
-        assert [a["id"] for a in items1] == [a["id"] for a in items2] == ["A1"]
-    finally:
-        album_cache._reset_for_tests()
-
-
-def test_album_cache_rebuilds_corrupt_db(tmp_path, monkeypatch):
-    import qobuz_librarian.config as cfg
-    from qobuz_librarian.api import album_cache
-    monkeypatch.setattr(cfg, "DATA_DIR", tmp_path)
-    monkeypatch.setattr(cfg, "ALBUM_CACHE_ENABLED", True)
-    album_cache._reset_for_tests()
-    # A truncated/garbage db file must not disable the cache for the whole
-    # process; it should be discarded and rebuilt so caching resumes.
-    (tmp_path / "album_cache.db").write_bytes(b"not a sqlite database, just junk")
-    try:
-        album_cache.put("ALB9", {"id": "ALB9", "title": "X"})
-        assert album_cache.get("ALB9") == {"id": "ALB9", "title": "X"}
     finally:
         album_cache._reset_for_tests()

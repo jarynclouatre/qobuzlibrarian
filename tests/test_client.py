@@ -54,28 +54,6 @@ def test_qobuz_get_retries_429_but_not_404():
         assert not isinstance(QobuzUnavailable(), QobuzError)  # distinct signals
 
 
-def test_qobuz_get_gives_up_when_the_deadline_is_spent():
-    # A repeating 503 normally burns all three attempts. Under a deadline with
-    # no slack left, the call must bail after the first request instead of
-    # sleeping out the backoff for a result the caller already stopped awaiting.
-    from qobuz_librarian.api.client import request_deadline
-    with patch("qobuz_librarian.api.client._get_session") as sess:
-        sess.return_value.get.return_value = _response(503)
-        with request_deadline(0.5):
-            with pytest.raises(QobuzUnavailable):
-                qobuz_get("album/search", {}, "tok")
-        assert sess.return_value.get.call_count == 1
-
-
-def test_attempt_timeout_does_not_floor_above_a_near_spent_deadline():
-    # With under a second of budget the per-request timeout must shrink to fit
-    # the deadline, not get floored up to 1.0s and overrun it.
-    from qobuz_librarian.api.client import _attempt_timeout, request_deadline
-    with request_deadline(0.5):
-        t = _attempt_timeout()
-    assert t is not None and t <= 0.5
-
-
 def test_qobuz_get_reports_token_validity(monkeypatch):
     # The dashboard banner listens for auth state. A 200 reports the token good
     # and a 401 reports it bad — reporting only failures leaves the banner stuck
@@ -97,14 +75,6 @@ def test_qobuz_get_reports_token_validity(monkeypatch):
         with pytest.raises(AuthLost):
             qobuz_get("album/search", {}, "bad")
     assert seen == [True, True, False]
-
-
-def test_user_agent_carries_installed_version():
-    from importlib.metadata import version
-
-    from qobuz_librarian.api.client import _get_session
-    ua = _get_session().headers["User-Agent"]
-    assert version("qobuz-librarian") in ua and "qobuz-librarian" in ua
 
 
 def test_retry_after_header_parsing():

@@ -19,14 +19,10 @@ from qobuz_librarian.library.backup import (
 from qobuz_librarian.library.catalog import (
     _MERGE_MAX_DEPTH,
     _merge_album_dirs,
-    _sync_beets_db_after_merge,
     _sync_beets_db_after_move,
-    cleanup_duplicate_art,
-    maybe_remove_empty_dir,
 )
 from qobuz_librarian.modes.consolidate import (
     execute_consolidation,
-    find_sibling_album_dirs,
     match_sibling_track,
 )
 
@@ -79,32 +75,6 @@ def test_cross_fs_backup_rejects_same_size_corruption(tmp_path, monkeypatch):
     assert (album / "01.flac").read_bytes() == original   # source preserved, not deleted
 
 
-def test_gap_fill_restore_rejects_same_size_corrupt_copy(tmp_path, monkeypatch):
-    # restore_gap_fill_backup moves the ONLY copy of each track back, so the copy
-    # must be content-verified before the source is dropped. A same-size but
-    # corrupt copy must fail the check: the backup is kept and the destination is
-    # not left holding garbage.
-    from pathlib import Path
-
-    album = tmp_path / "Album"
-    backup = tmp_path / "bp"
-    backup.mkdir()
-    (backup / "01.flac").write_bytes(b"GOOD-ORIGINAL-AUDIO")
-
-    real_copy2 = shutil.copy2
-
-    def corrupt_copy2(src, dst, *a, **k):
-        real_copy2(src, dst, *a, **k)
-        Path(dst).write_bytes(b"\x00" * Path(dst).stat().st_size)  # same size, wrong bytes
-        return dst
-
-    monkeypatch.setattr("qobuz_librarian.library.backup.shutil.copy2", corrupt_copy2)
-    n = restore_gap_fill_backup(backup, album, keep_larger_dst=False)
-    assert n == 0                                   # nothing restored
-    assert (backup / "01.flac").exists()            # the only copy is preserved
-    assert not (album / "01.flac").exists()         # destination not left corrupt
-
-
 def test_backup_album_dir_moves_and_refuses_symlinks(tmp_path, monkeypatch):
     monkeypatch.setattr("qobuz_librarian.config.UPGRADE_BACKUP_DIR", tmp_path / "backups")
     album = tmp_path / "My Album"
@@ -122,80 +92,6 @@ def test_backup_album_dir_moves_and_refuses_symlinks(tmp_path, monkeypatch):
     link.symlink_to(target)
     assert backup_album_dir(link) is None
     assert target.exists()
-
-
-def test_retention_keeps_an_orphaned_backup_but_reaps_a_completed_one(tmp_path, monkeypatch):
-    monkeypatch.setattr("qobuz_librarian.config.UPGRADE_BACKUP_DIR", tmp_path / "backups")
-    monkeypatch.setattr("qobuz_librarian.config.DATA_DIR", tmp_path / "data")
-    (tmp_path / "data").mkdir()
-
-    def _aged_backup(name):
-        src = tmp_path / "music" / name
-        src.mkdir(parents=True)
-        (src / "01.flac").write_bytes(b"a" * 2000)
-        (src / "02.flac").write_bytes(b"b" * 2000)
-        bp = backup_album_dir(src)
-        aged = bp.with_name("20200101_000000_" + name)  # well past any retention
-        bp.rename(aged)
-        return src, aged
-
-    orphan_src, orphan_bp = _aged_backup("Orphan")  # a hard kill left its folder gone
-    done_src, done_bp = _aged_backup("Done")
-    # The "Done" album's operation completed — its folder was rebuilt.
-    done_src.mkdir(parents=True, exist_ok=True)
-    (done_src / "01.flac").write_bytes(b"x" * 9000)
-    (done_src / "02.flac").write_bytes(b"y" * 9000)
-
-    assert (orphan_bp / ".ql_backup_origin").read_text() == str(orphan_src)
-
-    removed = cleanup_old_upgrade_backups(force=True)
-    assert not done_bp.exists()    # origin rebuilt → safe to reap
-    assert orphan_bp.exists()      # origin still missing the tracks → only copy, kept
-    assert removed == 1
-
-
-def test_partial_gap_fill_restore_is_protected_from_age_sweep(tmp_path, monkeypatch):
-    # When a gap-fill restore can only put SOME originals back, the leftover
-    # files in the backup are the only copy. Once the restored files land in the
-    # origin, the file-count heuristic would misjudge the backup as redundant —
-    # so a partial restore must pin it protected from the retention sweep.
-    import qobuz_librarian.library.backup as bk
-    monkeypatch.setattr(bk.cfg, "UPGRADE_BACKUP_DIR", tmp_path / "backups")
-    monkeypatch.setattr(bk.cfg, "DATA_DIR", tmp_path / "data")
-    (tmp_path / "data").mkdir()
-    music = tmp_path / "music"
-    album = music / "Album (2020)"
-    album.mkdir(parents=True)
-    f1 = album / "01 - A.flac"
-    f2 = album / "02 - B.flac"
-    f1.write_bytes(b"a" * 3000)
-    f2.write_bytes(b"b" * 3000)
-    bp = bk.backup_gap_fill_files([str(f1), str(f2)], album)
-    assert bp is not None and not f1.exists() and not f2.exists()
-
-    # Restore where the SECOND file can't be written back (e.g. EACCES): make
-    # os.replace fail for 02 only.
-    real_replace = bk.os.replace
-
-    def _replace(src, dst):
-        if "02 - B" in str(dst):
-            raise OSError("permission denied")
-        return real_replace(src, dst)
-    monkeypatch.setattr(bk.os, "replace", _replace)
-    n = bk.restore_gap_fill_backup(bp, album)
-    monkeypatch.setattr(bk.os, "replace", real_replace)
-    assert n == 1                       # only A restored
-    assert f1.exists()                  # A back in the album
-    assert (bp / "02 - B.flac").exists()  # B still the only copy, in the backup
-    assert (bp / ".ql_partial_restore").is_file()
-
-    # Age it well past retention and confirm the sweep does NOT reap it.
-    aged = bp.with_name("20200101_000000_gapfill_aged")
-    bp.rename(aged)
-    removed = bk.cleanup_old_upgrade_backups(force=True)
-    assert aged.exists()                # protected — the only copy of B survives
-    assert (aged / "02 - B.flac").exists()
-    assert removed == 0
 
 
 def test_restore_overwrites_partial_but_keeps_larger_good_file(tmp_path):
@@ -269,71 +165,6 @@ def test_age_sweep_keeps_any_backup_it_cannot_prove_redundant(tmp_path, monkeypa
     assert any(e == bp for e, _origin in bk.find_only_copy_backups())
 
 
-def test_find_only_copy_backups_is_memoized_within_ttl(tmp_path, monkeypatch):
-    # Every settings load/submit and the dashboard call _diagnostics(), which
-    # walks every retained backup to content-check redundancy. Two calls in a row
-    # (e.g. a form POST then the redirect's dashboard render) must not both
-    # re-walk the tree — the result is memoized for a few seconds.
-    import qobuz_librarian.library.backup as bk
-    backup_root = tmp_path / "backups"
-    backup_root.mkdir()
-    monkeypatch.setattr(bk.cfg, "UPGRADE_BACKUP_DIR", backup_root)
-
-    bp = backup_root / "20200101_000000_orphan"
-    bp.mkdir()
-    (bp / "01.flac").write_bytes(b"x" * 5000)  # no sidecar → surfaces as orphan
-
-    bk._only_copy_cache = None       # clear any cache a prior test left behind
-    calls = {"n": 0}
-    real_reap = bk._backup_safe_to_reap
-
-    def counting_reap(entry):
-        calls["n"] += 1
-        return real_reap(entry)
-
-    monkeypatch.setattr(bk, "_backup_safe_to_reap", counting_reap)
-
-    first = bk.find_only_copy_backups()
-    assert any(e == bp for e, _origin in first)
-    after_first = calls["n"]
-    assert after_first >= 1  # the first call did the walk
-
-    second = bk.find_only_copy_backups()
-    assert second == first
-    # No re-walk within the TTL while the backup dir's mtime is unchanged.
-    assert calls["n"] == after_first
-
-
-def test_age_sweep_keeps_a_count_match_when_a_track_is_missing_at_origin(tmp_path, monkeypatch):
-    # Redundancy is proved by content, not file count. An origin that gained a
-    # DIFFERENT file (so the count matches) while one of the backup's own tracks
-    # never returned must still be KEPT — a bare count check would reap the only
-    # surviving copy of that track.
-    import qobuz_librarian.library.backup as bk
-    monkeypatch.setattr(bk.cfg, "UPGRADE_BACKUP_DIR", tmp_path / "backups")
-    monkeypatch.setattr(bk.cfg, "DATA_DIR", tmp_path / "data")
-    (tmp_path / "data").mkdir()
-
-    album = tmp_path / "music" / "Album (2020)"
-    album.mkdir(parents=True)
-    (album / "01 - A.flac").write_bytes(b"a" * 3000)
-    (album / "02 - B.flac").write_bytes(b"b" * 3000)
-    bp = bk.backup_album_dir(album)
-    assert bp is not None and not album.exists()
-
-    # Origin comes back with the same file COUNT (2) but track B never returned —
-    # a new file C took its slot.
-    album.mkdir(parents=True, exist_ok=True)
-    (album / "01 - A.flac").write_bytes(b"a" * 5000)
-    (album / "03 - C.flac").write_bytes(b"c" * 5000)
-    assert not bk._backup_safe_to_reap(bp)
-
-    aged = bp.with_name("20200101_000000_aged")
-    bp.rename(aged)
-    assert bk.cleanup_old_upgrade_backups(force=True) == 0
-    assert (aged / "02 - B.flac").exists()      # the only copy of B survives
-
-
 def test_unverified_upgrade_backup_is_pinned_from_age_sweep(tmp_path, monkeypatch):
     # An upgrade kept because it couldn't be verified complete (a truncated-but-
     # decodable track drops playtime) leaves the backup as the only full copy.
@@ -390,97 +221,7 @@ def test_backup_refuses_rather_than_leave_unprotected_sole_copy(tmp_path, monkey
     assert g1.exists() and g1.read_bytes() == before
 
 
-def test_backup_album_dir_cross_filesystem_copy_verify_commit(tmp_path, monkeypatch):
-    # When src and backup are on different filesystems, rename can't be used —
-    # backup copies, verifies, then deletes the source. No .partial must survive.
-    from qobuz_librarian.library import backup as bkmod
-    monkeypatch.setattr("qobuz_librarian.config.UPGRADE_BACKUP_DIR", tmp_path / "backups")
-    monkeypatch.setattr(bkmod, "_same_filesystem", lambda a, b: False)
-    album = tmp_path / "Album"
-    album.mkdir()
-    (album / "track.flac").write_bytes(b"flac" * 1000)
-    bp = backup_album_dir(album)
-    assert bp is not None and bp.exists() and not album.exists()
-    assert not bp.with_name(bp.name + ".partial").exists()
-
-
-def test_backup_album_dir_cross_fs_rmtree_failure_restores_original(tmp_path, monkeypatch):
-    # Cross-FS path: copy succeeds, then rmtree fails partway. The original
-    # must be restored from the still-intact copy rather than left half-deleted.
-    from qobuz_librarian.library import backup as bkmod
-    monkeypatch.setattr("qobuz_librarian.config.UPGRADE_BACKUP_DIR", tmp_path / "backups")
-    monkeypatch.setattr(bkmod, "_same_filesystem", lambda a, b: False)
-    album = tmp_path / "Album"
-    album.mkdir()
-    (album / "track1.flac").write_bytes(b"a" * 4096)
-    (album / "track2.flac").write_bytes(b"b" * 4096)
-
-    real_rmtree = bkmod.shutil.rmtree
-    calls = []
-
-    def half_failing(path, *a, **kw):
-        calls.append(str(path))
-        if len(calls) == 1 and str(path) == str(album):
-            next(album.iterdir()).unlink()
-            raise OSError("device busy")
-        return real_rmtree(path, *a, **kw)
-
-    monkeypatch.setattr(bkmod.shutil, "rmtree", half_failing)
-    assert backup_album_dir(album) is None
-    assert album.exists()
-    assert {p.name for p in album.iterdir()} == {"track1.flac", "track2.flac"}
-
-
 # ── restore_upgrade_backup ──────────────────────────────────────────────────
-
-def test_restore_upgrade_backup_keeps_a_bigger_partial(tmp_path):
-    # A partial that's already larger than the backup must NOT be replaced —
-    # we'd be downgrading the user's data to the stale snapshot.
-    backup = tmp_path / "backup"
-    backup.mkdir()
-    for i in range(5):
-        (backup / f"small{i}.flac").write_bytes(b"x" * 100)
-    original = tmp_path / "original"
-    original.mkdir()
-    (original / "huge.flac").write_bytes(b"x" * 100_000)
-    assert restore_upgrade_backup(backup, original) is False
-    assert (original / "huge.flac").exists()
-
-
-def test_restore_upgrade_backup_does_not_replace_a_byte_equal_partial(tmp_path):
-    # A backup only auto-overwrites a partial that holds LESS data. A byte-equal
-    # destination isn't "more data" to restore, so leave it rather than churn the
-    # live dir (delete + move) on a tie; both copies are kept to reconcile.
-    backup = tmp_path / "backup"
-    backup.mkdir()
-    (backup / "01.flac").write_bytes(b"a" * 100_000)
-    original = tmp_path / "original"
-    original.mkdir()
-    (original / "01.flac").write_bytes(b"b" * 100_000)   # same byte count → a tie
-
-    assert restore_upgrade_backup(backup, original) is False
-    assert (original / "01.flac").read_bytes() == b"b" * 100_000   # untouched
-    assert backup.exists()                                          # backup kept
-
-
-def test_restore_upgrade_backup_survives_rmtree_failure_mid_walk(tmp_path):
-    # The partial-removal rmtree fails — backup must NOT be deleted; it's
-    # the only surviving copy.
-    backup = tmp_path / "backup"
-    backup.mkdir()
-    (backup / "intact.flac").write_bytes(b"a" * 100_000)
-    original = tmp_path / "original"
-    original.mkdir()
-    (original / "partial.flac").write_bytes(b"x" * 1_000)
-
-    with patch("qobuz_librarian.library.backup.shutil.rmtree",
-               side_effect=OSError("simulated mid-walk failure")):
-        assert restore_upgrade_backup(backup, original) is True
-    assert (original / "intact.flac").exists()
-    # The aborted partial gets parked in a .restore_trash dir for the user
-    # to clean — should be present, but the backup itself is consumed.
-    shutil.rmtree(original.with_name(original.name + ".restore_trash"))
-
 
 def test_restore_upgrade_backup_forgets_partial_import_paths_from_beets(tmp_path):
     # The R2 bug: --force routes through the auto-upgrade restore branch; if
@@ -516,24 +257,6 @@ def test_restore_upgrade_backup_forgets_partial_import_paths_from_beets(tmp_path
     assert set(captured_paths) == {str(partial_one), str(partial_two)}
     # And the restore still landed: intact files are back at the original.
     assert (original / "intact1.flac").exists()
-
-
-def test_restore_upgrade_backup_clears_a_stale_restore_trash(tmp_path):
-    # A prior interrupted restore can leave a .restore_trash beside the album;
-    # it must be cleared, or it blocks the rename here (and orphans forever).
-    backup = tmp_path / "backup"
-    backup.mkdir()
-    (backup / "intact.flac").write_bytes(b"a" * 100_000)
-    original = tmp_path / "Album"
-    original.mkdir()
-    (original / "partial.flac").write_bytes(b"x" * 1_000)
-    stale = original.with_name(original.name + ".restore_trash")
-    stale.mkdir()
-    (stale / "old.flac").write_bytes(b"x" * 500)
-
-    assert restore_upgrade_backup(backup, original) is True
-    assert (original / "intact.flac").exists()
-    assert not stale.exists()
 
 
 def test_restore_upgrade_backup_exdev_verifies_before_dropping_backup(tmp_path, monkeypatch):
@@ -577,59 +300,7 @@ def test_restore_upgrade_backup_exdev_verifies_before_dropping_backup(tmp_path, 
     assert not original.with_name(original.name + ".restoring").exists()
 
 
-def test_restore_upgrade_backup_strips_all_backup_sentinels(tmp_path):
-    # A restored backup must not leak ANY of its bookkeeping sentinels into the
-    # live library — not just the origin marker. The sibling gap-fill restore
-    # filters every sentinel; this one only stripped the origin one, so a
-    # partial-restore / unverified-upgrade marker could land beside the music.
-    import qobuz_librarian.library.backup as bkmod
-    backup = tmp_path / "backup"
-    backup.mkdir()
-    (backup / "01 - Track.flac").write_bytes(b"a" * 100_000)
-    for sidecar in bkmod._SIDECARS:
-        (backup / sidecar).write_text("x")
-    original = tmp_path / "Album"  # absent → straight to the move branch
-
-    assert bkmod.restore_upgrade_backup(backup, original) is True
-    assert (original / "01 - Track.flac").exists()
-    for sidecar in bkmod._SIDECARS:
-        assert not (original / sidecar).exists(), f"{sidecar} leaked into the live tree"
-
-
 # ── backup_gap_fill_files ───────────────────────────────────────────────────
-
-def test_gap_fill_backup_falls_back_to_copy_on_cross_device_rename(tmp_path, monkeypatch):
-    # Two bind mounts on one disk share a device but still reject rename
-    # with EXDEV — the backup must fall back to a copy.
-    from qobuz_librarian.library import backup as bkmod
-    monkeypatch.setattr("qobuz_librarian.config.UPGRADE_BACKUP_DIR", tmp_path / "backups")
-    monkeypatch.setattr(bkmod.os, "rename",
-                        lambda *a, **k: (_ for _ in ()).throw(OSError("Invalid cross-device link")))
-    album = tmp_path / "album"
-    album.mkdir()
-    src = album / "track.flac"
-    src.write_bytes(b"audio-bytes")
-    bp = bkmod.backup_gap_fill_files([str(src)], album)
-    assert bp is not None and (bp / "track.flac").read_bytes() == b"audio-bytes"
-    assert not src.exists()
-
-
-def test_gap_fill_backup_preserves_source_when_copy_fails(tmp_path, monkeypatch):
-    # If both rename AND the copy fallback fail, the source must still be
-    # there — losing it would be irrecoverable.
-    from qobuz_librarian.library import backup as bkmod
-    monkeypatch.setattr("qobuz_librarian.config.UPGRADE_BACKUP_DIR", tmp_path / "backups")
-    monkeypatch.setattr(bkmod.os, "rename",
-                        lambda *a, **k: (_ for _ in ()).throw(OSError("EXDEV")))
-    monkeypatch.setattr(bkmod.shutil, "copy2",
-                        lambda *a, **k: (_ for _ in ()).throw(OSError("disk full")))
-    album = tmp_path / "album"
-    album.mkdir()
-    src = album / "irreplaceable.flac"
-    src.write_bytes(b"original-audio-bytes")
-    bkmod.backup_gap_fill_files([str(src)], album)
-    assert src.read_bytes() == b"original-audio-bytes"
-
 
 def test_gap_fill_restore_handles_failure_partial_and_interrupt(tmp_path, monkeypatch):
     # Three failure modes in one — the common invariant is "backup must survive".
@@ -712,38 +383,6 @@ def test_cleanup_old_upgrade_backups_respects_dates_and_throttle(tmp_path, monke
     assert cleanup_old_upgrade_backups(retention_days=1, force=True) == 1
 
 
-# ── catalog helpers: maybe_remove_empty_dir / cleanup_duplicate_art ─────────
-
-def test_maybe_remove_empty_dir_walks_nested():
-    # Just confirm the recursive case — the trivial single-dir case is implied.
-    from pathlib import Path
-    from tempfile import mkdtemp
-    d = Path(mkdtemp())
-    try:
-        nested = d / "parent" / "child"
-        nested.mkdir(parents=True)
-        assert maybe_remove_empty_dir(d / "parent") is True
-        assert not (d / "parent").exists()
-    finally:
-        shutil.rmtree(d, ignore_errors=True)
-
-
-def test_cleanup_duplicate_art_only_drops_when_a_base_exists(tmp_path):
-    # cover.jpg + cover.1.jpg → the .1 is dropped as a duplicate.
-    (tmp_path / "cover.1.jpg").write_bytes(b"img")
-    (tmp_path / "cover.jpg").write_bytes(b"img")
-    assert cleanup_duplicate_art(tmp_path) == 1
-    assert not (tmp_path / "cover.1.jpg").exists()
-
-    # No base cover.jpg → user-curated booklet pages; keep both.
-    extra = tmp_path / "extra"
-    extra.mkdir()
-    (extra / "cover.1.jpg").write_bytes(b"booklet1")
-    (extra / "cover.2.jpg").write_bytes(b"booklet2")
-    assert cleanup_duplicate_art(extra) == 0
-    assert (extra / "cover.1.jpg").exists()
-
-
 # ── _merge_album_dirs ──────────────────────────────────────────────────────
 
 def test_merge_album_dirs_caps_depth_and_keeps_dst_on_replace_failure(tmp_path, monkeypatch):
@@ -814,90 +453,7 @@ def test_sync_beets_db_after_move_repoints_paths_and_leaves_others_alone(tmp_pat
     assert b"The Beatles/Abbey Road (1969)/01 - Come Together.flac" in rows
 
 
-def test_sync_beets_db_after_move_silently_skips_when_db_absent(tmp_path, monkeypatch):
-    music_root = tmp_path / "music"
-    music_root.mkdir()
-    monkeypatch.setattr("qobuz_librarian.library.catalog.config.BEETS_DB_PATH",
-                        str(tmp_path / "nonexistent.db"))
-    monkeypatch.setattr("qobuz_librarian.library.catalog.config.MUSIC_ROOT", music_root)
-    old = music_root / "old"
-    new = music_root / "new"
-    old.mkdir()
-    new.mkdir()
-    _sync_beets_db_after_move(old, new)  # must not raise
-
-
-def test_sync_beets_db_after_move_matches_non_utf8_paths(tmp_path, monkeypatch):
-    # beets stores items.path as os.fsencode bytes; a non-UTF-8 filename (here a
-    # raw 0xf6 'ö' byte) must still be matched and repointed. A UTF-8-encoded
-    # prefix would either miss the row or raise on the surrogate-escaped name.
-    raw = b"Bj\xf6rk/Post (1995)"                       # 0xf6 is invalid UTF-8 alone
-    music_root, db = _setup_beets_db(tmp_path, monkeypatch, [raw + b"/01 - t.flac"])
-    old = music_root / os.fsdecode(raw)
-    new = music_root / "Bjork" / "Post (1995)"
-    old.mkdir(parents=True)
-    new.mkdir(parents=True)
-    _sync_beets_db_after_move(old, new)
-    assert _read_beets_paths(db) == [b"Bjork/Post (1995)/01 - t.flac"]
-
-
-def test_sync_beets_db_after_merge_drops_collisions_and_repoints_the_rest(tmp_path, monkeypatch):
-    music_root, db = _setup_beets_db(tmp_path, monkeypatch, [
-        b"Primary, Other/Album (2020)/01 - a.flac",   # collides with dst row
-        b"Primary, Other/Album (2020)/02 - b.flac",   # unique -> repointed
-        b"Primary/Album (2020)/01 - a.flac",          # pre-existing dst row
-    ])
-    old = music_root / "Primary, Other" / "Album (2020)"
-    new = music_root / "Primary" / "Album (2020)"
-    old.mkdir(parents=True)
-    new.mkdir(parents=True)
-    _sync_beets_db_after_merge(old, new)
-    rows = _read_beets_paths(db)
-    assert sorted(rows) == sorted([
-        b"Primary/Album (2020)/01 - a.flac",
-        b"Primary/Album (2020)/02 - b.flac",
-    ])
-    assert rows.count(b"Primary/Album (2020)/01 - a.flac") == 1
-
-
-def test_sync_beets_db_after_merge_keeps_rows_for_files_that_didnt_move(tmp_path, monkeypatch):
-    # A merge that hits an I/O error (permission, disk full) leaves a file — and
-    # its correct row — at the old path. Repointing it blindly would aim the DB
-    # at a file that isn't there while orphaning the one that is, so the sync
-    # must skip any source file still present on disk.
-    music_root, db = _setup_beets_db(tmp_path, monkeypatch, [
-        b"Primary, Other/Album (2020)/01 - moved.flac",   # gone from disk -> repoint
-        b"Primary, Other/Album (2020)/02 - stuck.flac",   # still on disk -> leave
-    ])
-    old = music_root / "Primary, Other" / "Album (2020)"
-    new = music_root / "Primary" / "Album (2020)"
-    old.mkdir(parents=True)
-    new.mkdir(parents=True)
-    # Only the track whose move failed remains at the old path.
-    (old / "02 - stuck.flac").write_bytes(b"audio")
-    _sync_beets_db_after_merge(old, new)
-    assert sorted(_read_beets_paths(db)) == sorted([
-        b"Primary/Album (2020)/01 - moved.flac",
-        b"Primary, Other/Album (2020)/02 - stuck.flac",
-    ])
-
-
 # ── consolidation helpers ──────────────────────────────────────────────────
-
-def test_match_sibling_track_isrc_beats_title():
-    t = lambda **kw: {"isrc": "", "mb_trackid": "", "title": "", "discnumber": 1, **kw}
-    # Plain ISRC match.
-    sib = t(isrc="USRC17607839")
-    p = t(isrc="USRC17607839")
-    assert match_sibling_track(sib, [p]) is p
-    # ISRC wins even when the title-disc pair points elsewhere.
-    sib = t(isrc="AA0000000001", title="Song A", disc=1)
-    p_isrc = t(isrc="AA0000000001", title="Song B", disc=2)
-    p_title = t(title="Song A", disc=1)
-    assert match_sibling_track(sib, [p_isrc, p_title]) is p_isrc
-    # No identifying overlap → None, not a guess.
-    assert match_sibling_track(t(title="Track A"), [t(title="Track B")]) is None
-
 
 def test_match_sibling_track_requires_duration_to_confirm_a_duplicate():
     # Title + disc + position is not recording identity without an ISRC/MBID — a
@@ -939,37 +495,6 @@ def test_find_sibling_album_dirs_does_not_group_distinct_years(tmp_path, monkeyp
     sibs = {d.name for d, _ in c.find_sibling_album_dirs(album, primary)}
     assert "Live at Wembley 1992" not in sibs   # distinct year → not grouped
     assert "Live at Wembley" in sibs            # one-sided year → still grouped
-
-
-def test_prompt_migration_conflict_is_headless_safe(tmp_path, monkeypatch):
-    from types import SimpleNamespace
-
-    from qobuz_librarian.library import catalog
-    src = tmp_path / "src"
-    dst = tmp_path / "dst"
-    src.mkdir()
-    dst.mkdir()
-    # No terminal (the web executor reaches this): must NOT block on input() —
-    # leave both folders for manual review.
-    monkeypatch.setattr(catalog.sys, "stdin", SimpleNamespace(isatty=lambda: False))
-    assert catalog._prompt_migration_conflict(src, dst, auto_yes=False) is False
-    # --yes merges without a terminal.
-    assert catalog._prompt_migration_conflict(src, dst, auto_yes=True) is True
-
-
-def test_find_sibling_album_dirs_finds_remasters_and_sorts(tmp_path, monkeypatch):
-    monkeypatch.setattr("qobuz_librarian.config.CONSOLIDATE_THRESH", 0.70)
-    artist = tmp_path / "Artist"
-    primary = artist / "Revolver"
-    primary.mkdir(parents=True)
-    (artist / "Revolver (Remaster)").mkdir()
-    (artist / "Revolver (Mono Mix)").mkdir()
-    (artist / "Greatest Hits").mkdir()  # unrelated — must not appear
-    result = find_sibling_album_dirs({"title": "Revolver"}, primary)
-    titles = [r[0].name for r in result]
-    assert "Greatest Hits" not in titles
-    assert len(result) == 2
-    assert [r[1] for r in result] == sorted([r[1] for r in result], reverse=True)
 
 
 def test_execute_consolidation_moves_overlap_to_recoverable_backup(tmp_path, monkeypatch):

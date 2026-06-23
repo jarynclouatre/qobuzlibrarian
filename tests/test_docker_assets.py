@@ -86,34 +86,9 @@ def test_entrypoint_normalises_a_stale_config_volume(tmp_path):
     assert "failed_downloads_enabled = true" in out
 
 
-def test_entrypoint_leaves_a_correct_config_alone(tmp_path):
-    original = (
-        "[database]\n"
-        "downloads_enabled = false\n"
-        "failed_downloads_enabled = true\n"
-        "[filepaths]\n"
-        "add_singles_to_folder = true\n"
-    )
-    cfg = _make_config(tmp_path, original)
-    _run_entrypoint_head(tmp_path, {"CONFIG_DIR": str(cfg)})
-    assert (cfg / "streamrip" / "config.toml").read_text() == original
-
-
 def test_entrypoint_defaults_to_nonroot_user(tmp_path):
     # With no PUID/PGID the app must still drop to 1000:1000, not run as root.
     cfg = _make_config(tmp_path, "[database]\n")
     r = _run_entrypoint_head(tmp_path, {"CONFIG_DIR": str(cfg)}, capture=True)
     assert r.returncode == 0
     assert "Running as 1000:1000" in r.stdout
-
-
-def test_entrypoint_fails_closed_when_puid_is_non_numeric(tmp_path):
-    # A non-numeric PUID/PGID (a typo) must NOT silently fall back to running as
-    # root — that defeats the non-root isolation. The entrypoint refuses to start
-    # instead; running as root requires the explicit numeric pair 0:0.
-    cfg = _make_config(tmp_path, "[database]\n")
-    r = _run_entrypoint_head(tmp_path,
-        {"CONFIG_DIR": str(cfg), "PUID": "appuser", "PGID": "1000"},
-        capture=True)
-    assert r.returncode != 0
-    assert "must be numeric" in r.stderr

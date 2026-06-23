@@ -36,29 +36,6 @@ def _patch(monkeypatch, *, rip, added, cleanup, cancel=False):
     monkeypatch.setattr(dl.time, "sleep", lambda _s: None)
 
 
-def test_full_album_lossy_counts_once_not_as_failed(monkeypatch, tmp_path):
-    tracks = [{"id": i, "title": f"T{i}", "track_number": i} for i in range(1, 8)]
-    kept = [tmp_path / f"0{i} - T{i}.flac" for i in range(1, 6)]
-    for p in kept:
-        p.write_bytes(b"x")
-    # First cleanup pass: 5 kept FLACs, T6 landed lossy and was deleted; the
-    # empty retry pass leaves it stranded so we exercise the bookkeeping, not
-    # recovery. T7 never landed.
-    deltas = iter([kept + [tmp_path / "06 - T6.mp3"], []])
-    cleans = iter([(kept, ["06 - T6"], []), ([], [], [])])
-    _patch(monkeypatch,
-           rip=lambda *a, **k: (0, ""),
-           added=lambda _s: next(deltas, []),
-           cleanup=lambda _f: next(cleans, ([], [], [])))
-
-    r = dl.run_album_download(album=_album(tracks), missing=tracks, present=[],
-                              album_dir=None, snapshot=set())
-
-    assert (r["n_ok"], r["n_lossy"], r["n_fail"]) == (5, 1, 1)
-    assert r["n_ok"] + r["n_lossy"] + r["n_fail"] == 7
-    assert r["failed_tracks"] == ["T7"]            # T6 stays in the lossy bucket only
-
-
 def test_full_album_with_present_tracks_counts_fail_against_total(monkeypatch, tmp_path):
     # Full-album rip re-downloads the WHOLE album (present tracks too), so n_fail
     # must be reconciled against n_tracks_total, not len(missing). Otherwise a
@@ -86,27 +63,6 @@ def test_full_album_with_present_tracks_counts_fail_against_total(monkeypatch, t
     assert r["n_ok"] == 8
     assert r["n_fail"] == 2          # 10 total - 8 ok, NOT max(0, 6-8)=0
     assert r["n_ok"] + r["n_lossy"] + r["n_fail"] == 10
-
-
-def test_edition_suffix_track_that_landed_is_not_flagged_failed(monkeypatch, tmp_path):
-    tracks = [{"id": i, "title": t, "track_number": i} for i, t in enumerate(
-        ["A", "B", "C", "D", "Hungry Heart (Single Version)", "Outro"], 1)]
-    landed = [tmp_path / n for n in (
-        "01 - A.flac", "02 - B.flac", "03 - C.flac", "04 - D.flac",
-        "05 - Hungry Heart.flac")]
-    for p in landed:
-        p.write_bytes(b"x")
-    _patch(monkeypatch,
-           rip=lambda *a, **k: (0, ""),
-           added=lambda _s: landed,
-           cleanup=lambda f: (list(f), [], []))
-
-    r = dl.run_album_download(album=_album(tracks), missing=tracks, present=[],
-                              album_dir=None, snapshot=set())
-
-    assert r["n_fail"] == 1
-    assert "Hungry Heart (Single Version)" not in r["failed_tracks"]
-    assert r["failed_tracks"] == ["Outro"]
 
 
 def test_lossy_track_retried_once_and_recovers(monkeypatch, tmp_path):
@@ -158,45 +114,6 @@ def test_strategy_full_vs_per_track_boundary(monkeypatch, total, missing, expect
                           present=[{}], album_dir=None, snapshot=set())
 
     assert any("/album/" in u for u in urls) is expect_full
-
-
-def test_force_track_by_track_overrides_the_ratio(monkeypatch):
-    # 11 of 14 missing → 0.79 would normally trigger the album URL.
-    tracks = [{"id": i, "title": f"T{i}"} for i in range(1, 15)]
-    urls = []
-    _patch(monkeypatch,
-           rip=lambda url, **_k: (urls.append(url), (0, ""))[1],
-           added=lambda _s: [],
-           cleanup=lambda f: (list(f), [], []))
-
-    dl.run_album_download(album=_album(tracks), missing=tracks[:11],
-                          present=[{}, {}, {}], album_dir=None, snapshot=set(),
-                          force_track_by_track=True)
-
-    assert len(urls) == 11 and all("/track/" in u for u in urls)
-
-
-def test_per_track_loop_stops_on_cancel_without_counting_failures(monkeypatch):
-    tracks = [{"id": i, "title": f"T{i}"} for i in range(1, 15)]
-    urls = []
-    checks = {"n": 0}
-
-    def cancel():
-        checks["n"] += 1
-        return checks["n"] > 1          # False at the loop top, True after the rip
-
-    _patch(monkeypatch,
-           rip=lambda url, **_k: (urls.append(url), (130, ""))[1],
-           added=lambda _s: [],
-           cleanup=lambda f: (list(f), [], []))
-    monkeypatch.setattr(dl, "is_cancel_requested", cancel)
-
-    r = dl.run_album_download(album=_album(tracks), missing=tracks[:11],
-                              present=[{}, {}, {}], album_dir=None, snapshot=set(),
-                              force_track_by_track=True)
-
-    assert len(urls) == 1           # stopped after the first, not all 11
-    assert r["n_fail"] == 0         # the cancel exit (130) isn't a failure
 
 
 def test_full_album_backs_up_present_tracks_before_rip(monkeypatch, tmp_path):

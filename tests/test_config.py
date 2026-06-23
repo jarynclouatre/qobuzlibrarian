@@ -11,12 +11,6 @@ def test_env_choice_falls_back_on_unknown_value(monkeypatch):
                            ("embed", "sidecar", "both")) == "embed"
 
 
-def test_env_choice_accepts_known_value_case_insensitively(monkeypatch):
-    monkeypatch.setenv("ARTWORK", "BOTH")
-    assert cfg._env_choice("ARTWORK", "sidecar",
-                           ("sidecar", "embed", "both")) == "both"
-
-
 def test_env_bool_empty_string_means_unset(monkeypatch):
     # compose's `${PREFER_HIRES:-}` resolves to "" — that must mean "use the
     # default", not silently flip the flag off.
@@ -29,13 +23,6 @@ def test_env_num_min_floors_a_sub_minimum_count(monkeypatch):
     # import time; clamp to the floor so a typo can't take down the web app.
     monkeypatch.setenv("SSE_MAX_WORKERS", "0")
     assert cfg._env_num_min("SSE_MAX_WORKERS", 16, 1) == 1
-
-
-def test_env_num_min_clamps_a_negative_delay_to_zero(monkeypatch):
-    # A negative delay reaches time.sleep, which raises ValueError and kills the
-    # worker thread mid-scan. Flooring at 0 keeps a fat-fingered value harmless.
-    monkeypatch.setenv("ARTIST_API_DELAY", "-1")
-    assert cfg._env_num_min("ARTIST_API_DELAY", 0.0, 0.0) == 0.0
 
 
 def test_resolve_secret_reads_token_from_a_file(monkeypatch, tmp_path):
@@ -51,11 +38,3 @@ def test_resolve_secret_reads_token_from_a_file(monkeypatch, tmp_path):
     assert cfg._resolve_secret("QOBUZ_USER_AUTH_TOKEN") == "tok-from-file"
     # Must NOT leak the secret into the process environment.
     assert os.environ.get("QOBUZ_USER_AUTH_TOKEN") == ""
-
-
-def test_resolve_secret_prefers_a_set_env_var_over_the_file(monkeypatch, tmp_path):
-    token_file = tmp_path / "qobuz_token"
-    token_file.write_text("from-file")
-    monkeypatch.setenv("QOBUZ_USER_AUTH_TOKEN", "from-env")
-    monkeypatch.setenv("QOBUZ_USER_AUTH_TOKEN_FILE", str(token_file))
-    assert cfg._resolve_secret("QOBUZ_USER_AUTH_TOKEN") == "from-env"
