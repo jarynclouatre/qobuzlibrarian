@@ -760,6 +760,12 @@ def _maybe_auto_check_new_releases():
     # nothing. A completed library scan seeds it (flows.scan_library).
     if not new_releases.is_baseline_complete():
         return
+    # And never ahead of an interrupted library scan waiting to resume: finishing
+    # that takes priority (it's what the user's resume needs the scan lane for),
+    # and a delta check can wait until the library is whole again.
+    from qobuz_librarian.library import scan_checkpoint
+    if scan_checkpoint.pending() is not None:
+        return
     # Serialise the check-and-submit so two concurrent dashboard loads can't
     # both pass the gate and queue the check twice.
     with _auto_check_lock:
@@ -1652,6 +1658,20 @@ async def library_scan(request: Request, mode: str = Form("missing_albums")):
     # does its disk work in an executor.
     loop = asyncio.get_running_loop()
     if mode_norm == "new_releases":
+        # A new-release check compares the catalog against the baseline a completed
+        # library scan builds; with no baseline there's nothing to compare against,
+        # so it would crawl every artist, surface nothing, and (the old bug) flip
+        # the baseline "done" — stranding an interrupted library scan's resume.
+        # Refuse and point at a library scan instead of running that empty crawl.
+        from qobuz_librarian.library import new_releases as _nr
+        if not _nr.is_baseline_complete():
+            msg = "Run a full library scan first."
+            if _is_htmx(request):
+                return HTMLResponse(
+                    f'<div class="alert alert-warning" data-flash>{html.escape(msg)}</div>',
+                    status_code=200)
+            return RedirectResponse(
+                url="/library?error=" + urllib.parse.quote(msg), status_code=303)
         # Same job the dashboard auto-check submits; its own execute_kind so the
         # review screen pre-ticks the new releases and labels the surface.
         job = await loop.run_in_executor(None, _start_new_release_check)

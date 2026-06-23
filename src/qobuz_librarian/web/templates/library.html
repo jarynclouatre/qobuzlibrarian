@@ -53,11 +53,12 @@
         <div class="text-sm text-base-content/50">Albums you own that are missing tracks.</div>
       </div>
     </label>
-    <label class="flex items-start gap-3 cursor-pointer">
-      <input type="radio" name="mode" value="new_releases" class="radio radio-primary mt-1">
+    <label class="flex items-start gap-3 {% if baseline_complete %}cursor-pointer{% else %}opacity-60 cursor-not-allowed{% endif %}">
+      <input type="radio" name="mode" value="new_releases" class="radio radio-primary mt-1"
+             {% if not baseline_complete %}disabled{% endif %}>
       <div>
         <div class="font-medium">Check for new releases</div>
-        <div class="text-sm text-base-content/50">Recent releases you don't own yet.</div>
+        <div class="text-sm text-base-content/50">{% if baseline_complete %}Recent releases you don't own yet.{% else %}Needs a completed library scan first.{% endif %}</div>
       </div>
     </label>
   </div>

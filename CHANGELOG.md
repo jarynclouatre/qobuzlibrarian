@@ -13,6 +13,7 @@ version was tagged during local development.
 **"New releases" means actually new**
 
 - The new-release check flags an album when it appears in an artist's catalog and you don't own it — including an old album Qobuz only just added, which is genuinely new to you. The fix is in keeping the baseline trustworthy so this can't dump your back-catalog: a catalog bigger than the fetch limit is recorded but not diffed (its order isn't stable run to run), the baseline grows by union instead of being overwritten, and when the catalog fetch limit itself grows the check re-baselines once rather than treating the newly-visible older albums as fresh arrivals. Candidates default to un-ticked, so a review never queues a pile of downloads in one tap.
+- A new-release check now requires a completed library scan first — that scan is what builds the baseline it compares against. Until one finishes the option is disabled (with a note saying why), a direct request is refused, and the automatic check waits behind an interrupted scan you're resuming — so it can never crawl to an empty baseline or run ahead of the scan that would build one.
 
 **Repair scan — cleaner live activity**
 

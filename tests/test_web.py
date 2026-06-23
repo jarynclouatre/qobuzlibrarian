@@ -177,6 +177,22 @@ def test_search_uses_a_generous_result_limit(client, monkeypatch):
     assert cfg.SEARCH_LIMIT >= 20
 
 
+def test_new_release_check_refused_without_baseline(client, monkeypatch):
+    # "Check for new releases" is a library-walk-and-compare — useless until a full
+    # library scan has built the baseline. Without one it must NOT start a crawl
+    # (the old bug: it ran an empty crawl AND flipped baseline_complete=True, which
+    # then stopped an interrupted library scan from resuming). It refuses instead.
+    import qobuz_librarian.web.app as app_mod
+    from qobuz_librarian.library import new_releases
+    from qobuz_librarian.web import flows
+    monkeypatch.setattr(app_mod, "_get_token", lambda: "tok")
+    monkeypatch.setattr(flows, "scan_new_releases", lambda *a, **k: None)
+    assert new_releases.is_baseline_complete() is False      # fresh state, no baseline
+    r = client.post("/library", data={"mode": "new_releases"}, follow_redirects=False)
+    assert r.status_code == 303 and r.headers["location"].startswith("/library")
+    assert app_mod._existing_new_release_check() is None     # no crawl was started
+
+
 def test_settings_save_defers_apply_when_job_is_active(tmp_path, monkeypatch):
     """An in-flight job must not see cfg.* flip mid-run."""
     from qobuz_librarian import config as cfg
