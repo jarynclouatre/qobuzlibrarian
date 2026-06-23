@@ -29,6 +29,7 @@ version was tagged during local development.
 **Safety fixes**
 
 - Undo on a single-track grab can no longer remove a same-numbered track from a different disc of a multi-disc album. A flood of failed logins can no longer lock the admin out — a request that already carries a valid session skips the limit — and an unreadable credentials file now fails closed instead of re-opening first-run setup. A library migration to a destination short on free space no longer starts an unattended run that would relocate files until it ran out.
+- Upgrading an album no longer discards its booklets, scans, `.cue`/`.log`, or hand-placed cover art: the bulk and web upgrade paths now carry those companions into the rebuilt folder before clearing the backup, matching the single-album path. Consolidating duplicate folders moves the overlapping tracks to a recoverable backup rather than deleting them outright, so a mistaken match can be undone. A repair no longer removes a pre-existing album folder it failed to recognise before refilling. And a near-full disk now stops the download queue cleanly and keeps the rest for a retry, instead of failing each album in turn.
 
 ## [0.9.0] - 2026-06-21
 

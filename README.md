@@ -44,7 +44,7 @@ Every mode works the same way: **scan → review → download.** A scan runs in 
 | **Downsample** | Shrink hi-res files to CD rate (local, no login) |
 | **Repair** | Refill truncated or partial FLACs (ISRC-verified) |
 | **Lyrics** | Fetch lyrics for tracks missing them (local, no login) |
-| **Migrate** | Reorganise an existing library into the layout (copies, never touches originals) |
+| **Migrate** | Reorganise an existing library into the layout (copies by default; optional move mode) |
 | **Queue** | Live progress, reviews awaiting approval, and download history |
 | **Settings** | Qobuz credentials and behaviour toggles |
 

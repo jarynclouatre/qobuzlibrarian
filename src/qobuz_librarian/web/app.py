@@ -388,7 +388,9 @@ app = FastAPI(title="Qobuz Librarian", docs_url=None, redoc_url=None,
 
 # AuthMiddleware is added first so it ends up innermost — it runs after the
 # CSRF middleware, which keeps CSRF validation on the login/setup POSTs and
-# lets the redirects it returns pick up the CSRF cookie + security headers.
+# lets the redirects it returns pick up the security headers. (The CSRF cookie
+# rides only HTML responses, so it's seeded by the login/setup page GET the
+# redirect bounces to, not by the redirect itself.)
 app.add_middleware(web_auth.AuthMiddleware)
 app.add_middleware(CSRFMiddleware)
 app.add_middleware(SecurityHeadersMiddleware)
@@ -745,7 +747,8 @@ def _maybe_auto_check_new_releases():
     known-bad, the CLI holds the lock, another job is actively working, a
     new-release list is already awaiting review, or the interval hasn't elapsed.
     """
-    if cfg.NEW_RELEASE_CHECK_INTERVAL <= 0 or _CLI_MODE or _LOCK_BUSY_PID is not None:
+    if (cfg.NEW_RELEASE_CHECK_INTERVAL <= 0 or _CLI_MODE
+            or _LOCK_BUSY_PID is not None or _UNWRITABLE_VOLUMES):
         return
     # Don't bother (or thrash) when there's no token, or one we already know
     # Qobuz is rejecting — it would just fail on the first call every load.
@@ -914,7 +917,8 @@ def _maybe_auto_first_scan():
     AUTO_LIBRARY_SCAN — a manual scan still resumes the checkpoint and seeds the
     baseline.
     """
-    if not cfg.AUTO_LIBRARY_SCAN or _CLI_MODE or _LOCK_BUSY_PID is not None:
+    if (not cfg.AUTO_LIBRARY_SCAN or _CLI_MODE or _LOCK_BUSY_PID is not None
+            or _UNWRITABLE_VOLUMES):
         return
     if _TOKEN_VALID is False or not _read_creds().get("auth_token"):
         return

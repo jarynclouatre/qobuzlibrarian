@@ -332,6 +332,12 @@ CATALOG_SEARCH_LIMIT = _env("CATALOG_SEARCH_LIMIT", 12)
 # every download the instant it starts.
 RIP_TIMEOUT      = _env_num_min("RIP_TIMEOUT", 900, 0)
 DELAY_BETWEEN    = _env_num_min("DELAY_BETWEEN", 1.0, 0.0)
+# Free-space floor (MB) checked before each album download. streamrip only
+# signals a full disk via stderr text (which detect_disk_full best-effort greps),
+# so this preflight turns a near-full staging area into the proper disk-full stop
+# instead of a silent run of per-track failures that delete each partial. 0
+# disables the check.
+MIN_FREE_STAGING_MB = _env_num_min("MIN_FREE_STAGING_MB", 500, 0)
 # Pause before the next queued album when Qobuz throttling was detected
 # in the last rip (vs the normal DELAY_BETWEEN). Tames the error-wave
 # pattern on multi-hundred-album queues. Set 0 to disable.
@@ -462,8 +468,8 @@ ARTIST_CATALOG_PAGE    = _env_num_min("ARTIST_CATALOG_PAGE",    100, 1)
 MISSING_ALBUMS_MIN_TRACKS = _env("MISSING_ALBUMS_MIN_TRACKS", 4)
 
 # ── Retention windows (days) ──────────────────────────────────────────────────
-UPGRADE_BACKUP_RETENTION_DAYS = _env("UPGRADE_BACKUP_RETENTION_DAYS", 7)
-CAPPED_RETENTION_DAYS         = _env("CAPPED_RETENTION_DAYS",         90)
+UPGRADE_BACKUP_RETENTION_DAYS = _env_num_min("UPGRADE_BACKUP_RETENTION_DAYS", 7, 0)
+CAPPED_RETENTION_DAYS         = _env_num_min("CAPPED_RETENTION_DAYS",         90, 0)
 
 # ── Feature flags ─────────────────────────────────────────────────────────────
 AUTO_UPGRADE_ENABLED = _env_bool("AUTO_UPGRADE_ENABLED", False)

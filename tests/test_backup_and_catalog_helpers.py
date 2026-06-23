@@ -972,26 +972,31 @@ def test_find_sibling_album_dirs_finds_remasters_and_sorts(tmp_path, monkeypatch
     assert [r[1] for r in result] == sorted([r[1] for r in result], reverse=True)
 
 
-def test_execute_consolidation_deletes_and_counts_failures(tmp_path, monkeypatch):
-    f_ok = tmp_path / "track.flac"
-    f_ok.write_bytes(b"audio")
-    f_locked = tmp_path / "locked.flac"
-    f_locked.write_bytes(b"audio")
-    summary = {"overlap": [({"path": str(f_ok)}, {}), ({"path": str(f_locked)}, {})],
+def test_execute_consolidation_moves_overlap_to_recoverable_backup(tmp_path, monkeypatch):
+    # Consolidation now MOVES overlapping sibling tracks to the gap-fill backup
+    # dir (recoverable by the retention sweep) instead of hard-deleting them, so a
+    # mistaken duplicate-match can be undone like every other destructive mode.
+    import qobuz_librarian.config as cfg
+    monkeypatch.setattr(cfg, "UPGRADE_BACKUP_DIR", tmp_path / "backups")
+    sib = tmp_path / "Album (Deluxe)"
+    sib.mkdir()
+    f1 = sib / "track.flac"
+    f1.write_bytes(b"audio-1")
+    f2 = sib / "other.flac"
+    f2.write_bytes(b"audio-2")
+    summary = {"dir": str(sib),
+               "overlap": [({"path": str(f1)}, {}), ({"path": str(f2)}, {})],
                "unique": []}
 
-    import qobuz_librarian.modes.consolidate as cmod
-    real_unlink = cmod.Path.unlink
+    removed, n_fail = execute_consolidation(summary)
 
-    def maybe_fail(self, missing_ok=False):
-        if self.name == "locked.flac":
-            raise OSError("permission denied")
-        return real_unlink(self, missing_ok=missing_ok)
-
-    monkeypatch.setattr(cmod.Path, "unlink", maybe_fail)
-    deleted, n_fail = execute_consolidation(summary)
-    assert [p.name for p in deleted] == ["track.flac"] and n_fail == 1
-    assert not f_ok.exists() and f_locked.exists()
+    # Reported for the beets-DB drop, gone from the live folder, and recoverable
+    # under the backup dir — not destroyed.
+    assert n_fail == 0
+    assert sorted(p.name for p in removed) == ["other.flac", "track.flac"]
+    assert not f1.exists() and not f2.exists()
+    recovered = {p.name for p in (tmp_path / "backups").rglob("*.flac")}
+    assert recovered == {"track.flac", "other.flac"}
 
 
 def test_consolidate_albums_is_a_noop_under_dry_run(monkeypatch):

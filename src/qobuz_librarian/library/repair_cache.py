@@ -55,6 +55,8 @@ def _discard_corrupt_db() -> bool:
         except OSError as e:
             vlog(f"couldn't clear corrupt repair cache {p.name}: {e}")
             return False
+    if cleared:
+        vlog("repair cache was corrupt — rebuilt from scratch")
     return cleared
 
 

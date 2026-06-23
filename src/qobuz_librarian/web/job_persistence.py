@@ -116,37 +116,48 @@ def init() -> None:
         conn = _get_conn()
         if conn is None:
             return
-        conn.execute(_SCHEMA)
-        # Terminal-row index: history_count() / history_page() / prune_finished()
-        # all filter on status and order by finished_at. Without this they full-
-        # scan the table, touching every row's record header just to skip past
-        # the multi-MB ``candidates`` blob of parked reviews. COUNT(*) is served
-        # entirely from the index; the page query uses it to filter+sort before
-        # fetching only the LIMIT rows. created_at is the ORDER BY's COALESCE
-        # fallback, so it's carried in the index too. IF NOT EXISTS = idempotent.
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_jobs_terminal "
-            "ON jobs(status, finished_at, created_at)"
-        )
-        # Schema versioning so a FUTURE column addition can ALTER TABLE instead
-        # of silently failing every persist() against an old jobs.db — that
-        # failure is swallowed by _note_write_failure, leaving the archive
-        # non-durable with no visible sign. To add a column later: bump
-        # _SCHEMA_VERSION and add an `if version < N: conn.execute("ALTER TABLE
-        # jobs ADD COLUMN ...")` block here (SQLite ADD COLUMN is online-safe).
-        version = conn.execute("PRAGMA user_version").fetchone()[0]
-        if version < _SCHEMA_VERSION:
-            # v2: persist Job.single (single-track-grab undo info) so a restart
-            # doesn't drop the Undo affordance on a completed one-track grab.
-            # _SCHEMA already adds the column for a fresh db (CREATE TABLE), so
-            # only ALTER an existing table that predates it. ADD COLUMN is
-            # online-safe and the DEFAULT backfills old rows with '{}'.
-            cols = {r[1] for r in conn.execute("PRAGMA table_info(jobs)")}
-            if "single" not in cols:
-                conn.execute(
-                    "ALTER TABLE jobs ADD COLUMN single TEXT NOT NULL DEFAULT '{}'")
-            conn.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")
-        conn.commit()
+        try:
+            conn.execute(_SCHEMA)
+            # Terminal-row index: history_count() / history_page() / prune_finished()
+            # all filter on status and order by finished_at. Without this they full-
+            # scan the table, touching every row's record header just to skip past
+            # the multi-MB ``candidates`` blob of parked reviews. COUNT(*) is served
+            # entirely from the index; the page query uses it to filter+sort before
+            # fetching only the LIMIT rows. created_at is the ORDER BY's COALESCE
+            # fallback, so it's carried in the index too. IF NOT EXISTS = idempotent.
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_jobs_terminal "
+                "ON jobs(status, finished_at, created_at)"
+            )
+            # Schema versioning so a FUTURE column addition can ALTER TABLE instead
+            # of silently failing every persist() against an old jobs.db — that
+            # failure is swallowed by _note_write_failure, leaving the archive
+            # non-durable with no visible sign. To add a column later: bump
+            # _SCHEMA_VERSION and add an `if version < N: conn.execute("ALTER TABLE
+            # jobs ADD COLUMN ...")` block here (SQLite ADD COLUMN is online-safe).
+            version = conn.execute("PRAGMA user_version").fetchone()[0]
+            if version < _SCHEMA_VERSION:
+                # v2: persist Job.single (single-track-grab undo info) so a restart
+                # doesn't drop the Undo affordance on a completed one-track grab.
+                # _SCHEMA already adds the column for a fresh db (CREATE TABLE), so
+                # only ALTER an existing table that predates it. ADD COLUMN is
+                # online-safe and the DEFAULT backfills old rows with '{}'.
+                cols = {r[1] for r in conn.execute("PRAGMA table_info(jobs)")}
+                if "single" not in cols:
+                    conn.execute(
+                        "ALTER TABLE jobs ADD COLUMN single TEXT NOT NULL DEFAULT '{}'")
+                conn.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")
+            conn.commit()
+        except sqlite3.Error as e:
+            # A transient/locked/full/corrupt jobs.db here would otherwise
+            # propagate out of restore_jobs() into the caller's broad "couldn't
+            # restore prior jobs — starting fresh" handler, masking a recoverable
+            # condition and then leaving every later persist() silently non-
+            # durable. Surface it distinctly and degrade to the in-memory
+            # registry; a restart once the volume recovers re-runs this.
+            _log.warning("job persistence schema/migration failed; running "
+                         "without crash durability until the volume recovers "
+                         "and the app restarts: %s", e)
 
 
 def persist(job) -> None:

@@ -169,6 +169,47 @@ def test_executor_upgrade_runs_completeness_gate_before_dropping_backup(monkeypa
     assert not backup.exists()                   # verified → backup cleared
 
 
+def test_executor_upgrade_carries_non_audio_companions_from_backup(monkeypatch, tmp_path):
+    # Regression: the bulk/web upgrade path (this executor) must carry non-audio
+    # companions — booklets, scans, .cue/.log, hand-placed art — out of the backup
+    # into the rebuilt album before reaping it, exactly as the single-album
+    # process.py path does. The audio-only completeness gate ignores them, so
+    # without the carry they'd be destroyed with the backup on every upgrade.
+    from qobuz_librarian.modes import process as proc
+    from qobuz_librarian.queue import executor
+
+    album_dir = tmp_path / "music" / "Artist" / "Album"
+    album_dir.mkdir(parents=True)
+    (album_dir / "01.flac").write_bytes(b"new")            # the upgraded audio
+    backup = tmp_path / "backups" / "Album.bak"
+    backup.mkdir(parents=True)
+    (backup / "01.flac").write_bytes(b"old")               # old audio (not carried)
+    (backup / "booklet.pdf").write_bytes(b"the-booklet")   # user companion
+    (backup / "scans").mkdir()
+    (backup / "scans" / "front.jpg").write_bytes(b"art")
+
+    monkeypatch.setattr(executor, "find_album_dir_filesystem", lambda _a: album_dir)
+    monkeypatch.setattr(executor, "cleanup_duplicate_art", lambda _d: 0)
+    monkeypatch.setattr(proc, "find_album_dir_filesystem", lambda _a: album_dir)
+    monkeypatch.setattr(proc, "_upgrade_replacement_verified", lambda *a: True)
+
+    item = {
+        "album": {"id": "A", "artist": {"name": "Artist"}, "tracks": {"items": []}},
+        "album_dir": album_dir, "backup_path": backup, "gap_fill_backup_path": None,
+        "siblings_to_delete": [], "n_ok": 1, "n_fail": 0, "n_lossy": 0,
+        "auto_upgrade": True,
+    }
+    args = Namespace(migrate_multi_artist=False, no_import=False, consolidate=False)
+    executor._resolve_queue_item(item, args, imported_globally=True)
+
+    # Backup reaped, but its non-audio companions carried into the live folder;
+    # the upgraded audio is left untouched (the old copy is not carried back).
+    assert not backup.exists()
+    assert (album_dir / "booklet.pdf").read_bytes() == b"the-booklet"
+    assert (album_dir / "scans" / "front.jpg").read_bytes() == b"art"
+    assert (album_dir / "01.flac").read_bytes() == b"new"
+
+
 def test_executor_upgrade_keeps_backup_when_new_folder_not_located(monkeypatch, tmp_path):
     # Clean import but the renamed folder can't be relocated → keep the backup,
     # never restore it as a duplicate beside the fresh import.

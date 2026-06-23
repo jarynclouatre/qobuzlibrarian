@@ -152,29 +152,50 @@ def consolidation_summary(siblings, primary_tracks):
 
 
 def execute_consolidation(summary):
-    """Delete the overlapping sibling tracks. Returns (deleted_paths, n_failed)
-    so the caller can drop exactly those files from the beets DB."""
-    deleted, n_failed = [], 0
+    """Move the overlapping sibling tracks to a recoverable backup instead of
+    hard-deleting them, then return (removed_paths, n_failed) so the caller can
+    drop exactly those files from the beets DB.
+
+    Consolidation is the one destructive mode whose duplicate match can rest on a
+    title+disc+(track)+duration-within-2s heuristic when neither side carries an
+    ISRC/MBID, so a mistaken match would otherwise unlink a genuinely different
+    recording with no way back. Routing removals through the gap-fill backup dir
+    lets the retention sweep recover them, matching every other destructive
+    mode's keep-a-backup stance."""
+    from qobuz_librarian.library.backup import backup_gap_fill_files
+
+    to_remove, n_failed = [], 0
     for st, _ in summary["overlap"]:
         raw = (st.get("path") or "").strip()
         if not raw:
-            # Malformed overlap entry with no path — nothing to delete. Skip it
-            # rather than letting Path("") resolve to (and try to unlink) the
-            # current working directory.
+            # Malformed overlap entry with no path — nothing to remove. Skip it
+            # rather than letting Path("") resolve to the current dir.
             vlog("consolidation: skipping overlap entry with no path")
             continue
         path = Path(raw)
         if not path.exists():
             n_failed += 1
             continue
-        try:
-            path.unlink()
-            deleted.append(path)
-            vlog(f"deleted {path}")
-        except OSError as e:
+        to_remove.append(path)
+
+    if not to_remove:
+        return [], n_failed
+
+    # Move (don't unlink): backup_gap_fill_files renames/copies each file into a
+    # timestamped backup dir and only then removes the source, leaving anything
+    # it couldn't move on disk. A file gone from its original path landed in the
+    # backup; one still present failed to move and is counted as a failure.
+    backup_gap_fill_files(to_remove, Path(summary["dir"]))
+    removed = []
+    for path in to_remove:
+        if path.exists():
             n_failed += 1
-            log.info(fmt(C.RED, f"      ✗  failed to delete {path.name}: {e}."))
-    return deleted, n_failed
+            log.info(fmt(C.RED,
+                f"      ✗  couldn't move {path.name} to backup; left in place."))
+        else:
+            removed.append(path)
+            vlog(f"consolidation: moved {path} to backup")
+    return removed, n_failed
 
 
 def consolidate_albums(album, args):

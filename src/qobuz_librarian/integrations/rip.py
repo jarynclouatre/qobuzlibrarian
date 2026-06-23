@@ -133,6 +133,9 @@ def flac_audio_offset(path):
         with open(path, "rb") as fh:
             if fh.read(4) != b"fLaC":
                 return 0
+            fh.seek(0, 2)
+            size = fh.tell()
+            fh.seek(4)
             offset = 4
             while True:
                 header = fh.read(4)
@@ -140,6 +143,12 @@ def flac_audio_offset(path):
                     return 0
                 is_last = bool(header[0] & 0x80)
                 offset += 4 + int.from_bytes(header[1:4], "big")
+                # A corrupt/garbage block length can push the offset past EOF;
+                # don't trust it — it would collapse a caller's audio_size to 0
+                # and false-flag a healthy file as truncated. Fall back to the
+                # whole-file size instead.
+                if offset > size:
+                    return 0
                 fh.seek(offset)
                 if is_last:
                     return offset

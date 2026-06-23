@@ -177,7 +177,20 @@ def set_credentials(username: str, password: str) -> bool:
             os.fchmod(fd, 0o600)
             with os.fdopen(fd, "w", encoding="utf-8") as f:
                 json.dump(payload, f, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
             os.replace(tmp, cfg.WEB_AUTH_FILE)
+            # Make the rename durable: a power loss right after replace() must not
+            # revert to "no creds" and re-open the unauthenticated /setup page on
+            # reboot. fsync the parent dir so the new directory entry is on disk.
+            try:
+                dfd = os.open(str(cfg.WEB_AUTH_FILE.parent), os.O_RDONLY)
+                try:
+                    os.fsync(dfd)
+                finally:
+                    os.close(dfd)
+            except OSError:
+                pass
         finally:
             if os.path.exists(tmp):
                 os.unlink(tmp)

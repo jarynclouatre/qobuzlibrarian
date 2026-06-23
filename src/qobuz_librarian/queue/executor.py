@@ -384,8 +384,18 @@ def _resolve_queue_item(item, args, imported_globally):
             # original (track count + playtime), not merely decode-clean. The
             # artist/upgrade walks run their bulk upgrades through this executor,
             # so without this they'd skip the C01/C02 completeness gate.
-            from qobuz_librarian.modes.process import _upgrade_replacement_verified
+            from qobuz_librarian.modes.process import (
+                _carry_non_audio_from_backup,
+                _upgrade_replacement_verified,
+            )
             if _upgrade_replacement_verified(item["album"], album_dir, bp):
+                # Carry non-audio companions (booklets, scans, .cue/.log,
+                # hand-placed cover art) from the backup into the rebuilt album
+                # before deleting it — the audio-only completeness gate ignores
+                # them, so they'd be lost with the backup. Mirrors the single-
+                # album CLI path in modes/process.py; the bulk artist/upgrade
+                # walks and the web Upgrade action run through this executor.
+                _carry_non_audio_from_backup(item["album"], album_dir, bp)
                 try:
                     shutil.rmtree(bp)
                 except OSError as e:
@@ -754,6 +764,10 @@ def _execute_download_queue(queue, args, token, *, on_progress=None):
                         "  ⚠  Pre-import hook interrupted — skipping beets "
                         "for this album; stopping the queue."))
                     interrupted = True
+                    # Mark interrupted so _resolve_queue_item labels it as such
+                    # in the fetch log instead of falling through to "downloaded"
+                    # (the album did not import).
+                    item["result"] = "interrupted"
                     results.append(_resolve_queue_item(item, args, False))
                     continue
 
@@ -764,6 +778,9 @@ def _execute_download_queue(queue, args, token, *, on_progress=None):
                         "\n  beets interrupted. Resolving backups based on disk."))
                     interrupted = True
                     item_imported = False
+                    # Label as interrupted (not "downloaded") — beets did not
+                    # finish importing this album.
+                    item["result"] = "interrupted"
                     results.append(_resolve_queue_item(item, args, False))
                     continue
 

@@ -445,6 +445,18 @@ def repair_album_dir(album_dir, verified_truncated, artist_name, args, token):
                             for et in read_album_dir(landed_pre)}
             before_names.discard("")
 
+        # Snapshot the artist folder before the refill so that afterwards we can
+        # tell a folder beets created fresh for a misfiled refill (safe to remove
+        # wholesale once emptied) from a pre-existing folder the matcher merely
+        # failed to locate pre-download (must keep its non-audio companions). The
+        # old `landed_pre is None` signal conflated the two and could rmtree a
+        # real user folder on a cold-cache / fuzzy-match miss.
+        try:
+            pre_sibling_dirs = {p.resolve()
+                                for p in album_dir.parent.iterdir() if p.is_dir()}
+        except OSError:
+            pre_sibling_dirs = set()
+
         # ── Back up the truncated originals (plan in hand) ───────────────
         broken_paths = [b["path"] for b in verified_truncated]
         backup_path = backup_gap_fill_files(broken_paths, album_dir)
@@ -504,10 +516,21 @@ def repair_album_dir(album_dir, verified_truncated, artist_name, args, token):
         # from album_dir (EPs, compilations, bonus tracks) lands in a stray
         # folder. Move it home before judging success.
         landed_post = qi.get("_resolved_post_dir") or find_album_dir_filesystem(album)
+        landed_post_path = Path(landed_post) if landed_post else None
+        # "New" only when the refill folder appeared under the artist dir during
+        # THIS download. Anywhere else, or any uncertainty, is treated as
+        # pre-existing so it's never rmtree'd wholesale — only removed if empty.
+        landed_was_new = False
+        if landed_post_path is not None:
+            try:
+                landed_was_new = (
+                    landed_post_path.parent.resolve() == album_dir.parent.resolve()
+                    and landed_post_path.resolve() not in pre_sibling_dirs)
+            except OSError:
+                landed_was_new = False
         _relocate_refilled_into_album_dir(
-            album_dir,
-            Path(landed_post) if landed_post else None,
-            wanted_isrcs, before_names, landed_was_new=landed_pre is None)
+            album_dir, landed_post_path,
+            wanted_isrcs, before_names, landed_was_new=landed_was_new)
 
         n_fail_final = qi.get("n_fail", 0)
         n_ok_final = qi.get("n_ok", 0)

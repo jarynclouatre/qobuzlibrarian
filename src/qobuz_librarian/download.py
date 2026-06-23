@@ -9,6 +9,7 @@ returned — so the gap-fill backup taken mid-download can still be resolved by
 the caller's finally/except when a rip raises AuthLost or hits a full disk.
 """
 import re
+import shutil
 import time
 
 from qobuz_librarian import config as cfg
@@ -108,6 +109,25 @@ def run_album_download(*, album, missing, present, album_dir, snapshot,
         why = ("forced per-track (repair)" if force_track_by_track
                else f"{len(missing)} of {n_tracks_total} missing")
         log.info(fmt(C.GRAY, f"  Strategy: per-track ({why})"))
+
+    # Free-space preflight. streamrip reports a full disk only via stderr text,
+    # which detect_disk_full() best-effort-greps — a real ENOSPC whose message
+    # lacks the errno string would otherwise read as an ordinary per-track
+    # failure and march the whole queue into the same wall, deleting each
+    # truncated partial as it goes. Abort early down the proper disk-full path
+    # (errno 28 → the caller restores backups and keeps items for a retry once
+    # space is freed) when staging is below the floor.
+    if cfg.MIN_FREE_STAGING_MB > 0:
+        try:
+            free_mb = shutil.disk_usage(cfg.STAGING_DIR).free // (1024 * 1024)
+        except OSError:
+            free_mb = None
+        if free_mb is not None and free_mb < cfg.MIN_FREE_STAGING_MB:
+            raise OSError(
+                28,
+                f"Only {free_mb} MB free at {cfg.STAGING_DIR} "
+                f"(below the {cfg.MIN_FREE_STAGING_MB} MB MIN_FREE_STAGING_MB "
+                f"floor) — refusing to start the download.")
 
     if download_full_album:
         url = f"https://play.qobuz.com/album/{album_id}"

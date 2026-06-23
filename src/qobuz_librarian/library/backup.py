@@ -607,13 +607,14 @@ def restore_gap_fill_backup(backup_path: Path, album_dir: Path,
         try:
             if (keep_larger_dst and dst.exists()
                     and dst.stat().st_size >= f.stat().st_size
-                    and flac_audio_ok(dst) is not False):
-                # dst is larger AND decodes, so it's the good refill — keep it.
-                # "Larger" alone isn't "good": a bigger-but-corrupt partial must
-                # not win over the backed-up original, so a dst that fails to
-                # decode falls through to the verified restore below instead of
-                # discarding the backup. (flac_audio_ok is None when there's no
-                # flac tool to check with — then trust the size, as before.)
+                    and flac_audio_ok(dst) is True):
+                # dst is larger AND positively decodes, so it's the good refill —
+                # keep it. "Larger" alone isn't "good": a bigger-but-corrupt
+                # partial must not win over the backed-up original, so a dst that
+                # fails to decode (False) OR that can't be verified at all (None —
+                # no flac tool present) falls through to the verified restore
+                # below rather than discarding the only backed-up original on
+                # size-trust.
                 log.info(fmt(C.GRAY,
                     f"  · Keeping the file already at {dst.name} "
                     f"(>= the backed-up copy) rather than restoring over it."))
