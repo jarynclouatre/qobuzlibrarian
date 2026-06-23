@@ -11,6 +11,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, Form, HTTPException, Query, Request
 from fastapi.responses import (
+    FileResponse,
     HTMLResponse,
     JSONResponse,
     RedirectResponse,
@@ -416,6 +417,14 @@ static_dir.mkdir(exist_ok=True)
 app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
 
 
+@app.get("/favicon.ico", include_in_schema=False)
+async def favicon():
+    """Serve the app icon at the well-known path so the browser's automatic
+    /favicon.ico probe (allowlisted past auth in web/auth.py) doesn't 404. The
+    HTML pages also carry a <link rel="icon">; this covers the bare probe."""
+    return FileResponse(static_dir / "icon.png", media_type="image/png")
+
+
 def _asset_version() -> str:
     """Cache-bust key derived from the CONTENT of the served assets, not the
     release version. It changes whenever app.js / app.css / sw.js change, so an
@@ -496,7 +505,12 @@ async def login_submit(request: Request, username: str = Form(""),
     if not web_auth.credentials_configured():
         return RedirectResponse(url="/setup", status_code=303)
     ip = (request.client.host if request.client else "") or "unknown"
-    if not web_auth.check_login_rate_limit(ip, username):
+    # A request already carrying a valid session is provably the logged-in user,
+    # not the brute-forcer the throttle exists to stop — exempt it so a remote
+    # flood of failed logins for the admin username can't lock the real admin out.
+    cookie = request.cookies.get(web_auth.SESSION_COOKIE)
+    has_session = bool(cookie) and web_auth.verify_session(cookie)
+    if not has_session and not web_auth.check_login_rate_limit(ip, username):
         return templates.TemplateResponse(
             request=request, name="login.html",
             context={"error": "Too many failed attempts — wait an hour and try again."},

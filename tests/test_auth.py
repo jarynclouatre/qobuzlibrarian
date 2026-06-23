@@ -116,6 +116,20 @@ def test_write_streamrip_creds_writes_streamrip_2_2_schema(tmp_path, monkeypatch
     assert write_streamrip_creds("u", "t") is False
 
 
+def test_write_streamrip_creds_is_owner_only(tmp_path, monkeypatch):
+    # The long-lived Qobuz account token lands in this file, so it must be 0600 —
+    # not group/other-readable on a shared config volume. Set explicitly rather
+    # than left to mkstemp's incidental mode, matching web/auth.py's credential.
+    import stat as stat_mod
+
+    from qobuz_librarian import config
+    cfg_path = tmp_path / "sr" / "config.toml"
+    monkeypatch.setattr(config, "STREAMRIP_CONFIG", cfg_path)
+    monkeypatch.setattr(config, "STAGING_DIR", tmp_path / "stg")
+    assert write_streamrip_creds("uid", "tok") is True
+    assert stat_mod.S_IMODE(cfg_path.stat().st_mode) == 0o600
+
+
 def test_friendly_qobuz_error_strips_response_body():
     # Raw JSON / HTML response bodies must not leak into user-facing errors.
     e = QobuzError('HTTP 404 from album/get: {"status":"error","code":404}')

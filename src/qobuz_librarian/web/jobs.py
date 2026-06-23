@@ -320,7 +320,12 @@ class Job:
         """
         q: queue.Queue[str] = queue.Queue(maxsize=2000)
         with self._lock:
-            for line in self.log_lines[-self.REPLAY_TAIL:]:
+            # Leave at least one slot for the progress snapshot below, so a large
+            # REPLAY_TAIL can't fill the queue with history alone and drop the
+            # reconnect header. REPLAY_TAIL == 0 means replay nothing, not the
+            # everything a bare log_lines[-0:] slice would hand back.
+            tail = min(self.REPLAY_TAIL, q.maxsize - 1)
+            for line in (self.log_lines[-tail:] if tail > 0 else []):
                 try:
                     q.put_nowait(line)
                 except queue.Full:
@@ -438,6 +443,11 @@ class JobRegistry:
     """In-memory store for all jobs, bounded to the last N finished jobs."""
 
     MAX_FINISHED = 50
+    # A finished job a client is still streaming is kept past MAX_FINISHED until
+    # the stream closes, so a slow viewer isn't 404'd. But a socket that wedged
+    # open without running its unsubscribe would pin it — and its log — in RAM
+    # forever, so force-evict one finished longer ago than this.
+    _PINNED_MAX_AGE_SEC = 3600
 
     def __init__(self):
         self._jobs: dict[str, Job] = {}
@@ -492,12 +502,17 @@ class JobRegistry:
         if excess <= 0:
             return
         finished.sort(key=lambda j: j.finished_at or j.created_at)
+        now = time.time()
         for job in finished:
             if excess <= 0:
                 break
             # Don't evict a job a client is still streaming/viewing — that would
-            # 404 it out from under them. It's pruned once the stream closes.
-            if job._subscribers:
+            # 404 it out from under them; it's pruned once the stream closes. But
+            # a socket that wedged open (never ran its unsubscribe) would pin the
+            # job and its log in RAM forever, so force-evict one finished longer
+            # ago than any real post-finish stream would stay open.
+            age = now - (job.finished_at or job.created_at)
+            if job._subscribers and age < self._PINNED_MAX_AGE_SEC:
                 continue
             self._order.remove(job.id)
             self._jobs.pop(job.id, None)

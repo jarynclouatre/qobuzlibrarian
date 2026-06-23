@@ -138,12 +138,30 @@ def credentials_configured() -> bool:
                 and d.get("session_secret"))
 
 
+def creds_file_present_but_unreadable() -> bool:
+    """True when the creds file exists but can't be read as valid credentials —
+    a transient I/O error or a corrupt/half-written file. Distinct from a fresh
+    install (no file at all): something IS configured here, we just can't read it,
+    so callers must fail closed rather than fall back to the unauthenticated
+    /setup page, which would overwrite the admin account."""
+    try:
+        present = cfg.WEB_AUTH_FILE.exists()
+    except OSError:
+        return True  # can't even stat the volume → treat as present-but-unavailable
+    return present and not credentials_configured()
+
+
 def set_credentials(username: str, password: str) -> bool:
     """Persist username + password hash + a fresh session secret, atomically
     and 0600. Returns False if the data volume isn't writable so callers can
     show a clear message instead of 500ing. The new session secret rotates on
     every call, so resetting the password logs out any existing browser."""
     global _cred_cache, _cred_cache_path
+    # Never overwrite an existing-but-unreadable creds file: a transient read
+    # error must not let the open /setup page clobber the admin account. A fresh
+    # install (no file) and a normal password change (file reads fine) both pass.
+    if creds_file_present_but_unreadable():
+        return False
     _cred_cache = None
     _cred_cache_path = None
     payload = {
@@ -403,6 +421,14 @@ class AuthMiddleware(BaseHTTPMiddleware):
         configured = bool(creds.get("username") and creds.get("password_hash")
                           and creds.get("session_secret"))
         if not configured:
+            if creds_file_present_but_unreadable():
+                # The creds file is there but unreadable (transient I/O or a
+                # corrupt/half-written file). Falling back to the open /setup page
+                # would let anyone overwrite the admin account, so fail closed
+                # until the read recovers.
+                return Response(
+                    "Login is configured but its credentials can't be read right "
+                    "now. Try again shortly.", status_code=503)
             # Nothing protects the box yet — force the setup screen, but let
             # the setup GET/POST through so a login can actually be created.
             if path == SETUP_PATH:

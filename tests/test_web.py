@@ -295,6 +295,14 @@ def client():
         yield c
 
 
+def test_favicon_is_served_not_404(client):
+    # The browser's automatic /favicon.ico probe is allowlisted past auth but had
+    # no route, so it 404'd on every origin load. Serve the app icon there.
+    r = client.get("/favicon.ico")
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("image/")
+
+
 
 
 def test_download_error_raw_exception_not_reflected(client, monkeypatch):
@@ -1784,6 +1792,56 @@ def test_push_progress_streams_found_and_hit_but_not_in_replay():
     assert snap["found"] == 3 and "hit" not in snap
 
 
+def test_subscribe_keeps_the_progress_snapshot_under_a_huge_replay_tail():
+    # An over-large JOB_LOG_REPLAY_TAIL must not fill the bounded SSE queue with
+    # history alone and drop the reconnect progress snapshot — the replay reserves
+    # a slot for it.
+    import queue as _queue
+
+    job = jm.Job(title="scan")
+    job.REPLAY_TAIL = 5000                       # above the 2000 queue maxsize
+    job.log_lines = [f"line {i}" for i in range(2500)]
+    job.progress_phase = "Scanning"             # makes subscribe replay a snapshot
+    q = job.subscribe()
+    drained = []
+    while True:
+        try:
+            drained.append(q.get_nowait())
+        except _queue.Empty:
+            break
+    assert any(item.startswith(jm.PROGRESS_PREFIX) for item in drained)
+
+
+def test_prune_force_evicts_a_finished_job_pinned_by_a_wedged_subscriber():
+    # A finished job a client is still streaming is kept past MAX_FINISHED until
+    # the stream closes. But a socket that wedged open without unsubscribing would
+    # otherwise pin the job (and its log) in RAM forever — so a finished job
+    # pinned far longer than any real stream is force-evicted anyway.
+    import time as _time
+
+    reg = jm.JobRegistry()
+    reg.MAX_FINISHED = 0  # every finished job is "excess" so prune runs
+
+    old = jm.Job(title="old")
+    old.status = jm.JobStatus.DONE
+    old.finished_at = _time.time() - 10**7  # ~115 days ago, past any sane cap
+    old._subscribers.append(object())       # a socket that never unsubscribed
+
+    fresh = jm.Job(title="fresh")
+    fresh.status = jm.JobStatus.DONE
+    fresh.finished_at = _time.time()
+    fresh._subscribers.append(object())
+
+    with reg._lock:
+        reg._jobs[old.id] = old
+        reg._jobs[fresh.id] = fresh
+        reg._order.extend([old.id, fresh.id])
+        reg._prune_locked()
+
+    assert old.id not in reg._jobs    # wedged-pinned + ancient → force-evicted
+    assert fresh.id in reg._jobs      # recently finished + pinned → kept
+
+
 def test_rip_url_returns_canceled_when_check_fires(monkeypatch):
     # rip_url's polling loop must consult _CANCEL_CHECK between proc.wait
     # iterations and kill+return when the check fires, otherwise a clicked
@@ -3103,6 +3161,33 @@ def test_repeated_failed_logins_are_throttled(monkeypatch, tmp_path):
         web_auth._login_failures.clear()
 
 
+def test_login_lockout_exempts_a_request_with_a_valid_session(monkeypatch, tmp_path):
+    # A flood of failed logins for the admin username locks that account for the
+    # window — a remote DoS. A request that already carries a valid session is
+    # provably the real admin, not the brute-forcer, so the per-username throttle
+    # must not apply to it.
+    from qobuz_librarian.web import auth as web_auth
+    web_auth._login_failures.clear()
+    web_auth._user_failures.clear()
+    try:
+        with _enable_auth(monkeypatch, tmp_path) as c:
+            c.get("/login")
+            tok = c.cookies.get("qf_csrf")
+            hdr = {"X-CSRF-Token": tok}
+            good = {"username": "admin", "password": "hunter2hunter", "_csrf_token": tok}
+            assert c.post("/login", data=good, headers=hdr,
+                          follow_redirects=False).status_code == 303   # real login
+            # Attacker floods the admin username from elsewhere → account locked.
+            for _ in range(web_auth._USER_LOGIN_MAX):
+                web_auth.record_login_failure("9.9.9.9", "admin")
+            # The real admin holds a valid session, so the lockout doesn't bite.
+            r = c.post("/login", data=good, headers=hdr, follow_redirects=False)
+            assert r.status_code == 303
+    finally:
+        web_auth._login_failures.clear()
+        web_auth._user_failures.clear()
+
+
 def test_web_auth_none_bypasses_login(monkeypatch, tmp_path):
     # auth off and no credentials configured — every route stays open.
     with _enable_auth(monkeypatch, tmp_path, configure=False) as c:
@@ -3115,6 +3200,53 @@ def test_first_run_redirects_to_setup(monkeypatch, tmp_path):
         r = c.get("/", follow_redirects=False)
         assert r.status_code == 303
         assert r.headers["location"] == "/setup"
+
+
+def test_unreadable_creds_fail_closed_instead_of_reopening_setup(monkeypatch, tmp_path):
+    # A corrupt/unreadable creds file must NOT collapse to "unconfigured" and
+    # re-open the unauthenticated /setup page (where the admin account could be
+    # overwritten). Login IS configured here — we just can't read it — so fail
+    # closed with 503 rather than redirecting to setup.
+    (tmp_path / "web_auth.json").write_text("{ broken json, not parseable")
+    with _enable_auth(monkeypatch, tmp_path, configure=False) as c:
+        r = c.get("/", follow_redirects=False)
+    assert r.status_code == 503
+
+
+def test_set_credentials_refuses_to_overwrite_an_unreadable_creds_file(monkeypatch, tmp_path):
+    # The other half of the same defence: even if a request reaches set_credentials
+    # while the creds file is present-but-unreadable, it must refuse rather than
+    # clobber the admin account, leaving the existing file untouched.
+    from qobuz_librarian import config as cfg
+    from qobuz_librarian.web import auth as web_auth
+
+    creds = tmp_path / "web_auth.json"
+    creds.write_text("{ not valid json")
+    monkeypatch.setattr(cfg, "WEB_AUTH_FILE", creds)
+    before = creds.read_text()
+    assert web_auth.set_credentials("attacker", "password123") is False
+    assert creds.read_text() == before
+
+
+def test_pre_auth_pages_cache_bust_with_the_content_hash(monkeypatch, tmp_path):
+    # login.html / setup.html must cache-bust assets with the content hash like
+    # every other page, not the release version — otherwise a content-only
+    # redeploy (the documented no-bump workflow) serves a returning visitor stale
+    # app.js / app.css on the pre-auth pages.
+    from qobuz_librarian.web import app as appmod
+    av = appmod._ASSET_VERSION
+
+    with _enable_auth(monkeypatch, tmp_path, configure=False) as c:
+        setup = c.get("/setup")
+    assert setup.status_code == 200
+    assert f"/static/dist/app.css?v={av}" in setup.text
+    assert f"/static/app.js?v={av}" in setup.text
+
+    with _enable_auth(monkeypatch, tmp_path) as c:
+        login = c.get("/login")
+    assert login.status_code == 200
+    assert f"/static/dist/app.css?v={av}" in login.text
+    assert f"/static/app.js?v={av}" in login.text
 
 
 def test_api_endpoint_requires_auth(monkeypatch, tmp_path):
