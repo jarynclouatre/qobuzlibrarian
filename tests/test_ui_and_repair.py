@@ -720,6 +720,25 @@ def test_interactive_query_warns_on_non_qobuz_url(caplog):
     assert any("Only Qobuz URLs" in r.message for r in caplog.records)
 
 
+def test_interactive_query_routes_only_real_qobuz_urls():
+    from qobuz_librarian.ui_cli.prompts import interactive_query
+    from qobuz_librarian.ui_cli.sentinels import URL_QUERY
+    # Free text that merely contains "qobuz.com" is a search, not a URL paste.
+    with patch("builtins.input", side_effect=["qobuz.com mix", "Best Of"]):
+        assert interactive_query() == ("qobuz.com mix", "Best Of")
+    # A real Qobuz album URL still routes to the URL handler.
+    with patch("builtins.input", side_effect=["https://play.qobuz.com/album/123"]):
+        assert interactive_query() == (URL_QUERY, "https://play.qobuz.com/album/123")
+
+
+def test_truncate_respects_tiny_widths():
+    from qobuz_librarian.ui_cli.colors import truncate
+    assert truncate("hello", 1) == "…"            # one column, not "h…" (2 cols)
+    assert truncate("hello", 0) == ""             # zero columns → nothing
+    assert truncate("hi", 5) == "hi"              # fits → unchanged
+    assert truncate("hello world", 6) == "hello…"  # normal case still fits
+
+
 def test_album_mode_track_url_at_prompt_explains_clearly(caplog):
     import types
 
@@ -971,6 +990,94 @@ def test_album_walk_stop_halts_the_walk_without_burying_the_album(tmp_path, monk
 
     assert scanned == ["Abba"]            # stopped before reaching Beatles/Cream
     assert load_album_walk_seen() == set()  # the stopped-on album was not buried
+
+
+def test_album_walk_summary_separates_no_match_from_couldnt_place(tmp_path, monkeypatch, caplog):
+    # "no Qobuz match" must count only genuine no-matches, not folders that DID
+    # match a candidate then had it rejected (false_match / low_overlap / …).
+    import logging
+    from types import SimpleNamespace
+
+    from qobuz_librarian.modes import walk
+
+    monkeypatch.setattr("qobuz_librarian.config.ALBUM_WALK_SEEN_FILE",
+                        tmp_path / "album_walk_seen.txt")
+    monkeypatch.setattr(walk, "list_library_artists",
+                        lambda: [SimpleNamespace(name="Abba")])
+    monkeypatch.setattr(walk, "list_artist_album_dirs", lambda d: [])
+    monkeypatch.setattr(walk, "clear_scan_caches", lambda: None)
+    monkeypatch.setattr(walk, "save_pending_queue", lambda *a, **k: None)
+
+    def _fake_gap_fill(artist_query, *_a, **_k):
+        return ([
+            {"dir": SimpleNamespace(name="A"), "result": "no_qobuz_match"},
+            {"dir": SimpleNamespace(name="B"), "result": "false_match"},
+            {"dir": SimpleNamespace(name="C"), "result": "low_overlap"},
+        ], {}, set(), set(), None, [])
+    monkeypatch.setattr(walk, "run_artist_gap_fill", _fake_gap_fill)
+
+    args = SimpleNamespace(consolidate=False, yes=False, dry_run=False)
+    with caplog.at_level(logging.INFO, logger="qobuz_librarian"):
+        with patch("builtins.input", side_effect=[""]):
+            walk.run_album_walk_mode(args, "tok")
+    out = "\n".join(r.getMessage() for r in caplog.records)
+    assert "no Qobuz match: 1" in out        # only the genuine no-match
+    assert "couldn't place: 2" in out        # false_match + low_overlap
+
+
+def test_gap_fill_marks_set_aside_sibling_folders(tmp_path, monkeypatch):
+    # Picking one folder from a duplicate-sibling group sets the others aside.
+    # They must come back as a "decided" result so the walk records them seen and
+    # doesn't re-prompt the same group every run.
+    from types import SimpleNamespace
+
+    import qobuz_librarian.config as cfg
+    from qobuz_librarian.modes import artist as artist_mode
+
+    keep = tmp_path / "Greatest Hits"
+    dupe = tmp_path / "Greatest Hits (Deluxe Edition)"
+    keep.mkdir()
+    dupe.mkdir()
+    monkeypatch.setattr(cfg, "ARTIST_API_DELAY", 0)
+    monkeypatch.setattr(artist_mode, "list_artist_album_dirs", lambda d: [keep, dupe])
+    monkeypatch.setattr(artist_mode, "resolve_artist", lambda *a, **k: (None, None))
+    monkeypatch.setattr(artist_mode, "match_album_dir",
+                        lambda *a, **k: SimpleNamespace(
+                            status="no_match", qobuz_album=None,
+                            existing=[], missing=[], present=[]))
+    args = SimpleNamespace(yes=False, prefer_hires=False, dry_run=False,
+                           no_upgrade=True, consolidate=False, no_compress=True)
+    with patch("builtins.input", side_effect=["1", "n"]):  # keep #1; decline fallback
+        results = artist_mode.run_artist_gap_fill("Artist", tmp_path, args, "tok")[0]
+    set_aside = [r["dir"].name for r in results if r.get("result") == "sibling_skipped"]
+    assert set_aside == ["Greatest Hits (Deluxe Edition)"]
+
+
+def test_album_walk_records_a_set_aside_sibling_as_seen(tmp_path, monkeypatch):
+    # The walk must treat a "sibling_skipped" result as decided so the folder is
+    # recorded seen and the duplicate group isn't re-offered next run.
+    from types import SimpleNamespace
+
+    from qobuz_librarian.modes import walk
+    from qobuz_librarian.modes.walk import _album_seen_key, load_album_walk_seen
+
+    monkeypatch.setattr("qobuz_librarian.config.ALBUM_WALK_SEEN_FILE",
+                        tmp_path / "album_walk_seen.txt")
+    monkeypatch.setattr(walk, "list_library_artists",
+                        lambda: [SimpleNamespace(name="Abba")])
+    monkeypatch.setattr(walk, "list_artist_album_dirs", lambda d: [])
+    monkeypatch.setattr(walk, "clear_scan_caches", lambda: None)
+    monkeypatch.setattr(walk, "save_pending_queue", lambda *a, **k: None)
+
+    def _fake_gap_fill(artist_query, *_a, **_k):
+        return ([{"dir": SimpleNamespace(name="Dupe (Deluxe)"),
+                  "result": "sibling_skipped"}], {}, set(), set(), None, [])
+    monkeypatch.setattr(walk, "run_artist_gap_fill", _fake_gap_fill)
+
+    args = SimpleNamespace(consolidate=False, yes=False, dry_run=False)
+    with patch("builtins.input", side_effect=[""]):
+        walk.run_album_walk_mode(args, "tok")
+    assert _album_seen_key("Abba", "Dupe (Deluxe)") in load_album_walk_seen()
 
 
 # ── Scan-report-repair classifications ──────────────────────────────────

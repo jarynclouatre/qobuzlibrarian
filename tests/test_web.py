@@ -665,6 +665,23 @@ def test_search_treats_lookalike_url_as_text(client, monkeypatch):
     assert "Only Qobuz album URLs are supported here" not in r.text
 
 
+def test_search_treats_a_lookalike_host_as_text(client, monkeypatch):
+    # evilqobuz.com ends with "qobuz.com" but isn't a Qobuz host, so a URL there
+    # must be a text search — not parsed as a Qobuz album URL and fetched.
+    import qobuz_librarian.api.search as search_mod
+    import qobuz_librarian.web.app as webapp
+    monkeypatch.setattr(webapp, "_get_token", lambda: "tok")
+    fetched = []
+    monkeypatch.setattr(search_mod, "get_album",
+                        lambda aid, tok: fetched.append(aid) or {"id": aid})
+    monkeypatch.setattr(search_mod, "search_albums", lambda q, t, limit=None: [])
+    r = client.post("/search",
+                    data={"q": "https://evilqobuz.com/us-en/album/slug/123abc"},
+                    headers={"HX-Request": "true"})
+    assert r.status_code == 200
+    assert fetched == []   # not parsed + fetched as a Qobuz album URL
+
+
 
 
 def test_dashboard_no_creds_shows_setup_cta(client, monkeypatch):

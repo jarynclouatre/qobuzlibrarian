@@ -1053,8 +1053,10 @@ async def do_search(request: Request, q: str = Form("", max_length=500),
             # instead of doing a text search on the URL string.
             try:
                 _split = urllib.parse.urlsplit(query)
+                netloc = _split.netloc.lower()
                 is_qobuz_url = (_split.scheme in ("http", "https")
-                                and _split.netloc.lower().endswith("qobuz.com"))
+                                and (netloc == "qobuz.com"
+                                     or netloc.endswith(".qobuz.com")))
             except ValueError:
                 is_qobuz_url = False
             parsed = parse_qobuz_url(query) if is_qobuz_url else None

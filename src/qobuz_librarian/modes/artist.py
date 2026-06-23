@@ -131,11 +131,11 @@ def run_artist_gap_fill(artist_name, artist_dir, args, token, *,
             f"  ⚠  No confident Qobuz artist match for {artist_name!r}; "
             "per-folder fallback."))
 
+    skip_set = set()  # folders set aside while picking among duplicate groups
     sibling_groups = detect_sibling_album_groups(album_dirs)
     if sibling_groups:
         log.info(fmt(C.YELLOW,
             f"\n  ⚠  Detected {len(sibling_groups)} sibling folder group(s):"))
-        skip_set = set()
         for bare, dirs in sibling_groups:
             print()
             log.info(fmt(C.WHITE, f"  Group '{bare}':"))
@@ -204,6 +204,12 @@ def run_artist_gap_fill(artist_name, artist_dir, args, token, *,
     vlog("  Press 's' at any prompt to stop the scan.")
 
     results = []
+    # Folders set aside while picking among duplicate sibling groups are removed
+    # from album_dirs above, so the main loop never records a decision for them.
+    # Record them as decided here so the album walk doesn't re-prompt the same
+    # duplicate group on every run.
+    for d in sorted(skip_set, key=lambda p: p.name):
+        results.append({"dir": d, "result": "sibling_skipped"})
     stopped_early = False
     # 'a' at any gap-fill prompt auto-confirms the rest of THIS artist's albums.
     # Scoped local — doesn't bleed into step 2 or the next artist in a walk.

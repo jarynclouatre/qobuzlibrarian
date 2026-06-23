@@ -57,7 +57,9 @@ def truncate(s, n):
     s = str(s)
     if len(s) <= n:
         return s
-    return s[: max(1, n - 1)].rstrip() + "…"
+    if n <= 1:
+        return "…" if n == 1 else ""
+    return s[: n - 1].rstrip() + "…"
 
 
 def banner(title, color=None):

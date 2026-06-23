@@ -3,6 +3,7 @@ import fcntl
 import json
 import re
 import sys
+from urllib.parse import urlsplit
 
 from qobuz_librarian import config as cfg
 from qobuz_librarian.library.catalog import (
@@ -331,6 +332,20 @@ def parse_number_list(s, max_n):
     return sorted(selected)
 
 
+def _is_qobuz_url(text: str) -> bool:
+    """True only for an actual Qobuz URL (http(s) scheme + a qobuz.com host), so a
+    free-text query that merely contains "qobuz.com" is searched, not misrouted to
+    the URL handler."""
+    try:
+        parts = urlsplit(text)
+    except ValueError:
+        return False
+    if parts.scheme not in ("http", "https"):
+        return False
+    netloc = parts.netloc.lower()
+    return netloc == "qobuz.com" or netloc.endswith(".qobuz.com")
+
+
 def interactive_query():
     """Return one of: None (cancel), (URL_QUERY, url), or (artist, album)."""
     section("Album mode — interactive query", color=C.CYAN)
@@ -347,7 +362,7 @@ def interactive_query():
             show_recent_fetches()
             print()
             continue
-        if "qobuz.com" in line:
+        if _is_qobuz_url(line):
             return (URL_QUERY, line)
         if line.lower().startswith(("http://", "https://")):
             log.info(fmt(C.YELLOW,

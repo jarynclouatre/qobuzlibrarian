@@ -190,6 +190,7 @@ def record_album_walk_seen(artist_name, album_name, seen=None):
 _ALBUM_WALK_DECIDED = {
     "already_complete", "user_skipped",
     "no_qobuz_match", "no_tracks", "false_match", "predicted_path_mismatch",
+    "sibling_skipped",
 }
 
 
@@ -239,6 +240,7 @@ def run_album_walk_mode(args, token):
     n_albums_complete = 0
     n_albums_skipped = 0
     n_albums_unmatched = 0
+    n_albums_unplaced = 0
     n_albums_filled = 0
     interrupted = False
 
@@ -318,8 +320,15 @@ def run_album_walk_mode(args, token):
                         n_albums_complete += 1
                     elif _result in ("user_skipped", "user_stopped"):
                         n_albums_skipped += 1
-                    else:
+                    elif _result == "no_qobuz_match":
                         n_albums_unmatched += 1
+                    elif _result == "sibling_skipped":
+                        pass  # a folded duplicate folder — recorded seen, not summarized
+                    else:
+                        # Matched a candidate then rejected it (false_match,
+                        # low_overlap, predicted_path_mismatch) or it had no
+                        # tracks — not the same as "no Qobuz match".
+                        n_albums_unplaced += 1
                 n_artists_scanned += 1
                 if stopped:
                     log.info(fmt(C.GRAY, "  Stopping the album walk."))
@@ -377,6 +386,8 @@ def run_album_walk_mode(args, token):
         leftovers.append(f"skipped by you: {n_albums_skipped}")
     if n_albums_unmatched:
         leftovers.append(f"no Qobuz match: {n_albums_unmatched}")
+    if n_albums_unplaced:
+        leftovers.append(f"couldn't place: {n_albums_unplaced}")
     if leftovers:
         log.info(fmt(C.GRAY, "    " + " · ".join(leftovers)))
 
