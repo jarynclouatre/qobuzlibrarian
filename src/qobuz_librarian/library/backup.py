@@ -4,6 +4,7 @@ import hashlib
 import os
 import re
 import shutil
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
@@ -269,6 +270,10 @@ def pin_unverified_upgrade_backup(bp: Path) -> None:
 # e.g. a restore completing, that doesn't touch the parent's mtime).
 _ONLY_COPY_TTL_SEC = 10.0
 _only_copy_cache: tuple[float, float, list] | None = None
+# Executor threads (retention) and the web diagnostic both call
+# find_only_copy_backups; the lock keeps the memo read-modify-write atomic and
+# stops two callers re-walking the tree at once on a cache miss.
+_only_copy_lock = threading.Lock()
 
 
 def find_only_copy_backups():
@@ -281,34 +286,36 @@ def find_only_copy_backups():
     _ONLY_COPY_TTL_SEC — so repeated diagnostics don't each re-walk the tree."""
     global _only_copy_cache
     if not cfg.UPGRADE_BACKUP_DIR.exists():
-        _only_copy_cache = None
+        with _only_copy_lock:
+            _only_copy_cache = None
         return []
     try:
         dir_mtime = cfg.UPGRADE_BACKUP_DIR.stat().st_mtime
     except OSError:
         dir_mtime = 0.0
     now = time.time()
-    cached = _only_copy_cache
-    if (cached is not None and cached[1] == dir_mtime
-            and now - cached[0] < _ONLY_COPY_TTL_SEC):
-        return cached[2]
+    with _only_copy_lock:
+        cached = _only_copy_cache
+        if (cached is not None and cached[1] == dir_mtime
+                and now - cached[0] < _ONLY_COPY_TTL_SEC):
+            return cached[2]
 
-    out = []
-    try:
-        for entry in cfg.UPGRADE_BACKUP_DIR.iterdir():
-            if not entry.is_dir():
-                continue
-            # A genuine mid-copy '.partial' (sidecar not yet written) isn't a
-            # real backup; a committed backup whose album name merely ends in
-            # '.partial' DOES carry the origin sidecar and must still surface.
-            if entry.name.endswith(".partial") and not (entry / _ORIGIN_SIDECAR).is_file():
-                continue
-            if not _backup_safe_to_reap(entry):
-                out.append((entry, _read_backup_origin(entry)))
-    except OSError:
-        pass
-    _only_copy_cache = (now, dir_mtime, out)
-    return out
+        out = []
+        try:
+            for entry in cfg.UPGRADE_BACKUP_DIR.iterdir():
+                if not entry.is_dir():
+                    continue
+                # A genuine mid-copy '.partial' (sidecar not yet written) isn't a
+                # real backup; a committed backup whose album name merely ends in
+                # '.partial' DOES carry the origin sidecar and must still surface.
+                if entry.name.endswith(".partial") and not (entry / _ORIGIN_SIDECAR).is_file():
+                    continue
+                if not _backup_safe_to_reap(entry):
+                    out.append((entry, _read_backup_origin(entry)))
+        except OSError:
+            pass
+        _only_copy_cache = (now, dir_mtime, out)
+        return out
 
 
 def backup_album_dir(album_dir: Path):

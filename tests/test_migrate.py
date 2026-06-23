@@ -430,3 +430,63 @@ def test_fingerprint_compilation_releasegroup_is_flagged():
                            "releases": [{"date": {"year": 2001}}]}]}]}]}
     meta = m.identify_from_lookup(resp, 0.9, "stem", ".flac")
     assert meta["compilation"] is True
+
+
+def test_run_migrate_gates_on_insufficient_destination_space(tmp_path, monkeypatch):
+    # Short on space: an unattended (--yes) run must refuse outright (a partial
+    # in-place move scatters the library), and an interactive run needs a typed
+    # override — not the casual confirm that could be answered with a stray "y".
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    from qobuz_librarian.modes import migrate as migrate_mode
+
+    src = tmp_path / "src"
+    dest = tmp_path / "dest"
+    src.mkdir()
+    dest.mkdir()
+    plan = SimpleNamespace(
+        placed=[SimpleNamespace(source=src / "a.flac",
+                                dest_rel=Path("Artist/Album/a.flac"))],
+        unplaceable=[], collisions=[],
+        summary=lambda: {"place": 1, "unplaceable": 0, "collision": 0})
+
+    monkeypatch.setattr(migrate_mode, "_resolve_paths", lambda args: (src, dest))
+    monkeypatch.setattr(migrate_mode.engine, "collect_items", lambda *a, **k: [object()])
+    monkeypatch.setattr(migrate_mode.engine, "build_plan", lambda items, d: plan)
+    monkeypatch.setattr(migrate_mode.engine, "write_manifest", lambda *a, **k: None)
+    executed = []
+
+    def _fake_execute(*a, **k):
+        executed.append(1)
+        return SimpleNamespace(copied=1, skipped=0, lingered=0, failed=0,
+                               cancelled=False, failures=[], outcomes=[])
+    monkeypatch.setattr(migrate_mode.engine, "execute_plan", _fake_execute)
+    monkeypatch.setattr(migrate_mode.engine, "write_results_manifest", lambda *a, **k: None)
+    monkeypatch.setattr(migrate_mode.engine, "prune_empty_dirs", lambda *a, **k: 0)
+
+    def _args(**kw):
+        base = dict(dry_run=False, yes=False, verbose=False, in_place=True, acoustid=False)
+        base.update(kw)
+        return SimpleNamespace(**base)
+
+    # Short on space + unattended → refuse, no partial move.
+    monkeypatch.setattr(migrate_mode.engine, "space_estimate", lambda p, in_place: (100, 10))
+    migrate_mode.run_migrate_mode(_args(yes=True))
+    assert executed == []
+
+    # Short + interactive: a casual decline cancels…
+    with patch("builtins.input", side_effect=["no"]):
+        migrate_mode.run_migrate_mode(_args())
+    assert executed == []
+    # …only a typed "yes" overrides.
+    with patch("builtins.input", side_effect=["yes"]):
+        migrate_mode.run_migrate_mode(_args())
+    assert executed == [1]
+
+    # Enough space → the normal confirm path still runs.
+    executed.clear()
+    monkeypatch.setattr(migrate_mode.engine, "space_estimate", lambda p, in_place: (10, 100))
+    with patch("builtins.input", side_effect=["y"]):
+        migrate_mode.run_migrate_mode(_args())
+    assert executed == [1]

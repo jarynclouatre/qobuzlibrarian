@@ -755,12 +755,13 @@ def fetch_for_paths(
         _dead_providers.clear()
         _provider_fails.clear()
 
+    # Drop entries for files that have moved or gone since last run, so the state
+    # can't grow without bound across a library's churn. Route through
+    # update_state so the prune's read and write happen under one cross-process
+    # lock — a plain load→save here would clobber entries a concurrent process
+    # added in between.
+    update_state(prune_missing, state_path)
     state = load_state(state_path)
-    # Drop entries for files that have moved or gone since last run, so the
-    # state can't grow without bound across a library's churn.
-    if prune_missing(state):
-        with _state_lock:
-            save_state(state, state_path)
     candidates = [Path(p) for p in paths
                   if should_process(Path(p), state.get(str(p)), rescan,
                                     skip_existing_plain=skip_existing_plain)]
@@ -887,10 +888,8 @@ def index_existing(
         else:
             normalized.append((Path(it), 0.0, 0))
 
+    update_state(prune_missing, state_path)
     state = load_state(state_path)
-    if prune_missing(state):
-        with _state_lock:
-            save_state(state, state_path)
     counts: Counter = Counter()
     total = len(normalized)
     workers = max(1, int(workers))

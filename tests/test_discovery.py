@@ -449,6 +449,30 @@ def test_new_releases_surface_only_what_appeared_since_the_baseline(
     assert caught_up.new_gaps == []
 
 
+def test_new_release_check_ignores_an_id_less_catalog_album(monkeypatch, tmp_path):
+    # An album with no id can never enter the baseline (which filters id=None), so
+    # str(None) would miss the seen-set and flag it "new" on every single check.
+    owned = _album(101, "Ocean Eyes", "Billie Eilish", 2016,
+                   [_qt(f"o{i}", f"ISRCO{i}") for i in range(4)])
+    idless = _album(None, "Mystery Leak", "Billie Eilish", 2024,
+                    [_qt(f"m{i}", f"ISRCM{i}") for i in range(10)])
+    _library(monkeypatch, tmp_path,
+             {"Billie Eilish": {"Ocean Eyes (2016)":
+                                [_et(f"o{i}", f"ISRCO{i}") for i in range(4)]}})
+    FakeQobuz(artists=[{"name": "Billie Eilish", "id": 2867335}],
+              catalog=[owned, idless]).install(monkeypatch)
+    monkeypatch.setattr(discovery, "_resolve_cache", {})
+    ad = tmp_path / "Billie Eilish"
+    opts = DiscoveryOpts(prefer_hires=True)
+
+    first = find_new_releases_for_artist("Billie Eilish", token="tok", opts=opts,
+                                         seen_by_id=None, artist_dir=ad)
+    later = find_new_releases_for_artist(
+        "Billie Eilish", token="tok", opts=opts,
+        seen_by_id={str(first.artist_id): first.current_ids}, artist_dir=ad)
+    assert _titles(later.new_gaps) == []   # the id-less album is never surfaced
+
+
 def test_new_release_check_treats_a_short_page_as_a_failed_fetch(monkeypatch, tmp_path):
     # A transient partial 200 (Qobuz reports total=3 but hands back 1 album, and
     # we didn't hit our own limit) must NOT be recorded as the baseline — else

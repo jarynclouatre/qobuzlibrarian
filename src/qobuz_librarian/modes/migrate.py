@@ -156,8 +156,28 @@ def run_migrate_mode(args):
         return
 
     verb = "Move" if in_place else "Copy"
-    if not confirm(f"  {verb} {len(plan.placed)} file(s) into {dest}?",
-                   default_yes=False, auto_yes=bool(getattr(args, "yes", False))):
+    need, free = engine.space_estimate(plan, in_place=in_place)
+    short = free is not None and need > free
+    if short and bool(getattr(args, "yes", False)):
+        log.info(fmt(C.RED,
+            "  ✗  Not enough free space at the destination; refusing to start an "
+            "unattended (--yes) migration that would run out mid-move and scatter "
+            "the library. Free up space or pick another destination."))
+        return
+    if short:
+        log.info(fmt(C.YELLOW,
+            f"  ⚠  The destination is short on space (needs ~{format_size(need)}, "
+            f"only {format_size(free)} free) — a move that runs out leaves the "
+            "library half-relocated."))
+        try:
+            ack = input(fmt(C.RED, "  Type 'yes' to migrate anyway: ")).strip().lower()
+        except EOFError:
+            ack = ""
+        if ack != "yes":
+            log.info(fmt(C.GRAY, "  Cancelled. Nothing changed."))
+            return
+    elif not confirm(f"  {verb} {len(plan.placed)} file(s) into {dest}?",
+                     default_yes=False, auto_yes=bool(getattr(args, "yes", False))):
         log.info(fmt(C.GRAY, "  Cancelled. Nothing changed."))
         return
 

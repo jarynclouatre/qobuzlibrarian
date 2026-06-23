@@ -847,3 +847,41 @@ def test_library_lyrics_walk_targets_library_flacs_only(tmp_path, monkeypatch):
     res = liblyr.run_library_lyrics(artist_dirs=[music / "ArtistB"])
     assert set(seen["paths"]) == {music / "ArtistB/Album2/Disc 1/03.flac"}
     assert res["total"] == 1
+
+
+def test_lyric_prune_routes_through_update_state(tmp_path, monkeypatch):
+    # The startup prune must go through update_state (atomic, cross-process lock),
+    # not a load-then-blind-save that clobbers a concurrent process's just-added
+    # state entries.
+    from qobuz_librarian.integrations import lyric_fetch
+    state_path = tmp_path / "lyric_state.json"
+    monkeypatch.setattr(lyric_fetch, "AVAILABLE", True)  # past the provider-missing guard
+
+    calls = []
+    real_update = lyric_fetch.update_state
+
+    def spy(mutator, path=lyric_fetch.DEFAULT_STATE_FILE):
+        calls.append(mutator)
+        return real_update(mutator, path)
+    monkeypatch.setattr(lyric_fetch, "update_state", spy)
+
+    lyric_fetch.fetch_for_paths([], state_path=state_path)
+    lyric_fetch.index_existing([], state_path=state_path)
+    # Both functions prune through update_state (they also checkpoint through it).
+    assert calls.count(lyric_fetch.prune_missing) == 2
+
+
+def test_iter_library_flacs_skips_hidden_subdirs(tmp_path):
+    # The per-album walk must not descend into hidden subdirs (.stversions/,
+    # .Trash/) and write lyrics into stale/hidden copies — the dot-skip only
+    # applies at the artist/album tier, not inside the per-album rglob.
+    from qobuz_librarian.library import lyrics
+    album = tmp_path / "Artist" / "Album"
+    (album / "Disc 1").mkdir(parents=True)
+    (album / ".stversions").mkdir()
+    (album / "01.flac").write_bytes(b"")
+    (album / "Disc 1" / "02.flac").write_bytes(b"")
+    (album / ".stversions" / "old.flac").write_bytes(b"")
+    yielded = {p.name for p, _mt, _sz
+               in lyrics.iter_library_flacs(artist_dirs=[tmp_path / "Artist"])}
+    assert yielded == {"01.flac", "02.flac"}   # the hidden copy is skipped

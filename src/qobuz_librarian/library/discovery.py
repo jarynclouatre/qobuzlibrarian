@@ -641,7 +641,11 @@ def find_new_releases_for_artist(query, *, token, opts=None, seen_by_id=None,
     # change re-baseline is handled by the caller, and the baseline is unioned not
     # overwritten), so a plain set difference can't dump the back catalogue.
     seen_set = set(seen)
-    fresh = [a for a in lossless if str(a.get("id")) not in seen_set]
+    # An id-less album never makes it into the baseline (current_ids filters
+    # id=None), so skip it here too — str(None) would otherwise miss the set and
+    # flag it new on every check.
+    fresh = [a for a in lossless if a.get("id") is not None
+             and str(a.get("id")) not in seen_set]
     if not fresh:
         return NewReleaseResult(artist_id, artist_name, [], current_ids)
 
