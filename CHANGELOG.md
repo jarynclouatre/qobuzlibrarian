@@ -18,6 +18,18 @@ version was tagged during local development.
 
 - A whole-library repair scan now shows its progress as a single status line under the progress bar — `Scanning "<artist>" · N albums · M flagged`, refreshing a couple of times a second — instead of appending a "still scanning…" line to the activity log every few seconds. The activity log now lists only flagged albums (the actual findings), and a finished scan no longer keeps hundreds of heartbeat lines.
 
+**Repair runs on one page**
+
+- A repair scan now stays on the Repair page from start to finish — scanning, reviewing the flagged albums, and the repair itself all happen there and update live, instead of handing you off to a separate job page partway through. A parked review is no longer reachable only behind a "Start scan" button that would have discarded it.
+
+**Jobs say what they're doing**
+
+- A queued job now tells you what it's waiting behind instead of a bare "Queued"; a run that works through many albums keeps its progress on "album 3 of 16" rather than resetting to 1 of 1 for each one; and the Upgrade, Downsample, and Lyrics pages show when they last ran, so a fresh visit isn't indistinguishable from never having run.
+
+**Safety fixes**
+
+- Undo on a single-track grab can no longer remove a same-numbered track from a different disc of a multi-disc album. A flood of failed logins can no longer lock the admin out — a request that already carries a valid session skips the limit — and an unreadable credentials file now fails closed instead of re-opening first-run setup. A library migration to a destination short on free space no longer starts an unattended run that would relocate files until it ran out.
+
 ## [0.9.0] - 2026-06-21
 
 The repair scan, rebuilt — it catches more, runs far faster, and shows what it's doing — plus reliability and safety fixes from a follow-up audit. The one changed default: the unusable 320 kbps tier is gone.

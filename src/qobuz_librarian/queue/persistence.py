@@ -52,11 +52,15 @@ def _deserialize_queue_item(d):
 
 
 def save_pending_queue(items, *, mode):
-    """Atomically persist the current shared_queue to disk.
+    """Persist the current shared_queue to disk (best-effort).
 
-    Atomic = write to .tmp, then os.replace, so a crash mid-write can't
-    leave a half-written file. Failures are logged but never raise —
-    persistence is a safety net, not a hard requirement.
+    Write to .tmp, then os.replace, so a *process* crash mid-write can't leave a
+    half-written file at the real path. It is deliberately NOT fsync'd, so a power
+    loss or kernel panic in the write window can still leave a zero-length file —
+    the queue is re-derivable by re-running the walk (the same no-fsync trade the
+    project makes for its other re-derivable state), and load_pending_queue
+    discards an unreadable file cleanly so the walk just rebuilds it. Failures are
+    logged but never raise — persistence is a safety net, not a hard requirement.
     """
     try:
         cfg.PENDING_QUEUE_FILE.parent.mkdir(parents=True, exist_ok=True)

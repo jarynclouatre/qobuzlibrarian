@@ -871,7 +871,7 @@ def restore_upgrade_backup(backup_path: Path, original_path: Path) -> bool:
         return False
 
 
-def cleanup_old_upgrade_backups(retention_days: int = None,
+def cleanup_old_upgrade_backups(retention_days: int | None = None,
                                 force: bool = False) -> int:
     """Sweep upgrade-backup dir of anything older than retention_days.
     Called once at script startup. Returns count of dirs removed.

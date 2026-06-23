@@ -74,6 +74,12 @@ def test_pending_queue_rejects_bad_payloads(tmp_path, monkeypatch):
     # A file that parses as a list/string must not crash startup.
     qfile.write_text('["a", "b"]', encoding="utf-8")
     assert load_pending_queue() == (None, None, None)
+    # A power loss can leave the (not-fsync'd) file zero-length or truncated;
+    # load must discard it cleanly so the walk rebuilds, not raise.
+    qfile.write_text("", encoding="utf-8")
+    assert load_pending_queue() == (None, None, None)
+    qfile.write_text('{"version": 1, "items": [{"al', encoding="utf-8")
+    assert load_pending_queue() == (None, None, None)
 
 
 def test_pending_queue_save_failure_is_silent(tmp_path, monkeypatch):

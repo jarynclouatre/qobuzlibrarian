@@ -243,6 +243,58 @@ def test_flac_cache_conn_reopens_after_generation_bump(tmp_path, monkeypatch):
         flac_cache._reset_for_tests()
 
 
+def test_flac_cache_heals_on_corrupt_db(tmp_path, monkeypatch):
+    # A corrupt flac_cache.db must heal (discard + rebuild) on read, not raise —
+    # the same recovery album_cache and repair_cache already have.
+    import qobuz_librarian.config as cfg
+    from qobuz_librarian.library import flac_cache
+
+    monkeypatch.setattr(cfg, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(cfg, "FLAC_CACHE_ENABLED", True)
+    flac_cache._reset_for_tests()
+    try:
+        f = tmp_path / "song.flac"
+        f.write_bytes(b"abc")
+        flac_cache.put(f, {"title": "T", "isrc": "X"})
+        flac_cache.flush_pending()
+        assert flac_cache.get(f) == {"title": "T", "isrc": "X"}
+        gen0 = flac_cache._generation
+
+        # Corrupt the db and drop the handle so the next read reopens it.
+        (tmp_path / "flac_cache.db").write_bytes(b"not a sqlite database, junk")
+        flac_cache._local.conn = None
+        assert flac_cache.get(f) is None              # heals, no raise
+        assert flac_cache._generation == gen0 + 1     # siblings reopen
+
+        f2 = tmp_path / "song2.flac"
+        f2.write_bytes(b"def")
+        flac_cache.put(f2, {"title": "T2", "isrc": "Y"})
+        flac_cache.flush_pending()
+        assert flac_cache.get(f2) == {"title": "T2", "isrc": "Y"}   # rebuilt
+    finally:
+        flac_cache._reset_for_tests()
+
+
+def test_scan_checkpoint_load_coerces_wrong_types(tmp_path, monkeypatch):
+    # A hand-edited / partially-written checkpoint with wrong-typed fields must
+    # coerce back to []/[]/{} so the consumer's set()/dict() can't crash on resume.
+    import json
+
+    import qobuz_librarian.config as cfg
+    from qobuz_librarian.library import scan_checkpoint
+
+    cpfile = tmp_path / "checkpoint.json"
+    monkeypatch.setattr(cfg, "SCAN_CHECKPOINT_FILE", cpfile)
+    cpfile.write_text(json.dumps({
+        "library": {"scanned": "oops", "candidates": {"not": "a list"}, "seen": ["x"]}
+    }), encoding="utf-8")
+
+    cp = scan_checkpoint.load("library")
+    assert cp["scanned"] == [] and cp["candidates"] == [] and cp["seen"] == {}
+    # The coerced shapes are safe for the consumer's set()/dict().
+    assert set(cp["scanned"]) == set() and dict(cp["seen"]) == {}
+
+
 def test_dir_caches_survive_a_concurrent_clear(monkeypatch, tmp_path):
     # clear_scan_caches() (a concurrent download) can empty a scan cache between
     # the `in` check and the lookup; that KeyError used to escape the OSError

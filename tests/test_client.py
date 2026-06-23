@@ -5,7 +5,7 @@ import pytest
 import requests
 
 from qobuz_librarian.api.auth import AuthLost, QobuzError, QobuzUnavailable
-from qobuz_librarian.api.client import qobuz_get
+from qobuz_librarian.api.client import _retry_after, qobuz_get
 
 
 def _response(status_code=200, json_data=None, text=""):
@@ -105,3 +105,18 @@ def test_user_agent_carries_installed_version():
     from qobuz_librarian.api.client import _get_session
     ua = _get_session().headers["User-Agent"]
     assert version("qobuz-librarian") in ua and "qobuz-librarian" in ua
+
+
+def test_retry_after_header_parsing():
+    from types import SimpleNamespace
+
+    def resp(val):
+        return SimpleNamespace(headers={} if val is None else {"Retry-After": val})
+
+    assert _retry_after(resp(None)) is None      # no header
+    assert _retry_after(resp("abc")) is None     # non-numeric
+    assert _retry_after(resp("nan")) is None      # NaN rejected, not run through the clamp
+    assert _retry_after(resp("0")) == 0.0         # retry-immediately stays 0.0, not None
+    assert _retry_after(resp("-3")) == 0.0        # clamped to the floor
+    assert _retry_after(resp("999")) == 30.0      # clamped to the 30 s ceiling
+    assert _retry_after(resp("12")) == 12.0

@@ -1349,6 +1349,40 @@ def test_job_single_undo_info_survives_persistence_roundtrip():
             job_persistence._conn = None
 
 
+def test_job_persistence_migrates_a_pre_single_db():
+    # An old jobs.db without the v2 `single` column must be migrated by init()
+    # (ALTER TABLE + user_version bump), not left to fail every persist() silently.
+    from qobuz_librarian.web import job_persistence as jp
+
+    jp._reset_for_tests()
+    jp.init()
+    try:
+        # Downgrade the fresh db to a v1 shape: drop the column, reset the version.
+        jp._conn.execute("ALTER TABLE jobs DROP COLUMN single")
+        jp._conn.execute("PRAGMA user_version = 1")
+        jp._conn.commit()
+        assert "single" not in {r[1] for r in jp._conn.execute("PRAGMA table_info(jobs)")}
+
+        jp.init()  # runs the additive migration
+        cols = {r[1] for r in jp._conn.execute("PRAGMA table_info(jobs)")}
+        assert "single" in cols
+        assert jp._conn.execute("PRAGMA user_version").fetchone()[0] == jp._SCHEMA_VERSION
+
+        # persist works against the migrated db (the INSERT references `single`).
+        single = {"album_dir": "/m/A/B", "isrc": "USABC1234567"}
+        job = jm.Job(title="Grab", status=jm.JobStatus.DONE, single=single)
+        jp.persist(job)
+        assert jp.load_one(job.id)["single"] == single
+    finally:
+        jp._disabled = True
+        if jp._conn is not None:
+            try:
+                jp._conn.close()
+            except Exception:
+                pass
+            jp._conn = None
+
+
 def test_history_lists_finished_jobs_newest_first(client):
     """Finished jobs live in the durable archive, not the capped in-memory set —
     the History view pages them newest-first and offers a retry on a failure."""

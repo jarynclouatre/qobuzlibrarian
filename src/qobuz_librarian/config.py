@@ -181,11 +181,12 @@ BEETS_PATH_SINGLETON = os.environ.get("BEETS_PATH_SINGLETON", "").strip()
 BEETS_PATH_COMP      = os.environ.get("BEETS_PATH_COMP", "").strip()
 
 # Comma-separated list of beets plugins to enable. Empty = honour whatever
-# is set in /config/beets/config.yaml (which seeds with `fetchart` only).
+# is set in /config/beets/config.yaml (which seeds with `fetchart` and `inline`).
 # Override per-deployment without editing the user's config.yaml — e.g.
-# BEETS_PLUGINS="fetchart,lastgenre,replaygain,scrub". The override yaml
-# emits `plugins: [...]` so this REPLACES whatever the user's config
-# declares; leave unset to let their config win.
+# BEETS_PLUGINS="fetchart,inline,lastgenre,replaygain,scrub". The override yaml
+# emits `plugins: [...]` so this REPLACES whatever the user's config declares
+# (keep `inline` — it drives the multi-disc `Disc N/` folder field); leave unset
+# to let their config win.
 BEETS_PLUGINS = [p.strip() for p in
                  os.environ.get("BEETS_PLUGINS", "").split(",")
                  if p.strip()]

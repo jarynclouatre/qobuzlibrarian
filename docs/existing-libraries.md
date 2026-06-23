@@ -63,7 +63,7 @@ docker run --rm -v qobuz-librarian-config:/dest -v /your/beets/dir:/src alpine \
          cp /src/library.db /dest/beets/musiclibrary.db'
 ```
 
-Replace `library.db` with your filename (check the `library:` path in your `config.yaml` if unsure), or bind-mount a host directory at `/config/beets` instead. The container won't overwrite either file on start.
+Replace `library.db` with your filename (check the `library:` path in your `config.yaml` if unsure), or bind-mount a host directory at `/config/beets` instead. The container won't overwrite either file on start. If renaming the DB to `musiclibrary.db` isn't convenient, point `BEETS_DB_PATH` at your file instead (e.g. `BEETS_DB_PATH=/config/beets/library.db`) and the app reads it from there.
 
 ## Tagging an untagged collection
 
