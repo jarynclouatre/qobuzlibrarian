@@ -107,15 +107,18 @@ def flac_audio_ok(path):
     stream — the embedded cover art streamrip always writes (sometimes the
     oversized "original" Qobuz art) never enters the decode, so a track with
     intact audio but a malformed picture isn't mistaken for a broken download.
-    The timeout caps a pathological hang without tripping on long tracks (FLAC
-    verifies far faster than real time)."""
+    A verify that exceeds the timeout reads as broken (False), not unverifiable
+    — FLAC checks far faster than real time, so a hang means a pathological file,
+    and None is reserved for the tool being absent."""
     if shutil.which("flac") is None:
         return None
     try:
         proc = subprocess.run(
             ["flac", "-t", "-s", str(path)],
             capture_output=True, timeout=300, stdin=subprocess.DEVNULL)
-    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+    except subprocess.TimeoutExpired:
+        return False
+    except (FileNotFoundError, OSError):
         return None
     return proc.returncode == 0
 

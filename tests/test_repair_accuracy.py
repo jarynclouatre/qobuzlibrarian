@@ -144,6 +144,42 @@ def test_shallow_scan_does_not_false_flag_healthy(tmp_path, _need_tools):
     assert r["verified_ok"] == 2
 
 
+def test_byte_size_gate_does_not_flag_a_small_valid_flac_with_flac_absent(tmp_path, monkeypatch):
+    # The byte-size gate clears a suspiciously small file with a decode probe, but
+    # the probe needs the `flac` tool. With flac absent the gate must SKIP, not
+    # flag: quiet/ambient material compresses below the size gate yet decodes
+    # fine, and flagging it would trigger a false re-rip over a good original.
+    # Every other gate already degrades to "trust" when flac is absent; this one
+    # was the exception. Needs only ffmpeg (flac is simulated absent).
+    if shutil.which("ffmpeg") is None:
+        pytest.skip("ffmpeg not available")
+
+    album = tmp_path / "Artist" / "Album (2020)"
+    album.mkdir(parents=True)
+    p = album / "01 - Quiet.flac"
+    subprocess.run(
+        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi",
+         "-i", "anullsrc=r=44100:cl=stereo", "-t", "4", "-sample_fmt", "s16",
+         "-c:a", "flac", str(p)], check=True)
+    from mutagen.flac import FLAC
+    f = FLAC(str(p))
+    f["isrc"] = "USABC1234500"
+    f["title"] = "Quiet"
+    f["tracknumber"] = "1"
+    f.save()
+
+    import qobuz_librarian.repair_log as rl
+    monkeypatch.setattr(rl, "find_qobuz_track_by_isrc", lambda i, t: _QT)
+    real_which = shutil.which
+    monkeypatch.setattr(rl.shutil, "which",
+                        lambda name, *a, **k: None if name == "flac"
+                        else real_which(name, *a, **k))
+
+    r = scan_dir_for_isrc_repairs(album, "token", deep=False)
+    assert "01 - Quiet.flac" not in _names(r["verified_truncated"]), (
+        f"a small but valid FLAC must not be flagged when flac is absent (got {r})")
+
+
 def test_deep_scan_flags_decode_clean_but_short_via_duration(tmp_path, _need_tools):
     # The Jack's Mannequin / "Everything In Transit" ground-truth gate, exercised
     # against a REAL FLAC end to end: a file that decodes perfectly but is far

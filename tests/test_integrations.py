@@ -74,6 +74,39 @@ def test_is_flac_keeps_track_with_corrupt_embedded_art(tmp_path, _need_ffmpeg, _
     assert is_flac(track) is True
 
 
+def test_flac_audio_ok_treats_a_verify_timeout_as_broken(monkeypatch):
+    # A `flac -t` that hangs past the timeout (a pathological/corrupt large FLAC)
+    # must read as broken (False), not as "tool absent" (None): None routes a
+    # large file through the size heuristic, which trusts it. FLAC verifies far
+    # faster than real time, so a hang is the file, not the tool.
+    import qobuz_librarian.integrations.rip as rip
+
+    monkeypatch.setattr(rip.shutil, "which", lambda name: "/usr/bin/flac")
+
+    def hang(*a, **k):
+        raise subprocess.TimeoutExpired(cmd="flac", timeout=300)
+    monkeypatch.setattr(rip.subprocess, "run", hang)
+
+    assert rip.flac_audio_ok("/any/large.flac") is False
+
+
+def test_is_flac_rejects_a_large_file_whose_verify_times_out(tmp_path, monkeypatch):
+    # The harm the sentinel split prevents: a big file whose `flac -t` hangs must
+    # be treated as broken, not trusted via the "flac unavailable, trust large
+    # files" fallback (which fires on the None a timeout used to return).
+    import qobuz_librarian.integrations.rip as rip
+
+    big = tmp_path / "track.flac"
+    big.write_bytes(b"\x00" * (_FLAC_TRUNCATION_FLOOR + 1))
+    monkeypatch.setattr(rip.shutil, "which", lambda name: "/usr/bin/flac")
+
+    def hang(*a, **k):
+        raise subprocess.TimeoutExpired(cmd="flac", timeout=300)
+    monkeypatch.setattr(rip.subprocess, "run", hang)
+
+    assert rip.is_flac(big) is False
+
+
 def test_cleanup_lossy_sorts_flac_lossy_and_broken(tmp_path):
     good = tmp_path / "good.flac"
     good.write_bytes(b"\x00" * 200_000)

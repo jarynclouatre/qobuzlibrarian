@@ -322,14 +322,16 @@ def scan_dir_for_isrc_repairs(album_dir, token,
 
         # Byte-size sanity gate against Qobuz's authoritative duration. Quiet /
         # ambient material legitimately compresses this small and decodes fine,
-        # so a decode probe vetoes the flag when the flac tool is present.
-        # ``audio_size`` excludes the metadata block so a multi-MB embedded
-        # picture doesn't mask a truncated audio stream.
+        # so flag only when a decode probe conclusively fails — and that probe
+        # needs the flac tool, so when it's absent skip the gate rather than flag
+        # a good file into a false re-rip (every other gate degrades to trust
+        # when flac is absent). ``audio_size`` excludes the metadata block so a
+        # multi-MB embedded picture doesn't mask a truncated audio stream.
         if sample_rate > 0 and bits > 0 and audio_size > 0:
             expected_uncompressed = qdur * sample_rate * channels * (bits / 8)
             if (audio_size < expected_uncompressed * _BYTE_SIZE_TRUNCATED_RATIO
-                    and not (shutil.which("flac") is not None
-                             and path and _flac_decode_ok(path))):
+                    and shutil.which("flac") is not None
+                    and path and not _flac_decode_ok(path)):
                 report["verified_truncated"].append({
                     "path": path,
                     "file_length": flen,

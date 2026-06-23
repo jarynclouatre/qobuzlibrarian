@@ -110,10 +110,14 @@ def detect_resampler_filter():
 
 def parse_flac_info(data: bytes):
     """Return (sample_rate, bits_per_sample) from FLAC header bytes, or (0, 0)."""
-    i = data.find(b"fLaC")
-    if i < 0:
+    # STREAMINFO is always the first metadata block right after the fLaC marker
+    # at offset 0 — anchor there instead of scanning. A leading ID3v2 tag (or any
+    # bytes) that happens to contain "fLaC" would otherwise be read as the header
+    # and yield a wrong rate/depth the metaflac backstop (which only fires on a 0)
+    # never catches. A real leading-ID3 FLAC fails this and defers to metaflac.
+    if not data.startswith(b"fLaC"):
         return 0, 0
-    si = i + 8  # skip fLaC(4) + metadata block header(4)
+    si = 8  # fLaC(4) + STREAMINFO block header(4)
     if len(data) < si + 14:
         return 0, 0
     sr = (data[si + 10] << 12) | (data[si + 11] << 4) | (data[si + 12] >> 4)
@@ -179,10 +183,9 @@ def parse_flac_total_samples(data: bytes) -> int:
 
     FLAC stores 0 for 'unknown/streaming', which this also returns as 0 so
     callers treat it as 'don't know' rather than 'zero-length'."""
-    i = data.find(b"fLaC")
-    if i < 0:
+    if not data.startswith(b"fLaC"):
         return 0
-    si = i + 8  # skip fLaC(4) + metadata block header(4)
+    si = 8  # fLaC(4) + STREAMINFO block header(4); anchored at offset 0
     if len(data) < si + 18:
         return 0
     return (((data[si + 13] & 0x0F) << 32)
@@ -327,6 +330,15 @@ def resample_one(rel, sr, rate, af_filter, *, base_dir=None):
         src_mode = stat.S_IMODE(st.st_mode)
 
         bps = read_local_bit_depth(src)
+        # An unreadable source bit depth (bps == 0) can't be pinned — the encode
+        # would default to 32-bit and inflate a 24-bit master — and can't be
+        # re-verified afterward, so refuse rather than overwrite the master in
+        # place. A downsample has no re-download to fall back on; an un-shrunk
+        # file is far cheaper than a silently altered master. Same stance as the
+        # unknown-length guard below.
+        if not bps:
+            return (rel, sr, rate, None,
+                    "couldn't read the source bit depth; left the original untouched")
         af, sample_fmt, depth_args = _encode_opts_for_bps(bps, af_filter)
 
         fd, tmp_name = tempfile.mkstemp(
@@ -368,15 +380,14 @@ def resample_one(rel, sr, rate, af_filter, *, base_dir=None):
         if not _decode_ok(tmp):
             return (rel, sr, rate, None, "resampled file failed verification")
         # Never let a resample silently change the bit depth — a 24-bit master
-        # must not come back 32-bit, nor an 8-bit file get padded to 24. Checked
-        # for any known source depth; an unknown depth (bps == 0, unreadable)
-        # can't be verified and falls through. Original untouched on a mismatch.
-        if bps:
-            out_bps = read_local_bit_depth(tmp)
-            if out_bps != bps:
-                return (rel, sr, rate, None,
-                        f"resampled to {out_bps}-bit, expected {bps}-bit; "
-                        "left the original untouched")
+        # must not come back 32-bit, nor an 8-bit file get padded to 24. The
+        # source depth is known here (an unreadable one was refused above), so
+        # this always runs. Original untouched on a mismatch.
+        out_bps = read_local_bit_depth(tmp)
+        if out_bps != bps:
+            return (rel, sr, rate, None,
+                    f"resampled to {out_bps}-bit, expected {bps}-bit; "
+                    "left the original untouched")
         # Verify the resample kept the whole stream. ffmpeg exits 0 on a
         # truncated or mid-file-corrupt source, emitting only the decodable
         # prefix, and flac -t then passes on that short output — so a damaged

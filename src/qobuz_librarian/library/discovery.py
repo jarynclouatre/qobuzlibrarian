@@ -149,8 +149,12 @@ def resolve_artist(query, token):
     best = max(qualifying,
                key=lambda a: (match_score(a), a.get("albums_count") or 0))
     aid, aname = best.get("id"), best.get("name")
-    cache[query] = [aid, aname]
-    _resolve_cache_dirty = True
+    # A name match with no id is a malformed/partial result, not a usable hit —
+    # the callers need the id, so caching [None, name] would skip the artist on
+    # every later scan. Treat it as a miss (don't cache); a later scan retries.
+    if aid:
+        cache[query] = [aid, aname]
+        _resolve_cache_dirty = True
     return aid, aname
 
 

@@ -511,6 +511,59 @@ def test_refills_present_in_counts_duplicate_isrcs(tmp_path, monkeypatch):
     assert repair._refills_present_in(tmp_path, wanted) is True
 
 
+def test_refills_intact_requires_every_wanted_isrc_to_reverify(tmp_path, monkeypatch):
+    # Before the truncated originals' backup is trusted as redundant, the rebuilt
+    # folder is re-scanned and EVERY backed-up ISRC must positively re-verify.
+    # Checking only "not flagged truncated" was unsafe: an ISRC whose re-lookup
+    # transiently returned nothing lands in isrc_no_match, not verified_truncated,
+    # so it would read as intact and the only good copy's backup would be deleted
+    # while the refill is still short. Verified ISRCs come back in Qobuz's own
+    # casing, so the gate normalizes them first.
+    from qobuz_librarian.modes import repair
+    wanted = {"GBCFB1300101", "USRC11700001"}
+
+    monkeypatch.setattr(repair, "scan_dir_for_isrc_repairs",
+                        lambda *a, **k: {"verified_ok_isrcs": ["gbcfb1300101", "USRC1-17-00001"]})
+    assert repair._refills_intact(tmp_path, wanted, "tok") is True
+
+    # One ISRC didn't re-verify → keep the backup.
+    monkeypatch.setattr(repair, "scan_dir_for_isrc_repairs",
+                        lambda *a, **k: {"verified_ok_isrcs": ["GBCFB1300101"]})
+    assert repair._refills_intact(tmp_path, wanted, "tok") is False
+
+
+def test_refills_intact_propagates_qobuz_outage(tmp_path, monkeypatch):
+    # A token loss or Qobuz outage during re-verification must propagate, not
+    # collapse to "still truncated" — an outage is not a verdict on the refill.
+    from qobuz_librarian.modes import repair
+    wanted = {"GBCFB1300101"}
+
+    def raise_authlost(*a, **k):
+        raise repair.AuthLost("token lost")
+    monkeypatch.setattr(repair, "scan_dir_for_isrc_repairs", raise_authlost)
+    with pytest.raises(repair.AuthLost):
+        repair._refills_intact(tmp_path, wanted, "tok")
+
+    def raise_unavailable(*a, **k):
+        raise repair.QobuzUnavailable("upstream down")
+    monkeypatch.setattr(repair, "scan_dir_for_isrc_repairs", raise_unavailable)
+    with pytest.raises(repair.QobuzUnavailable):
+        repair._refills_intact(tmp_path, wanted, "tok")
+
+
+def test_refills_intact_keeps_backup_on_an_unexpected_rescan_error(tmp_path, monkeypatch):
+    # Any non-outage failure of the re-scan stays conservative: return False so
+    # the caller keeps the backup rather than delete originals on an error we
+    # can't interpret.
+    from qobuz_librarian.modes import repair
+    wanted = {"GBCFB1300101"}
+
+    def boom(*a, **k):
+        raise ValueError("malformed scan result")
+    monkeypatch.setattr(repair, "scan_dir_for_isrc_repairs", boom)
+    assert repair._refills_intact(tmp_path, wanted, "tok") is False
+
+
 def test_repair_leaves_a_preexisting_track_sharing_the_recording_alone(tmp_path, monkeypatch):
     # A track that was already in the target dir's sibling album under the
     # same ISRC must NOT be moved — it isn't a refill, it's an existing copy.

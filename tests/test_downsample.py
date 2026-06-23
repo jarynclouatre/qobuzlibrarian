@@ -70,6 +70,22 @@ def test_resample_preserves_source_bit_depth():
     assert _encode_opts_for_bps(0, base) == (base, "s32", [])
 
 
+def test_flac_header_parse_anchors_at_offset_zero():
+    # STREAMINFO is the first block immediately after the fLaC marker at offset 0.
+    # A leading ID3v2 tag (or any bytes) that happens to contain "fLaC" must not
+    # be read as the header — the old scan parsed garbage at the false marker and
+    # returned a nonzero, wrong rate/depth the metaflac backstop (which only fires
+    # on a 0) never caught, feeding an irreversible in-place resample.
+    streaminfo = bytes(4) + bytes([0x12] * 20)         # block header + body bytes
+    at_zero = b"fLaC" + streaminfo
+    not_at_zero = b"ID3\x04\x00" + at_zero             # real marker pushed past 0
+
+    assert de.parse_flac_info(at_zero) != (0, 0)       # anchored marker parses
+    assert de.parse_flac_info(not_at_zero) == (0, 0)   # hidden marker ignored
+    assert de.parse_flac_total_samples(at_zero) != 0
+    assert de.parse_flac_total_samples(not_at_zero) == 0
+
+
 def test_read_total_samples_matches_metaflac(tmp_path, _need_ffmpeg, _need_flac):
     src = tmp_path / "x.flac"
     _hires_flac(src, 1.5)
@@ -148,6 +164,26 @@ def test_resample_keeps_truncated_source_untouched(tmp_path, _need_ffmpeg, _need
     assert saved is None and err is not None
     assert src.read_bytes() == before                  # original untouched
     # No stray temp left behind.
+    assert not list(tmp_path.glob(".compress-*.flac"))
+
+
+def test_resample_keeps_original_when_source_bit_depth_unreadable(
+        tmp_path, monkeypatch, _need_ffmpeg, _need_flac):
+    # A FLAC whose bit depth can't be read (bps==0 — e.g. a leading-ID3 tag with
+    # no metaflac to fall back on) used to encode at the s32 default and overwrite
+    # the master in place, inflating a 24-bit file to 32-bit with the depth-match
+    # guard disabled. A downsample has no re-download behind it, so refuse and keep
+    # the original — the same stance as the truncated-source and decode-fail guards.
+    src = tmp_path / "track.flac"
+    _hires_flac(src, 2.0)                              # real 24-bit / 96 kHz
+    before = src.read_bytes()
+    monkeypatch.setattr(de, "read_local_bit_depth", lambda p: 0)
+    af, _ = detect_resampler_filter()
+
+    rel, sr, rate, saved, err = resample_one("track.flac", 96000, 48000, af,
+                                             base_dir=tmp_path)
+    assert saved is None and err is not None
+    assert src.read_bytes() == before                  # master left untouched
     assert not list(tmp_path.glob(".compress-*.flac"))
 
 

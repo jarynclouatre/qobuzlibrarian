@@ -457,7 +457,7 @@ LEFTOVER_WARN_LIMIT    = _env("LEFTOVER_WARN_LIMIT",    50)
 ARTIST_CATALOG_LIMIT   = _env_num_min("ARTIST_CATALOG_LIMIT",   1000, 1)
 ARTIST_CATALOG_PAGE    = _env_num_min("ARTIST_CATALOG_PAGE",    100, 1)
 # Hide releases shorter than this in the "missing albums" step of artist
-# mode (singles, very small EPs are usually noise — bump if you want them).
+# mode (singles/small EPs are usually noise; lower it to 1 to surface them).
 MISSING_ALBUMS_MIN_TRACKS = _env("MISSING_ALBUMS_MIN_TRACKS", 4)
 
 # ── Retention windows (days) ──────────────────────────────────────────────────

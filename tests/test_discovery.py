@@ -388,6 +388,28 @@ def test_want_missing_false_yields_only_owned_gaps(monkeypatch, tmp_path, beatle
 
 # ── New-release quickscan ─────────────────────────────────────────────────────
 
+def test_resolve_artist_does_not_cache_an_id_less_match(monkeypatch):
+    # A partial/malformed Qobuz 200 — a name match carrying no id — must not be
+    # cached. The contract is "misses are NOT cached"; caching [None, name] would
+    # have every later scan return that poisoned hit and silently skip the artist
+    # forever (the gap and new-release paths early-return on a falsy id).
+    monkeypatch.setattr(discovery, "_resolve_cache", {})
+    monkeypatch.setattr(discovery, "_resolve_cache_dirty", False)
+
+    calls = []
+
+    def fake_search(query, token, limit=None):
+        calls.append(query)
+        return [{"name": "Phantom Singer", "albums_count": 7}]  # no "id"
+    monkeypatch.setattr(discovery, "search_artists", fake_search)
+
+    assert discovery.resolve_artist("Phantom Singer", "tok") == (None, "Phantom Singer")
+    # A later scan must re-search, not hand back a cached non-match.
+    assert discovery.resolve_artist("Phantom Singer", "tok") == (None, "Phantom Singer")
+    assert len(calls) == 2
+    assert "Phantom Singer" not in discovery._resolve_cache
+
+
 def test_new_releases_surface_only_what_appeared_since_the_baseline(
         monkeypatch, tmp_path):
     # resolve_artist hands back an int id (as Qobuz does) but the baseline is
