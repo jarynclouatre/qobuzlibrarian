@@ -23,6 +23,10 @@ from qobuz_librarian.ui_cli.logging import vlog
 
 _init_lock = threading.Lock()
 _initialized = False
+# Bumped when a corrupt db is discarded; _conn() reopens a thread's connection
+# when its generation lags, so a sibling libscan worker stops writing into the
+# deleted inode after another thread rebuilt the db.
+_generation = 0
 _local = threading.local()
 
 # Buffered-write state. A cold scan of a 200k-track library writes one row per
@@ -72,7 +76,7 @@ def _handle_db_error(e: sqlite3.Error) -> None:
     album_cache has. SQLite data-page corruption can pass connect + CREATE TABLE
     and only surface on a row read, which would otherwise leave the cache
     permanently dead (every scan re-parsing every file)."""
-    global _initialized
+    global _initialized, _generation
     conn = getattr(_local, "conn", None)
     if conn is not None:
         try:
@@ -85,6 +89,7 @@ def _handle_db_error(e: sqlite3.Error) -> None:
     with _init_lock:
         if _initialized and _discard_corrupt_db():
             _initialized = False
+            _generation += 1
             import logging
             logging.getLogger("qobuz_librarian").info(
                 "flac cache was corrupt — discarded; it rebuilds on next scan")
@@ -139,10 +144,20 @@ def _conn():
     otherwise the bulk of a cold scan's caching cost.
     """
     conn = getattr(_local, "conn", None)
+    if conn is not None and getattr(_local, "generation", None) != _generation:
+        # Another thread discarded a corrupt db; drop this stale handle so we
+        # don't keep writing into the deleted inode.
+        try:
+            conn.close()
+        except sqlite3.Error:
+            pass
+        conn = None
+        _local.conn = None
     if conn is None:
         conn = sqlite3.connect(str(_db_path()), timeout=5)
         conn.execute("PRAGMA synchronous=NORMAL")
         _local.conn = conn
+        _local.generation = _generation
     return conn
 
 
@@ -310,11 +325,13 @@ def prune_missing(force: bool = False) -> int:
 
 
 def _reset_for_tests() -> None:
-    global _initialized
+    global _initialized, _generation
     conn = getattr(_local, "conn", None)
     if conn is not None:
         conn.close()
         _local.conn = None
+    _local.generation = None
     _initialized = False
+    _generation = 0
     with _PENDING_LOCK:
         _PENDING_ROWS.clear()

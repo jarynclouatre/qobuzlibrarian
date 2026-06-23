@@ -220,3 +220,42 @@ def test_flac_cache_put_buffers_and_flush_pending_drains_to_disk(tmp_path, monke
         flac_cache.flush_pending()
     finally:
         flac_cache._reset_for_tests()
+
+
+def test_flac_cache_conn_reopens_after_generation_bump(tmp_path, monkeypatch):
+    # A libscan worker mid-scan must stop writing into a db another worker
+    # discarded as corrupt: a bumped generation forces _conn() to replace this
+    # thread's handle instead of writing into the deleted inode.
+    import qobuz_librarian.config as cfg
+    from qobuz_librarian.library import flac_cache
+
+    monkeypatch.setattr(cfg, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(cfg, "FLAC_CACHE_ENABLED", True)
+    flac_cache._reset_for_tests()
+    try:
+        assert flac_cache._ensure()
+        c1 = flac_cache._conn()
+        flac_cache._generation += 1            # another worker's corrupt-db recovery
+        c2 = flac_cache._conn()
+        assert c2 is not c1
+        assert flac_cache._local.generation == flac_cache._generation
+    finally:
+        flac_cache._reset_for_tests()
+
+
+def test_dir_caches_survive_a_concurrent_clear(monkeypatch, tmp_path):
+    # clear_scan_caches() (a concurrent download) can empty a scan cache between
+    # the `in` check and the lookup; that KeyError used to escape the OSError
+    # guard and silently drop the artist. Both cached lookups must be atomic.
+    from qobuz_librarian.library import scanner
+
+    class _LyingCache(dict):
+        def __contains__(self, k):   # present for the check, absent at the lookup
+            return True
+
+    artist = tmp_path / "Artist"
+    (artist / "Album").mkdir(parents=True)
+    monkeypatch.setattr(scanner, "_HAS_AUDIO_CACHE", _LyingCache())
+    monkeypatch.setattr(scanner, "_ARTIST_SUBDIRS_CACHE", _LyingCache())
+    assert scanner._has_audio_anywhere(artist) is False    # no KeyError
+    assert [d.name for d in scanner._list_artist_subdirs_cached(artist)] == ["Album"]

@@ -234,8 +234,13 @@ def _has_audio_anywhere(d: Path) -> bool:
     iter_tree per call is wasted iterdir+stat on every album subtree.
     """
     key = str(d)
-    if key in _HAS_AUDIO_CACHE:
-        return _HAS_AUDIO_CACHE[key]
+    # Atomic get: a concurrent download's clear_scan_caches() can empty the dict
+    # between an `in` check and the lookup, and that KeyError would escape the
+    # OSError guard below and drop the artist from the scan. Cached values are
+    # never None, so None unambiguously means "not cached".
+    cached = _HAS_AUDIO_CACHE.get(key)
+    if cached is not None:
+        return cached
     exts = set(config.AUDIO_EXTS)
     try:
         for f in iter_tree_no_symlinks(d):
@@ -338,8 +343,11 @@ _ARTIST_SUBDIRS_CACHE: dict = {}
 
 def _list_artist_subdirs_cached(artist_dir: Path):
     key = str(artist_dir)
-    if key in _ARTIST_SUBDIRS_CACHE:
-        return _ARTIST_SUBDIRS_CACHE[key]
+    # Atomic get (see _has_audio_anywhere): an `in`/`[]` pair could KeyError if a
+    # concurrent clear_scan_caches() empties the dict between them.
+    cached = _ARTIST_SUBDIRS_CACHE.get(key)
+    if cached is not None:
+        return cached
     try:
         subdirs = sorted((d for d in artist_dir.iterdir() if d.is_dir()),
                          key=lambda p: p.name.lower())

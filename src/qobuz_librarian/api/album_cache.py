@@ -23,6 +23,10 @@ from qobuz_librarian.ui_cli.logging import vlog
 
 _init_lock = threading.Lock()
 _initialized = False
+# Bumped when a corrupt db is discarded; _conn() reopens a thread's connection
+# when its generation lags, so a sibling scan worker stops writing into the
+# deleted inode after another thread rebuilt the db.
+_generation = 0
 _local = threading.local()
 
 
@@ -68,7 +72,7 @@ def _handle_db_error(e: sqlite3.Error) -> None:
     the error is corruption, discard the malformed file and force the next
     _ensure() to rebuild it.
     """
-    global _initialized
+    global _initialized, _generation
     conn = getattr(_local, "conn", None)
     if conn is not None:
         try:
@@ -80,9 +84,12 @@ def _handle_db_error(e: sqlite3.Error) -> None:
         return
     with _init_lock:
         # First thread to notice clears the file and resets the init flag; a
-        # concurrent rebuild (which re-sets _initialized) isn't torn down.
+        # concurrent rebuild (which re-sets _initialized) isn't torn down. Bump
+        # the generation so sibling workers reopen against the rebuilt db rather
+        # than keep writing into the deleted inode.
         if _initialized and _discard_corrupt_db():
             _initialized = False
+            _generation += 1
             import logging
             logging.getLogger("qobuz_librarian").info(
                 "album cache was corrupt — discarded; it rebuilds on next scan")
@@ -142,10 +149,20 @@ def _conn() -> sqlite3.Connection:
     to an OS crash is just refetched from Qobuz on the next scan.
     """
     conn = getattr(_local, "conn", None)
+    if conn is not None and getattr(_local, "generation", None) != _generation:
+        # Another thread discarded a corrupt db; drop this stale handle so we
+        # don't keep writing into the deleted inode.
+        try:
+            conn.close()
+        except sqlite3.Error:
+            pass
+        conn = None
+        _local.conn = None
     if conn is None:
         conn = sqlite3.connect(str(_db_path()), timeout=5)
         conn.execute("PRAGMA synchronous=NORMAL")
         _local.conn = conn
+        _local.generation = _generation
     return conn
 
 
@@ -254,9 +271,11 @@ def put_catalog(key, payload) -> None:
 
 
 def _reset_for_tests() -> None:
-    global _initialized
+    global _initialized, _generation
     conn = getattr(_local, "conn", None)
     if conn is not None:
         conn.close()
         _local.conn = None
+    _local.generation = None
     _initialized = False
+    _generation = 0

@@ -158,7 +158,12 @@ def persist(job) -> None:
     # Path that slipped into a payload) coerces to text instead of raising
     # TypeError, which would escape the sqlite3.Error guard, crash the worker,
     # and silently drop a parked review the user can't get back.
-    candidates_json = json.dumps(job.candidates or [], default=str)
+    # Snapshot the candidate list under the job's own lock first: set_selected /
+    # set_all_selected mutate it under that lock, so dumping it unlocked could
+    # serialize a torn selection or trip over a concurrent resize.
+    with job._lock:
+        candidates_snapshot = list(job.candidates or [])
+    candidates_json = json.dumps(candidates_snapshot, default=str)
     execute_args_json = json.dumps(job.execute_args or {}, default=str)
     single_json = json.dumps(job.single or {}, default=str)
     with _lock:

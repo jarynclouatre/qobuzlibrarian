@@ -247,6 +247,26 @@ def test_album_cache_heals_on_corrupt_db(tmp_path, monkeypatch):
         album_cache._reset_for_tests()
 
 
+def test_album_cache_conn_reopens_after_generation_bump(tmp_path, monkeypatch):
+    # A scan worker mid-lookup must stop writing into a db another worker
+    # discarded as corrupt: a bumped generation forces _conn() to drop and
+    # replace this thread's handle instead of writing into the deleted inode.
+    import qobuz_librarian.config as cfg
+    from qobuz_librarian.api import album_cache
+    monkeypatch.setattr(cfg, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(cfg, "ALBUM_CACHE_ENABLED", True)
+    album_cache._reset_for_tests()
+    try:
+        assert album_cache._ensure()
+        c1 = album_cache._conn()
+        album_cache._generation += 1            # another worker's corrupt-db recovery
+        c2 = album_cache._conn()
+        assert c2 is not c1
+        assert album_cache._local.generation == album_cache._generation
+    finally:
+        album_cache._reset_for_tests()
+
+
 def test_get_artist_albums_cached_within_ttl(tmp_path, monkeypatch):
     import qobuz_librarian.config as cfg
     from qobuz_librarian.api import album_cache, search

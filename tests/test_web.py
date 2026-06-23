@@ -1842,6 +1842,32 @@ def test_prune_force_evicts_a_finished_job_pinned_by_a_wedged_subscriber():
     assert fresh.id in reg._jobs      # recently finished + pinned → kept
 
 
+def test_persist_serializes_an_atomic_candidate_snapshot(monkeypatch):
+    # persist snapshots the candidate list under the job lock before serializing,
+    # so a list change landing mid-dump (a concurrent selection rebuild / add)
+    # can't tear the persisted review.
+    import json as _json
+
+    from qobuz_librarian.web import job_persistence as jp
+
+    job = jm.Job(title="review")
+    job.candidates = [{"cid": "a"}, {"cid": "b"}]
+    captured = {}
+    real_dumps = jp.json.dumps
+
+    def racing(obj, **kw):
+        if isinstance(obj, list):                # the candidates serialization
+            job.candidates.append({"cid": "c"})  # a concurrent add lands now
+            captured["json"] = real_dumps(obj, **kw)
+            return captured["json"]
+        return real_dumps(obj, **kw)
+    monkeypatch.setattr(jp.json, "dumps", racing)
+
+    jp.persist(job)
+    assert captured.get("json") is not None
+    assert len(_json.loads(captured["json"])) == 2   # the mid-dump add didn't tear it
+
+
 def test_rip_url_returns_canceled_when_check_fires(monkeypatch):
     # rip_url's polling loop must consult _CANCEL_CHECK between proc.wait
     # iterations and kill+return when the check fires, otherwise a clicked
