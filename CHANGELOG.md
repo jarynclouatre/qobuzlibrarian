@@ -4,6 +4,12 @@ All notable changes to Qobuz Librarian are recorded here, newest first. The
 project follows [semantic versioning](https://semver.org/); dates are when each
 version was tagged during local development.
 
+## [0.9.2] - 2026-06-23
+
+**New-release check needs a baseline first**
+
+- A new-release check compares your artists' Qobuz catalogs against a baseline that a full library scan builds, so it now needs one first. Until your first full scan finishes, "Check for new releases" is disabled (with a note saying why) and a direct request is refused — instead of crawling to an empty baseline, surfacing nothing, and marking the baseline "done," which previously left an interrupted library scan unable to resume. The automatic daily check likewise waits behind an interrupted scan you're resuming.
+
 ## [0.9.1] - 2026-06-23
 
 **Reviews no longer pile up**
@@ -13,7 +19,6 @@ version was tagged during local development.
 **"New releases" means actually new**
 
 - The new-release check flags an album when it appears in an artist's catalog and you don't own it — including an old album Qobuz only just added, which is genuinely new to you. The fix is in keeping the baseline trustworthy so this can't dump your back-catalog: a catalog bigger than the fetch limit is recorded but not diffed (its order isn't stable run to run), the baseline grows by union instead of being overwritten, and when the catalog fetch limit itself grows the check re-baselines once rather than treating the newly-visible older albums as fresh arrivals. Candidates default to un-ticked, so a review never queues a pile of downloads in one tap.
-- A new-release check now requires a completed library scan first — that scan is what builds the baseline it compares against. Until one finishes the option is disabled (with a note saying why), a direct request is refused, and the automatic check waits behind an interrupted scan you're resuming — so it can never crawl to an empty baseline or run ahead of the scan that would build one.
 
 **Repair scan — cleaner live activity**
 
