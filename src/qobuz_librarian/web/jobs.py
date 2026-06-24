@@ -836,6 +836,24 @@ def submit_scan(job: Job, scan_fn, execute_fn):
     return job
 
 
+def finalize_review_if_empty(job: Job) -> bool:
+    """Complete a triage review once dismissal has emptied its candidate list.
+
+    Dismissing the last album leaves nothing to act on, so the job must not stay
+    in AWAITING_REVIEW — otherwise the dashboard keeps showing the "N new
+    releases" banner (now zero) and the job page stays badged "awaiting review"
+    over an empty list. Mirror submit_scan's found-nothing path and mark it DONE.
+    Returns True if it finalized the job (so callers can refresh the view).
+    """
+    with job._lock:
+        if job.status != JobStatus.AWAITING_REVIEW or job.candidates:
+            return False
+        job.status = JobStatus.DONE
+        job.summary = "All candidates reviewed — the ones you didn't keep were dismissed."
+    job_persistence.persist(job)
+    return True
+
+
 def approve(job: Job, selected_ids=None) -> bool:
     """Resume a reviewed job: run execute_fn over the selected candidates.
 

@@ -129,9 +129,10 @@
 </div>
 {% endif %}
 
-{% if new_release_review %}
+{% if new_release_review and new_release_review.count %}
 <!-- The automatic (or manual) new-release check found albums you don't own and
-     parked them for review. Surfaced up front so new releases come to you. -->
+     parked them for review. Surfaced up front so new releases come to you.
+     Gated on a non-zero count so a fully-dismissed check never shows "0 new". -->
 <div class="ql-notice ql-notice-success mb-6 flex items-start flex-wrap gap-3 p-4">
   <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 shrink-0 text-success" fill="none"
        viewBox="0 0 24 24" stroke="currentColor">
@@ -146,21 +147,24 @@
 </div>
 {% endif %}
 
-<!-- Hero + search. The navbar already carries the logo + wordmark, so the hero
-     leads with the tagline (as the page heading) over a single logo mark rather
-     than repeating the lockup. -->
+<!-- Search-first: the navbar already carries the wordmark and links to every
+     mode, so the dashboard leads straight with search (or the connect prompt) —
+     no marketing tagline on a tool you open daily, and no second copy of the nav
+     rendered as tiles below. -->
 <section class="text-center pt-2 pb-8">
-  <h1 class="text-2xl sm:text-3xl font-semibold max-w-xl mx-auto text-balance leading-tight">Build and maintain a complete, lossless library from Qobuz.</h1>
-
   {% if not creds_ok %}
-  <a href="/settings" class="btn btn-primary btn-lg mt-6">Set up your Qobuz account</a>
+  <h1 class="text-xl font-semibold mb-1">Connect your Qobuz account</h1>
+  <p class="text-base-content/60 mb-5 max-w-md mx-auto">Paste your Qobuz token to start finding and filling in your library.</p>
+  <a href="/settings" class="btn btn-primary btn-lg">Set up your Qobuz account</a>
   {% elif creds_token_valid == False %}
-  <a href="/settings" class="btn btn-primary btn-lg mt-6">Reconnect Qobuz</a>
+  <h1 class="text-xl font-semibold mb-1">Reconnect Qobuz</h1>
+  <p class="text-base-content/60 mb-5 max-w-md mx-auto">Your saved token was rejected — reconnect it to keep searching and downloading.</p>
+  <a href="/settings" class="btn btn-primary btn-lg">Reconnect Qobuz</a>
   {% else %}
   <form action="/search" method="post"
         hx-post="/search" hx-target="#search-results" hx-swap="innerHTML"
         hx-indicator="#dashboard-search-spinner"
-        class="flex flex-col gap-2 mt-6 max-w-2xl mx-auto">
+        class="flex flex-col gap-2 mt-2 max-w-2xl mx-auto">
     <input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}">
     <div class="join self-center" role="group" aria-label="Search for">
       <label class="join-item btn btn-sm has-[:checked]:btn-primary">
@@ -174,14 +178,14 @@
         Tracks
       </label>
     </div>
-    <div class="flex flex-col gap-2 sm:flex-row">
+    <div class="join w-full">
       <input type="text" name="q" aria-label="Search Qobuz" placeholder="Artist, album, or URL"
              inputmode="search" enterkeyhint="search" autocapitalize="off" spellcheck="false" maxlength="500"
-             class="input input-bordered input-lg min-w-0 flex-1" autocomplete="off">
-      <button type="submit" class="btn btn-primary btn-lg w-full gap-2 px-4 sm:w-auto sm:px-6">
+             class="input input-bordered input-lg join-item min-w-0 flex-1" autocomplete="off">
+      <button type="submit" class="btn btn-primary btn-lg join-item gap-2">
         <span id="dashboard-search-spinner"
               class="loading loading-spinner loading-sm htmx-indicator"></span>
-        <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+        <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-4.35-4.35M17 11A6 6 0 1 1 5 11a6 6 0 0 1 12 0z"/>
         </svg>
         <span>Search</span>
@@ -193,61 +197,6 @@
 
 <div id="search-results" aria-live="polite"></div>
 
-<!-- Quick actions -->
-{% if qobuz_ready %}
-<p class="ql-eyebrow mb-3">Quick actions</p>
-<div class="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-6">
-  <a href="/artist"
-     class="ql-tile card bg-base-200 border border-base-300/60 hover:border-primary/60">
-    <div class="card-body p-5 items-center text-center gap-1">
-      <span class="grid place-items-center h-11 w-11 rounded-full bg-primary/10 text-primary mb-1">
-        <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 7a4 4 0 1 1-8 0 4 4 0 0 1 8 0zM12 14a7 7 0 0 0-7 7h14a7 7 0 0 0-7-7z"/>
-        </svg>
-      </span>
-      <span class="font-semibold">Artist</span>
-      <span class="text-xs text-base-content/50">Fill an artist's gaps</span>
-    </div>
-  </a>
-  <a href="/library"
-     class="ql-tile card bg-base-200 border border-base-300/60 hover:border-primary/60">
-    <div class="card-body p-5 items-center text-center gap-1">
-      <span class="grid place-items-center h-11 w-11 rounded-full bg-primary/10 text-primary mb-1">
-        <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v14l-7-3.5L6 20V6z"/>
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M18 4h.5A1.5 1.5 0 0 1 20 5.5V18"/>
-        </svg>
-      </span>
-      <span class="font-semibold">Library</span>
-      <span class="text-xs text-base-content/50">Find what you're missing</span>
-    </div>
-  </a>
-  <a href="/upgrade"
-     class="ql-tile card bg-base-200 border border-base-300/60 hover:border-primary/60">
-    <div class="card-body p-5 items-center text-center gap-1">
-      <span class="grid place-items-center h-11 w-11 rounded-full bg-primary/10 text-primary mb-1">
-        <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 19V5M5 12l7-7 7 7"/>
-        </svg>
-      </span>
-      <span class="font-semibold">Upgrade</span>
-      <span class="text-xs text-base-content/50">Better-quality versions</span>
-    </div>
-  </a>
-  <a href="/repair"
-     class="ql-tile card bg-base-200 border border-base-300/60 hover:border-primary/60">
-    <div class="card-body p-5 items-center text-center gap-1">
-      <span class="grid place-items-center h-11 w-11 rounded-full bg-primary/10 text-primary mb-1">
-        <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.7 6.3a4 4 0 0 0-5.4 5.4L4 17v3h3l5.3-5.3a4 4 0 0 0 5.4-5.4l-2.6 2.6-2-2 2.6-2.6z"/>
-        </svg>
-      </span>
-      <span class="font-semibold">Repair</span>
-      <span class="text-xs text-base-content/50">Find and refill incomplete tracks</span>
-    </div>
-  </a>
-</div>
-{% endif %}
 
 <!-- Scans waiting for your review. Only the one new-release check shown in the
      banner above is excluded (by id), so a second one can't go unlisted. -->
@@ -341,7 +290,7 @@
 {% if creds_ok %}
 <div class="card bg-base-200 border border-base-300/60 shadow-sm">
   <div class="card-body">
-    <div class="flex items-baseline justify-between mb-3">
+    <div class="flex flex-col gap-1 mb-3 sm:flex-row sm:items-baseline sm:justify-between">
       <h2 class="ql-eyebrow">Recent downloads</h2>
       {% if last_library_scan or last_new_release_check %}
       <span class="readout text-xs text-base-content/40">

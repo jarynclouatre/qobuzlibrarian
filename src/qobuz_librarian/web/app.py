@@ -2459,6 +2459,11 @@ async def job_hide(request: Request, job_id: str):
         n = flows.dismiss_albums(job, artist, scope=_hide_scope(job.execute_kind))
         if n:
             job.notify_review_changed()  # keep other open tabs in sync
+        # Dismissing the last album completes the review — drop AWAITING_REVIEW so
+        # the dashboard "new releases" banner clears and this page stops showing an
+        # empty "awaiting review". HX-Refresh reloads to the finished view.
+        if job_mgr.finalize_review_if_empty(job):
+            return HTMLResponse("", headers={"HX-Refresh": "true"})
         with job._lock:
             remaining = [c for c in job.candidates if c.get("artist") == artist]
         if remaining:
@@ -2506,6 +2511,9 @@ async def job_hide_artists(request: Request, job_id: str):
         job.notify_review_changed()
     payload = _selection_payload(job)
     payload["hidden"] = hidden_count
+    # If that cleared the last candidate, complete the review so the caller can
+    # reload to the finished view instead of an empty "awaiting review".
+    payload["review_done"] = job_mgr.finalize_review_if_empty(job)
     return JSONResponse(payload)
 
 

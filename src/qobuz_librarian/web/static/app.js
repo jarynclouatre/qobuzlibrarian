@@ -669,6 +669,9 @@
         .then(function (r) { return r.ok ? r.json() : Promise.reject(); })
         .then(function (c) {
           hideMarkedBusy = false;
+          // Dismissing the last marked artist completed the review — reload to the
+          // finished view rather than leaving an empty "awaiting review" list.
+          if (c.review_done) { location.reload(); return; }
           applyCounts(c);
           loadPage(curPage(), curQuery());
           updateMarkedActions();

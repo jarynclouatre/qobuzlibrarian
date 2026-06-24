@@ -383,9 +383,9 @@ def test_dashboard_search_button_label_is_visible_on_mobile(client, monkeypatch)
     r = client.get("/")
 
     assert r.status_code == 200
-    assert 'class="flex flex-col gap-2 sm:flex-row"' in r.text
-    assert 'class="input input-bordered input-lg min-w-0 flex-1"' in r.text
-    assert 'class="btn btn-primary btn-lg w-full gap-2 px-4 sm:w-auto sm:px-6"' in r.text
+    assert 'class="join w-full"' in r.text
+    assert 'class="input input-bordered input-lg join-item min-w-0 flex-1"' in r.text
+    assert 'class="btn btn-primary btn-lg join-item gap-2"' in r.text
     assert '<span>Search</span>' in r.text
     assert '<span class="hidden sm:inline">Search</span>' not in r.text
 
@@ -409,7 +409,7 @@ def test_dashboard_setup_scan_action_stacks_on_mobile(client, monkeypatch):
     assert 'class="btn btn-sm btn-primary w-full sm:w-auto"' in r.text
 
 
-def test_search_page_form_stacks_cleanly_on_mobile(client, monkeypatch):
+def test_search_page_form_is_a_clean_unified_bar(client, monkeypatch):
     from qobuz_librarian.web import app as webapp
 
     monkeypatch.setattr(webapp, "_read_creds",
@@ -422,9 +422,9 @@ def test_search_page_form_stacks_cleanly_on_mobile(client, monkeypatch):
     assert "Artist, album, or Qobuz URL" not in r.text
     assert "Type an artist, album, or URL above to search." in r.text
     assert "autofocus" not in r.text
-    assert 'class="flex flex-col gap-2 sm:flex-row"' in r.text
-    assert 'class="input input-bordered input-lg w-full min-w-0 flex-1"' in r.text
-    assert 'class="btn btn-primary btn-lg w-full gap-2 sm:w-auto"' in r.text
+    assert 'class="join w-full"' in r.text
+    assert 'class="input input-bordered input-lg join-item min-w-0 flex-1"' in r.text
+    assert 'class="btn btn-primary btn-lg join-item gap-2"' in r.text
 
 
 def test_artist_page_form_stacks_cleanly_on_mobile(client, monkeypatch):

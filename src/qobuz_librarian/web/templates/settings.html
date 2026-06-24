@@ -141,7 +141,7 @@
                  value="{{ auth_token_prefill | default('') }}"
                  aria-label="Qobuz auth token"
                  autocomplete="off" autocorrect="off" spellcheck="false"
-                 placeholder="{% if auth_token_set %}•••••••• (paste a new token to replace){% else %}paste the long token string here{% endif %}"
+                 placeholder="{% if auth_token_set %}•••••••• paste new token to replace{% else %}paste the long token string here{% endif %}"
                  class="input input-bordered min-w-0 flex-1 font-mono text-base sm:text-sm">
           <button type="button" class="btn btn-ghost btn-sm"
                   data-toggle-password="auth_token">Show</button>

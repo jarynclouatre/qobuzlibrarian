@@ -2,6 +2,16 @@
 
 All notable changes to Qobuz Librarian are recorded here, newest first. The project follows [semantic versioning](https://semver.org/); dates are when each version was tagged during local development.
 
+## [0.9.4] - 2026-06-24
+
+**Web UI**
+
+- A review now completes the moment you dismiss its last album. Before, hiding everything left the job stuck "awaiting review" over an empty list and kept a stale new-release banner on the dashboard that read "0 new releases"; the banner is now also gated on a non-zero count so it can never read zero again.
+- "New releases" now means recently released. The check was a plain catalog diff, so an old album Qobuz back-filled into an artist's catalog got flagged as new — a 2020 album could show up as a "new release". It now only surfaces albums released within a recency window (`NEW_RELEASE_MAX_AGE_DAYS`, default 365 days; 0 disables it). Gap-fill still surfaces old albums you're missing, as before.
+- The search box is one clean bar again — the input and button are joined at every width — instead of a small field above an oversized full-width button on phones.
+- Decluttered the dashboard: dropped the marketing tagline and the quick-action tiles that just duplicated the nav, so it leads straight with search and recent activity.
+- Finish fixes: the hidden-albums list no longer crushes the artist name to "R…" on a phone, history result lines wrap instead of clipping, and a few headers stack cleanly on small screens.
+
 ## [0.9.3] - 2026-06-23
 
 **Data-safety polish**

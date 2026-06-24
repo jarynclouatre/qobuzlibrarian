@@ -7,6 +7,8 @@ the Qobuz API stubbed. They pin the reconciled behaviour the two interfaces
 must now agree on; the per-interface tests elsewhere prove each face presents
 this same result.
 """
+from datetime import date
+
 import pytest
 
 from qobuz_librarian import config as cfg
@@ -249,7 +251,9 @@ def test_new_releases_surface_only_what_appeared_since_the_baseline(
                    [_qt(f"o{i}", f"ISRCO{i}") for i in range(4)])
     old = _album(202, "Happier Than Ever", "Billie Eilish", 2021,
                  [_qt(f"h{i}", f"ISRCH{i}") for i in range(16)])
-    fresh = _album(303, "Hit Me Hard And Soft", "Billie Eilish", 2024,
+    # A genuinely-new release: dated in the current year so it always stays
+    # inside the default recency window, whenever the suite runs.
+    fresh = _album(303, "Hit Me Hard And Soft", "Billie Eilish", date.today().year,
                    [_qt(f"s{i}", f"ISRCS{i}") for i in range(10)])
     _library(monkeypatch, tmp_path,
              {"Billie Eilish": {"Ocean Eyes (2016)":
@@ -277,3 +281,12 @@ def test_new_releases_surface_only_what_appeared_since_the_baseline(
         "Billie Eilish", token="tok", opts=opts,
         seen_by_id={str(first.artist_id): first.current_ids}, artist_dir=ad)
     assert caught_up.new_gaps == []
+
+    # Recency window: an OLD album that's new to the baseline (Qobuz back-filled
+    # it) is a back-catalogue gap, not a new release. With only the owned album
+    # in the baseline, both "Happier Than Ever" (2021) and the current-year album
+    # are new since — but only the recent one surfaces.
+    recency = find_new_releases_for_artist(
+        "Billie Eilish", token="tok", opts=opts,
+        seen_by_id={str(first.artist_id): ["101"]}, artist_dir=ad)
+    assert _titles(recency.new_gaps) == ["Hit Me Hard And Soft"]

@@ -33,6 +33,7 @@ from qobuz_librarian.library import hidden as hidden_mod
 from qobuz_librarian.library.catalog import (
     _dir_year,
     _paths_equal,
+    album_released_within,
     compute_missing,
     dedup_album_versions,
     filter_compilation_albums,
@@ -646,6 +647,14 @@ def find_new_releases_for_artist(query, *, token, opts=None, seen_by_id=None,
     # flag it new on every check.
     fresh = [a for a in lossless if a.get("id") is not None
              and str(a.get("id")) not in seen_set]
+    # A "new release" should be recent. Qobuz routinely back-fills old catalogue
+    # titles, so an album from years ago newly appearing in the catalog is a
+    # back-catalogue gap, not a new release — narrow to recently-released albums.
+    # current_ids above already recorded every catalog id as the next baseline,
+    # so a suppressed older newcomer won't resurface here; gap-fill still offers
+    # it elsewhere as a missing album.
+    fresh = [a for a in fresh
+             if album_released_within(a, cfg.NEW_RELEASE_MAX_AGE_DAYS)]
     if not fresh:
         return NewReleaseResult(artist_id, artist_name, [], current_ids)
 

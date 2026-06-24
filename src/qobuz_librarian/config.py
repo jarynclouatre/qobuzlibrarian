@@ -430,6 +430,16 @@ ARTIST_CATALOG_CACHE_TTL = _env("ARTIST_CATALOG_CACHE_TTL", 7 * 86400)
 # "Check for new releases" buttons still work.
 NEW_RELEASE_CHECK_INTERVAL = _env("NEW_RELEASE_CHECK_INTERVAL", 86400)
 
+# A "new release" should actually be recent. Qobuz routinely back-fills older
+# catalogue titles, so without a recency window an album from years ago that it
+# only just listed gets flagged "new" — that's a back-catalogue gap, not a new
+# release. Only surface albums whose ORIGINAL release date is within this many
+# days. The baseline still records suppressed albums, so they never resurface
+# here. 0 disables the window (any catalog newcomer counts, the old behaviour).
+# Gap-fill (Library / Artist "missing albums") is unaffected — it deliberately
+# surfaces old albums you don't own; this only narrows the new-release check.
+NEW_RELEASE_MAX_AGE_DAYS = _env("NEW_RELEASE_MAX_AGE_DAYS", 365)
+
 # Auto-start a library scan on first run — and resume an interrupted one — so the
 # new-release baseline gets established without the user remembering to scan. Off
 # disables only the automatic start; a manual library scan still seeds it.

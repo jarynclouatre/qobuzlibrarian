@@ -32,7 +32,7 @@
       {% if job.error %}
       <p class="text-xs text-error/80 truncate">{{ job.error }}</p>
       {% elif job.summary %}
-      <p class="text-xs text-base-content/50 truncate">{{ job.summary }}</p>
+      <p class="text-xs text-base-content/50 line-clamp-2 sm:truncate">{{ job.summary }}</p>
       {% endif %}
     </div>
     {# Timestamp + actions wrap to their own right-aligned line on a phone so a

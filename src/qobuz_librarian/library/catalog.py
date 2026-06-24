@@ -548,6 +548,43 @@ def album_year_int(album, fallback=99999):
         return fallback
 
 
+def album_release_ts(album):
+    """Original-release date as a UTC unix timestamp, or None if unknown.
+
+    Prefers release_date_original (YYYY-MM-DD); falls back to released_at.
+    """
+    rdo = album.get("release_date_original") or ""
+    if isinstance(rdo, str) and len(rdo) >= 10 and rdo[:4].isdigit():
+        try:
+            return datetime.strptime(
+                rdo[:10], "%Y-%m-%d").replace(tzinfo=timezone.utc).timestamp()
+        except ValueError:
+            pass
+    ra = album.get("released_at")
+    if isinstance(ra, (int, float)):
+        return float(ra)
+    return None
+
+
+def album_released_within(album, max_age_days):
+    """True if the album's ORIGINAL release date is within max_age_days of now.
+
+    For surfacing genuinely-new releases: Qobuz routinely back-fills old
+    catalogue titles, so "appeared in the catalog since the baseline" isn't
+    enough on its own — a 2020 album it only just listed is a back-catalogue gap,
+    not a new release. An album with no parseable date is treated as recent (don't
+    suppress a possibly-new release over a missing date). max_age_days <= 0
+    disables the window (any catalog newcomer counts, the original behaviour).
+    """
+    if max_age_days <= 0:
+        return True
+    ts = album_release_ts(album)
+    if ts is None:
+        return True
+    cutoff = datetime.now(timezone.utc).timestamp() - max_age_days * 86400
+    return ts >= cutoff
+
+
 def is_lossless_album(album):
     return (album.get("maximum_bit_depth") or 0) >= 16
 
