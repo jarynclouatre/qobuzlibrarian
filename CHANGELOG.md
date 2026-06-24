@@ -12,6 +12,7 @@ All notable changes to Qobuz Librarian are recorded here, newest first. The proj
 - The search box is one clean bar again — the input and button are joined at every width — instead of a small field above an oversized full-width button on phones.
 - Decluttered the dashboard: dropped the marketing tagline and the quick-action tiles that just duplicated the nav, so it leads straight with search and recent activity.
 - Finish fixes: the hidden-albums list no longer crushes the artist name to "R…" on a phone, history result lines wrap instead of clipping, and a few headers stack cleanly on small screens.
+- A failed download now says what actually went wrong — tracks failed, downloaded-but-import-failed, or nothing retrieved (Qobuz rate-limiting or an unavailable release, try again) — instead of the catch-all "download or import failed".
 
 ## [0.9.3] - 2026-06-23
 

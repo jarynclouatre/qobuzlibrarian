@@ -1371,8 +1371,13 @@ def _make_download_run(album, token, *, treat_as_new=False):
                   "lossy_only", "no_tracks", "cancelled"}
         if r.get("result") not in benign and not r.get("imported"):
             j.status = job_mgr.JobStatus.FAILED
-            j.error = (f"{plural(r['n_fail'], 'track')} failed"
-                       if r.get("n_fail") else "download or import failed")
+            if r.get("n_fail"):
+                j.error = f"{plural(r['n_fail'], 'track')} failed — see job log"
+            elif r.get("n_ok"):
+                j.error = "Downloaded, but the import failed — see job log"
+            else:
+                j.error = ("No tracks were retrieved — Qobuz may be rate-limiting "
+                           "you, or the release is unavailable. Try again shortly.")
         elif r.get("imported") and r.get("n_fail", 0) > 0:
             j.error = f"{plural(r['n_fail'], 'track')} failed — see job log"
         # Surface a one-line outcome here so the /jobs page tells the user what
@@ -1430,8 +1435,13 @@ def _make_single_track_run(album, track, token):
         if not (qi.get("n_ok", 0) > 0 and qi.get("imported", False)
                 and qi.get("n_fail", 0) == 0):
             j.status = job_mgr.JobStatus.FAILED
-            j.error = (f"{plural(qi.get('n_fail', 1), 'track')} failed"
-                       if qi.get("n_fail") else "download or import failed")
+            if qi.get("n_fail"):
+                j.error = f"{plural(qi.get('n_fail', 1), 'track')} failed"
+            elif qi.get("n_ok"):
+                j.error = "Downloaded, but the import failed — see job log"
+            else:
+                j.error = ("Couldn't retrieve the track — Qobuz may be rate-limiting "
+                           "you, or it's unavailable. Try again shortly.")
             return
         # Only mark it a single if the album is still partial after this grab. If
         # this was the album's last missing track, you now own the whole thing —
