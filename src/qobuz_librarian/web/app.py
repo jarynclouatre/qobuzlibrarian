@@ -1110,7 +1110,16 @@ async def do_search(request: Request, q: str = Form("", max_length=500),
                 search_tracks,
             )
             from qobuz_librarian.cli import parse_qobuz_url
-            from qobuz_librarian.library.catalog import album_quality_label, album_year
+            from qobuz_librarian.library.catalog import (
+                album_quality_label,
+                album_year,
+                filter_owned_albums,
+            )
+            from qobuz_librarian.library.discovery import (
+                owned_album_titles,
+                resolve_artist_dir,
+            )
+            from qobuz_librarian.library.scanner import list_artist_album_dirs
 
             # If the user pasted a Qobuz URL, the placeholder says we
             # handle it — actually do so by fetching the album directly
@@ -1224,6 +1233,7 @@ async def do_search(request: Request, q: str = Form("", max_length=500),
                     "cover":       _tcover if _tcover.startswith(
                         "https://static.qobuz.com/") else "",
                 })
+            _album_raws = []
             for a in (raw if kind == "album" else []):
                 if not a.get("id"):
                     continue
@@ -1246,7 +1256,34 @@ async def do_search(request: Request, q: str = Form("", max_length=500),
                     "lossy":   _bd == 0,
                     "cover":   _cover if _cover.startswith(
                         "https://static.qobuz.com/") else "",
+                    "owned":   False,
                 })
+                _album_raws.append(a)
+
+            # Flag results already in the library so search never offers a plain
+            # Download on an album you own — the app is gap-fill, so that would
+            # contradict its own purpose. Reuse the scans' owned-title match,
+            # resolving each artist's folder once, off the event loop.
+            if results and kind == "album":
+                def _annotate_owned():
+                    owned_by_artist: dict = {}
+                    for res, alb in zip(results, _album_raws):
+                        name = (alb.get("artist") or {}).get("name") or ""
+                        if name not in owned_by_artist:
+                            ad = resolve_artist_dir(name)
+                            owned_by_artist[name] = (
+                                owned_album_titles(list_artist_album_dirs(ad))
+                                if ad else {})
+                        titles = owned_by_artist[name]
+                        if titles:
+                            res["owned"] = not filter_owned_albums(
+                                [(alb, 1)], titles, name)
+                try:
+                    await asyncio.wait_for(
+                        loop.run_in_executor(None, _annotate_owned),
+                        timeout=cfg.WEB_FETCH_TIMEOUT)
+                except Exception:
+                    pass  # ownership is a nicety; never fail search over it
         except (SystemExit, NoCredsError):
             error = "No Qobuz credentials set — visit Settings."
         except AuthLost:

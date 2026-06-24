@@ -55,6 +55,9 @@
           </div>
         </div>
         <div class="shrink-0 flex items-center gap-2 self-end sm:self-auto">
+          {% if r.owned %}
+          <span class="badge badge-sm badge-success whitespace-nowrap shrink-0" title="Already in your library">In library</span>
+          {% endif %}
           {% if r.hires %}
           <span class="badge badge-sm quality-hires border border-current">Hi-Res</span>
           {% elif r.lossy %}
@@ -69,15 +72,15 @@
                 hx-target="#download-toast"
                 hx-swap="innerHTML"
                 hx-disabled-elt="find button[type=submit]"
-                hx-confirm='Download "{{ r.title }}" by {{ r.artist }} ({{ r.tracks }} track{{ 's' if r.tracks != 1 else '' }})?'
+                hx-confirm='{% if r.owned %}You already have "{{ r.title }}" by {{ r.artist }} in your library. Download it again anyway?{% else %}Download "{{ r.title }}" by {{ r.artist }} ({{ r.tracks }} track{{ 's' if r.tracks != 1 else '' }})?{% endif %}'
                 data-queue-button>
             <input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}">
             <input type="hidden" name="album_id" value="{{ r.id }}">
-            <button type="submit" class="btn btn-sm btn-primary">
+            <button type="submit" class="btn btn-sm {% if r.owned %}btn-ghost{% else %}btn-primary{% endif %}">
               <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/>
               </svg>
-              Download
+              {% if r.owned %}Download again{% else %}Download{% endif %}
             </button>
           </form>
         </div>
