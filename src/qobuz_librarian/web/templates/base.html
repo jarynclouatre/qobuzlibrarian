@@ -118,7 +118,7 @@
         <li><a href="/queue"   class="{% if page=='queue' %}active{% endif %}">
           Queue
           {% set _qbadge = pending_job_count or 0 %}
-          {% if _qbadge > 0 %}<span class="badge {% if queue_has_running %}badge-warning{% else %}badge-primary{% endif %} badge-sm">{% if _qbadge > 99 %}99+{% else %}{{ _qbadge }}{% endif %}</span>{% endif %}
+          <span class="js-queue-badge badge badge-sm {% if queue_has_running %}badge-warning{% else %}badge-primary{% endif %}{% if not _qbadge %} hidden{% endif %}">{% if _qbadge %}{% if _qbadge > 99 %}99+{% else %}{{ _qbadge }}{% endif %}{% endif %}</span>
         </a></li>
         <li><a href="/settings" class="{% if page=='settings' %}active{% endif %}">Settings</a></li>
         {% if auth_active() %}
@@ -142,7 +142,7 @@
           <li><a href="/queue" class="{% if page=='queue' %}active{% endif %}">
             Queue
             {% set _qbadge = pending_job_count or 0 %}
-            {% if _qbadge > 0 %}<span class="badge {% if queue_has_running %}badge-warning{% else %}badge-primary{% endif %} badge-sm">{% if _qbadge > 99 %}99+{% else %}{{ _qbadge }}{% endif %}</span>{% endif %}
+            <span class="js-queue-badge badge badge-sm {% if queue_has_running %}badge-warning{% else %}badge-primary{% endif %}{% if not _qbadge %} hidden{% endif %}">{% if _qbadge %}{% if _qbadge > 99 %}99+{% else %}{{ _qbadge }}{% endif %}{% endif %}</span>
           </a></li>
           <li class="menu-title pt-2">Tools</li>
           <li><a href="/upgrade" class="{% if page in ('upgrade', 'downsample') %}active{% endif %}">Upgrade / Downsample</a></li>
@@ -209,6 +209,30 @@
       // ?v= the asset content hash so changed assets invalidate the SW + caches.
       navigator.serviceWorker.register('/sw.js?v={{ asset_version }}');
     }
+    // Keep the nav Queue badge in sync without a reload — it's otherwise rendered
+    // once per page, so it could read "1" next to an empty Queue after a job
+    // finished while you were on another page. Polls a tiny count endpoint.
+    (function () {
+      var badges = document.querySelectorAll('.js-queue-badge');
+      if (!badges.length) return;
+      function apply(n, running) {
+        badges.forEach(function (b) {
+          if (!n) { b.classList.add('hidden'); b.textContent = ''; return; }
+          b.classList.remove('hidden');
+          b.textContent = n > 99 ? '99+' : String(n);
+          b.classList.toggle('badge-warning', !!running);
+          b.classList.toggle('badge-primary', !running);
+        });
+      }
+      function refresh() {
+        fetch('/api/queue/count', { headers: { 'Accept': 'application/json' } })
+          .then(function (r) { return r.ok ? r.json() : null; })
+          .then(function (d) { if (d) apply(d.count, d.running); })
+          .catch(function () {});
+      }
+      refresh();
+      setInterval(refresh, 12000);
+    })();
     // Close the mobile nav dropdown when a link inside it is tapped — daisyUI
     // otherwise keeps it open until focus drops, which feels broken on slow
     // navigations.

@@ -3386,6 +3386,19 @@ async def job_status(job_id: str):
     return _job_to_dict(job)
 
 
+@app.get("/api/queue/count")
+async def queue_count():
+    """Live count of active jobs (pending/scanning/running/awaiting-review) so the
+    nav Queue badge stays in sync without a page reload. The badge is otherwise
+    server-rendered once per page, which left it stale (e.g. reading "1" next to
+    an empty Queue) after a job finished while you sat on another page."""
+    active = job_mgr.registry.pending_and_running()
+    return JSONResponse({
+        "count": len(active),
+        "running": any(j.status.value in ("running", "scanning") for j in active),
+    })
+
+
 @app.get("/api/jobs")
 async def jobs_list(status: str = "", limit: int = 50):
     """List jobs as JSON. Optional `status` filter ('pending', 'running',
