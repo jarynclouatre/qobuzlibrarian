@@ -17,19 +17,24 @@
       {% elif preselected %}everything's selected by default; untick anything to skip.
       {% else %}tick the albums you want.{% endif %}
     </p>
-    <div class="flex gap-2 shrink-0">
+    <div class="flex flex-wrap gap-2 shrink-0">
       <button type="button" class="btn btn-xs" aria-label="Select every album across all pages"
               data-select-all="1">All</button>
       <button type="button" class="btn btn-xs" aria-label="Deselect every album across all pages"
               data-select-all="0">None</button>
       <button type="button" class="btn btn-xs" aria-label="Select every album on this page"
               data-select-page="1">This page</button>
+      {% if triage %}
+      <button type="button" class="btn btn-xs btn-ghost" data-hide-marked disabled>
+        Hide marked artists
+      </button>
+      {% endif %}
     </div>
   </div>
 
   {% if triage and review_counts.total %}
   <p class="text-xs text-base-content/40 mb-3">
-    This review is saved — close the tab and come back whenever; the list keeps your ticks and your place.
+    This review is saved — tick albums to keep, mark artists to dismiss, then hide their unselected albums.
   </p>
   {% endif %}
   {# Filter spans the WHOLE result set (server-side), not just the page on

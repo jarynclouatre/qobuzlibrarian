@@ -2,7 +2,10 @@
 {% block title %}Artist — Qobuz Librarian{% endblock %}
 {% block content %}
 
-<h1 class="text-2xl font-bold mb-6">For one artist</h1>
+<h1 class="text-2xl font-bold mb-2">For one artist</h1>
+<p class="text-base-content/60 mb-6 max-w-2xl">
+  Run a focused check when you know which artist you want to clean up.
+</p>
 
 {% if error %}
 <div class="alert alert-error mb-4" data-flash><span>{{ error }}</span></div>
@@ -14,23 +17,23 @@
     <form action="/artist" method="post" data-busy-submit>
       <input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}">
 
-      <div class="flex gap-2">
+      <div class="flex flex-col gap-2 sm:flex-row">
         <input type="text" name="artist" placeholder="e.g. Stars of the Lid"
                value="{{ prefill }}" aria-label="Artist name"
                inputmode="search" enterkeyhint="search" autocapitalize="words" spellcheck="false"
-               class="input input-bordered flex-1" autocomplete="off" autofocus>
-        <button type="submit" class="btn btn-primary">Find missing</button>
+               class="input input-bordered input-lg w-full min-w-0 flex-1" autocomplete="off">
+        <button type="submit" class="btn btn-primary btn-lg w-full sm:w-auto">Find missing</button>
       </div>
 
       <div class="text-xs text-base-content/50 mt-4 mb-2">Or for that artist:</div>
-      <div class="flex flex-wrap gap-2">
-        <button type="submit" formaction="/upgrade/artist" class="btn btn-sm btn-outline"
+      <div class="grid grid-cols-2 gap-2 sm:grid-cols-4">
+        <button type="submit" formaction="/upgrade/artist" class="btn btn-sm btn-outline w-full sm:w-auto"
                 aria-label="Check this artist for quality upgrades">Check upgrades</button>
-        <button type="submit" formaction="/lyrics/artist" class="btn btn-sm btn-outline"
+        <button type="submit" formaction="/lyrics/artist" class="btn btn-sm btn-outline w-full sm:w-auto"
                 aria-label="Fetch lyrics for this artist's tracks">Fetch lyrics</button>
-        <button type="submit" formaction="/repair/artist" class="btn btn-sm btn-outline"
+        <button type="submit" formaction="/repair/artist" class="btn btn-sm btn-outline w-full sm:w-auto"
                 aria-label="Scan this artist for truncated files">Scan for repair</button>
-        <button type="submit" formaction="/downsample/artist" class="btn btn-sm btn-outline"
+        <button type="submit" formaction="/downsample/artist" class="btn btn-sm btn-outline w-full sm:w-auto"
                 aria-label="Find hi-res files to downsample for this artist">Downsample hi-res</button>
       </div>
     </form>

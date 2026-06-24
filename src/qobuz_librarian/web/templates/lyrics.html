@@ -6,6 +6,11 @@
 <p class="text-base-content/60 mb-2">
   Fetches lyrics for tracks in your library that are missing them — timed where available, plain otherwise.
 </p>
+{% if creds_ok %}
+<p class="text-base-content/40 text-sm mb-2">
+  Just one artist? <a href="/artist" class="link">Run a focused artist scan</a>.
+</p>
+{% endif %}
 <p class="text-base-content/40 text-sm mb-1">
   Writing <span class="readout">{{ lyrics_format }}</span> via {{ providers }} — <a href="/settings" class="link">change in Settings</a>.
 </p>
@@ -36,7 +41,7 @@
       </div>
     </div>
   </div>
-  <button type="submit" class="btn btn-primary"
+  <button type="submit" class="btn btn-primary w-full sm:w-auto"
           data-confirm="Start a library-wide lyrics pass? This can take a while on a large library.">Fetch missing lyrics</button>
 </form>
 {% else %}

@@ -49,17 +49,20 @@
       <div class="sticky bottom-0 z-20 -mx-4 mt-4 flex flex-wrap items-center gap-2
                   border-t border-base-300 bg-base-100/95 px-4 py-3
                   supports-[backdrop-filter]:bg-base-100/75 supports-[backdrop-filter]:backdrop-blur">
-        <button type="submit" id="review-submit" class="btn btn-primary"{% if not review_counts.selected %} disabled{% endif %}
+        <button type="submit" id="review-submit" class="btn btn-primary w-full sm:w-auto"
+          data-review-verb="{{ job.review_verb }}"
+          data-empty-label="Select albums to {{ job.review_verb|lower }}"
+          {% if not review_counts.selected %} disabled{% endif %}
           {%- if job.execute_kind == 'downsample' %} data-confirm="Downsample the selected albums now? Each file is rewritten in place at CD rate — the hi-res original is not kept and this cannot be undone."
           {%- elif job.execute_kind == 'migration' and job.review_verb == 'Move' %} data-confirm="Move the selected files now? This relocates your originals instead of copying them, and removes the folders it empties."
-          {%- endif %}>{{ job.review_verb }}<span data-count>{% if review_counts.selected %} {{ review_counts.selected }}{% endif %}</span> selected</button>
-        <button type="submit" formaction="/jobs/{{ job.id }}/cancel" class="btn btn-ghost">Cancel</button>
+          {%- endif %}>{% if review_counts.selected %}{{ job.review_verb }} {{ review_counts.selected }} selected{% else %}Select albums to {{ job.review_verb|lower }}{% endif %}</button>
+        <button type="submit" formaction="/jobs/{{ job.id }}/cancel" class="btn btn-ghost w-full sm:w-auto">Cancel</button>
         {% if job.execute_kind == 'upgrade' %}
-        <a href="/upgrade/hidden" class="btn btn-ghost btn-sm sm:ml-auto">Hidden upgrades</a>
+        <a href="/upgrade/hidden" class="btn btn-ghost btn-sm w-full sm:ml-auto sm:w-auto">Hidden upgrades</a>
         {% elif job.execute_kind == 'downsample' %}
-        <a href="/downsample/hidden" class="btn btn-ghost btn-sm sm:ml-auto">Kept hi-res</a>
+        <a href="/downsample/hidden" class="btn btn-ghost btn-sm w-full sm:ml-auto sm:w-auto">Kept hi-res</a>
         {% elif job.execute_kind in ('library', 'new_releases') %}
-        <a href="/library/hidden" class="btn btn-ghost btn-sm sm:ml-auto">Hidden albums</a>
+        <a href="/library/hidden" class="btn btn-ghost btn-sm w-full sm:ml-auto sm:w-auto">Hidden albums</a>
         {% endif %}
       </div>
     </form>

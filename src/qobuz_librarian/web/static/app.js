@@ -531,13 +531,13 @@
     var form = document.getElementById("review-form");
     if (!cont || !form) return;
     var submit = document.getElementById("review-submit");
-    var countEl = submit ? submit.querySelector("[data-count]") : null;
     var summaryRow = document.getElementById("review-summary-row");
     var summaryCount = document.querySelector("#review-candidates [data-summary-count]");
     var emptyBox = document.getElementById("review-empty");
     var filterRow = document.getElementById("review-filter-row");
     var filterInput = document.getElementById("review-filter");
     var dsTotal = document.querySelector("[data-downsample-total]");
+    var hideMarked = cont.querySelector("[data-hide-marked]");
     var kind = form.getAttribute("data-review-kind") || "";
 
     function plural(n, w) { return n + " " + w + (n === 1 ? "" : "s"); }
@@ -554,8 +554,12 @@
     // DOM, which only holds one page.
     function applyCounts(c) {
       if (!c) return;
-      if (countEl) countEl.textContent = c.selected ? " " + c.selected : "";
-      if (submit) submit.disabled = c.selected === 0;
+      if (submit) {
+        submit.disabled = c.selected === 0;
+        submit.textContent = c.selected
+          ? (submit.dataset.reviewVerb || "Download") + " " + c.selected + " selected"
+          : (submit.dataset.emptyLabel || "Select albums");
+      }
       if (summaryCount) {
         summaryCount.textContent = plural(c.total, "album") + " across " + plural(c.artists, "artist");
       }
@@ -579,6 +583,20 @@
         },
         body: body,
       });
+    }
+
+    function markedArtists() {
+      var box = pageBox();
+      if (!box) return [];
+      return Array.prototype.map.call(box.querySelectorAll("[data-artist-mark]:checked"),
+        function (cb) { return cb.value || ""; });
+    }
+
+    function updateMarkedActions() {
+      if (!hideMarked) return;
+      var n = markedArtists().length;
+      hideMarked.disabled = n === 0;
+      hideMarked.textContent = n ? "Hide " + plural(n, "marked artist") : "Hide marked artists";
     }
 
     // Save one tick to the server, then refresh counts from its response.
@@ -635,6 +653,31 @@
           updateHideLabels();
         })
         .catch(function () { bulkBusy = false; flashSelectError(); });
+    }
+
+    var hideMarkedBusy = false;
+    function hideMarkedArtists() {
+      if (hideMarkedBusy) return;
+      var artists = markedArtists();
+      if (!artists.length) return;
+      hideMarkedBusy = true;
+      if (hideMarked) hideMarked.disabled = true;
+      var body = artists.map(function (artist) {
+        return "artist=" + encodeURIComponent(artist);
+      }).join("&");
+      post("/jobs/" + id + "/hide-artists", body)
+        .then(function (r) { return r.ok ? r.json() : Promise.reject(); })
+        .then(function (c) {
+          hideMarkedBusy = false;
+          applyCounts(c);
+          loadPage(curPage(), curQuery());
+          updateMarkedActions();
+        })
+        .catch(function () {
+          hideMarkedBusy = false;
+          updateMarkedActions();
+          flashSelectError();
+        });
     }
 
     // Briefly red-outline the on-screen checkboxes when a bulk/group save fails,
@@ -696,7 +739,7 @@
         var total = det.querySelectorAll(".cb").length;
         var picked = det.querySelectorAll(".cb:checked").length;
         btn.classList.toggle("hidden", total > 0 && picked === total);
-        lbl.textContent = picked ? "Hide other " + (total - picked) : "Hide all " + total;
+        lbl.textContent = picked ? "Hide rest" : "Hide artist";
       });
     }
 
@@ -726,6 +769,7 @@
             });
             if (window.htmx) window.htmx.process(host);
             updateHideLabels();
+            updateMarkedActions();
           }
         })
         .catch(function () { loading = false; });
@@ -734,10 +778,13 @@
     // ── Wire interactions (delegated so swapped-in pages keep working) ──────
     cont.addEventListener("change", function (e) {
       if (e.target.classList && e.target.classList.contains("cb")) saveTick(e.target);
+      if (e.target.closest("[data-artist-mark]")) updateMarkedActions();
     });
     cont.addEventListener("click", function (e) {
       var t = e.target;
+      if (t.closest("[data-artist-mark-label]")) e.stopPropagation();
       if (t.closest("[data-hide]")) { e.preventDefault(); return; }  // htmx handles the post
+      if (t.closest("[data-hide-marked]")) { e.preventDefault(); hideMarkedArtists(); return; }
       var allBtn = t.closest("[data-select-all]");
       if (allBtn) { bulkSelect(allBtn.getAttribute("data-select-all") === "1", "all"); return; }
       var pageBtn = t.closest("[data-select-page]");
@@ -751,6 +798,9 @@
       if (t.closest("[data-page-prev]")) { loadPage(curPage() - 1, curQuery()); return; }
       if (t.closest("[data-page-next]")) { loadPage(curPage() + 1, curQuery()); return; }
     });
+    cont.addEventListener("click", function (e) {
+      if (e.target.closest("[data-artist-mark-label]")) e.stopPropagation();
+    }, true);
 
     // Whole-set filter — re-paginate from the server (debounced) so it spans
     // every page, not just the one on screen.
@@ -781,11 +831,13 @@
         loadPage(p > 1 ? p - 1 : 1, curQuery());
       } else {
         updateHideLabels();
+        updateMarkedActions();
       }
     }
     document.body.addEventListener("qlHidden", onQlHidden);
 
     updateHideLabels();
+    updateMarkedActions();
 
     // ── Multi-tab live sync. A second tab/device ticking, hiding, or
     //    selecting-all fires a `review` event here; refresh this page from the

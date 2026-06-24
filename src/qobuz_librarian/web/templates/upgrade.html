@@ -9,6 +9,11 @@
 <p class="text-base-content/60 mb-2">
   Finds higher-quality copies of albums you own. Originals are backed up before anything's replaced.
 </p>
+{% if creds_ok %}
+<p class="text-base-content/40 text-sm mb-2">
+  Just one artist? <a href="/artist" class="link">Run a focused artist scan</a>.
+</p>
+{% endif %}
 <p class="text-base-content/40 text-sm mb-3">
   {% if last_run %}Last upgrade scan {{ last_run }}.{% else %}No upgrade scan has finished yet.{% endif %}
 </p>
@@ -24,7 +29,7 @@
 {% if creds_ok %}
 <form action="/upgrade" method="post" data-busy-submit>
   <input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}">
-  <button type="submit" class="btn btn-primary"
+  <button type="submit" class="btn btn-primary w-full sm:w-auto"
           data-confirm="Start a full upgrade scan? It checks every album against Qobuz and can take a while.">Start upgrade scan</button>
 </form>
 {% else %}

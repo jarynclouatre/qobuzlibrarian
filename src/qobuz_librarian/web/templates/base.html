@@ -67,10 +67,11 @@
 
   <!-- Navbar -->
   <nav class="navbar ql-header px-4">
-    <div class="flex-1 min-w-0">
-      <a href="/" class="inline-flex items-center gap-2 text-lg font-bold text-primary whitespace-nowrap">
+    <div class="flex-1 min-w-0 pr-2">
+      <a href="/" class="inline-flex max-w-full min-w-0 items-center gap-2 text-lg font-bold text-primary">
         <img src="/static/icon.png" alt="" class="h-8 w-8 rounded-lg shrink-0">
-        Qobuz Librarian
+        <span class="ql-brand-full min-w-0 truncate">Qobuz Librarian</span>
+        <span class="ql-brand-short hidden">Qobuz</span>
       </a>
     </div>
     {% if health_token_invalid or health_lock_busy %}

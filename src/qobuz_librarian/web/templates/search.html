@@ -4,7 +4,7 @@
 
 <h1 class="text-2xl font-bold mb-4">Search Qobuz</h1>
 
-{% if creds_ok %}
+{% if qobuz_ready %}
 <div class="card bg-base-200 shadow mb-6">
   <div class="card-body">
     <form action="/search" method="post"
@@ -24,13 +24,13 @@
             Tracks
           </label>
       </div>
-      <div class="flex gap-2">
+      <div class="flex flex-col gap-2 sm:flex-row">
         <input type="text" name="q" value="{{ q or '' }}"
                aria-label="Search Qobuz"
-               placeholder="{% if kind == 'track' %}Song or artist{% else %}Artist, album, or Qobuz URL{% endif %}"
+               placeholder="{% if kind == 'track' %}Song or artist{% else %}Artist, album, or URL{% endif %}"
                inputmode="search" enterkeyhint="search" autocapitalize="off" spellcheck="false" maxlength="500"
-               class="input input-bordered flex-1" autocomplete="off" autofocus>
-        <button type="submit" class="btn btn-primary gap-2">
+               class="input input-bordered input-lg w-full min-w-0 flex-1" autocomplete="off">
+        <button type="submit" class="btn btn-primary btn-lg w-full gap-2 sm:w-auto">
           <span id="search-spinner" class="loading loading-spinner loading-sm htmx-indicator"></span>
           Search
         </button>
@@ -44,8 +44,13 @@
 </div>
 {% else %}
 <div class="alert alert-warning">
+  {% if creds_ok %}
+  <span>Your saved Qobuz token was rejected —
+    <a href="/settings" class="link">reconnect it in Settings</a> before searching.</span>
+  {% else %}
   <span>No Qobuz credentials set —
     <a href="/settings" class="link">set them in Settings</a> before searching.</span>
+  {% endif %}
 </div>
 {% endif %}
 

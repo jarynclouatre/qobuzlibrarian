@@ -9,6 +9,11 @@
 <p class="text-base-content/60 mb-2">
   Shrinks hi-res FLACs above CD rate down to 44.1 / 48&nbsp;kHz to reclaim space — most playback gear can't tell the difference.
 </p>
+{% if creds_ok %}
+<p class="text-base-content/40 text-sm mb-2">
+  Just one artist? <a href="/artist" class="link">Run a focused artist scan</a>.
+</p>
+{% endif %}
 <div class="ql-notice ql-notice-warning mb-3 p-3 text-sm">
   <span><strong>This can't be undone.</strong> Files are rewritten in place and the hi-res original isn't kept.</span>
 </div>
@@ -27,7 +32,7 @@
 {% if have_downsample %}
 <form action="/downsample" method="post" data-busy-submit>
   <input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}">
-  <button type="submit" class="btn btn-primary"
+  <button type="submit" class="btn btn-primary w-full sm:w-auto"
           data-confirm="Scan the library for hi-res files? You review and pick what to shrink before anything changes.">Start downsample scan</button>
 </form>
 {% else %}

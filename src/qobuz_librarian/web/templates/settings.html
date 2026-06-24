@@ -142,7 +142,7 @@
                  aria-label="Qobuz auth token"
                  autocomplete="off" autocorrect="off" spellcheck="false"
                  placeholder="{% if auth_token_set %}•••••••• (paste a new token to replace){% else %}paste the long token string here{% endif %}"
-                 class="input input-bordered flex-1 font-mono text-base sm:text-sm">
+                 class="input input-bordered min-w-0 flex-1 font-mono text-base sm:text-sm">
           <button type="button" class="btn btn-ghost btn-sm"
                   data-toggle-password="auth_token">Show</button>
         </div>
@@ -152,7 +152,7 @@
       </div>
 
       <div class="flex gap-3 flex-wrap">
-        <button type="submit" class="btn btn-primary">Save &amp; connect</button>
+        <button type="submit" class="btn btn-primary w-full sm:w-auto">Save &amp; connect</button>
       </div>
     </form>
   </div>
@@ -172,10 +172,10 @@
     <div class="flex items-center gap-3 flex-wrap">
       <span class="badge badge-warning gap-1">Terminal (CLI) mode</span>
       <span class="text-sm text-base-content/70">Web downloads are paused.</span>
-      <form action="/settings/mode" method="post" class="ml-auto">
+      <form action="/settings/mode" method="post" class="w-full sm:ml-auto sm:w-auto">
         <input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}">
         <input type="hidden" name="target" value="web">
-        <button type="submit" class="btn btn-primary btn-sm">Resume web app</button>
+        <button type="submit" class="btn btn-primary btn-sm w-full sm:w-auto">Resume web app</button>
       </form>
     </div>
     {% if cli_only_env %}
@@ -188,10 +188,10 @@
     <div class="flex items-center gap-3 flex-wrap">
       <span class="badge badge-success gap-1">Web app active</span>
       <span class="text-sm text-base-content/70">Command-line tool is paused — this is normal.</span>
-      <form action="/settings/mode" method="post" class="ml-auto">
+      <form action="/settings/mode" method="post" class="w-full sm:ml-auto sm:w-auto">
         <input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}">
         <input type="hidden" name="target" value="cli">
-        <button type="submit" class="btn btn-outline btn-sm">Hand off to terminal</button>
+        <button type="submit" class="btn btn-outline btn-sm w-full sm:w-auto">Hand off to terminal</button>
       </form>
     </div>
     {% endif %}
@@ -211,6 +211,16 @@
       <input type="hidden" name="form_complete" value="1">
       <div class="space-y-4 mb-5">
         {% for key, label, help in behavior_fields %}
+        {% if key == 'CONSOLIDATE' %}
+        <input type="hidden" name="{{ key }}" value="{{ '1' if behavior[key] else '0' }}">
+        <div class="flex items-start gap-3 opacity-70">
+          <span class="badge badge-ghost mt-0.5 whitespace-nowrap">CLI only</span>
+          <div>
+            <p class="font-medium">{{ label.replace(' (CLI only)', '') }}</p>
+            <div class="text-sm text-base-content/50">{{ help }}</div>
+          </div>
+        </div>
+        {% else %}
         <div class="flex items-start gap-3">
           <input type="checkbox" name="{{ key }}" id="cb-{{ key }}"
                  class="toggle toggle-primary mt-1"
@@ -220,6 +230,7 @@
             <div class="text-sm text-base-content/50">{{ help }}</div>
           </div>
         </div>
+        {% endif %}
         {% endfor %}
       </div>
 
@@ -245,7 +256,7 @@
         {% endfor %}
       </div>
 
-      <button type="submit" class="btn btn-primary">Save behaviour</button>
+      <button type="submit" class="btn btn-primary w-full sm:w-auto">Save behaviour</button>
     </form>
   </div>
 </div>

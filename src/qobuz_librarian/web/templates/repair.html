@@ -19,6 +19,9 @@
 <p class="text-base-content/60 mb-6">
   Finds truncated or partially-downloaded FLACs — even ones that still play — by checking each track's length against its Qobuz recording by ISRC. Broken files are backed up before refilling.
 </p>
+<p class="text-base-content/40 text-sm mb-6 -mt-3">
+  Just one artist? <a href="/artist" class="link">Run a focused artist scan</a>.
+</p>
 {% if repair_resume %}
 <div class="alert alert-info mb-4">
   <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
@@ -29,7 +32,7 @@
 {% endif %}
 <form action="/repair" method="post" data-busy-submit>
   <input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}">
-  <button type="submit" class="btn btn-primary"
+  <button type="submit" class="btn btn-primary w-full sm:w-auto"
           {% if repair_resume %}data-confirm="Continue the repair scan from where it left off?"{% else %}data-confirm="Start a full repair scan? This can take a couple of hours on a large library."{% endif %}>{% if repair_resume %}Resume scan{% else %}Scan library for damaged tracks{% endif %}</button>
 </form>
 {% endif %}

@@ -312,10 +312,10 @@ def scan_library(job, token, partial_only=False):
                if normalize(d.name) not in VA_NORMALIZED]
     if not artists:
         job.summary = ("No artist folders found under MUSIC_ROOT — check that "
-                       "QL_MUSIC_DIR points at your library.")
+                       "MUSIC_ROOT points at your library.")
         log.info("No artist folders found under MUSIC_ROOT.")
         log.info("  Expected layout: $MUSIC_ROOT/<Artist>/<Album (Year)>/<track>.flac")
-        log.info("  Check that QL_MUSIC_DIR in your .env points at the right place.")
+        log.info("  Check that MUSIC_ROOT in your .env points at the right place.")
         return
     kind = "partial" if partial_only else "missing"
     # Resume an interrupted scan of this kind: skip the artists already done and
@@ -445,10 +445,10 @@ def scan_new_releases(job, token):
                if normalize(d.name) not in VA_NORMALIZED]
     if not artists:
         job.summary = ("No artist folders found under MUSIC_ROOT — check that "
-                       "QL_MUSIC_DIR points at your library.")
+                       "MUSIC_ROOT points at your library.")
         log.info("No artist folders found under MUSIC_ROOT.")
         log.info("  Expected layout: $MUSIC_ROOT/<Artist>/<Album (Year)>/<track>.flac")
-        log.info("  Check that QL_MUSIC_DIR in your .env points at the right place.")
+        log.info("  Check that MUSIC_ROOT in your .env points at the right place.")
         return
     state = new_releases_mod.load()
     seen = state.get("seen") or {}

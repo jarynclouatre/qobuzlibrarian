@@ -72,15 +72,10 @@
   --color-info-content: oklch(99% 0.01 245);
 }
 
-/* ──────────────────────────────────────────────────────────────────────────
-   Faceplate — the UI as the control surface of a hi-fi component. Matte panels
-   lit from above, hairline seams, teal reserved for the "powered / active"
-   state. Everything quiet so the readouts and any live teal are what the eye
-   catches. Night carries the depth; winter (light) stays clean and flat.
-   ────────────────────────────────────────────────────────────────────────── */
+/* Core surface treatment. Dark mode keeps a little depth; light mode stays flat
+   and closer to the default daisyUI controls. */
 
-/* A deep matte field with one faint top sheen, like a brushed faceplate lit
-   from above — never competes with text, and stays put while the page scrolls. */
+/* Subtle fixed background sheen for dark mode. */
 [data-theme="night"] body {
   background-image: radial-gradient(118% 72% at 50% -12%,
     oklch(36% 0.034 200 / 0.30), transparent 58%);
@@ -88,12 +83,10 @@
   background-attachment: fixed;
 }
 
-/* Headings set tighter — confident, not default. */
-h1, h2 { letter-spacing: -0.021em; }
-h3     { letter-spacing: -0.014em; }
+/* Keep heading metrics predictable across breakpoints. */
+h1, h2, h3 { letter-spacing: 0; }
 
-/* Sticky machined edge instead of a heavy drop shadow: a hairline seam + a hint
-   of blur read as the thin top edge of a faceplate. */
+/* Sticky header with a light separating rule and backdrop blur. */
 .ql-header {
   position: sticky; top: 0; z-index: 30;
   box-shadow: none;
@@ -104,9 +97,12 @@ h3     { letter-spacing: -0.014em; }
 }
 [data-theme="night"] .ql-header { border-bottom-color: oklch(100% 0 0 / 0.08); }
 
-/* Panels seated and lit from above: a 1px inner top highlight is the machined
-   edge; the layered shadow seats them on the field. Night only — winter keeps
-   daisyUI's clean flat card. */
+@media (max-width: 360px) {
+  .ql-brand-full { display: none; }
+  .ql-brand-short { display: inline; }
+}
+
+/* Dark-mode cards get depth; light-mode cards keep daisyUI's flatter default. */
 [data-theme="night"] .card {
   box-shadow:
     inset 0 1px 0 0 oklch(100% 0 0 / 0.05),
@@ -114,30 +110,25 @@ h3     { letter-spacing: -0.014em; }
     0 16px 32px -20px oklch(0% 0 0 / 0.62);
 }
 
-/* Tactile panel buttons — a hair of lift on hover, press settles it back, like
-   a physical control rather than a flat link. */
+/* Small hover lift for dashboard action tiles. */
 .ql-tile { transition: transform 140ms ease, border-color 140ms ease, background-color 140ms ease; }
 .ql-tile:hover { transform: translateY(-2px); }
 .ql-tile:active { transform: translateY(0); }
 @media (hover: none) { .ql-tile:hover { transform: none; } }
 
-/* Eyebrow: a small tracked-out panel label, not a heading. */
+/* Compact section label. */
 .ql-eyebrow {
-  font-size: 0.6875rem; font-weight: 600; letter-spacing: 0.13em;
+  font-size: 0.6875rem; font-weight: 600; letter-spacing: 0;
   text-transform: uppercase; opacity: 0.5;
 }
 
-/* Spec readout — the instrument-gauge voice for counts, sizes, tiers and the
-   phase strip: mono + tabular so figures sit in fixed columns. */
+/* Monospace numeric readouts for counts, sizes, tiers, and progress phases. */
 .readout {
   font-family: 'Cascadia Code','Fira Code','Consolas',ui-monospace,monospace;
-  font-variant-numeric: tabular-nums; letter-spacing: 0.01em;
+  font-variant-numeric: tabular-nums; letter-spacing: 0;
 }
 
-/* Quiet notice — a tinted panel seamed with a colour bar on the left, instead of
-   a fully-saturated block that shouts over the page. Text stays base-content
-   (readable); the seam + faint tint carry the status hue. Set the hue with a
-   .ql-notice-{info,success,warning} modifier; the icon keeps its own text-* hue. */
+/* Tinted notice panels with a status color rule on the left. */
 .ql-notice {
   --ql-seam: var(--color-base-content);
   border: 1px solid color-mix(in oklab, var(--ql-seam) 22%, transparent);

@@ -1,6 +1,18 @@
 <details class="group bg-base-200 border border-base-300/70 rounded-lg shadow-sm overflow-hidden transition-colors hover:border-base-300" data-artist="{{ artist }}"{% if open %} open{% endif %}>
   <summary class="flex items-center justify-between gap-2 px-3 py-2.5 cursor-pointer select-none transition-colors hover:bg-base-300/30 group-open:border-b group-open:border-base-300/50">
-    <span class="font-medium min-w-0 truncate">{{ artist or 'Unknown artist' }}<span class="text-base-content/50 font-normal"> — {{ items | length }} album{% if items | length != 1 %}s{% endif %}</span></span>
+    <span class="flex items-center gap-2 min-w-0">
+      {% if triage %}
+      <label class="inline-flex items-center gap-1.5 shrink-0 text-xs text-base-content/60 cursor-pointer" data-artist-mark-label>
+        <input type="checkbox" class="checkbox checkbox-xs" data-artist-mark value="{{ artist }}"
+               aria-label="Mark {{ artist or 'this artist' }} for hiding">
+        <span>Mark</span>
+      </label>
+      {% endif %}
+      <span class="min-w-0">
+        <span class="block truncate font-medium sm:inline">{{ artist or 'Unknown artist' }}</span>
+        <span class="block truncate text-xs font-normal text-base-content/50 sm:inline sm:text-sm">— {{ items | length }} album{% if items | length != 1 %}s{% endif %}</span>
+      </span>
+    </span>
     {% if triage %}
     {# Hide drops this artist's UNticked albums (selection is saved server-side,
        so no cids need to ride along). Target this group only so the rest of the
@@ -11,7 +23,7 @@
             hx-vals='{{ {"artist": artist}|tojson }}'
             hx-target="closest details"
             hx-swap="outerHTML swap:280ms"
-            class="btn btn-xs btn-ghost shrink-0"><span data-hide-label>Hide all {{ items | length }}</span></button>
+            class="btn btn-xs btn-ghost shrink-0"><span data-hide-label>Hide artist</span></button>
     {% endif %}
   </summary>
   <div class="px-3 pb-3 pt-1 space-y-1">

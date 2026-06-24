@@ -72,11 +72,11 @@
 </div>
 {% endif %}
 
-{% if creds_ok and not baseline_complete %}
+{% if qobuz_ready and not baseline_complete %}
 <!-- First-run setup: until a full library scan has seeded the new-release
      baseline, frame what's happening rather than leaving the user guessing. -->
-<div class="ql-notice ql-notice-info mb-6 flex items-start flex-wrap gap-3 p-4">
-  <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 shrink-0 text-info" fill="none"
+<div class="ql-notice {% if not setup_scanning and not library_scan_state.ready %}ql-notice-warning{% else %}ql-notice-info{% endif %} mb-6 flex items-start flex-wrap gap-3 p-4">
+  <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 shrink-0 {% if not setup_scanning and not library_scan_state.ready %}text-warning{% else %}text-info{% endif %}" fill="none"
        viewBox="0 0 24 24" stroke="currentColor">
     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
           d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 0 0-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 0 0 3.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 0 0 3.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 0 0-3.09 3.09zM18.259 8.715L18 9.75l-.259-1.035a3.375 3.375 0 0 0-2.456-2.456L14.25 6l1.035-.259a3.375 3.375 0 0 0 2.456-2.456L18 2.25l.259 1.035a3.375 3.375 0 0 0 2.456 2.456L21.75 6l-1.035.259a3.375 3.375 0 0 0-2.456 2.456z"/>
@@ -84,21 +84,25 @@
   <span class="min-w-0 flex-1 text-sm">
     {% if setup_scanning %}
     <strong>Setting up your library…</strong> Your first scan is running — finding the albums you're missing and switching on new-release alerts once it finishes.
+    {% elif not library_scan_state.ready %}
+    <strong>Library folder is not ready:</strong> {{ library_scan_state.message }}
     {% else %}
     <strong>One-time setup:</strong> new-release alerts stay off until a library scan finishes once. It finds the albums you're missing, and picks up where it left off if interrupted.
     {% endif %}
   </span>
-  {% if not setup_scanning %}
-  <form action="/library" method="post" class="ml-auto shrink-0">
+  {% if not setup_scanning and library_scan_state.ready %}
+  <form action="/library" method="post" class="w-full shrink-0 sm:ml-auto sm:w-auto">
     <input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}">
     <input type="hidden" name="mode" value="missing_albums">
-    <button type="submit" class="btn btn-sm btn-primary">{% if scan_resumable %}Resume scan{% else %}Run library scan{% endif %}</button>
+    <button type="submit" class="btn btn-sm btn-primary w-full sm:w-auto">{% if scan_resumable %}Resume scan{% else %}Run library scan{% endif %}</button>
   </form>
+  {% elif not setup_scanning %}
+  <a href="/settings" class="btn btn-sm btn-primary w-full shrink-0 sm:ml-auto sm:w-auto">Open Settings</a>
   {% endif %}
 </div>
 {% endif %}
 
-{% if creds_ok and baseline_complete and library_resume %}
+{% if qobuz_ready and baseline_complete and library_resume %}
 <!-- A gap scan was interrupted AFTER the baseline was already established. The
      setup banner above only fires before the first scan completes, so without
      this an interrupted scan would surface solely on /library — exactly the
@@ -150,6 +154,8 @@
 
   {% if not creds_ok %}
   <a href="/settings" class="btn btn-primary btn-lg mt-6">Set up your Qobuz account</a>
+  {% elif creds_token_valid == False %}
+  <a href="/settings" class="btn btn-primary btn-lg mt-6">Reconnect Qobuz</a>
   {% else %}
   <form action="/search" method="post"
         hx-post="/search" hx-target="#search-results" hx-swap="innerHTML"
@@ -168,17 +174,17 @@
         Tracks
       </label>
     </div>
-    <div class="flex gap-2">
-      <input type="text" name="q" aria-label="Search Qobuz" placeholder="Artist, album, or Qobuz URL"
+    <div class="flex flex-col gap-2 sm:flex-row">
+      <input type="text" name="q" aria-label="Search Qobuz" placeholder="Artist, album, or URL"
              inputmode="search" enterkeyhint="search" autocapitalize="off" spellcheck="false" maxlength="500"
-             class="input input-bordered input-lg flex-1" autocomplete="off">
-      <button type="submit" class="btn btn-primary btn-lg gap-2">
+             class="input input-bordered input-lg min-w-0 flex-1" autocomplete="off">
+      <button type="submit" class="btn btn-primary btn-lg w-full gap-2 px-4 sm:w-auto sm:px-6">
         <span id="dashboard-search-spinner"
               class="loading loading-spinner loading-sm htmx-indicator"></span>
         <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-4.35-4.35M17 11A6 6 0 1 1 5 11a6 6 0 0 1 12 0z"/>
         </svg>
-        <span class="hidden sm:inline">Search</span>
+        <span>Search</span>
       </button>
     </div>
   </form>
@@ -188,7 +194,7 @@
 <div id="search-results" aria-live="polite"></div>
 
 <!-- Quick actions -->
-{% if creds_ok %}
+{% if qobuz_ready %}
 <p class="ql-eyebrow mb-3">Quick actions</p>
 <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-6">
   <a href="/artist"
@@ -273,6 +279,10 @@
 <div id="dashboard-active" class="{% if active_jobs %}space-y-3 mb-6{% endif %}">
   {% if active_jobs %}
   {% for j in active_jobs %}
+  {% set _is_scan = j.status.value == 'scanning' %}
+  {% set _downloadish = j.execute_kind in ('album', 'library', 'new_releases', 'upgrade') %}
+  {% set _fallback_activity = 'Scanning' if _is_scan else ('Downloading' if _downloadish else 'Working') %}
+  {% set _activity = j.progress_phase or _fallback_activity %}
   <div class="card bg-base-200 border border-warning shadow relative hover:bg-base-300/30 transition-colors"
        data-job-card data-job-id="{{ j.id }}" data-job-surface="dashboard"
        data-job-status="{{ j.status.value }}">
@@ -283,27 +293,29 @@
         <div class="min-w-0 flex-1">
           <div class="flex items-center gap-2 mb-1 flex-wrap">
             <span class="loading loading-spinner loading-xs text-warning"></span>
-            {% if j.status.value == 'scanning' %}
+            {% if _is_scan %}
             <span class="badge badge-info badge-sm">Scanning</span>
-            {% else %}
+            {% elif _downloadish %}
             <span class="badge badge-warning badge-sm">Downloading</span>
+            {% else %}
+            <span class="badge badge-warning badge-sm">Working</span>
             {% endif %}
             <span id="dash-reconnect-{{ j.id }}" class="badge badge-warning badge-sm hidden">connection lost — reconnecting…</span>
           </div>
           <p class="font-semibold truncate">{% if j.artist %}{{ j.artist }} — {% endif %}{{ j.title }}</p>
           <p id="dash-prog-{{ j.id }}" class="text-sm text-base-content/60 mt-1 truncate">
             {%- if j.progress_total > 0 -%}
-            {% if j.status.value == 'scanning' %}Scanning{% else %}Downloading{% endif %} {{ j.progress_current }} / {{ j.progress_total }}{% if j.progress_unit %} {{ j.progress_unit }}{{ 's' if j.progress_total != 1 }}{% endif %}
+            {{ _activity }} {{ j.progress_current }} / {{ j.progress_total }}{% if j.progress_unit %} {{ j.progress_unit }}{{ 's' if j.progress_total != 1 }}{% endif %}
             {%- elif j.progress_phase -%}
             {{ j.progress_phase }}
             {%- else -%}
-            {% if j.status.value == 'scanning' %}Scanning your library…{% else %}Downloading…{% endif %}
+            {{ _fallback_activity }}…
             {%- endif -%}
           </p>
         </div>
         <form action="/jobs/{{ j.id }}/cancel" method="post" class="relative z-10 shrink-0">
           <input type="hidden" name="_csrf_token" value="{{ request.state.csrf_token }}">
-          {% set _cancel_label = 'Cancel scan' if j.status.value == 'scanning' else 'Cancel download' %}
+          {% set _cancel_label = 'Cancel job' %}
           <button type="submit" class="btn btn-sm btn-ghost btn-square min-h-[44px] min-w-[44px]"
                   title="{{ _cancel_label }}" aria-label="{{ _cancel_label }}">×</button>
         </form>
@@ -382,7 +394,7 @@
               d="M9 18V6l10-2v12M9 18a2 2 0 1 1-4 0 2 2 0 0 1 4 0zm10-2a2 2 0 1 1-4 0 2 2 0 0 1 4 0z"/>
       </svg>
       <p class="font-medium text-base-content/60">Nothing downloaded yet.</p>
-      <p class="text-xs text-base-content/40">Search above to find an album or artist.</p>
+      <p class="text-xs text-base-content/40">{{ recent_empty_hint }}</p>
     </div>
     {% endif %}
   </div>

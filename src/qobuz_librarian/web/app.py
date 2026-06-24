@@ -355,6 +355,20 @@ def _on_auth_state(valid: bool) -> None:
     _TOKEN_VALID = bool(valid)
 
 
+def _qobuz_ready() -> bool:
+    """True when Qobuz-dependent UI actions are worth offering."""
+    return bool(_read_creds().get("auth_token")) and _TOKEN_VALID is not False
+
+
+def _recent_empty_hint() -> str:
+    creds_ok = bool(_read_creds().get("auth_token"))
+    if creds_ok and _TOKEN_VALID is False:
+        return "Reconnect Qobuz before searching."
+    if not creds_ok:
+        return "Set up Qobuz before searching."
+    return "Search above to find an album or artist."
+
+
 async def _probe_token():
     """One-shot startup check that the saved token still authenticates.
 
@@ -886,6 +900,41 @@ def _active_library_scan():
     return _active_scan("library")
 
 
+def _library_scan_state():
+    """Whether a whole-library scan has something valid to scan."""
+    root = Path(cfg.MUSIC_ROOT)
+    if not root.exists():
+        return {
+            "ready": False,
+            "count": 0,
+            "message": (
+                f"Music library folder {root} does not exist. Set MUSIC_ROOT "
+                "to the folder that contains your artist folders."
+            ),
+        }
+    if not root.is_dir():
+        return {
+            "ready": False,
+            "count": 0,
+            "message": (
+                f"MUSIC_ROOT points at {root}, but it is not a folder. Set "
+                "MUSIC_ROOT to the folder that contains your artist folders."
+            ),
+        }
+    from qobuz_librarian.library.scanner import list_library_artists
+    artists = list_library_artists()
+    if not artists:
+        return {
+            "ready": False,
+            "count": 0,
+            "message": (
+                "No artist folders with audio were found under MUSIC_ROOT. "
+                "Expected layout: MUSIC_ROOT/Artist/Album (Year)/track.flac."
+            ),
+        }
+    return {"ready": True, "count": len(artists), "message": ""}
+
+
 def _start_library_scan(partial_only=False):
     """Submit a library scan and return the job. Shared by the Library page and
     the automatic first-run/resume trigger. scan_library resumes from a matching
@@ -962,6 +1011,7 @@ async def dashboard(request: Request):
         # first (establishes the baseline); the check is gated on that baseline.
         _maybe_auto_first_scan()
         _maybe_auto_check_new_releases()
+        library_scan_state = _library_scan_state()
         return {
             "new_release_review": _new_release_review(),
             # First-run setup banner: shown until a full library scan has seeded
@@ -971,6 +1021,7 @@ async def dashboard(request: Request):
             "baseline_complete": new_releases.is_baseline_complete(),
             "setup_scanning": _active_library_scan() is not None,
             "scan_resumable": scan_checkpoint.pending() is not None,
+            "library_scan_state": library_scan_state,
             # An interrupted gap-scan, surfaced on the dashboard the way /library
             # already does — gated on no scan running. The setup banner above
             # covers the not-yet-baselined case, so index.html shows THIS only
@@ -984,6 +1035,8 @@ async def dashboard(request: Request):
             # First-run nudge: a fresh install has no creds, so every search/scan
             # would fail cryptically — surface it up front. Filesystem-only.
             "creds_ok": bool(_read_creds().get("auth_token")),
+            "qobuz_ready": _qobuz_ready(),
+            "recent_empty_hint": _recent_empty_hint(),
             "lyric_retry_count":
                 len(load_lyric_retry()) if _cfg.LYRIC_RETRY_FILE.exists() else 0,
             "staging_album_count": 0 if active_jobs else _staging_album_count(),
@@ -1032,7 +1085,7 @@ async def search_page(request: Request, q: str = Query("", max_length=500),
     return _tr(request, "search.html", {
         "q": "", "results": [], "error": None,
         "kind": "track" if kind == "track" else "album",
-        "creds_ok": creds_ok, "page": "search",
+        "creds_ok": creds_ok, "qobuz_ready": _qobuz_ready(), "page": "search",
     })
 
 
@@ -1209,7 +1262,7 @@ async def do_search(request: Request, q: str = Form("", max_length=500),
             error = "Search failed — try again."
     creds_ok = bool(_read_creds().get("auth_token"))
     ctx = {"q": query, "results": results, "error": error, "kind": kind,
-           "creds_ok": creds_ok, "page": "search"}
+           "creds_ok": creds_ok, "qobuz_ready": _qobuz_ready(), "page": "search"}
     if _is_htmx(request):
         return _tr(request, "_search_results.html", ctx)
     return _tr(request, "search.html", ctx)
@@ -1635,6 +1688,8 @@ async def library_page(request: Request):
     return _tr(request, "library.html", {
         "creds_ok": creds_ok, "page": "library",
         "library_resume": library_resume,
+        "library_scan_state": _library_scan_state(),
+        "error": request.query_params.get("error", ""),
         # Freshness line: when a full gap scan last completed, and whether one
         # ever has (the new-release baseline is only seeded by a clean finish).
         "last_full_scan": _last_scan_age(),
@@ -1679,6 +1734,15 @@ async def library_scan(request: Request, mode: str = Form("missing_albums")):
             return _lock_busy_response(request) or RedirectResponse(
                 url="/settings?mode=cli", status_code=303)
         return RedirectResponse(url=f"/jobs/{job.id}", status_code=303)
+    scan_state = _library_scan_state()
+    if not scan_state["ready"]:
+        msg = scan_state["message"]
+        if _is_htmx(request):
+            return HTMLResponse(
+                f'<div class="alert alert-warning" data-flash>{html.escape(msg)}</div>',
+                status_code=200)
+        return RedirectResponse(
+            url="/library?error=" + urllib.parse.quote(msg), status_code=303)
     # "library" (not "album") so the review screen knows this is the paced triage
     # surface; both modes run the same album executor and resume from a matching
     # checkpoint if one's waiting (see _start_library_scan / scan_library).
@@ -2410,6 +2474,38 @@ async def job_hide(request: Request, job_id: str):
     return HTMLResponse("")
 
 
+@app.post("/jobs/{job_id}/hide-artists")
+async def job_hide_artists(request: Request, job_id: str):
+    """Hide unselected albums for several marked artists in one review action."""
+    job = _get_reviewable_job(job_id)
+    if not job:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    if not (job.execute_kind in _TRIAGE_KINDS and job.status in (
+            job_mgr.JobStatus.AWAITING_REVIEW, job_mgr.JobStatus.SCANNING)):
+        return JSONResponse({"error": "not reviewable"}, status_code=404)
+
+    from qobuz_librarian.web import flows
+    form = await request.form()
+    artists = []
+    seen = set()
+    for artist in form.getlist("artist"):
+        artist = (artist or "").strip()
+        if artist in seen:
+            continue
+        seen.add(artist)
+        artists.append(artist)
+
+    hidden_count = 0
+    scope = _hide_scope(job.execute_kind)
+    for artist in artists[:1000]:
+        hidden_count += flows.dismiss_albums(job, artist, scope=scope)
+    if hidden_count:
+        job.notify_review_changed()
+    payload = _selection_payload(job)
+    payload["hidden"] = hidden_count
+    return JSONResponse(payload)
+
+
 @app.post("/jobs/{job_id}/retry")
 async def job_retry(request: Request, job_id: str):
     busy = _lock_busy_response(request)
@@ -2977,6 +3073,10 @@ async def save_settings(request: Request, user_id: str = Form(""), auth_token: s
 async def save_behavior(request: Request):
     from qobuz_librarian.web import settings_store
     form = await request.form()
+    def _posted_bool(key):
+        return form.get(key, "").strip().lower() not in (
+            "0", "false", "off", "no", ""
+        )
     # The real Settings form ships a hidden form_complete=1 marker. When
     # it's present, every checkbox key is known to be authoritative
     # (unchecked = absent = False). When it's absent — a scripted partial
@@ -2985,9 +3085,10 @@ async def save_behavior(request: Request):
     # away the user's other booleans.
     is_complete = "form_complete" in form
     if is_complete:
-        values = {k: (k in form) for k in settings_store.BEHAVIOR_KEYS}
+        values = {k: (_posted_bool(k) if k in form else False)
+                  for k in settings_store.BEHAVIOR_KEYS}
     else:
-        values = {k: (form.get(k, "").strip().lower() not in ("0", "false", "off", "no", ""))
+        values = {k: _posted_bool(k)
                   for k in settings_store.BEHAVIOR_KEYS if k in form}
     # Text/enum/list fields: take whatever the form posted; absent =
     # leave unchanged (don't wipe a previously-set value).

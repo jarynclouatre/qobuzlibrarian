@@ -106,12 +106,16 @@
   {% endfor %}
 </div>
 {% else %}
-<div class="text-center py-10 text-base-content/40 mb-6">
+<div class="text-center py-12 text-base-content/40 mb-6">
   <svg xmlns="http://www.w3.org/2000/svg" class="h-12 w-12 mx-auto mb-3 opacity-30" fill="none" viewBox="0 0 24 24" stroke="currentColor">
     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/>
   </svg>
-  <p>Queue is empty. <a href="/search" class="link">Search for something to download.</a>
-    Finished jobs move to <a href="/queue/history" class="link">History</a>.</p>
+  <p class="font-medium text-base-content/60">Queue is empty.</p>
+  <p class="text-sm mt-1">New downloads, scans, and reviews appear here while they're waiting or running.</p>
+  <div class="mt-4 flex flex-col gap-2 sm:flex-row sm:justify-center">
+    <a href="/search" class="btn btn-primary w-full sm:w-auto">Search Qobuz</a>
+    <a href="/queue/history" class="btn btn-outline w-full sm:w-auto">View history</a>
+  </div>
 </div>
 {% endif %}
 
