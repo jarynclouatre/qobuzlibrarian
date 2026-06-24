@@ -4,6 +4,29 @@ All notable changes to Qobuz Librarian are recorded here, newest first. The
 project follows [semantic versioning](https://semver.org/); dates are when each
 version was tagged during local development.
 
+## [0.9.3] - 2026-06-23
+
+**Data-safety polish**
+
+- Migrating in place into a destination that's short on space is now blocked before anything moves, the same way the CLI already refused it — a move that runs out mid-way would leave your library half-relocated. Tick "proceed even if low on space" on the Migrate screen to override deliberately. The copy mode (the default) still only warns, since it leaves your originals intact.
+- The migration space preview now counts the cover art, booklets, and `.cue`/`.log` sidecars that get carried alongside the audio, so the estimate matches what the copy actually writes — previously a library with large booklets could see an estimate that was too low, and an in-place move could read "0 bytes" while still copying art.
+- When a parked album finally imports on a retry, any non-audio companions it left behind (booklets, scans, cover art) are now moved somewhere safe instead of being deleted with the staging folder — the same protection the upgrade path already had.
+
+**Correctness**
+
+- An artist's discography no longer stops paginating early if Qobuz returns a page with a few malformed entries mixed in, which could silently hide some of that artist's albums during a scan.
+- Fuzzy-match thresholds set via the environment are clamped to their valid 0–1 range, so a typo like `CONSOLIDATE_THRESH=-1` can't quietly turn duplicate cleanup into "match everything."
+- The gap-fill "will downsample to…" note now respects your download-quality tier — at CD-lossless it no longer promises a downsample that won't happen.
+- Saved Qobuz credentials are now flushed to disk durably, matching the web-login credential write, so a crash right after saving can't roll back a token the UI reported as saved.
+- The hidden/single-album store is now safe against two processes writing it at once (a web dismissal during a CLI hand-off), via a cross-process lock and unique temp files.
+
+**Setup, docs, and release polish**
+
+- `compose.yaml` now forwards the documented `.env` knobs that it previously dropped — `WEB_AUTH_PASSWORD_FILE`, the free-space floor, the repair cache/pacing settings, beets path/plugin overrides, and the live-album filter — so setting them in `.env` actually takes effect.
+- New `WEB_BIND` controls the host interface the UI is published on; set `WEB_BIND=127.0.0.1` to keep it off the LAN. (The old advice to set `WEB_HOST=127.0.0.1` was wrong for Docker — that's the in-container bind.)
+- New releases are described everywhere as flagged/badged for review rather than "pre-ticked": the review screen leaves them un-ticked so one click can't queue a whole list.
+- Configuration docs now state the real new-release and catalog-cache defaults, clarify that Settings covers the common behaviour knobs while advanced ones stay in `.env`/Compose, and fix the migration-results filename, lock-handoff, and CLI-container wording. The Docker image's license metadata now reflects the third-party (GPL) tools it bundles, and the release smoke test verifies the compiled stylesheet is actually served.
+
 ## [0.9.2] - 2026-06-23
 
 **New-release check needs a baseline first**
@@ -212,7 +235,7 @@ exhaustive post-release audit — no new features, no changed defaults.
 
 ## [0.5.0] - 2026-06-05
 
-First public release. The big additions over the private 0.4 line:
+First public release. Major additions included:
 
 - **Migrate** mode turns an existing, messy or half-tagged collection into the
   `Artist/Album (Year)/` layout the rest of the tool expects. It reads each
@@ -238,7 +261,7 @@ First public release. The big additions over the private 0.4 line:
 
 - **Check for new releases** — across the whole library or one artist —
   compares each artist's current Qobuz catalogue against what you've seen and
-  surfaces only what's genuinely new, pre-ticked. It reads the catalogue listing
+  surfaces only what's genuinely new, flagged for review. It reads the catalogue listing
   alone, so it's about one API call per artist.
 - On-disk caches (album fetches, parsed FLAC tags keyed on path+mtime+size, and
   artist catalogues with a TTL) turn a re-scan of an unchanged library into

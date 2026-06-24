@@ -110,6 +110,13 @@ def test_space_estimate_counts_copy_bytes_but_not_same_fs_moves(tmp_path):
     assert free is not None and free > 0
     # An in-place move within one filesystem is a rename — no bytes written.
     assert m.space_estimate(plan, in_place=True)[0] == 0
+    # A same-folder companion (cover art/booklet) is copied into the destination
+    # even for a same-fs in-place move, so its bytes belong in the estimate —
+    # without this the preview understates a library with large booklets/scans.
+    booklet = plan.placed[0].source.parent / "booklet.pdf"
+    booklet.write_bytes(b"x" * 500)
+    assert m.space_estimate(plan, in_place=False)[0] == total + 500
+    assert m.space_estimate(plan, in_place=True)[0] == 500
 
 
 # ── web flow (scan → review candidates → execute copy) ─────────────────────────
@@ -135,6 +142,36 @@ def test_execute_migration_copies_selected_and_keeps_originals(tmp_path):
     assert f1.exists() and f2.exists()             # copy mode: originals intact
     assert "2 files copied" in job.summary
     assert (dest / "migration-results.csv").exists()
+
+
+def test_execute_migration_blocks_low_space_in_place_move(tmp_path, monkeypatch):
+    # An in-place move into a destination that's known to be short on space must
+    # be refused before any file is touched — running out mid-move would scatter
+    # the library — unless the user passes the deliberate low-space override.
+    from qobuz_librarian.library import migrate as engine
+    from qobuz_librarian.web import flows
+    from qobuz_librarian.web import jobs as jm
+
+    src = tmp_path / "src"
+    src.mkdir()
+    f1 = src / "x.flac"
+    f1.write_bytes(b"one")
+    dest = tmp_path / "dest"
+    chosen = [{"payload": {"entries": [(str(f1), "Artist/Album (2017)/01 - A.flac")]}}]
+    monkeypatch.setattr(engine, "space_estimate", lambda plan, in_place: (10_000, 10))
+
+    job = jm.Job(title="mig")
+    flows.execute_migration(job, chosen, str(dest), in_place=True, src=src)
+    assert job.error and "free space" in job.error.lower()
+    assert not (dest / "Artist/Album (2017)/01 - A.flac").exists()
+    assert f1.exists()                                   # nothing was moved
+
+    # The explicit override lets the same short move through.
+    job2 = jm.Job(title="mig2")
+    flows.execute_migration(job2, chosen, str(dest), in_place=True, src=src,
+                            allow_low_space=True)
+    assert not job2.error
+    assert (dest / "Artist/Album (2017)/01 - A.flac").exists()
 
 
 def test_fingerprint_lookup_resolves_album_year_and_is_placeable():

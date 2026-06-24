@@ -213,7 +213,20 @@ def write_streamrip_creds(user_id, auth_token) -> bool:
             os.fchmod(fd, 0o600)  # holds the account token — keep it owner-only
             with os.fdopen(fd, "w", encoding="utf-8") as f:
                 f.write(tomlkit.dumps(doc))
+                f.flush()
+                os.fsync(f.fileno())
             os.replace(tmp, target)
+            # Make the rename durable, matching web/auth.py: a power loss right
+            # after replace() must not roll back a token the UI already reported
+            # as saved. fsync the parent dir so the new directory entry is on disk.
+            try:
+                dfd = os.open(str(target.parent), os.O_RDONLY)
+                try:
+                    os.fsync(dfd)
+                finally:
+                    os.close(dfd)
+            except OSError:
+                pass
         finally:
             if os.path.exists(tmp):
                 try:

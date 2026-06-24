@@ -354,6 +354,12 @@ def test_scan_action_buttons_are_mobile_friendly(client, monkeypatch):
 
     monkeypatch.setattr(webapp, "_read_creds",
                         lambda: {"auth_token": "dummy", "user_id": "dummy"})
+    # The Library page only renders its scan button once the library folder is
+    # ready (has artist folders with audio); give it one so the button shows.
+    monkeypatch.setattr(
+        "qobuz_librarian.library.scanner.list_library_artists",
+        lambda: ["Some Artist"],
+    )
     monkeypatch.setattr(
         "qobuz_librarian.integrations.downsample_engine.HAVE_DOWNSAMPLE",
         True,
@@ -389,6 +395,12 @@ def test_dashboard_setup_scan_action_stacks_on_mobile(client, monkeypatch):
 
     monkeypatch.setattr(webapp, "_read_creds",
                         lambda: {"auth_token": "dummy", "user_id": "dummy"})
+    # The first-run setup card only offers the inline scan button once the
+    # library folder is ready; give it artists so that branch renders.
+    monkeypatch.setattr(
+        "qobuz_librarian.library.scanner.list_library_artists",
+        lambda: ["Some Artist"],
+    )
 
     r = client.get("/")
 

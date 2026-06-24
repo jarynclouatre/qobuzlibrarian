@@ -2,7 +2,7 @@
 
 [← README](../README.md)
 
-The CLI runs inside the same container as the web UI, with no separate install. It uses the same matching engine as the web app, so it finds the same gaps — it just walks them album by album with yes/no prompts instead of parking a checklist. Run it with no arguments for the menu, or pass flags for unattended runs (`--help` lists them all).
+The CLI runs from the same image and Compose service as the web UI, with no separate install — `docker compose run` starts a one-off container from that service that shares the same volumes, config, and download lock. It uses the same matching engine as the web app, so it finds the same gaps — it just walks them album by album with yes/no prompts instead of parking a checklist. Run it with no arguments for the menu, or pass flags for unattended runs (`--help` lists them all).
 
 ## The download lock
 

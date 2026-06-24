@@ -22,9 +22,13 @@ The single-artist Artist page does NOT consult this store — typing a name is a
 conscious request to see everything by that artist. Only the bulk walks filter
 on it.
 """
+import fcntl
 import json
 import logging
+import os
+import tempfile
 import threading
+from contextlib import contextmanager
 from datetime import datetime, timezone
 
 from qobuz_librarian import config as cfg
@@ -46,9 +50,43 @@ _SCOPES = (SCOPE_MISSING, SCOPE_UPGRADE, SCOPE_DOWNSAMPLE, SCOPE_SINGLE)
 # Serialises the load-modify-save in every mutator. mark_single fires on the
 # download executor thread while a scan or request may be hiding/restoring on
 # another; load()+save() is a read-modify-write that would otherwise drop one
-# side's update. In-process only — the run-lock keeps a second OS process off
-# the same store.
+# side's update. In-process thread guard; _store_lock() adds the cross-process
+# half.
 _LOCK = threading.RLock()
+
+
+@contextmanager
+def _store_lock():
+    """Serialise the hidden-store load-modify-save across BOTH threads and OS
+    processes.
+
+    The web hide/restore routes deliberately run without the global run-lock (so
+    a review row can still be dismissed while a scan holds it, or after the web
+    app hands the run-lock to the terminal). During that CLI handoff a separate
+    process can be marking single-track graduations at the same time — two OS
+    processes the in-process RLock can't serialise. An flock on a sidecar lock
+    file does. Best-effort on the file lock: if it can't be opened (read-only or
+    an odd mount) we proceed on the in-process lock alone rather than block a
+    dismissal."""
+    with _LOCK:
+        lock_path = cfg.HIDDEN_FILE.parent / (cfg.HIDDEN_FILE.name + ".lock")
+        fh = None
+        try:
+            cfg.HIDDEN_FILE.parent.mkdir(parents=True, exist_ok=True)
+            fh = open(lock_path, "w", encoding="utf-8")
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+        except OSError:
+            if fh is not None:
+                fh.close()
+                fh = None
+        try:
+            yield
+        finally:
+            if fh is not None:
+                try:
+                    fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+                finally:
+                    fh.close()
 
 
 def album_fingerprint(artist, title):
@@ -113,12 +151,25 @@ def load():
 
 
 def save(store):
+    # Callers hold _store_lock() across load()+save(), so this writer never races
+    # a second writer of the same store. The temp file is still unique per write
+    # (mkstemp, not a fixed ".tmp" name): a shared temp name let two concurrent
+    # writers — a web hide racing a CLI single-marker during a run-lock handoff —
+    # clobber each other's partial write and leave an orphan beside the store.
     try:
         cfg.HIDDEN_FILE.parent.mkdir(parents=True, exist_ok=True)
-        tmp = cfg.HIDDEN_FILE.with_suffix(cfg.HIDDEN_FILE.suffix + ".tmp")
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(store, f, indent=2, ensure_ascii=False)
-        tmp.replace(cfg.HIDDEN_FILE)
+        fd, tmp = tempfile.mkstemp(dir=str(cfg.HIDDEN_FILE.parent),
+                                   prefix=cfg.HIDDEN_FILE.name + ".", suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(store, f, indent=2, ensure_ascii=False)
+            os.replace(tmp, cfg.HIDDEN_FILE)
+        finally:
+            if os.path.exists(tmp):
+                try:
+                    os.unlink(tmp)
+                except OSError:
+                    pass
     except OSError as e:
         # Don't fail completely silent: a dismissal/single-mark that didn't
         # persist (full or read-only data volume) returns a success count but
@@ -139,7 +190,7 @@ def is_hidden(scope, artist, title, store):
 def hide(scope, items):
     """Record dismissals. `items` is an iterable of (artist, title, year).
     Returns the number newly hidden; an already-hidden album is a no-op."""
-    with _LOCK:
+    with _store_lock():
         store = load()
         bucket = store.setdefault(scope, {})
         now = datetime.now(timezone.utc).isoformat()
@@ -164,7 +215,7 @@ def restore(scope, artists):
     casing or spacing difference between the posted value and the stored string
     still restores it (and every casing variant of one artist clears together)
     rather than stranding an album as un-restorable."""
-    with _LOCK:
+    with _store_lock():
         store = load()
         bucket = store.get(scope) or {}
         targets = {normalize(a) for a in artists if normalize(a)}
@@ -184,7 +235,7 @@ def restore_albums(scope, fingerprints):
     Unknown fingerprints are silently skipped: the Hidden page can render
     against a slightly stale store (another tab just restored the same row, or
     the bucket changed mid-request) and a hard 404 there would be hostile."""
-    with _LOCK:
+    with _store_lock():
         store = load()
         bucket = store.get(scope) or {}
         drop = [fp for fp in fingerprints if fp in bucket]
@@ -250,7 +301,7 @@ def mark_single(artist, title, year, album_id):
     fp = album_fingerprint(artist, title)
     if fp is None:
         return False
-    with _LOCK:
+    with _store_lock():
         store = load()
         bucket = store.setdefault(SCOPE_SINGLE, {})
         prev = bucket.get(fp) or {}
@@ -269,7 +320,7 @@ def unmark_single(artist, title):
     fp = album_fingerprint(artist, title)
     if fp is None:
         return False
-    with _LOCK:
+    with _store_lock():
         store = load()
         bucket = store.get(SCOPE_SINGLE) or {}
         if fp not in bucket:

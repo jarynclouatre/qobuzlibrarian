@@ -105,9 +105,10 @@ def _resume_migration(job, args):
     dest = args.get("dest", "")
     in_place = bool(args.get("in_place"))
     src = args.get("src")
+    allow_low_space = bool(args.get("allow_low_space"))
     return lambda j, chosen: flows.execute_migration(
         j, chosen, dest, in_place=in_place,
-        src=Path(src) if src else None)
+        src=Path(src) if src else None, allow_low_space=allow_low_space)
 
 
 def _resume_downsample(job, _args):
@@ -1728,7 +1729,7 @@ async def library_scan(request: Request, mode: str = Form("missing_albums")):
             return RedirectResponse(
                 url="/library?error=" + urllib.parse.quote(msg), status_code=303)
         # Same job the dashboard auto-check submits; its own execute_kind so the
-        # review screen pre-ticks the new releases and labels the surface.
+        # review screen badges the new releases (left un-ticked) and labels the surface.
         job = await loop.run_in_executor(None, _start_new_release_check)
         if job is None:    # lock handed to the terminal during the submit
             return _lock_busy_response(request) or RedirectResponse(
@@ -2156,6 +2157,7 @@ async def migrate_scan(request: Request):
     form = await request.form()
     use_acoustid = form.get("acoustid") == "on"
     in_place = form.get("in_place") == "on"
+    allow_low_space = form.get("allow_low_space") == "on"
     if not src or not dest:
         err = ("Set QL_MIGRATE_SRC and QL_MIGRATE_DEST — the folder to read and "
                "the folder to build the organized copy into — then try again.")
@@ -2173,13 +2175,14 @@ async def migrate_scan(request: Request):
     # src is persisted so a resume after restart can still prune the emptied
     # source folders on an in-place move (the live execute below gets it too).
     job.execute_args = {"dest": str(dest), "in_place": bool(in_place),
-                        "src": str(src)}
+                        "src": str(src), "allow_low_space": bool(allow_low_space)}
     job = await _submit_scan_deduped_async(
         job,
         lambda j: flows.scan_migration(j, src, dest, use_acoustid=use_acoustid,
                                        in_place=in_place),
         lambda j, chosen: flows.execute_migration(j, chosen, dest,
-                                                  in_place=in_place, src=src),
+                                                  in_place=in_place, src=src,
+                                                  allow_low_space=allow_low_space),
         "migration")
     return RedirectResponse(url=f"/jobs/{job.id}", status_code=303)
 

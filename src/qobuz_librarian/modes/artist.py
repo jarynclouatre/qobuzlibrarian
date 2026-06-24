@@ -43,7 +43,7 @@ from qobuz_librarian.modes.process import (
     process_album,
 )
 from qobuz_librarian.quality.decision import compare_album_quality
-from qobuz_librarian.quality.tiers import downsample_target_rate
+from qobuz_librarian.quality.tiers import downsample_target_rate, streamrip_quality_cap
 from qobuz_librarian.queue.builder import _build_queue_item
 from qobuz_librarian.queue.executor import _execute_download_queue
 from qobuz_librarian.ui_cli.colors import C, banner, fmt, section, truncate
@@ -64,6 +64,13 @@ def _downsample_note(album):
         return ""
     sr = album.get("maximum_sampling_rate") or 0
     sr_hz = int(round(sr)) if sr >= 1000 else int(round(sr * 1000))
+    # Cap the advertised rate to the active streamrip quality tier first, the
+    # same way album_max_quality() does. At tier 2 (CD lossless) a 192kHz master
+    # is already fetched at 44.1/48kHz, so there's no hi-res master left to
+    # downsample — without this cap the note promises a downsample step that
+    # never happens.
+    if sr_hz:
+        sr_hz = min(sr_hz, streamrip_quality_cap()[1])
     target_hz = downsample_target_rate(sr_hz)
     if target_hz < sr_hz:
         return f"  → will downsample to {target_hz / 1000:g}kHz"

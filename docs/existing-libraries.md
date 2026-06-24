@@ -29,7 +29,7 @@ If your collection isn't in `Artist/Album (Year)/` shape — flat folders, incon
 
 It places each file by tags first (album artist, album, title, track, disc), which is fast and entirely offline. For files whose tags can't place them, an optional AcoustID fingerprint pass identifies them by sound; it's slower and needs network access, so it's off by default. No API key is needed.
 
-Migrate copies by default, so your originals are only read. It previews the full plan first — where each file goes, what it couldn't place, and the space the copy needs against what's free — then waits for you to confirm. Files it can't confidently identify are left in place and listed, never moved into a wrong guess. Two CSVs land at the destination: `migration-manifest.csv` (the full plan, including everything left behind and why) and `migration-results.csv` (what the run copied, skipped, or failed on).
+Migrate copies by default, so your originals are only read. It previews the full plan first — where each file goes, what it couldn't place, and the space the copy needs against what's free — then waits for you to confirm. Files it can't confidently identify are left in place and listed, never moved into a wrong guess. Two CSVs land at the destination: `migration-manifest.csv` (the full plan, including everything left behind and why) and a results file recording what the run copied, skipped, or failed on. A web migration writes `migration-results.csv`; a CLI migration writes a timestamped `migration-results-YYYYMMDD-HHMMSS.csv` so repeated command-line runs don't overwrite each other.
 
 Point it at two folders — the messy source (read-only) and an empty destination — in `.env` / `compose.yaml`:
 

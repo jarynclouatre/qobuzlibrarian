@@ -492,8 +492,8 @@ def _catalog_fetch_incomplete(catalog, total, limit) -> bool:
     (a partial 200 mid-pagination) has fewer than BOTH the limit and Qobuz's own
     reported total. A fully-empty 200 (total None, no albums key) is incomplete
     too. Recording a baseline from an incomplete fetch is the bug this guards:
-    the dropped albums later re-surface as 'new releases' (pre-ticked for
-    download) or as missing gaps. Mirrors get_artist_albums' own `complete` test.
+    the dropped albums later re-surface as 'new releases' (flagged for
+    review) or as missing gaps. Mirrors get_artist_albums' own `complete` test.
     """
     if not catalog and total is None:
         return True
@@ -602,7 +602,7 @@ def find_new_releases_for_artist(query, *, token, opts=None, seen_by_id=None,
     # key yields items=[]/total=None; a transient short page mid-pagination
     # yields a non-empty catalog SHORTER than Qobuz's reported total (without
     # hitting our own limit). Either way the dropped albums would re-surface as
-    # "new" (pre-ticked for download) on the next successful check. Preserve the
+    # "new" (flagged for review) on the next successful check. Preserve the
     # previous baseline and flag the failure so the caller skips re-baselining.
     if _catalog_fetch_incomplete(catalog, _total, cfg.ARTIST_CATALOG_LIMIT):
         prev = (seen_by_id or {}).get(artist_id)

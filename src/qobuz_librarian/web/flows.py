@@ -435,9 +435,10 @@ def scan_library(job, token, partial_only=False):
 
 def scan_new_releases(job, token):
     """Surface albums that appeared in library artists' Qobuz catalogs since the
-    last check and that the user doesn't own or hasn't hidden — pre-ticked, ready
-    to download. Cheap (one catalog call per artist, no track fetches), so it's
-    the quick "what's new" pass rather than the full gap scan."""
+    last check and that the user doesn't own or hasn't hidden — flagged as new
+    for review, but left un-ticked so one click can't queue the whole list.
+    Cheap (one catalog call per artist, no track fetches), so it's the quick
+    "what's new" pass rather than the full gap scan."""
     clear_scan_caches()
     # Same VA exclusion as scan_library: the Various-Artists folder has no single
     # Qobuz catalog, so it can't yield meaningful "new releases".
@@ -1705,13 +1706,17 @@ def scan_migration(job, src, dest, *, use_acoustid, in_place=False):
         if need > free:
             space = ("⚠ not enough free space — needs "
                      f"≈{format_size(need)} but only {format_size(free)} is free")
+            if in_place:
+                space += (" — the in-place move is blocked unless you re-run with "
+                          "“proceed even if low on space” checked")
         parts.append(space)
     job.summary = ("; ".join(parts) + ". Unidentified and skipped files stay "
                    f"where they are. Full plan written to {manifest}.")
     log.info(job.summary)
 
 
-def execute_migration(job, chosen, dest, *, in_place, src=None):
+def execute_migration(job, chosen, dest, *, in_place, src=None,
+                      allow_low_space=False):
     """Copy (or move) the files behind the approved albums into the layout."""
     from qobuz_librarian.library import migrate as engine
 
@@ -1726,6 +1731,24 @@ def execute_migration(job, chosen, dest, *, in_place, src=None):
         return
 
     plan = engine.MigrationPlan(dest_root=dest, entries=entries)
+    # Re-check free space against the actually-selected files right before
+    # touching anything (the user may have deselected albums since the scan, and
+    # the disk may have changed). An in-place move that runs out mid-run leaves
+    # the library half-relocated, so block a known-short in-place migration here
+    # unless the user deliberately overrode the warning — the same gate the CLI
+    # enforces with a typed "yes". Copy mode leaves the originals intact, so a
+    # partial copy is recoverable and only warns.
+    need, free = engine.space_estimate(plan, in_place=in_place)
+    if in_place and free is not None and need > free and not allow_low_space:
+        job.error = (
+            f"Not enough free space at {dest} — the move needs about "
+            f"{format_size(need)} but only {format_size(free)} is free. An "
+            "in-place move that runs out mid-run would leave your library "
+            "half-relocated. Free up space, choose another destination, or "
+            "re-run the migration with “proceed even if low on space” checked.")
+        job.summary = job.error
+        log.info(job.summary)
+        return
     # Serialize the file moves under the staging lock like every other execute
     # flow. Without it a migration writing into the library tree could interleave
     # with a concurrent download lane importing into the same <artist>/<album>

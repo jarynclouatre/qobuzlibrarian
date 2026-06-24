@@ -93,6 +93,27 @@ def _env_num_min(key, default, minimum, maximum=None):
     return val
 
 
+def _env_unit_float(key, default):
+    """A similarity threshold env value clamped to the valid 0.0–1.0 range.
+
+    Every fuzzy-match threshold is a 0..1 score cutoff, and several gate
+    destructive review paths (consolidate, artist/dir matching). A value that
+    falls outside the range can only come from a typo'd `.env`, and it changes
+    behaviour far from intent: CONSOLIDATE_THRESH=-1 (or any negative) would make
+    every sibling folder a consolidation candidate, while a value above 1 makes
+    nothing ever match and silently disables the feature. Clamp into range and
+    warn rather than trust the bad value. (0.0 and 1.0 are the legitimate
+    boundaries — "match everything" / "exact only" — so they pass through.)"""
+    val = _env(key, default)
+    if val < 0.0:
+        _warn(f"{key}={val!r} is below 0.0 (thresholds are 0–1 scores); using 0.0.")
+        return 0.0
+    if val > 1.0:
+        _warn(f"{key}={val!r} is above 1.0 (thresholds are 0–1 scores); using 1.0.")
+        return 1.0
+    return val
+
+
 def _resolve_secret(key: str) -> str:
     """Value of `key`, or — when it's unset — the contents of the file named by
     `{key}_FILE`. The file form lets Docker/Compose secrets supply the token
@@ -446,13 +467,13 @@ SSE_MAX_WORKERS      = _env_num_min("SSE_MAX_WORKERS", 16, 1)
 SSE_HEARTBEAT_TICKS  = _env_num_min("SSE_HEARTBEAT_TICKS", 30, 1)
 
 # ── Fuzzy-match thresholds ────────────────────────────────────────────────────
-FUZZY_DIR_THRESH           = _env("FUZZY_DIR_THRESH",           0.78)
-FUZZY_DIR_MIN_COVERAGE     = _env("FUZZY_DIR_MIN_COVERAGE",     0.75)
-DB_ALBUM_THRESH            = _env("DB_ALBUM_THRESH",            0.85)
-CONSOLIDATE_THRESH         = _env("CONSOLIDATE_THRESH",         0.70)
-ARTIST_NAME_THRESH         = _env("ARTIST_NAME_THRESH",         0.85)
-ARTIST_DIR_MATCH_THRESH    = _env("ARTIST_DIR_MATCH_THRESH",    0.65)
-AUTO_SAFE_TITLE_SIM_THRESH = _env("AUTO_SAFE_TITLE_SIM_THRESH", 0.85)
+FUZZY_DIR_THRESH           = _env_unit_float("FUZZY_DIR_THRESH",           0.78)
+FUZZY_DIR_MIN_COVERAGE     = _env_unit_float("FUZZY_DIR_MIN_COVERAGE",     0.75)
+DB_ALBUM_THRESH            = _env_unit_float("DB_ALBUM_THRESH",            0.85)
+CONSOLIDATE_THRESH         = _env_unit_float("CONSOLIDATE_THRESH",         0.70)
+ARTIST_NAME_THRESH         = _env_unit_float("ARTIST_NAME_THRESH",         0.85)
+ARTIST_DIR_MATCH_THRESH    = _env_unit_float("ARTIST_DIR_MATCH_THRESH",    0.65)
+AUTO_SAFE_TITLE_SIM_THRESH = _env_unit_float("AUTO_SAFE_TITLE_SIM_THRESH", 0.85)
 
 # ── Catalog / walk ────────────────────────────────────────────────────────────
 EDITION_SEARCH_API_BUDGET = _env("EDITION_SEARCH_API_BUDGET", 3)

@@ -19,9 +19,12 @@ Qobuz Librarian is a self-hosted, single-user tool.
   constant-time compare. Setting `WEB_AUTH=none` turns the login off
   entirely — the UI logs a warning at every boot when it does. Disabling it is
   an explicit opt-out; a blank value leaves auth on.
-- **Network binding.** By default the UI binds to `0.0.0.0` on `WEB_PORT`, so
-  it's reachable by anything on your LAN. Set `WEB_HOST=127.0.0.1` (or bind the
-  published port to `127.0.0.1` in `compose.yaml`) to keep it local.
+- **Network binding.** By default the Docker image publishes `WEB_PORT` on
+  `0.0.0.0`, so the UI is reachable by anything on your LAN. To keep it reachable
+  only from the Docker host, set `WEB_BIND=127.0.0.1` in `.env` (it binds the
+  published port to localhost). Don't use `WEB_HOST` for this on Docker —
+  `WEB_HOST` is the in-container bind and must stay `0.0.0.0`, or the published
+  port can't reach the app; `WEB_HOST=127.0.0.1` is only for a bare-metal/non-Docker run.
 - **Internet exposure.** The built-in login is a single shared credential. It
   throttles repeated failures (five per hour per IP, then a `429`), which is
   enough for a home LAN, but if you expose the UI to the internet, still front

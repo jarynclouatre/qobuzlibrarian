@@ -23,7 +23,7 @@ Qobuz Librarian downloads from Qobuz — one album, a whole discography, or your
 - **Single tracks.** Switch search to **Tracks** to grab one song. It's flagged as a deliberate single, so gap scans won't push you to complete the album. Download the full album later and it graduates back automatically.
 - **Quality upgrades.** **Upgrade** mode re-rips albums Qobuz can now serve at higher quality, backing up the originals first.
 - **Downsample.** Shrink hi-res FLACs to CD rate (44.1 / 48 kHz) to reclaim space, still lossless. Run it on demand, or apply it automatically to new downloads.
-- **New releases.** A periodic pass flags new albums an artist has put out that you don't own, pre-ticked.
+- **New releases.** A periodic pass flags new albums an artist has put out that you don't own, badged for review (left un-ticked, so one click can't queue them all).
 - **Clean import.** beets handles tagging and cover art, and files land in your library in a single move. Synced lyrics are fetched on import; **Lyrics** mode backfills tracks you already have.
 - **Repair.** ISRC-anchored scanning finds truncated or corrupt FLACs and refills the exact missing tracks, leaving good files alone. It catches files that play but are cut short, not just obviously tiny ones.
 - **Tidy up.** Consolidates duplicate album folders and handles Various Artists layouts. **Migrate** brings a messy or untagged collection into a clean `Artist/Album (Year)/` layout.
@@ -31,14 +31,14 @@ Qobuz Librarian downloads from Qobuz — one album, a whole discography, or your
 
 ## How it works
 
-A single Docker image bundles streamrip, beets, ffmpeg, and the FLAC tools, with no sidecar containers. The web UI is the primary interface; the CLI runs the same engine for scripted or unattended jobs. Paths and ports come from environment variables, and everything else lives on the **Settings** page and applies live.
+A single Docker image bundles streamrip, beets, ffmpeg, and the FLAC tools, with no sidecar containers. The web UI is the primary interface; the CLI runs the same engine for scripted or unattended jobs. Paths, ports, and container/runtime options come from environment variables (see [docs/configuration.md](docs/configuration.md)); the common day-to-day behaviour — quality, lyrics, artwork, beets layout, scan cadence — lives on the **Settings** page and takes effect on the next job. A few advanced knobs stay in `.env`/`compose.yaml` and need a restart.
 
 Every mode works the same way: **scan → review → download.** A scan runs in the background and parks a checklist of what it found. Nothing downloads or changes on disk until you tick what you want and approve.
 
 | Page | What it does |
 |---|---|
 | **Search** | Find an album by name or Qobuz URL and download it |
-| **Artist** | Scan one artist's discography; new releases pre-ticked |
+| **Artist** | Scan one artist's discography; new releases flagged for review |
 | **Library** | Scan every artist for missing albums, or just check for new releases |
 | **Upgrade** | Re-rip albums Qobuz can now serve at higher quality |
 | **Downsample** | Shrink hi-res files to CD rate (local, no login) |
@@ -65,9 +65,11 @@ Then open <http://localhost:8666>. The first visit sets a web username and passw
 
 > **Point `QL_MUSIC_DIR` at a dedicated music library**, not your home folder or a drive with other files mixed in. The app moves and merges files within that tree, and Upgrade replaces files in place.
 
-> **On an untrusted or shared network, lock the box down before the first boot.** The default Compose publishes the port on all interfaces, and the first-visit setup screen stays open until an account exists, so whoever reaches it first claims the admin login. Seed `WEB_AUTH_USER` / `WEB_AUTH_PASSWORD` in `.env`, or bind the port to `127.0.0.1`, before you start it. On a private home LAN the risk is low.
+> **On an untrusted or shared network, lock the box down before the first boot.** The default Compose publishes the port on all interfaces, and the first-visit setup screen stays open until an account exists, so whoever reaches it first claims the admin login. Seed `WEB_AUTH_USER` / `WEB_AUTH_PASSWORD` in `.env`, or set `WEB_BIND=127.0.0.1` to keep the port off the LAN, before you start it. On a private home LAN the risk is low.
 
 `compose.yaml` pulls the prebuilt `latest` image from Docker Hub. On Windows, run the setup in WSL or Git Bash. To build the image yourself, see [Development](#development).
+
+Docker is the supported way to run the **web UI** — the image bundles streamrip, beets, the FLAC tools, and the compiled stylesheet. A `pip`/`pipx` install gives you the `qobuz-librarian` **CLI** (handy for scripted runs against an existing streamrip/beets setup); running `qobuz-librarian-web` from such an install first needs the CSS built once (`npm ci && npm run build`), or the page renders unstyled.
 
 ### Your Qobuz token
 

@@ -4,7 +4,7 @@
 
 | Symptom | Likely cause / next step |
 |---|---|
-| `Another Qobuz Librarian run is in progress` | The web container holds the download lock — use the web UI, or `docker compose stop qobuz-librarian` for the CLI. |
+| `Another Qobuz Librarian run is in progress` | The web app holds the download lock. For a CLI run, hand it over from **Settings → Mode → Hand off to terminal** (then **Resume web app** after); stopping the container with `docker compose stop qobuz-librarian` is the heavier fallback. |
 | `MUSIC_ROOT missing or inaccessible` | Bind mount unset or wrong — check `QL_MUSIC_DIR` in `.env` and that the host path exists. |
 | Container exits immediately on `up` | `.env` missing from the compose dir, or a host bind-mount path doesn't exist. `docker compose logs qobuz-librarian` shows which. |
 | `Volume not writable` (Settings → Diagnostics: FAIL) | `PUID`/`PGID` don't match the host owner — `chown -R $(id -u):$(id -g) ./music ./staging`, or set them in `.env`. |

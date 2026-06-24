@@ -92,7 +92,7 @@ TEXT_FIELDS = [
     ("BEETS_PLUGINS", "beets plugins",
      "Comma-separated list of beets plugins to enable. Replaces the list "
      "in /config/beets/config.yaml entirely. Empty = honour that file "
-     "(seeded with fetchart only). Names that aren't installed here are "
+     "(seeded with fetchart and inline). Names that aren't installed here are "
      "dropped (and called out) so a typo can't break every import. "
      "Examples: lastgenre, replaygain, scrub, edit.",
      "list", None, "fetchart,lastgenre,replaygain"),

@@ -201,6 +201,52 @@ def _dir_has_audio(d):
         return True  # can't tell → assume tracks remain, never delete blindly
 
 
+def _parked_companions(d):
+    """Non-audio companion files under a parked album dir worth keeping after
+    beets has moved the audio out — booklets, scans, .cue/.log, hand-placed
+    cover art. Skips hidden/bookkeeping dotfiles and streamrip's `__artwork`
+    cover orphans (swept separately), which aren't user content."""
+    out = []
+    try:
+        for f in d.rglob("*"):
+            if (not f.is_file()
+                    or f.suffix.lower() in cfg.AUDIO_EXTS
+                    or f.name.startswith(".")
+                    or "__artwork" in f.parts):
+                continue
+            out.append(f)
+    except OSError:
+        return []
+    return out
+
+
+def _preserve_parked_companions(group, d):
+    """Move a parked album's leftover non-audio companions out of the retry tree
+    before the husk is deleted, so beets importing the audio doesn't silently
+    take booklets/scans/.cue/.log down with the staging folder. They land under
+    DATA_DIR/import_leftovers/<group>/<album>/ — outside the retry tree (so they
+    aren't rescanned every flush) and on the persistent volume — and the move is
+    logged so the user can rescue them."""
+    companions = _parked_companions(d)
+    if not companions:
+        return
+    dest = cfg.DATA_DIR / "import_leftovers" / group.name / d.name
+    moved = 0
+    for f in companions:
+        out = dest / f.relative_to(d)
+        try:
+            out.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(f), str(out))
+            moved += 1
+        except OSError:
+            pass
+    if moved:
+        log.info(fmt(C.YELLOW,
+            f"  📎  Kept {moved} non-audio file(s) from "
+            f"{truncate(d.name, 40)} at {dest} — beets imported the audio but "
+            f"left these behind."))
+
+
 def _reimport_parked_albums():
     """Re-attempt beets import on albums an earlier batch parked under
     ``STAGING_DIR/<BEETS_RETRY_DIR>/``. A park almost always means a transient
@@ -238,6 +284,10 @@ def _reimport_parked_albums():
                 kept.append(d)
             else:
                 any_ok = True
+                # beets moved the audio into the library; rescue any non-audio
+                # companions it left behind before removing the husk, so the
+                # booklet/scans/cue aren't silently deleted with the staging dir.
+                _preserve_parked_companions(group, d)
                 shutil.rmtree(d, ignore_errors=True)
         if kept:
             log.info(fmt(C.YELLOW,

@@ -78,6 +78,7 @@ check /queue/history          200
 check /settings               200
 check /static/icon.png        200   # favicon + navbar mark
 check /static/icon-192.png    200   # PWA icon
+check /static/dist/app.css    200   # compiled Tailwind/DaisyUI; the SW precaches it too
 check /api/jobs/nope/status   404   # unknown job id
 
 echo "==> Checking bundled tools in the image"
@@ -96,6 +97,17 @@ if curl -fsS "${BASE}/" 2>/dev/null | grep -q "Qobuz Librarian"; then
     echo "  ok  page shows 'Qobuz Librarian'"
 else
     fail "branding 'Qobuz Librarian' not found in served HTML"
+fi
+
+echo "==> Checking compiled CSS is a real build"
+# A 200 alone isn't enough: the HTML routes render even with no stylesheet, so a
+# regression in the Docker CSS build/copy step would otherwise pass smoke with an
+# unstyled UI. Assert the asset is substantial and carries a real Tailwind token.
+css=$(curl -fsS "${BASE}/static/dist/app.css" 2>/dev/null || true)
+if [ "$(printf '%s' "$css" | wc -c)" -gt 1000 ] && printf '%s' "$css" | grep -q -- '--tw-'; then
+    echo "  ok  app.css served and looks like a real Tailwind build"
+else
+    fail "/static/dist/app.css missing or not a real build — the UI would be unstyled"
 fi
 
 echo

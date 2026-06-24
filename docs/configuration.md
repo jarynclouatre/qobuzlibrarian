@@ -2,7 +2,7 @@
 
 [← README](../README.md)
 
-Host paths and the web port come from a gitignored `.env` (copy `.env.example`). Docker Compose reads these on the host and maps them to the container-side names the app uses. Everything else is a behaviour toggle: set it live on **Settings**, or as a default in `compose.yaml`.
+Host paths and the web port come from a gitignored `.env` (copy `.env.example`). Docker Compose reads these on the host and maps them to the container-side names the app uses. The common day-to-day behaviour toggles — quality, lyrics, artwork, beets layout, scan cadence — are on the **Settings** page and take effect on the next job. Advanced, container, and runtime knobs (timeouts, worker counts, cache/pacing tunables, `WEB_AUTH*`, host bind, `LOG_LEVEL`) stay in `.env`/`compose.yaml` and may need a restart — Compose only forwards a key into the container if `compose.yaml` lists it under `environment:`.
 
 ## Host paths
 
@@ -23,8 +23,8 @@ Host paths and the web port come from a gitignored `.env` (copy `.env.example`).
 | `LYRICS_PROVIDERS` | *(auto)* | Ordered comma list, e.g. `Lrclib,NetEase` |
 | `ARTWORK` | `sidecar` | Cover art: `sidecar`, `embed`, or `both` |
 | `AUTO_LIBRARY_SCAN` | `true` | Run the one-time library scan on first launch |
-| `NEW_RELEASE_CHECK_INTERVAL` | — | How often to auto-check for new releases (also on Settings) |
-| `ARTIST_CATALOG_CACHE_TTL` | — | How long artist album-lists stay cached |
+| `NEW_RELEASE_CHECK_INTERVAL` | `86400` | How often (seconds) to auto-check for new releases — daily (also on Settings) |
+| `ARTIST_CATALOG_CACHE_TTL` | `604800` | How long (seconds) artist album-lists stay cached — 7 days |
 | `REPAIR_CACHE_ENABLED` | `true` | Cache the repair scan's Qobuz ISRC lookups (files are still decode-tested fresh every scan) |
 | `REPAIR_CACHE_TTL_DAYS` | `30` | How long a cached ISRC lookup is reused before re-verifying (`0` = keep until the db is deleted) |
 | `AUTO_UPGRADE_ENABLED` | `false` | Surface upgrades during ordinary gap-fill walks |

@@ -66,7 +66,12 @@ FROM python:3.12-slim AS runtime
 LABEL org.opencontainers.image.title="Qobuz Librarian"
 LABEL org.opencontainers.image.description="Qobuz downloader + library maintenance (CLI + web UI)"
 LABEL org.opencontainers.image.source="https://github.com/jarynclouatre/qobuz-librarian"
-LABEL org.opencontainers.image.licenses="MIT"
+# The image REDISTRIBUTES third-party tools under their own licenses (streamrip
+# is GPL-3.0-or-later, mutagen GPL-2.0-or-later, plus ffmpeg/flac/beets), so the
+# standard machine-readable label reflects the whole image, not just this app.
+# This project's OWN source is MIT — see the dedicated label below and LICENSE.
+LABEL org.opencontainers.image.licenses="MIT AND GPL-3.0-or-later AND GPL-2.0-or-later"
+LABEL com.qobuzlibrarian.app-code-license="MIT"
 
 # ffmpeg: rip/compress (runtime). flac: `flac -t` integrity checks and
 # `metaflac` header reads — the reference tools verify frame CRCs and ignore

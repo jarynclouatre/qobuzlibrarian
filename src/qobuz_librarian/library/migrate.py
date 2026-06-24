@@ -525,14 +525,33 @@ def space_estimate(plan: MigrationPlan, *, in_place: bool = False) -> tuple:
         except OSError:
             free = None
     need = 0
+    # source folder -> set of dest folders that will receive its audio, mirroring
+    # _carry_companion_files's folder_map so the companion accounting below
+    # matches what execution actually writes (incl. AcoustID fan-out).
+    companion_targets: dict = {}
     for entry in plan.placed:
         try:
             st = entry.source.stat()
         except OSError:
             continue
-        if in_place and dest_dev is not None and st.st_dev == dest_dev:
+        if not (in_place and dest_dev is not None and st.st_dev == dest_dev):
+            need += st.st_size
+        if entry.dest_rel is not None:
+            companion_targets.setdefault(entry.source.parent, set()).add(
+                (plan.dest_root / entry.dest_rel).parent)
+    # Non-audio companions (cover art, booklets, .cue/.log/.lrc, playlists) are
+    # ALWAYS copied into each destination folder — even in same-filesystem
+    # in-place mode, where the audio itself is a free rename — so their bytes
+    # count toward the estimate regardless of the audio discount. Without this
+    # the preview understates the space a library with large booklets/scans
+    # needs, and can read "0 bytes" for an in-place move that still copies art.
+    for src_folder, dst_folders in companion_targets.items():
+        try:
+            comp_bytes = sum(f.stat().st_size for f in src_folder.iterdir()
+                             if f.is_file() and f.suffix.lower() in _COMPANION_EXTS)
+        except OSError:
             continue
-        need += st.st_size
+        need += comp_bytes * len(dst_folders)
     return need, free
 
 

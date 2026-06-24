@@ -86,6 +86,26 @@ def test_get_artist_albums_paginates_and_stops_early():
     assert len(items) == 50
 
 
+def test_get_artist_albums_advances_past_malformed_page_entries():
+    # A full raw page that mixes in a few malformed (non-dict) entries must NOT
+    # look like the end of the discography. Offset and short-page detection use
+    # the raw page length, so pagination keeps going and every real album is
+    # returned — a regression here silently hides albums during artist scans.
+    page1 = {"albums": {"items": [{"id": i} for i in range(99)] + ["oops"],
+                        "total": 101}}
+    page2 = {"albums": {"items": [{"id": 99}, {"id": 100}]}}
+    with patch("qobuz_librarian.api.search.qobuz_get",
+               side_effect=[page1, page2]) as gg:
+        items, total = get_artist_albums("artist_malformed", "tok")
+    # 101 usable dict albums, both pages fetched (filtered-count logic stopped
+    # after page 1 with only 99 and never made the second call).
+    assert total == 101
+    assert [a["id"] for a in items] == list(range(101))
+    assert gg.call_count == 2
+    # The second call asked for the offset AFTER the full raw page (100), not 99.
+    assert gg.call_args_list[1].args[1]["offset"] == 100
+
+
 def test_get_artist_albums_does_not_cache_a_short_fetch(tmp_path, monkeypatch):
     import qobuz_librarian.config as cfg
     from qobuz_librarian.api import album_cache, search

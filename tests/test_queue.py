@@ -362,6 +362,37 @@ def test_reimport_parked_albums_clears_moved_and_keeps_skipped(monkeypatch, tmp_
     assert skipped_flac.exists()       # the only copy of the skipped track survives
 
 
+def test_reimport_parked_albums_preserves_non_audio_companions(monkeypatch, tmp_path):
+    """When beets imports the audio out of a parked album, the non-audio
+    companions it leaves behind (booklets, scans) must be rescued, not deleted
+    with the staging husk — the same data-loss shape as the upgrade-backup path."""
+    from qobuz_librarian import config as cfg
+    from qobuz_librarian.queue import executor
+
+    staging = tmp_path / "staging"
+    data = tmp_path / "data"
+    monkeypatch.setattr(cfg, "STAGING_DIR", staging)
+    monkeypatch.setattr(cfg, "DATA_DIR", data)
+    parked = staging / cfg.BEETS_RETRY_DIR / "20260101_000000-grp"
+    album = parked / "Some Album"
+    album.mkdir(parents=True)
+    flac = album / "01.flac"
+    booklet = album / "booklet.pdf"
+    flac.write_bytes(b"flac")
+    booklet.write_bytes(b"%PDF-1.4 booklet")
+
+    def fake_import(dirs):
+        flac.unlink()   # beets moves only the audio out, like a real import
+        return "ok"
+    monkeypatch.setattr(executor, "beets_import_albums", fake_import)
+
+    assert executor._reimport_parked_albums() is True
+    assert not parked.exists()                       # husk cleared
+    rescued = data / "import_leftovers" / "20260101_000000-grp" / "Some Album" / "booklet.pdf"
+    assert rescued.exists()                          # booklet rescued, not deleted
+    assert rescued.read_bytes() == b"%PDF-1.4 booklet"
+
+
 def test_queue_runs_post_download_truncation_recheck_on_success(monkeypatch, tmp_path):
     # The post-download length recheck must fire on the QUEUE path too — walk,
     # artist/album queue, resume, repair refill and the web single-track grab all

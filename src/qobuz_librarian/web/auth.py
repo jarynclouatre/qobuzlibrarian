@@ -5,9 +5,10 @@ cookie conventions (HttpOnly/SameSite, secrets.compare_digest) and persists
 the credential the way the streamrip token is persisted — an atomic 0600
 file in DATA_DIR.
 
-The session cookie carries a per-credential secret rather than a per-login
-token, so a browser stays signed in across container restarts and resetting
-the password (which mints a new secret) invalidates every old cookie.
+The session cookie carries a random per-login token, not a credential-derived
+secret. Tokens live in memory and are revoked on logout, on a password reset,
+and on restart — a restart logs every browser out, which is acceptable for a
+self-hosted app.
 """
 import hashlib
 import json

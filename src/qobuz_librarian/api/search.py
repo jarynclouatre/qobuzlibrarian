@@ -224,8 +224,15 @@ def get_artist_albums(artist_id, token, limit=None, fresh=False):
         }, token), "artist/get")
         albums_obj = _envelope(data, "albums")
         _albums_raw = albums_obj.get("items")
-        block = ([a for a in _albums_raw if isinstance(a, dict)]
-                 if isinstance(_albums_raw, list) else [])
+        raw_list = _albums_raw if isinstance(_albums_raw, list) else None
+        # `block` is the usable albums (dicts only); `raw_len` is how much of the
+        # page Qobuz actually handed back. They differ when a page mixes a few
+        # malformed non-dict entries into an otherwise full page — and the
+        # difference is load-bearing: advancing the offset or detecting a short
+        # page by the FILTERED count would treat that full page as the end of the
+        # discography and silently hide the artist's remaining albums.
+        block = [a for a in raw_list if isinstance(a, dict)] if raw_list else []
+        raw_len = len(raw_list) if raw_list else 0
         if qobuz_total is None:
             t = albums_obj.get("total")
             if isinstance(t, bool):
@@ -234,16 +241,19 @@ def get_artist_albums(artist_id, token, limit=None, fresh=False):
                 t = int(t)
             if isinstance(t, int):
                 qobuz_total = t
-        if not block:
+        if not raw_len:
             break
         for a in block:
             _normalize_album_fields(a)
         items.extend(block)
-        offset += len(block)
-        # Short page = end of data on Qobuz's side; stop early.
-        if len(block) < want:
+        offset += raw_len
+        # Short page = end of data on Qobuz's side; stop early. Measured by the
+        # raw page length so malformed entries don't truncate the walk.
+        if raw_len < want:
             break
-        if qobuz_total is not None and len(items) >= qobuz_total:
+        # Or once we've walked past everything Qobuz says it has (offset counts
+        # raw entries, matching how Qobuz reports `total`).
+        if qobuz_total is not None and offset >= qobuz_total:
             break
     # Only persist a discography we believe is whole. The catalog cache lives
     # for weeks, so an entry that fell short because Qobuz handed back a short

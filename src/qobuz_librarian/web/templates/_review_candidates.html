@@ -11,7 +11,7 @@
        class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between mb-3{% if not review_counts.total %} hidden{% endif %}">
     <p class="text-base-content/70">
       <span data-summary-count>{{ review_counts.total }} album{% if review_counts.total != 1 %}s{% endif %} across {{ review_counts.artists }} artist{% if review_counts.artists != 1 %}s{% endif %}</span> —
-      {% if job.execute_kind == 'new_releases' %}new since your last check and pre-ticked — untick any you don't want, or hide one to stop it resurfacing.
+      {% if job.execute_kind == 'new_releases' %}new since your last check — flagged for review but left un-ticked, so tick the ones you want, or hide one to stop it resurfacing.
       {% elif job.execute_kind == 'downsample' %}tick the albums to shrink to CD rate, or hide one to keep it hi-res.<span data-downsample-total class="font-semibold ml-1">{% if review_reclaimable_label %} · ~{{ review_reclaimable_label }} reclaimable{% endif %}</span>
       {% elif triage %}tick the albums you want, or hide an artist you don't.
       {% elif preselected %}everything's selected by default; untick anything to skip.

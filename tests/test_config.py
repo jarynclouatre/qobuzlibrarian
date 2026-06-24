@@ -25,6 +25,21 @@ def test_env_num_min_floors_a_sub_minimum_count(monkeypatch):
     assert cfg._env_num_min("SSE_MAX_WORKERS", 16, 1) == 1
 
 
+def test_env_unit_float_clamps_out_of_range_thresholds(monkeypatch):
+    # Fuzzy thresholds are 0–1 similarity scores and several gate destructive
+    # review paths, so an out-of-range typo must clamp into range rather than
+    # make consolidation match everything (<0). 0.0 is a legit boundary and
+    # passes through; a non-numeric value falls back to the default.
+    monkeypatch.setenv("CONSOLIDATE_THRESH", "-1")
+    assert cfg._env_unit_float("CONSOLIDATE_THRESH", 0.70) == 0.0
+    monkeypatch.setenv("CONSOLIDATE_THRESH", "1.5")
+    assert cfg._env_unit_float("CONSOLIDATE_THRESH", 0.70) == 1.0
+    monkeypatch.setenv("CONSOLIDATE_THRESH", "0")
+    assert cfg._env_unit_float("CONSOLIDATE_THRESH", 0.70) == 0.0
+    monkeypatch.setenv("CONSOLIDATE_THRESH", "loose")
+    assert cfg._env_unit_float("CONSOLIDATE_THRESH", 0.70) == 0.70
+
+
 def test_resolve_secret_reads_token_from_a_file(monkeypatch, tmp_path):
     # Docker-secret style: the token lives in a file, not the environment, so
     # it stays out of `docker inspect`. The trailing newline a file carries must

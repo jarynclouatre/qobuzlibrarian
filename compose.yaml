@@ -23,8 +23,12 @@ services:
       - SETGID
     ports:
       # WEB_PORT (from .env) only changes the host-side mapping; the
-      # container always listens on 8666 internally.
-      - "${WEB_PORT:-8666}:8666"
+      # container always listens on 8666 internally. WEB_BIND sets the host
+      # interface the port is published on — leave it 0.0.0.0 for LAN access, or
+      # set WEB_BIND=127.0.0.1 in .env to keep the UI reachable only from the
+      # Docker host. (Don't use WEB_HOST for this — that's the in-container bind
+      # and must stay 0.0.0.0 or the published port can't reach the app.)
+      - "${WEB_BIND:-0.0.0.0}:${WEB_PORT:-8666}:8666"
 
     environment:
       # ── User / permissions ────────────────────────────────────────────────
@@ -62,17 +66,17 @@ services:
       BEETS_CONFIG_DIR:     /config/beets
       BEETS_DB_PATH:        /config/beets/musiclibrary.db
       BEETS_STAGING_INSIDE: /staging
-      # Optional folder/file naming. Leave unset to use the fully-editable
+      # Optional folder/file naming. Empty = use the fully-editable
       # /config/beets/config.yaml. beets path syntax ($albumartist, $album,
-      # $year, $track, $title, ...).
-      # BEETS_PATH_DEFAULT:   "$albumartist/$album ($year)/$track - $title"
-      # BEETS_PATH_SINGLETON: "$albumartist/$album ($year)/$track - $title"
-      # BEETS_PATH_COMP:      "Various Artists/$album ($year)/$track - $title"
-      # Comma-separated list of beets plugins. Unset = honour /config/beets/
+      # $year, $track, $title, ...). Set in .env (escape $ as $$ if needed).
+      BEETS_PATH_DEFAULT:   "${BEETS_PATH_DEFAULT:-}"
+      BEETS_PATH_SINGLETON: "${BEETS_PATH_SINGLETON:-}"
+      BEETS_PATH_COMP:      "${BEETS_PATH_COMP:-}"
+      # Comma-separated list of beets plugins. Empty = honour /config/beets/
       # config.yaml (seeded with `fetchart` and `inline`; this REPLACES that list,
       # so keep `inline` — it drives the multi-disc `Disc N/` folder field).
       # Useful extras: lastgenre, replaygain, scrub, edit, embedart.
-      # BEETS_PLUGINS: "fetchart,inline,lastgenre,replaygain"
+      BEETS_PLUGINS: "${BEETS_PLUGINS:-}"
 
       # streamrip config (generated on first run)
       STREAMRIP_CONFIG:     /config/streamrip/config.toml
@@ -90,6 +94,10 @@ services:
       # Empty = use the setup screen. An env value is visible to `docker inspect`.
       WEB_AUTH_USER:     "${WEB_AUTH_USER:-}"
       WEB_AUTH_PASSWORD: "${WEB_AUTH_PASSWORD:-}"
+      # Or keep the password out of the environment by pointing this at a file
+      # holding just the password (e.g. a Docker secret), mirroring the Qobuz
+      # token file. Empty = use the values above / the setup screen.
+      WEB_AUTH_PASSWORD_FILE: "${WEB_AUTH_PASSWORD_FILE:-}"
       # Behind a reverse proxy, set this to the proxy's IP(s) so the failed-login
       # throttle keys on the real client IP instead of the shared proxy address.
       FORWARDED_ALLOW_IPS: "${FORWARDED_ALLOW_IPS:-127.0.0.1}"
@@ -191,6 +199,16 @@ services:
       RATE_LIMIT_COOLDOWN:   "${RATE_LIMIT_COOLDOWN:-30}"
       # Parallel ffmpeg workers for the on-demand downsample (CPU-bound).
       RESAMPLE_WORKERS:      "${RESAMPLE_WORKERS:-4}"
+      # Free-space floor (MB) checked before each album download — turns a
+      # near-full staging area into a clean disk-full stop. 0 disables it.
+      MIN_FREE_STAGING_MB:   "${MIN_FREE_STAGING_MB:-500}"
+      # Repair scan: minimum gap (s) between live Qobuz ISRC lookups, and the
+      # on-disk ISRC-lookup cache (files are still decode-tested fresh each scan).
+      REPAIR_LOOKUP_MIN_INTERVAL: "${REPAIR_LOOKUP_MIN_INTERVAL:-0.05}"
+      REPAIR_CACHE_ENABLED:       "${REPAIR_CACHE_ENABLED:-true}"
+      REPAIR_CACHE_TTL_DAYS:      "${REPAIR_CACHE_TTL_DAYS:-30}"
+      # Drop obvious live/tour/session releases from the missing-albums gap list.
+      EXCLUDE_LIVE_ALBUMS:   "${EXCLUDE_LIVE_ALBUMS:-false}"
       # Log verbosity: DEBUG | INFO | WARNING | ERROR.
       LOG_LEVEL:             "${LOG_LEVEL:-INFO}"
       # Optional command run after every job (job state as JSON on stdin);
